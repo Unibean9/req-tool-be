@@ -11,9 +11,7 @@ from starlette.requests import Request
 from app.config import settings
 from app.database import engine
 from app.core.errors import http_exception_handler, validation_exception_handler, unhandled_exception_handler
-from app.routers import admin, github_auth, users, organizations, projects, actors, github, sync
-from app.routers import stakeholders, nfrs, project_business, estimates, health, context_diagram
-from app.routers.requirements import epics, features, stories, tasks
+from app.routers import admin, auth, github_auth, users, organizations, projects
 
 
 def _run_migrations() -> None:
@@ -69,23 +67,13 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(admin.router)
+api_v1.include_router(auth.router)
 api_v1.include_router(github_auth.router)
 api_v1.include_router(users.router)
 api_v1.include_router(organizations.router)
+api_v1.include_router(organizations.alias_router)
 api_v1.include_router(projects.router)
-api_v1.include_router(actors.router)
-api_v1.include_router(epics.router)
-api_v1.include_router(features.router)
-api_v1.include_router(stories.router)
-api_v1.include_router(tasks.router)
-api_v1.include_router(github.router)
-api_v1.include_router(sync.router)
-api_v1.include_router(stakeholders.router)
-api_v1.include_router(nfrs.router)
-api_v1.include_router(project_business.router)
-api_v1.include_router(estimates.router)
-api_v1.include_router(health.router)
-api_v1.include_router(context_diagram.router)
+api_v1.include_router(projects.alias_router)
 
 app.include_router(api_v1)
 

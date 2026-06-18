@@ -35,7 +35,7 @@ class ProjectService:
             description=body.description,
             context=body.context,
             problems=body.problems,
-            proposed_solutions=body.proposed_solutions,
+            proposed_solutions=body.proposed_solutions or [],
             start_date=body.start_date,
             end_date=body.end_date,
             budget=body.budget,

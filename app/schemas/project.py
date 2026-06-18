@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, model_validator
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
+    org_id: uuid.UUID | None = None
     description: str | None = None
     context: str | None = None
     problems: list[str] = []

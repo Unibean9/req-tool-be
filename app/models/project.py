@@ -27,17 +27,4 @@ class Project(AuditMixin, Base):
     executive_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     roi_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    # Relationships
     organization: Mapped["Organization"] = relationship(back_populates="projects")  # noqa: F821
-    actors: Mapped[list["Actor"]] = relationship(back_populates="project", cascade="all, delete-orphan")  # noqa: F821
-    github_connection: Mapped["GithubConnection | None"] = relationship(back_populates="project", uselist=False)  # noqa: F821
-    epics: Mapped[list["Epic"]] = relationship(back_populates="project", cascade="all, delete-orphan")  # noqa: F821
-    stakeholders: Mapped[list["Stakeholder"]] = relationship(back_populates="project", cascade="all, delete-orphan")  # noqa: F821
-    goals: Mapped[list["ProjectGoal"]] = relationship(back_populates="project", cascade="all, delete-orphan", order_by="ProjectGoal.order")  # noqa: F821
-    flows: Mapped[list["ProjectFlow"]] = relationship(back_populates="project", cascade="all, delete-orphan", passive_deletes=True)  # noqa: F821
-    rules: Mapped[list["ProjectRule"]] = relationship(back_populates="project", cascade="all, delete-orphan")  # noqa: F821
-    nfrs: Mapped[list["NFR"]] = relationship(back_populates="project", cascade="all, delete-orphan")  # noqa: F821
-    constraints: Mapped[list["ProjectConstraint"]] = relationship(back_populates="project", cascade="all, delete-orphan", passive_deletes=True)  # noqa: F821
-    business_requirements: Mapped[list["ProjectBusinessRequirement"]] = relationship(back_populates="project", cascade="all, delete-orphan", passive_deletes=True)  # noqa: F821
-    out_of_scope_items: Mapped[list["ProjectOutOfScope"]] = relationship(back_populates="project", cascade="all, delete-orphan", passive_deletes=True, order_by="ProjectOutOfScope.order")  # noqa: F821
-    context_diagram: Mapped["ProjectContextDiagram | None"] = relationship(back_populates="project", uselist=False, cascade="all, delete-orphan", passive_deletes=True)  # noqa: F821

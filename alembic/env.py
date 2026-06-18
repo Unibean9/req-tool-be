@@ -7,9 +7,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from alembic import context
 
-# Import all models so Alembic can detect them
 from app.models import Base  # noqa: F401
-from app.models import User, Organization, OrgMember, Project, Actor, GithubConnection  # noqa: F401
+from app.models import User, Organization, OrgMember, Project  # noqa: F401
 from app.config import settings
 
 config = context.config
