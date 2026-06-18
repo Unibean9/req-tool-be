@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
 
     encryption_key: str = ""
+    encryption_key_previous: str = ""
     password_pepper: str = ""
 
     github_client_id: str = ""

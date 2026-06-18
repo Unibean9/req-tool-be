@@ -18,6 +18,7 @@ from app.routers import (
     auth,
     exports,
     github_auth,
+    llm_providers,
     organizations,
     projects,
     source_documents,
@@ -91,6 +92,7 @@ api_v1.include_router(artifact_links.router)
 api_v1.include_router(source_documents.router)
 api_v1.include_router(workflow.router)
 api_v1.include_router(exports.router)
+api_v1.include_router(llm_providers.router)
 
 app.include_router(api_v1)
 
