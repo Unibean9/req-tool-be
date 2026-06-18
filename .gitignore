@@ -63,3 +63,15 @@ site/
 plans/*
 docs/*
 .claude/session-data/*
+
+# my-skills generated files
+.claude/
+CLAUDE.md
+claude.md
+.codex/
+.agents/
+AGENTS.md
+agents.md
+.ck.json
+.my-skills.lock.json
+session-data/
