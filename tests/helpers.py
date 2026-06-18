@@ -44,7 +44,7 @@ async def create_project(client, h: dict, org_id: str) -> dict:
     slug = f"proj-{uuid_mod.uuid4().hex[:8]}"
     resp = await client.post(
         f"{BASE}/orgs/{org_id}/projects",
-        json={"name": slug, "slug": slug, "description": "test", "proposed_solutions": []},
+        json={"name": slug, "description": "test"},
         headers=h,
     )
     assert resp.status_code == 201, resp.text

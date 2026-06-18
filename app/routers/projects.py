@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 
 from app.core.guards import require_org_member, require_org_owner
@@ -10,7 +10,7 @@ from app.deps import current_user, get_project_service
 from app.models.organization import OrgMember
 from app.models.project import Project
 from app.models.user import User
-from app.schemas.project import ProjectCreateRequest, ProjectResponse, ProjectUpdateRequest
+from app.schemas.project import ProjectCreateRequest, ProjectCreateTopLevelRequest, ProjectResponse, ProjectUpdateRequest
 from app.schemas.response import ApiResponse
 from app.services.project_service import ProjectService
 
@@ -20,12 +20,10 @@ alias_router = APIRouter(prefix="/projects", tags=["Projects"])
 
 @alias_router.post("", response_model=ApiResponse[ProjectResponse], status_code=status.HTTP_201_CREATED)
 async def create_project_top_level(
-    body: ProjectCreateRequest,
+    body: ProjectCreateTopLevelRequest,
     user: User = Depends(current_user),
     service: ProjectService = Depends(get_project_service),
 ):
-    if body.org_id is None:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Thiếu org_id")
     await require_org_member(body.org_id, user, service.db)
     return created(await service.create(body.org_id, body))
 

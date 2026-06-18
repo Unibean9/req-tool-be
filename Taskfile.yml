@@ -25,7 +25,7 @@ tasks:
   dev:
     desc: Run FastAPI development server
     cmds:
-      - python -m uvicorn app.main:app --reload 8000
+      - python -m uvicorn app.main:app --reload --port 8000
 
   test:
     desc: Run test suite
@@ -35,4 +35,4 @@ tasks:
   ruff:
     desc: Chạy Ruff lint nhanh
     cmds:
-      - '{{.PYTHON}} -m ruff check app tests alembic'
+      - "{{.PYTHON}} -m ruff check app tests alembic"
