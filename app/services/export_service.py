@@ -6,6 +6,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.artifact import Artifact, ArtifactLink, ArtifactPriority, ArtifactStatus, ArtifactType
+from app.models.organization import OrgMember
+from app.models.project import Project
 
 
 @dataclass(frozen=True)
@@ -25,7 +27,8 @@ class ExportService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def render(self, *, project_id: uuid.UUID, export_type: str, include_wont: bool = False) -> str:
+    async def render(self, *, project_id: uuid.UUID, user_id: uuid.UUID, export_type: str, include_wont: bool = False) -> str:
+        await self._require_project_member(project_id, user_id)
         artifacts = await self._load_artifacts(project_id, include_wont)
         links = await self._load_links(project_id)
         if export_type == "brd":
@@ -66,6 +69,14 @@ class ExportService:
                 )
             )
         return result
+
+    async def _require_project_member(self, project_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        org_id = (await self.db.execute(select(Project.org_id).where(Project.id == project_id))).scalar_one_or_none()
+        if org_id is None:
+            raise ValueError("Không tìm thấy dự án")
+        member = (await self.db.execute(select(OrgMember.id).where(OrgMember.org_id == org_id, OrgMember.user_id == user_id))).scalar_one_or_none()
+        if member is None:
+            raise PermissionError("User không có quyền truy cập dự án")
 
     async def _load_links(self, project_id: uuid.UUID) -> list[ArtifactLink]:
         return list((await self.db.execute(select(ArtifactLink).where(ArtifactLink.project_id == project_id))).scalars().all())

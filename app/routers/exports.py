@@ -62,7 +62,7 @@ async def _render(
 ) -> PlainTextResponse:
     await require_project_access(project_id, user, db)
     try:
-        content = await ExportService(db).render(project_id=project_id, export_type=export_type, include_wont=include_wont)
+        content = await ExportService(db).render(project_id=project_id, user_id=user.id, export_type=export_type, include_wont=include_wont)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
