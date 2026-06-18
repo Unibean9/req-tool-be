@@ -8,7 +8,20 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 
 from app.models import Base  # noqa: F401
-from app.models import User, Organization, OrgMember, Project  # noqa: F401
+from app.models import (  # noqa: F401
+    Artifact,
+    ArtifactEvidence,
+    ArtifactLink,
+    ArtifactReview,
+    ArtifactVersion,
+    OrgMember,
+    Organization,
+    Project,
+    SourceDocument,
+    User,
+    WorkflowRun,
+    WorkflowStep,
+)
 from app.config import settings
 
 config = context.config

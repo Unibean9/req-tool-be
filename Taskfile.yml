@@ -1,126 +1,38 @@
-# yaml-language-server: $schema=https://taskfile.dev/schema.json
 version: "3"
 
-# ── New here? Three commands to get started: ──────────────────────────────────
-#   task setup       — create .venv and install all dependencies
-#   task infra:up    — start PostgreSQL + pgAdmin via Docker
-#   task dev         — run the API at http://127.0.0.1:8000
-
 vars:
-  APP: app.main:app
-  PORT: "8000"
-  VENV_BIN: '{{if eq OS "windows"}}.venv/Scripts{{else}}.venv/bin{{end}}'
-  ALEMBIC: '{{if eq OS "windows"}}.venv/Scripts/alembic{{else}}.venv/bin/alembic{{end}}'
-  UVICORN: '{{if eq OS "windows"}}.venv/Scripts/uvicorn{{else}}.venv/bin/uvicorn{{end}}'
-  VENV_CHECK: '{{if eq OS "windows"}}.venv/Scripts/pip.exe{{else}}.venv/bin/pip{{end}}'
+  PYTHON: '{{if eq OS "windows"}}.venv/Scripts/python.exe{{else}}.venv/bin/python{{end}}'
 
 tasks:
-  default:
-    desc: List all available tasks
-    cmds:
-      - task --list
-    silent: true
-
-  # ── Setup ─────────────────────────────────────────────────────────────────
-
   setup:
-    desc: "First-time setup: create .venv and install all dependencies"
+    desc: Create virtual environment and install dependencies
     cmds:
-      - cmd: python3 -m venv .venv
-        platforms: [linux, darwin]
-      - cmd: python -m venv .venv
-        platforms: [windows]
-      - cmd: .venv/bin/pip install -r requirements.txt
-        platforms: [linux, darwin]
-      - cmd: .venv\Scripts\pip install -r requirements.txt
-        platforms: [windows]
-      - task --list
+      - python -m venv .venv
+      - python -m pip install --upgrade pip
+      - python -m pip install -r requirements.txt
 
-  # ── Database ──────────────────────────────────────────────────────────────
-
-  db:upgrade:
-    desc: Run all pending Alembic migrations (upgrade head)
-    preconditions:
-      - sh: test -f "{{.VENV_CHECK}}"
-        msg: ".venv not found — run: task setup"
-    cmds:
-      - "{{.ALEMBIC}} upgrade head"
-
-  db:downgrade:
-    desc: Downgrade one Alembic revision
-    preconditions:
-      - sh: test -f "{{.VENV_CHECK}}"
-        msg: ".venv not found — run: task setup"
-    cmds:
-      - "{{.ALEMBIC}} downgrade -1"
-
-  db:revision:
-    desc: "Create a new migration — task db:revision -- 'describe your change'"
-    preconditions:
-      - sh: test -f "{{.VENV_CHECK}}"
-        msg: ".venv not found — run: task setup"
-    cmds:
-      - "{{.ALEMBIC}} revision --autogenerate -m '{{.CLI_ARGS}}'"
-
-  db:history:
-    desc: Show Alembic migration history
-    preconditions:
-      - sh: test -f "{{.VENV_CHECK}}"
-        msg: ".venv not found — run: task setup"
-    cmds:
-      - "{{.ALEMBIC}} history --verbose"
-
-  db:current:
-    desc: Show current Alembic revision in the DB
-    preconditions:
-      - sh: test -f "{{.VENV_CHECK}}"
-        msg: ".venv not found — run: task setup"
-    cmds:
-      - "{{.ALEMBIC}} current"
-
-  # ── Infrastructure ────────────────────────────────────────────────────────
-
-  infra:up:
-    desc: Start PostgreSQL + pgAdmin in background (Docker required)
+  docker:up:
+    desc: Start Docker services
     cmds:
       - docker compose up -d
 
-  infra:down:
-    desc: Stop infrastructure containers
-    cmds:
-      - docker compose down
-
-  infra:logs:
-    desc: Tail infrastructure container logs
-    cmds:
-      - docker compose logs -f
-
-  infra:reset:
-    desc: "WARNING: destroy all data and restart fresh"
+  docker:reset:
+    desc: Reset Docker services and database state
     cmds:
       - docker compose down -v
       - docker compose up -d
 
-  # ── App ───────────────────────────────────────────────────────────────────
-
   dev:
-    desc: Run FastAPI with auto-reload at http://127.0.0.1:8000 (runs migrations first)
+    desc: Run FastAPI development server
     cmds:
-      - task: db:upgrade
-      - "{{.UVICORN}} {{.APP}} --reload --host 127.0.0.1 --port {{.PORT}}"
-    env:
-      AUTO_MIGRATE: "false"
+      - python -m uvicorn app.main:app --reload 8000
 
-  start:
-    desc: Run FastAPI in production mode with 4 workers (runs migrations first)
+  test:
+    desc: Run test suite
     cmds:
-      - task: db:upgrade
-      - "{{.UVICORN}} {{.APP}} --host 0.0.0.0 --port {{.PORT}} --workers 4"
-    env:
-      AUTO_MIGRATE: "false"
+      - python -m pytest -q
 
-  up:
-    desc: "Full local stack: infra up → migrate → dev server"
+  ruff:
+    desc: Chạy Ruff lint nhanh
     cmds:
-      - task: infra:up
-      - task: dev
+      - '{{.PYTHON}} -m ruff check app tests alembic'

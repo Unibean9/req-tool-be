@@ -1,4 +1,6 @@
 import logging
+from typing import Any
+
 from fastapi import Request, status
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
@@ -15,7 +17,7 @@ def _request_id(request: Request) -> str | None:
 def _problem(
     status_code: int,
     title: str,
-    detail: str,
+    detail: str | dict[str, Any],
     instance: str | None = None,
     request_id: str | None = None,
     errors: list[dict] | None = None,
@@ -57,7 +59,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
     return _problem(
         exc.status_code,
         title,
-        str(exc.detail),
+        exc.detail,
         str(request.url),
         _request_id(request),
     )
