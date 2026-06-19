@@ -13,6 +13,7 @@ from app.database import engine
 from app.core.errors import http_exception_handler, validation_exception_handler, unhandled_exception_handler
 from app.routers import (
     admin,
+    agent_sessions,
     artifact_links,
     artifacts,
     auth,
@@ -53,6 +54,12 @@ async def lifespan(app: FastAPI):
     if settings.app_env == "development":
         from scripts.seed_dev_users import seed
         await seed()
+
+    from app.database import async_session_factory
+    from app.graphs.checkpointer import DelegatingCheckpointer
+    from app.graphs.graph import build_graph
+    app.state.compiled_graph = build_graph(DelegatingCheckpointer(async_session_factory))
+
     yield
     await engine.dispose()
 
@@ -92,6 +99,7 @@ api_v1.include_router(source_documents.router)
 api_v1.include_router(workflow.router)
 api_v1.include_router(exports.router)
 api_v1.include_router(llm_providers.router)
+api_v1.include_router(agent_sessions.router)
 
 app.include_router(api_v1)
 

@@ -17,6 +17,31 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent import AgentSession
 
 
+class DelegatingCheckpointer(BaseCheckpointSaver):
+    """Delegates to per-session AgentSessionCheckpointer based on thread_id in config."""
+
+    def __init__(self, session_factory: Callable[[], AsyncContextManager[AsyncSession]]):
+        super().__init__()
+        self.session_factory = session_factory
+
+    def _for(self, config: RunnableConfig) -> "AgentSessionCheckpointer":
+        thread_id = config["configurable"]["thread_id"]
+        return AgentSessionCheckpointer(session_id=thread_id, session_factory=self.session_factory)
+
+    async def aget_tuple(self, config: RunnableConfig) -> "CheckpointTuple | None":
+        return await self._for(config).aget_tuple(config)
+
+    async def aput(self, config, checkpoint, metadata, new_versions):
+        return await self._for(config).aput(config, checkpoint, metadata, new_versions)
+
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        return await self._for(config).aput_writes(config, writes, task_id, task_path)
+
+    async def alist(self, config, *, filter=None, before=None, limit=None):
+        async for item in self._for(config).alist(config, filter=filter, before=before, limit=limit):
+            yield item
+
+
 class AgentSessionCheckpointer(BaseCheckpointSaver):
     def __init__(
         self,
