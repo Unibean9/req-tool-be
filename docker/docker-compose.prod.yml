@@ -1,0 +1,53 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: '3'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_CONTAINER_PREFIX:-reqflow}-postgres
+    restart: unless-stopped
+    networks:
+      - reqflow-network
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    logging: *default-logging
+
+  app:
+    image: ${DOCKER_USERNAME:?DOCKER_USERNAME is required}/req-tool-be:${IMAGE_TAG:-latest}
+    pull_policy: always
+    container_name: ${COMPOSE_CONTAINER_PREFIX:-reqflow}-app
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
+      AUTO_MIGRATE: 'false'
+      RUN_MIGRATIONS: 'true'
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-4}
+    ports:
+      - '${APP_PORT:-8000}:8000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - reqflow-network
+    logging: *default-logging
+
+volumes:
+  pgdata:
+
+networks:
+  reqflow-network:
+    driver: bridge
