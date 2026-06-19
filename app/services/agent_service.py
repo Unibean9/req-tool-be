@@ -245,6 +245,7 @@ class AgentService:
         await self.db.commit()
 
         await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self.db.refresh(tool_call)
         return tool_call
 
     async def reject_tool_call(
@@ -264,6 +265,7 @@ class AgentService:
         await self.db.commit()
 
         await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self.db.refresh(tool_call)
         return tool_call
 
     async def request_edit(
@@ -287,6 +289,7 @@ class AgentService:
         await self.db.commit()
 
         await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self.db.refresh(tool_call)
         return tool_call
 
     # ------------------------------------------------------------------
