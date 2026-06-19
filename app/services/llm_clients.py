@@ -72,10 +72,7 @@ class OpenAILLMClient:
             "max_output_tokens": max_tokens,
         }
         if response_format:
-            body["response_format"] = {
-                "type": "json_schema",
-                "json_schema": _json_schema_format(response_format),
-            }
+            body["text"] = {"format": _responses_json_schema_format(response_format)}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -388,6 +385,18 @@ def _json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
             "strict": response_format.get("strict", True),
         }
     return response_format
+
+
+def _responses_json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
+    schema_format = _json_schema_format(response_format)
+    if schema_format.get("type") == "json_schema":
+        return schema_format
+    return {
+        "type": "json_schema",
+        "name": schema_format.get("name", "structured_output"),
+        "schema": schema_format.get("schema", schema_format),
+        "strict": response_format.get("strict", False),
+    }
 
 
 def _system_with_schema_instruction(system: str | None, response_format: dict[str, Any] | None) -> str | None:

@@ -78,6 +78,7 @@ class AgentSession(AuditMixin, Base):
     interrupt_type: Mapped[AgentSessionInterruptType | None] = enum_column(AgentSessionInterruptType, nullable=True)
     missing_context: Mapped[Any | None] = jsonb_column(nullable=True)
     graph_checkpoint: Mapped[Any] = jsonb_column(nullable=False, default=dict)
+    agent_role: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider_config_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("llm_provider_configs.id"),

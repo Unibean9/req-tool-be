@@ -42,6 +42,7 @@ class AgentService:
         artifact_type: str,
         step_key: str | None = None,
         workflow_area: str = "analysis",
+        agent_role: str | None = None,
         provider_config_id: uuid.UUID | None = None,
         created_by_id: uuid.UUID | None = None,
         llm_client: Any = None,
@@ -54,6 +55,7 @@ class AgentService:
                 artifact_type=artifact_type,
                 step_key=step_key,
                 workflow_area=workflow_area,
+                agent_role=agent_role,
                 status=AgentSessionStatus.ACTIVE,
                 graph_checkpoint={},
                 missing_context=missing or None,
@@ -92,6 +94,7 @@ class AgentService:
                 artifact_type=artifact_type,
                 step_key=step_key,
                 workflow_area=workflow_area,
+                agent_role=agent_role,
                 missing_context=missing,
                 llm_client=llm_client,
                 initial_state=None,
@@ -148,7 +151,7 @@ class AgentService:
         if llm_client is None:
             llm_client = await self._resolve_llm_client(session.provider_config_id)
 
-        config = self._make_config(session.id, project_id, llm_client)
+        config = self._make_config(session.id, project_id, llm_client, session.agent_role)
         asyncio.create_task(self.graph.ainvoke(Command(resume={"content": content}), config))
 
         return msg
@@ -358,7 +361,7 @@ class AgentService:
         session_row.interrupt_type = None
         await self.db.commit()
 
-        config = self._make_config(session_id, project_id, llm_client)
+        config = self._make_config(session_id, project_id, llm_client, session_row.agent_role)
         asyncio.create_task(self.graph.ainvoke(Command(resume={"all_resolved": True}), config))
 
     async def _run_graph(
@@ -369,12 +372,13 @@ class AgentService:
         artifact_type: str,
         step_key: str | None,
         workflow_area: str,
+        agent_role: str | None,
         missing_context: list[str],
         llm_client: Any,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
     ) -> None:
-        config = self._make_config(session_id, project_id, llm_client)
+        config = self._make_config(session_id, project_id, llm_client, agent_role)
         try:
             if resume_command is not None:
                 await self.graph.ainvoke(resume_command, config)
@@ -397,20 +401,34 @@ class AgentService:
                 if row.status == AgentSessionStatus.ACTIVE:
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
-        except Exception:
+        except Exception as exc:
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
                     row.status = AgentSessionStatus.FAILED
+                    db.add(
+                        AgentMessage(
+                            session_id=session_id,
+                            role=AgentMessageRole.AGENT,
+                            content=_agent_failure_message(exc),
+                        )
+                    )
                 await db.commit()
 
-    def _make_config(self, session_id: uuid.UUID, project_id: uuid.UUID, llm_client: Any) -> dict[str, Any]:
+    def _make_config(
+        self,
+        session_id: uuid.UUID,
+        project_id: uuid.UUID,
+        llm_client: Any,
+        agent_role: str | None = None,
+    ) -> dict[str, Any]:
         return {
             "configurable": {
                 "thread_id": str(session_id),
                 "project_id": str(project_id),
                 "session_factory": self.session_factory,
                 "llm_client": llm_client,
+                "agent_role": agent_role,
             }
         }
 
@@ -435,3 +453,10 @@ class AgentService:
             model=config_row.model_name,
             region=config_row.region,
         )
+
+
+def _agent_failure_message(exc: Exception) -> str:
+    message = str(exc).strip()
+    if not message:
+        message = exc.__class__.__name__
+    return f"Agent không thể hoàn tất lượt phân tích hiện tại. Lý do kỹ thuật: {message[:500]}"

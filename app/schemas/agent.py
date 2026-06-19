@@ -16,6 +16,7 @@ class AgentSessionCreate(BaseModel):
     artifact_type: str = Field(min_length=1, max_length=100)
     step_key: str | None = Field(default=None, max_length=100)
     workflow_area: str = Field(default="analysis", max_length=50)
+    agent_role: str | None = Field(default=None, max_length=100)
     provider_config_id: uuid.UUID | None = None
 
 
@@ -28,6 +29,7 @@ class AgentSessionResponse(BaseModel):
     status: AgentSessionStatus
     interrupt_type: AgentSessionInterruptType | None
     missing_context: Any | None
+    agent_role: str | None
     provider_config_id: uuid.UUID | None
     created_by_id: uuid.UUID | None
     created_at: datetime | None

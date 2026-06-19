@@ -55,6 +55,22 @@ async def lifespan(app: FastAPI):
         from scripts.seed_dev_users import seed
         await seed()
 
+    from pathlib import Path
+    from app.graphs.personas import load_personas, loaded_roles
+
+    _bmad_candidates = [
+        Path(__file__).parent.parent / "prompts",
+    ]
+    for _candidate in _bmad_candidates:
+        if _candidate.exists():
+            load_personas(_candidate)
+            break
+
+    if loaded_roles():
+        print(f"[personas] loaded: {loaded_roles()}")
+    else:
+        print("[personas] no BMAD skills found — system=None for all sessions")
+
     from app.database import async_session_factory
     from app.graphs.checkpointer import DelegatingCheckpointer
     from app.graphs.graph import build_graph

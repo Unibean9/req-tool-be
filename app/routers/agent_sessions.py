@@ -56,6 +56,7 @@ async def create_session(
         artifact_type=body.artifact_type,
         step_key=body.step_key,
         workflow_area=body.workflow_area,
+        agent_role=body.agent_role,
         provider_config_id=body.provider_config_id,
         created_by_id=user.id,
     )

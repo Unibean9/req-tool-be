@@ -106,6 +106,29 @@ async def test_generate_with_response_format_returns_dict(monkeypatch, client_cl
 
 
 @pytest.mark.asyncio
+async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, {"output_text": '{"answer": "ok"}'})
+    client = OpenAILLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    result = await client.generate(
+        messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
+        system="Bạn là BA.",
+        max_tokens=256,
+        response_format={"name": "analysis_result", "schema": {"type": "object"}},
+    )
+
+    body = recorder.requests[0]["json"]
+    assert result == {"answer": "ok"}
+    assert "response_format" not in body
+    assert body["text"]["format"] == {
+        "type": "json_schema",
+        "name": "analysis_result",
+        "schema": {"type": "object"},
+        "strict": False,
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("client_class", "provider_payload"),
     [

@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,6 +7,8 @@ from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.models.agent import (
+    AgentMessage,
+    AgentMessageRole,
     AgentRun,
     AgentSession,
     AgentSessionInterruptType,
@@ -33,8 +36,17 @@ async def _setup(client):
 # Use patch to suppress background tasks in all tests — avoids concurrent session access.
 @pytest.fixture(autouse=True)
 def _no_background_tasks():
+    real_create_task = asyncio.create_task
+
+    def _side_effect(coro, *args, **kwargs):
+        qualname = getattr(coro, "__qualname__", "")
+        if "AgentService" in qualname or "AsyncMockMixin" in qualname:
+            coro.close()
+            return MagicMock()
+        return real_create_task(coro, *args, **kwargs)
+
     with patch("app.services.agent_service.asyncio.create_task") as mock_ct:
-        mock_ct.side_effect = lambda coro: coro.close() or MagicMock()
+        mock_ct.side_effect = _side_effect
         yield mock_ct
 
 
@@ -147,6 +159,46 @@ async def test_handle_user_message_propose_artifacts_raises_400(client, db_sessi
         await svc.handle_user_message(project_id=project_id, session_id=session.id, content="ok")
 
     assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_run_graph_failure_marks_session_failed_and_saves_agent_message(client, db_session):
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("provider rejected request"))
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="research_output",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id,
+        project_id=project_id,
+        artifact_type="research_output",
+        step_key="intent_vision",
+        workflow_area="analysis",
+        agent_role=None,
+        missing_context=[],
+        llm_client=AsyncMock(),
+        initial_state=None,
+        resume_command=None,
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert updated.status == AgentSessionStatus.FAILED
+    assert len(messages) == 1
+    assert messages[0].role == AgentMessageRole.AGENT
+    assert "provider rejected request" in messages[0].content
 
 
 # ---------------------------------------------------------------------------

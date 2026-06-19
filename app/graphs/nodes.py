@@ -7,6 +7,7 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
+from app.graphs.personas import get_persona
 from app.graphs.policy import ApprovalRequired, GovernanceDenied
 from app.graphs.state import WorkflowState
 from app.graphs.tools import create_artifact, read_artifacts
@@ -62,9 +63,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         )
 
     prompt = _build_analyst_prompt(state, artifacts)
+    system_prompt = get_persona(
+        artifact_type=state["artifact_type"],
+        workflow_area=state["workflow_area"],
+        agent_role=cfg.get("agent_role"),
+    )
     analysis_result = await llm_client.generate(
         messages=[{"role": "user", "content": prompt}],
-        system=None,
+        system=system_prompt,
         max_tokens=2000,
         response_format=ANALYSIS_SCHEMA,
     )
