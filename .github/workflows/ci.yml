@@ -44,7 +44,6 @@ jobs:
 
   docker-validate:
     name: Docker / Validate Image
-    needs: ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

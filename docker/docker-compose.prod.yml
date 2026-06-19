@@ -9,6 +9,8 @@ services:
     image: postgres:16-alpine
     container_name: ${COMPOSE_CONTAINER_PREFIX:-reqflow}-postgres
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
     networks:
       - reqflow-network
     environment:
@@ -30,6 +32,9 @@ services:
     pull_policy: always
     container_name: ${COMPOSE_CONTAINER_PREFIX:-reqflow}-app
     restart: unless-stopped
+    init: true
+    mem_limit: 768m
+    cpus: 1.0
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:?POSTGRES_USER is required}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:?POSTGRES_DB is required}
