@@ -10,10 +10,11 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCallStatus,
 )
+from app.models.artifact import ArtifactType
 
 
 class AgentSessionCreate(BaseModel):
-    artifact_type: str = Field(min_length=1, max_length=100)
+    artifact_type: ArtifactType
     step_key: str | None = Field(default=None, max_length=100)
     workflow_area: str = Field(default="analysis", max_length=50)
     agent_role: str | None = Field(default=None, max_length=100)
