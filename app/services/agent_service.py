@@ -146,6 +146,7 @@ class AgentService:
                 "last_agent_run_id": None,
                 "turn_count": 0,
                 "missing_context": session.missing_context or [],
+                "user_confirmed": None,
             }
             resume_command = None
         else:
@@ -418,6 +419,7 @@ class AgentService:
                     "last_agent_run_id": None,
                     "turn_count": 0,
                     "missing_context": missing_context,
+                    "user_confirmed": None,
                 }
                 await self.graph.ainvoke(state, config)
 

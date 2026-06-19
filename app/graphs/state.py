@@ -13,4 +13,5 @@ class WorkflowState(TypedDict):
     last_agent_run_id: str | None
     turn_count: int
     missing_context: list[str]
+    user_confirmed: bool | None
 

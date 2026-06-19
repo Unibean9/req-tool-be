@@ -98,7 +98,7 @@ def route_node(state: WorkflowState) -> str:
     if action == "ask":
         return "ask_human"
     if action == "propose":
-        return "propose_artifacts"
+        return "confirm"
     return END
 
 
@@ -215,5 +215,65 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         f"Context hiện tại:\n{artifact_context}\n\n"
         f"Hội thoại gần đây:\n{messages_summary}\n\n"
         "Trả về JSON với next_action (ask/propose/done), confidence (0-1), gaps, proposals (nếu propose). "
-        "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user)."
+        "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user). "
+        "Lưu ý: nếu user vừa từ chối tạo artifact và yêu cầu khám phá thêm, hãy tiếp tục hỏi các góc độ "
+        "chưa được đề cập thay vì đề xuất lại ngay."
     )
+
+
+_YES_KEYWORDS = {"có", "yes", "đồng ý", "ok", "oke", "okay", "tạo", "được", "tạo đi", "create", "proceed", "go"}
+
+
+def _is_affirmative(text: str) -> bool:
+    tokens = set(text.lower().split())
+    return bool(tokens & _YES_KEYWORDS)
+
+
+async def confirm_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    session_id = uuid.UUID(cfg["thread_id"])
+
+    artifact_type = state["artifact_type"]
+    message = (
+        f"Tôi đã có đủ thông tin để tạo **{artifact_type}**. "
+        "Bạn có muốn tôi tiến hành tạo không?\n\n"
+        "Nếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm."
+    )
+
+    async with session_factory() as db:
+        already_saved = (
+            await db.execute(
+                select(exists().where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                    AgentMessage.content == message,
+                ))
+            )
+        ).scalar()
+        if not already_saved:
+            db.add(AgentMessage(session_id=session_id, role=AgentMessageRole.AGENT, content=message))
+        session_row = (
+            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+        ).scalar_one()
+        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        await db.commit()
+
+    user_response = interrupt({"type": "ask_human", "message": message})
+    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
+    confirmed = _is_affirmative(user_content)
+
+    return {
+        "messages": [
+            {"role": "assistant", "content": message},
+            {"role": "user", "content": user_content},
+        ],
+        "user_confirmed": confirmed,
+    }
+
+
+def route_after_confirm(state: WorkflowState) -> str:
+    if state.get("user_confirmed"):
+        return "propose_artifacts"
+    return "analyze"
