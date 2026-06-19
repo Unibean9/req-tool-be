@@ -2,7 +2,6 @@
 Phase 9 integration tests — end-to-end wiring.
 Uses real graph execution with mock LLM.
 """
-import asyncio
 import uuid
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
@@ -156,7 +155,6 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
 @pytest.mark.asyncio
 async def test_delegating_checkpointer_round_trip(db_session):
     """DelegatingCheckpointer.aput + aget_tuple round-trip stores and retrieves checkpoint."""
-    from sqlalchemy import select
     from app.models.agent import AgentSession
 
     session = AgentSession(
