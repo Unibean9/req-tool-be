@@ -186,8 +186,10 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
 
     await svc.handle_user_message(project_id=project_id, session_id=session.id, content="Thêm thông tin")
 
-    # Background task was "scheduled" (mock called) with the resume Command
+    # Background task was scheduled through _run_graph so resume failures update session status/messages.
     _no_background_tasks.assert_called_once()
+    scheduled = _no_background_tasks.call_args.args[0]
+    assert scheduled.cr_code.co_name == "_run_graph"
 
 
 @pytest.mark.asyncio
@@ -249,6 +251,48 @@ async def test_run_graph_failure_marks_session_failed_and_saves_agent_message(cl
     assert "provider rejected request" in messages[0].content
 
 
+@pytest.mark.asyncio
+async def test_run_graph_resume_failure_marks_session_failed_and_saves_agent_message(client, db_session):
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("resume rejected request"))
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="research_output",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    from langgraph.types import Command
+
+    await svc._run_graph(
+        session_id=session.id,
+        project_id=project_id,
+        artifact_type="research_output",
+        step_key="intent_vision",
+        workflow_area="analysis",
+        agent_role=None,
+        missing_context=[],
+        llm_client=AsyncMock(),
+        initial_state=None,
+        resume_command=Command(resume={"content": "Thêm thông tin"}),
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert updated.status == AgentSessionStatus.FAILED
+    assert len(messages) == 1
+    assert messages[0].role == AgentMessageRole.AGENT
+    assert "resume rejected request" in messages[0].content
+
+
 # ---------------------------------------------------------------------------
 # approve_tool_call — batch logic
 # ---------------------------------------------------------------------------
@@ -277,6 +321,8 @@ async def test_approve_tool_call_batch_all_approved_resumes_once(client, db_sess
     await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=None)
 
     assert _no_background_tasks.call_count == 1
+    scheduled = _no_background_tasks.call_args.args[0]
+    assert scheduled.cr_code.co_name == "_run_graph"
 
 
 @pytest.mark.asyncio

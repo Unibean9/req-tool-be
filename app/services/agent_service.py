@@ -151,8 +151,20 @@ class AgentService:
         if llm_client is None:
             llm_client = await self._resolve_llm_client(session.provider_config_id)
 
-        config = self._make_config(session.id, project_id, llm_client, session.agent_role)
-        asyncio.create_task(self.graph.ainvoke(Command(resume={"content": content}), config))
+        asyncio.create_task(
+            self._run_graph(
+                session_id=session.id,
+                project_id=project_id,
+                artifact_type=session.artifact_type,
+                step_key=session.step_key,
+                workflow_area=session.workflow_area,
+                agent_role=session.agent_role,
+                missing_context=session.missing_context or [],
+                llm_client=llm_client,
+                initial_state=None,
+                resume_command=Command(resume={"content": content}),
+            )
+        )
 
         return msg
 
@@ -361,8 +373,20 @@ class AgentService:
         session_row.interrupt_type = None
         await self.db.commit()
 
-        config = self._make_config(session_id, project_id, llm_client, session_row.agent_role)
-        asyncio.create_task(self.graph.ainvoke(Command(resume={"all_resolved": True}), config))
+        asyncio.create_task(
+            self._run_graph(
+                session_id=session_id,
+                project_id=project_id,
+                artifact_type=session_row.artifact_type,
+                step_key=session_row.step_key,
+                workflow_area=session_row.workflow_area,
+                agent_role=session_row.agent_role,
+                missing_context=session_row.missing_context or [],
+                llm_client=llm_client,
+                initial_state=None,
+                resume_command=Command(resume={"all_resolved": True}),
+            )
+        )
 
     async def _run_graph(
         self,

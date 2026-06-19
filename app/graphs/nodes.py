@@ -178,14 +178,26 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
     return {"pending_tool_call_ids": tool_call_ids}
 
 
+def _msg_role_content(m) -> tuple[str, str]:
+    """Extract role and content from a message object or dict."""
+    if isinstance(m, dict):
+        return m.get("role", "user"), m.get("content", "")
+    role = getattr(m, "type", "user")
+    if role == "human":
+        role = "user"
+    elif role == "ai":
+        role = "assistant"
+    return role, str(getattr(m, "content", ""))
+
+
 def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
     artifact_context = "\n".join(
         f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
     ) or "(chưa có artifact nào)"
 
     messages_summary = "\n".join(
-        f"{m.get('role', 'user')}: {m.get('content', '')}"
-        for m in (state.get("messages") or [])[-5:]
+        f"{role}: {content}"
+        for role, content in (_msg_role_content(m) for m in (state.get("messages") or [])[-5:])
     ) or "(chưa có hội thoại)"
 
     return (
