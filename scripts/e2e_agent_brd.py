@@ -32,8 +32,8 @@ from typing import Any
 import httpx
 from dotenv import load_dotenv
 
-# Đọc .env từ thư mục gốc project
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# Đọc .env.test từ thư mục gốc project
+load_dotenv(Path(__file__).resolve().parent.parent / ".env.test")
 
 API_PREFIX = "/api/v1"
 _PASSWORD = "Secret123!"
