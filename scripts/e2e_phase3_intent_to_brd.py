@@ -40,7 +40,6 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from textwrap import indent
 from typing import Any
 
 import httpx
@@ -395,7 +394,7 @@ async def fetch_created_artifacts(ctx: RunContext, session_id: str) -> list[dict
     artifact_ids = [
         tc["created_artifact_id"]
         for tc in tool_calls
-        if tc.get("created_artifact_id") and tc["status"] == "approved"
+        if tc.get("created_artifact_id") and tc["status"] in {"approved", "executed"}
     ]
 
     if not artifact_ids:
@@ -422,7 +421,7 @@ def export_brd_md(artifacts: list[dict[str, Any]], *, output_path: Path) -> None
         lines.append(f"## Artifact {i}: {art.get('title', '(no title)')}\n")
         lines.append(f"> type: `{art.get('type')}` | status: `{art.get('status')}`\n")
         lines.append("")
-        body = art.get("body") or "(empty body)"
+        body = _artifact_body(art) or "(empty body)"
         lines.append(body)
         lines.append("")
 
@@ -442,7 +441,7 @@ def assert_brd_quality(artifacts: list[dict[str, Any]]) -> None:
 
     for art in artifacts:
         title = art.get("title", "")
-        body = art.get("body", "")
+        body = _artifact_body(art)
 
         if not title.strip():
             raise E2EFailure(f"Artifact {art.get('id')} không có title")
@@ -453,6 +452,12 @@ def assert_brd_quality(artifacts: list[dict[str, Any]]) -> None:
             )
 
     log(f"  assertions ok: {len(artifacts)} artifact(s), title + body đủ")
+
+
+def _artifact_body(artifact: dict[str, Any]) -> str:
+    """Artifact API exposes content through current_version.body."""
+    current_version = artifact.get("current_version") or {}
+    return artifact.get("body") or current_version.get("body") or ""
 
 
 # ---------------------------------------------------------------------------
