@@ -90,6 +90,48 @@ async def test_create_config_stores_encrypted_key(client, db_session, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_create_config_stores_user_selected_model_name(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+
+    row = await LLMProviderService(db_session).create(
+        user_id=user_id,
+        body={
+            "provider_type": "bedrock",
+            "api_key": "AKIATEST",
+            "secret_key": "aws-secret",
+            "region": "us-east-1",
+            "model_name": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        },
+    )
+
+    assert row.provider_type == ProviderType.BEDROCK
+    assert row.model_name == "anthropic.claude-3-5-sonnet-20241022-v2:0"
+
+
+@pytest.mark.asyncio
+async def test_post_config_accepts_model_name_and_returns_it(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+
+    resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={
+            "provider_type": "openai",
+            "api_key": "sk-secret",
+            "model_name": "gpt-4.1-mini",
+        },
+        headers=headers,
+    )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["model_name"] == "gpt-4.1-mini"
+
+
+@pytest.mark.asyncio
 async def test_read_config_response_redacts_key(client, db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()
@@ -320,6 +362,30 @@ async def test_rotate_key_resets_status_to_draft(client, db_session, monkeypatch
     updated = await service.update(user_id=user_id, config_id=row.id, body={"api_key": "sk-new"})
 
     assert updated.status == LLMProviderStatus.DRAFT
+    assert _resolve_api_key(updated) == "sk-new"
+
+
+@pytest.mark.asyncio
+async def test_update_config_stores_user_selected_model_name(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(user_id=user_id, body=_create_body(api_key="sk-old"))
+
+    updated = await service.update(
+        user_id=user_id,
+        config_id=row.id,
+        body={
+            "provider_type": "openai",
+            "api_key": "sk-new",
+            "model_name": "gpt-4.1-mini",
+        },
+    )
+
+    assert updated.status == LLMProviderStatus.DRAFT
+    assert updated.model_name == "gpt-4.1-mini"
     assert _resolve_api_key(updated) == "sk-new"
 
 

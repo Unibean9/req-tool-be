@@ -13,6 +13,7 @@ class LLMProviderKeyRequest(BaseModel):
     api_key: str = Field(min_length=1)
     secret_key: str | None = Field(default=None, min_length=1)
     region: str | None = Field(default=None, min_length=1, max_length=64)
+    model_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class LLMProviderConfigRead(BaseModel):
