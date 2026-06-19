@@ -491,7 +491,7 @@ async def run(args: argparse.Namespace) -> None:
         artifacts = await fetch_created_artifacts(ctx, session_id)
         log(f"  tìm thấy {len(artifacts)} artifact(s)")
         for art in artifacts:
-            log(f"    [{art.get('type')}] {art.get('title')} ({len(art.get('body') or '')} chars)")
+            log(f"    [{art.get('type')}] {art.get('title')} ({len(_artifact_body(art))} chars)")
 
         # 8. Assert chất lượng
         assert_brd_quality(artifacts)
