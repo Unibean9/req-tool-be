@@ -34,7 +34,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt ruff
+        run: pip install -r requirements.txt pytest pytest-asyncio aiosqlite
 
       - name: Ruff lint
         run: ruff check app tests alembic
