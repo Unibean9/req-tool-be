@@ -3,9 +3,13 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from sqlalchemy import select
 
+from app.config import settings
+from app.core import crypto
+from app.core.crypto import encrypt_token
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -17,6 +21,7 @@ from app.models.agent import (
     AgentToolCallStatus,
 )
 from app.models.artifact import Artifact, ArtifactVersion
+from app.models.llm_provider import LLMProviderConfig, ProviderType
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -75,6 +80,49 @@ async def test_create_session_goal_without_predecessors_returns_missing_context(
     result = await svc.create_session(project_id=project_id, artifact_type="goal")
 
     assert set(result["missing_context"]) == {"intent", "problem"}
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        captured = {}
+        sentinel = object()
+
+        def fake_create(**kwargs):
+            captured.update(kwargs)
+            return sentinel
+
+        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.BEDROCK,
+            name="Bedrock",
+            encrypted_api_key=encrypt_token("AKIATEST"),
+            encrypted_secret_key=encrypt_token("aws-secret"),
+            region="us-east-1",
+            model_name="amazon.nova-lite-v1:0",
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        client = await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert client is sentinel
+        assert captured["provider_type"] == ProviderType.BEDROCK
+        assert captured["api_key"] == "AKIATEST"
+        assert captured["secret_key"] == "aws-secret"
+        assert captured["region"] == "us-east-1"
+        assert captured["model"] == "amazon.nova-lite-v1:0"
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
 
 
 @pytest.mark.asyncio

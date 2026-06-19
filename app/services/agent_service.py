@@ -446,10 +446,16 @@ class AgentService:
             return None
         api_key = decrypt_token(config_row.encrypted_api_key)
         if not api_key:
-            return None
+            raise ValueError("API key không thể giải mã — có thể lệch key rotation")
+        secret_key = None
+        if config_row.encrypted_secret_key:
+            secret_key = decrypt_token(config_row.encrypted_secret_key)
+            if not secret_key:
+                raise ValueError("secret_key không thể giải mã — có thể lệch key rotation")
         return LLMClientFactory.create(
             provider_type=config_row.provider_type,
             api_key=api_key,
+            secret_key=secret_key,
             model=config_row.model_name,
             region=config_row.region,
         )
