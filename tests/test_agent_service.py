@@ -216,7 +216,7 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
 
 
 @pytest.mark.asyncio
-async def test_resume_command_targets_latest_interrupt_id(db_session):
+async def test_resume_command_uses_direct_payload_for_single_interrupt(db_session):
     from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
 
@@ -243,7 +243,43 @@ async def test_resume_command_targets_latest_interrupt_id(db_session):
 
     command = svc._resume_command(session, {"content": "Có"})
 
-    assert command.resume == {"interrupt-1": {"content": "Có"}}
+    assert command.resume == {"content": "Có"}
+
+
+@pytest.mark.asyncio
+async def test_resume_command_targets_latest_interrupt_id_when_multiple_pending(db_session):
+    from app.graphs.checkpointer import AgentSessionCheckpointer
+    from langgraph.types import Interrupt
+
+    svc = _make_service(db_session)
+    session = AgentSession(
+        id=uuid.uuid4(),
+        project_id=uuid.uuid4(),
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+    )
+    checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=svc.session_factory)
+    session.graph_checkpoint = {
+        "pending_writes": [
+            checker._dump_pending_write(
+                "task-1",
+                "__interrupt__",
+                [Interrupt(value={"type": "ask_human", "message": "Lần 1?"}, id="interrupt-1")],
+            ),
+            checker._dump_pending_write(
+                "task-2",
+                "__interrupt__",
+                [Interrupt(value={"type": "ask_human", "message": "Lần 2?"}, id="interrupt-2")],
+            ),
+        ]
+    }
+
+    command = svc._resume_command(session, {"content": "Có"})
+
+    assert command.resume == {"interrupt-2": {"content": "Có"}}
 
 
 @pytest.mark.asyncio

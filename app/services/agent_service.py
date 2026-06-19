@@ -504,19 +504,19 @@ class AgentService:
         }
 
     def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
-        interrupt_id = self._latest_interrupt_id(session)
-        if interrupt_id:
-            return Command(resume={interrupt_id: value})
+        interrupt_ids = self._pending_interrupt_ids(session)
+        if len(interrupt_ids) > 1:
+            return Command(resume={interrupt_ids[-1]: value})
         return Command(resume=value)
 
-    def _latest_interrupt_id(self, session: AgentSession) -> str | None:
+    def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
         pending_writes = payload.get("pending_writes") or []
         if not pending_writes:
-            return None
+            return []
 
         checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=self.session_factory)
-        fallback_id: str | None = None
+        interrupt_ids: list[str] = []
         for item in reversed(pending_writes):
             try:
                 _, channel, value = checker._load_pending_write(item)
@@ -530,12 +530,13 @@ class AgentService:
                 interrupt_value = getattr(interrupt, "value", None)
                 if not interrupt_id:
                     continue
-                fallback_id = str(interrupt_id)
+                interrupt_id = str(interrupt_id)
                 if not isinstance(interrupt_value, dict):
+                    interrupt_ids.append(interrupt_id)
                     continue
                 if interrupt_value.get("type") == session.interrupt_type:
-                    return str(interrupt_id)
-        return fallback_id
+                    interrupt_ids.append(interrupt_id)
+        return list(reversed(interrupt_ids))
 
     async def _resolve_llm_client(self, provider_config_id: uuid.UUID | None) -> Any:
         if not provider_config_id:
