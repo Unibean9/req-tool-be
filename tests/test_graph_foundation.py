@@ -104,6 +104,8 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "turn_count": 0,
         "missing_context": [],
         "user_confirmed": None,
+        "critique_rounds": 0,
+        "quality_report": None,
     }
 
     assert state["turn_count"] == 0
@@ -118,6 +120,8 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "turn_count",
         "missing_context",
         "user_confirmed",
+        "critique_rounds",
+        "quality_report",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

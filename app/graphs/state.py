@@ -14,4 +14,6 @@ class WorkflowState(TypedDict):
     turn_count: int
     missing_context: list[str]
     user_confirmed: bool | None
+    critique_rounds: int
+    quality_report: dict[str, Any] | None
 

@@ -24,7 +24,10 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _load_fixtures() -> list[dict]:
-    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(_FIXTURES_DIR.glob("*.json"))]
+    # Exclude *_weak.json — those are low-quality fixtures for the quality-gate eval
+    # (Phase 5) and are not part of the baseline golden set.
+    paths = [p for p in sorted(_FIXTURES_DIR.glob("*.json")) if not p.stem.endswith("_weak")]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 
 
 async def run_eval_baseline(llm_client, n: int = 3) -> list[dict]:

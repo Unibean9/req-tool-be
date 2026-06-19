@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     max_agent_turns: int = 10
     llm_provider_health_timeout_seconds: float = 25.0
 
+    # Quality gate — reflection critic loop
+    max_critique_rounds: int = 2
+    critique_score_threshold: float = 0.7
+
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":
         if self.app_env != "development":

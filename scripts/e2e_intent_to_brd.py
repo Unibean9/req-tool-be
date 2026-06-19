@@ -25,9 +25,9 @@ Biến môi trường (đọc từ .env.test):
     E2E_BRD_OUTPUT          Đường dẫn file output (mặc định brd.md)
 
 Ví dụ:
-    python scripts/e2e_phase3_intent_to_brd.py
-    python scripts/e2e_phase3_intent_to_brd.py --output docs/output/brd.md
-    python scripts/e2e_phase3_intent_to_brd.py --health-check --verbose
+    python scripts/e2e_intent_to_brd.py
+    python scripts/e2e_intent_to_brd.py --output docs/output/brd.md
+    python scripts/e2e_intent_to_brd.py --health-check --verbose
 """
 
 from __future__ import annotations
