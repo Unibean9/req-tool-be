@@ -68,15 +68,14 @@ class AgentService:
             await self.db.commit()
         except IntegrityError:
             await self.db.rollback()
-            existing = (
-                await self.db.execute(
-                    select(AgentSession).where(
-                        AgentSession.project_id == project_id,
-                        AgentSession.artifact_type == artifact_type,
-                        AgentSession.status.in_(["active", "waiting_for_human"]),
-                    )
-                )
-            ).scalar_one_or_none()
+            existing_query = select(AgentSession).where(
+                AgentSession.project_id == project_id,
+                AgentSession.artifact_type == artifact_type,
+                AgentSession.status.in_(["active", "waiting_for_human"]),
+            )
+            if created_by_id is not None:
+                existing_query = existing_query.where(AgentSession.created_by_id == created_by_id)
+            existing = (await self.db.execute(existing_query)).scalar_one_or_none()
             raise HTTPException(
                 409,
                 detail={
@@ -87,21 +86,32 @@ class AgentService:
 
         return {"session_id": str(session.id), "missing_context": missing}
 
-    async def get_session(self, *, project_id: uuid.UUID, session_id: uuid.UUID) -> AgentSession:
-        session = (
-            await self.db.execute(
-                select(AgentSession).where(
-                    AgentSession.id == session_id,
-                    AgentSession.project_id == project_id,
-                )
-            )
-        ).scalar_one_or_none()
+    async def get_session(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> AgentSession:
+        query = select(AgentSession).where(
+            AgentSession.id == session_id,
+            AgentSession.project_id == project_id,
+        )
+        if user_id is not None:
+            query = query.where(AgentSession.created_by_id == user_id)
+        session = (await self.db.execute(query)).scalar_one_or_none()
         if not session:
             raise HTTPException(404, detail="Agent session không tồn tại")
         return session
 
-    async def delete_session(self, *, project_id: uuid.UUID, session_id: uuid.UUID) -> None:
-        session = await self.get_session(project_id=project_id, session_id=session_id)
+    async def delete_session(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> None:
+        session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
         await self.db.delete(session)
         await self.db.commit()
 
@@ -111,9 +121,10 @@ class AgentService:
         project_id: uuid.UUID,
         session_id: uuid.UUID,
         content: str,
+        user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentMessage:
-        session = await self.get_session(project_id=project_id, session_id=session_id)
+        session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         if session.status != AgentSessionStatus.WAITING_FOR_HUMAN:
             raise HTTPException(400, detail="Session không ở trạng thái chờ người dùng")
@@ -171,8 +182,14 @@ class AgentService:
 
         return msg
 
-    async def list_messages(self, *, project_id: uuid.UUID, session_id: uuid.UUID) -> list[AgentMessage]:
-        await self.get_session(project_id=project_id, session_id=session_id)
+    async def list_messages(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> list[AgentMessage]:
+        await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
         rows = (
             await self.db.execute(
                 select(AgentMessage)
@@ -182,8 +199,14 @@ class AgentService:
         ).scalars().all()
         return list(rows)
 
-    async def list_tool_calls(self, *, project_id: uuid.UUID, session_id: uuid.UUID) -> list[AgentToolCall]:
-        await self.get_session(project_id=project_id, session_id=session_id)
+    async def list_tool_calls(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> list[AgentToolCall]:
+        await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
         rows = (
             await self.db.execute(
                 select(AgentToolCall)
@@ -200,9 +223,10 @@ class AgentService:
         project_id: uuid.UUID,
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
+        user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentToolCall:
-        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id)
+        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -228,9 +252,10 @@ class AgentService:
         *,
         project_id: uuid.UUID,
         tool_call_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentToolCall:
-        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id)
+        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -247,9 +272,10 @@ class AgentService:
         project_id: uuid.UUID,
         tool_call_id: uuid.UUID,
         note: str,
+        user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentToolCall:
-        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id)
+        tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -284,17 +310,21 @@ class AgentService:
         return missing
 
     async def _get_tool_call_with_idor(
-        self, tool_call_id: uuid.UUID, project_id: uuid.UUID
+        self,
+        tool_call_id: uuid.UUID,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
     ) -> tuple[AgentToolCall, uuid.UUID]:
-        row = (
-            await self.db.execute(
-                select(AgentToolCall, AgentRun.session_id.label("session_id"))
-                .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
-                .join(AgentSession, AgentRun.session_id == AgentSession.id)
-                .where(AgentToolCall.id == tool_call_id)
-                .where(AgentSession.project_id == project_id)
-            )
-        ).one_or_none()
+        query = (
+            select(AgentToolCall, AgentRun.session_id.label("session_id"))
+            .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
+            .join(AgentSession, AgentRun.session_id == AgentSession.id)
+            .where(AgentToolCall.id == tool_call_id)
+            .where(AgentSession.project_id == project_id)
+        )
+        if user_id is not None:
+            query = query.where(AgentSession.created_by_id == user_id)
+        row = (await self.db.execute(query)).one_or_none()
         if not row:
             raise HTTPException(404, detail="Tool call không tồn tại")
         tool_call, session_id = row

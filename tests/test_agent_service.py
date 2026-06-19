@@ -155,15 +155,31 @@ async def test_create_session_intent_has_no_predecessors(client, db_session):
 @pytest.mark.asyncio
 async def test_create_session_duplicate_active_raises_409(client, db_session):
     project_id = await _setup(client)
+    owner_id = uuid.uuid4()
     svc = _make_service(db_session)
 
-    await svc.create_session(project_id=project_id, artifact_type="intent")
+    await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=owner_id)
 
     with pytest.raises(HTTPException) as exc:
-        await _make_service(db_session).create_session(project_id=project_id, artifact_type="intent")
+        await _make_service(db_session).create_session(
+            project_id=project_id,
+            artifact_type="intent",
+            created_by_id=owner_id,
+        )
 
     assert exc.value.status_code == 409
     assert "session_id" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_session_same_artifact_allowed_for_different_users(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=uuid.uuid4())
+    result = await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=uuid.uuid4())
+
+    assert result["session_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +189,7 @@ async def test_create_session_duplicate_active_raises_409(client, db_session):
 @pytest.mark.asyncio
 async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _no_background_tasks):
     project_id = await _setup(client)
+    owner_id = uuid.uuid4()
     graph = _mock_graph()
     svc = _make_service(db_session, graph)
 
@@ -180,16 +197,51 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
         graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+        created_by_id=owner_id,
     )
     db_session.add(session)
     await db_session.flush()
 
-    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="Thêm thông tin")
+    await svc.handle_user_message(
+        project_id=project_id,
+        session_id=session.id,
+        content="Thêm thông tin",
+        user_id=owner_id,
+    )
 
     # Background task was scheduled through _run_graph so resume failures update session status/messages.
     _no_background_tasks.assert_called_once()
     scheduled = _no_background_tasks.call_args.args[0]
     assert scheduled.cr_code.co_name == "_run_graph"
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_rejects_non_owner(client, db_session):
+    project_id = await _setup(client)
+    owner_id = uuid.uuid4()
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=None,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.handle_user_message(
+            project_id=project_id,
+            session_id=session.id,
+            content="Xin chào",
+            user_id=uuid.uuid4(),
+        )
+
+    assert exc.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -340,6 +392,23 @@ async def test_approve_tool_call_cross_project_returns_404(client, db_session):
     assert exc.value.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_approve_tool_call_rejects_non_owner(client, db_session):
+    project_id = await _setup(client)
+    owner_id = uuid.uuid4()
+    _, _, tc, _ = await _make_propose_session(db_session, project_id, created_by_id=owner_id)
+
+    with pytest.raises(HTTPException) as exc:
+        await _make_service(db_session).approve_tool_call(
+            project_id=project_id,
+            tool_call_id=tc.id,
+            created_by_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+        )
+
+    assert exc.value.status_code == 404
+
+
 # ---------------------------------------------------------------------------
 # ArtifactVersion traceability
 # ---------------------------------------------------------------------------
@@ -417,11 +486,12 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _make_single_propose_session(db_session, project_id):
+async def _make_single_propose_session(db_session, project_id, created_by_id=None):
     session = AgentSession(
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
         graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
+        created_by_id=created_by_id,
     )
     db_session.add(session)
     await db_session.flush()
@@ -440,11 +510,12 @@ async def _make_single_propose_session(db_session, project_id):
     return session, run, tc
 
 
-async def _make_propose_session(db_session, project_id):
+async def _make_propose_session(db_session, project_id, created_by_id=None):
     session = AgentSession(
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
         graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
+        created_by_id=created_by_id,
     )
     db_session.add(session)
     await db_session.flush()

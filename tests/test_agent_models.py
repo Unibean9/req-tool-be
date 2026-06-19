@@ -101,14 +101,16 @@ async def test_agent_session_status_rejects_unknown_value(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_one_active_agent_session_per_project_and_artifact_type(client, db_session):
+async def test_one_active_agent_session_per_project_artifact_type_and_user(client, db_session):
     project_id = await create_project_id(client)
+    owner_id = uuid.uuid4()
     db_session.add(
         AgentSession(
             project_id=project_id,
             artifact_type="problem",
             workflow_area="analysis",
             status=AgentSessionStatus.ACTIVE,
+            created_by_id=owner_id,
         )
     )
     await db_session.flush()
@@ -119,11 +121,45 @@ async def test_one_active_agent_session_per_project_and_artifact_type(client, db
             artifact_type="problem",
             workflow_area="analysis",
             status=AgentSessionStatus.WAITING_FOR_HUMAN,
+            created_by_id=owner_id,
         )
     )
 
     with pytest.raises(IntegrityError):
         await db_session.flush()
+
+
+@pytest.mark.asyncio
+async def test_active_agent_sessions_with_same_artifact_type_are_allowed_for_different_users(client, db_session):
+    project_id = await create_project_id(client)
+    db_session.add(
+        AgentSession(
+            project_id=project_id,
+            artifact_type="problem",
+            workflow_area="analysis",
+            status=AgentSessionStatus.ACTIVE,
+            created_by_id=uuid.uuid4(),
+        )
+    )
+    db_session.add(
+        AgentSession(
+            project_id=project_id,
+            artifact_type="problem",
+            workflow_area="analysis",
+            status=AgentSessionStatus.WAITING_FOR_HUMAN,
+            created_by_id=uuid.uuid4(),
+        )
+    )
+
+    await db_session.flush()
+
+    result = await db_session.execute(
+        select(AgentSession).where(
+            AgentSession.project_id == project_id,
+            AgentSession.artifact_type == "problem",
+        )
+    )
+    assert len(result.scalars().all()) == 2
 
 
 @pytest.mark.asyncio

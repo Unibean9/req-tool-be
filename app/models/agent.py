@@ -61,9 +61,10 @@ class AgentSession(AuditMixin, Base):
         Index("ix_agent_sessions_provider_config_id", "provider_config_id"),
         Index("ix_agent_sessions_created_by_id", "created_by_id"),
         Index(
-            "uq_agent_sessions_active_project_artifact_type",
+            "uq_agent_sessions_active_project_artifact_type_user",
             "project_id",
             "artifact_type",
+            "created_by_id",
             unique=True,
             postgresql_where=text("status IN ('active', 'waiting_for_human')"),
             sqlite_where=text("status IN ('active', 'waiting_for_human')"),
