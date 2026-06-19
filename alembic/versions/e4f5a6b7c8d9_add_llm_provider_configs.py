@@ -27,8 +27,7 @@ def upgrade() -> None:
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.Column("updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
-        sa.Column("org_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("project_id", postgresql.UUID(as_uuid=True), nullable=True),
+        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("provider_type", postgresql.ENUM(name="providertype", create_type=False), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("base_url", sa.String(512), nullable=True),
@@ -40,30 +39,20 @@ def upgrade() -> None:
         sa.Column("is_default", sa.Boolean(), nullable=False, server_default=sa.text("FALSE")),
         sa.Column("last_checked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_check_error", sa.Text(), nullable=True),
-        sa.CheckConstraint("(org_id IS NULL) != (project_id IS NULL)", name="ck_llm_provider_scope_xor"),
         sa.CheckConstraint("encrypted_api_key IS NOT NULL", name="ck_llm_provider_api_key_required"),
-        sa.ForeignKeyConstraint(["org_id"], ["organizations.id"]),
-        sa.ForeignKeyConstraint(["project_id"], ["projects.id"]),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index("ix_llm_provider_configs_org_id", "llm_provider_configs", ["org_id"])
-    op.create_index("ix_llm_provider_configs_project_id", "llm_provider_configs", ["project_id"])
+    op.create_index("ix_llm_provider_configs_user_id", "llm_provider_configs", ["user_id"])
     op.create_index("ix_llm_provider_configs_provider_type", "llm_provider_configs", ["provider_type"])
     op.create_index("ix_llm_provider_configs_status", "llm_provider_configs", ["status"])
     op.create_index("ix_llm_provider_configs_is_default", "llm_provider_configs", ["is_default"])
     op.create_index(
-        "uq_llm_provider_default_project",
+        "uq_llm_provider_default_user",
         "llm_provider_configs",
-        ["project_id"],
+        ["user_id"],
         unique=True,
-        postgresql_where=sa.text("project_id IS NOT NULL AND is_default = TRUE"),
-    )
-    op.create_index(
-        "uq_llm_provider_default_org",
-        "llm_provider_configs",
-        ["org_id"],
-        unique=True,
-        postgresql_where=sa.text("org_id IS NOT NULL AND is_default = TRUE"),
+        postgresql_where=sa.text("is_default = TRUE"),
     )
 
 

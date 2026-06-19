@@ -59,11 +59,11 @@ class LLMProviderService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, *, project_id: uuid.UUID, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderConfig:
+    async def create(self, *, user_id: uuid.UUID, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderConfig:
         body = self._key_schema(body)
-        existing = await self._get_first_project_config(project_id)
+        existing = await self._get_first_user_config(user_id)
         if existing is not None:
-            await self._disable_project_configs_except(project_id, existing.id)
+            await self._disable_user_configs_except(user_id, existing.id)
             values = self._values_from_key_request(body)
             for field, value in values.items():
                 setattr(existing, field, value)
@@ -73,10 +73,10 @@ class LLMProviderService:
             existing.last_check_error = None
             await self.db.flush()
             return existing
-        await self._unset_project_default(project_id)
+        await self._unset_user_default(user_id)
         values = self._values_from_key_request(body)
         config = LLMProviderConfig(
-            project_id=project_id,
+            user_id=user_id,
             is_default=True,
             status=LLMProviderStatus.DRAFT,
             **values,
@@ -85,19 +85,19 @@ class LLMProviderService:
         await self.db.flush()
         return config
 
-    async def list(self, *, project_id: uuid.UUID) -> list[LLMProviderConfig]:
+    async def list(self, *, user_id: uuid.UUID) -> list[LLMProviderConfig]:
         result = await self.db.execute(
             select(LLMProviderConfig)
-            .where(LLMProviderConfig.project_id == project_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
+            .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
             .order_by(LLMProviderConfig.created_at, LLMProviderConfig.id)
         )
         return list(result.scalars().all())
 
-    async def get(self, *, project_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderConfig:
+    async def get(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderConfig:
         result = await self.db.execute(
             select(LLMProviderConfig).where(
                 LLMProviderConfig.id == config_id,
-                LLMProviderConfig.project_id == project_id,
+                LLMProviderConfig.user_id == user_id,
                 LLMProviderConfig.status != LLMProviderStatus.DISABLED,
             )
         )
@@ -109,12 +109,12 @@ class LLMProviderService:
     async def update(
         self,
         *,
-        project_id: uuid.UUID,
+        user_id: uuid.UUID,
         config_id: uuid.UUID,
         body: LLMProviderKeyRequest | dict[str, Any],
     ) -> LLMProviderConfig:
         schema = self._key_schema(body)
-        config = await self.get(project_id=project_id, config_id=config_id)
+        config = await self.get(user_id=user_id, config_id=config_id)
         values = {
             "status": LLMProviderStatus.DRAFT,
             "last_checked_at": None,
@@ -122,25 +122,25 @@ class LLMProviderService:
             "is_default": True,
         }
         values.update(self._values_from_key_request(schema))
-        await self._unset_project_default(project_id, exclude_id=config_id)
+        await self._unset_user_default(user_id, exclude_id=config_id)
         if values:
             await self.db.execute(
                 update(LLMProviderConfig)
-                .where(LLMProviderConfig.id == config_id, LLMProviderConfig.project_id == project_id)
+                .where(LLMProviderConfig.id == config_id, LLMProviderConfig.user_id == user_id)
                 .values(**values)
             )
             await self.db.flush()
             await self.db.refresh(config)
         return config
 
-    async def delete(self, *, project_id: uuid.UUID, config_id: uuid.UUID) -> None:
-        config = await self.get(project_id=project_id, config_id=config_id)
+    async def delete(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> None:
+        config = await self.get(user_id=user_id, config_id=config_id)
         config.status = LLMProviderStatus.DISABLED
         config.is_default = False
         await self.db.flush()
 
-    async def health_check(self, *, project_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderHealthCheckResult:
-        config = await self.get(project_id=project_id, config_id=config_id)
+    async def health_check(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderHealthCheckResult:
+        config = await self.get(user_id=user_id, config_id=config_id)
         now = datetime.now(UTC)
         if config.last_checked_at and now - config.last_checked_at < timedelta(seconds=30):
             raise CooldownError("Health-check đang trong thời gian cooldown")
@@ -165,25 +165,25 @@ class LLMProviderService:
             provider_reply=provider_reply,
         )
 
-    async def _unset_project_default(self, project_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
-        query = update(LLMProviderConfig).where(LLMProviderConfig.project_id == project_id, LLMProviderConfig.is_default.is_(True))
+    async def _unset_user_default(self, user_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
+        query = update(LLMProviderConfig).where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_default.is_(True))
         if exclude_id:
             query = query.where(LLMProviderConfig.id != exclude_id)
         await self.db.execute(query.values(is_default=False))
 
-    async def _get_first_project_config(self, project_id: uuid.UUID) -> LLMProviderConfig | None:
+    async def _get_first_user_config(self, user_id: uuid.UUID) -> LLMProviderConfig | None:
         result = await self.db.execute(
             select(LLMProviderConfig)
-            .where(LLMProviderConfig.project_id == project_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
+            .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
             .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.created_at, LLMProviderConfig.id)
         )
         return result.scalars().first()
 
-    async def _disable_project_configs_except(self, project_id: uuid.UUID, config_id: uuid.UUID) -> None:
+    async def _disable_user_configs_except(self, user_id: uuid.UUID, config_id: uuid.UUID) -> None:
         await self.db.execute(
             update(LLMProviderConfig)
             .where(
-                LLMProviderConfig.project_id == project_id,
+                LLMProviderConfig.user_id == user_id,
                 LLMProviderConfig.id != config_id,
                 LLMProviderConfig.status != LLMProviderStatus.DISABLED,
             )

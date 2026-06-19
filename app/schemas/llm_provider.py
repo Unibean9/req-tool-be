@@ -19,8 +19,7 @@ class LLMProviderConfigRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    org_id: uuid.UUID | None
-    project_id: uuid.UUID | None
+    user_id: uuid.UUID
     provider_type: ProviderType
     name: str
     base_url: str | None
