@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.graphs.policy import governed
-from app.models.artifact import Artifact, ArtifactLink, ArtifactVersion
+from app.models.artifact import Artifact, ArtifactLink
 
 
 @governed
