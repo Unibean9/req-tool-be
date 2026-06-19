@@ -505,7 +505,7 @@ class AgentService:
 
     def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
-        if len(interrupt_ids) > 1:
+        if interrupt_ids:
             return Command(resume={interrupt_ids[-1]: value})
         return Command(resume=value)
 

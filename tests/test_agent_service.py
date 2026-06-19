@@ -216,9 +216,12 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
 
 
 @pytest.mark.asyncio
-async def test_resume_command_uses_direct_payload_for_single_interrupt(db_session):
+async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
     from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
+
+    # 32-char hex to match the xxh3_128_hexdigest format LangGraph's interrupt() produces
+    INTERRUPT_ID = "a1b2c3d4e5f6789012345678901234ab"
 
     svc = _make_service(db_session)
     session = AgentSession(
@@ -236,14 +239,14 @@ async def test_resume_command_uses_direct_payload_for_single_interrupt(db_sessio
             checker._dump_pending_write(
                 "task-1",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Tiếp tục?"}, id="interrupt-1")],
+                [Interrupt(value={"type": "ask_human", "message": "Tiếp tục?"}, id=INTERRUPT_ID)],
             )
         ]
     }
 
     command = svc._resume_command(session, {"content": "Có"})
 
-    assert command.resume == {"content": "Có"}
+    assert command.resume == {INTERRUPT_ID: {"content": "Có"}}
 
 
 @pytest.mark.asyncio
@@ -251,6 +254,10 @@ async def test_resume_command_targets_latest_interrupt_id_when_multiple_pending(
     from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
 
+    # 32-char hex IDs matching the xxh3_128_hexdigest format LangGraph's interrupt() produces
+    INTERRUPT_ID_1 = "a1b2c3d4e5f6789012345678901234ab"
+    INTERRUPT_ID_2 = "b2c3d4e5f6789012345678901234abcd"
+
     svc = _make_service(db_session)
     session = AgentSession(
         id=uuid.uuid4(),
@@ -267,19 +274,19 @@ async def test_resume_command_targets_latest_interrupt_id_when_multiple_pending(
             checker._dump_pending_write(
                 "task-1",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lần 1?"}, id="interrupt-1")],
+                [Interrupt(value={"type": "ask_human", "message": "Lần 1?"}, id=INTERRUPT_ID_1)],
             ),
             checker._dump_pending_write(
                 "task-2",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lần 2?"}, id="interrupt-2")],
+                [Interrupt(value={"type": "ask_human", "message": "Lần 2?"}, id=INTERRUPT_ID_2)],
             ),
         ]
     }
 
     command = svc._resume_command(session, {"content": "Có"})
 
-    assert command.resume == {"interrupt-2": {"content": "Có"}}
+    assert command.resume == {INTERRUPT_ID_2: {"content": "Có"}}
 
 
 @pytest.mark.asyncio
