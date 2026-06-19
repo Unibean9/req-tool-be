@@ -442,8 +442,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="Gọi health-check provider trước khi chạy agent.")
     parser.add_argument(
         "--artifact-type",
-        default=os.getenv("E2E_ARTIFACT_TYPE", "brd"),
-        help="Artifact type cho BRD session (E2E_ARTIFACT_TYPE, mặc định brd).",
+        default=os.getenv("E2E_ARTIFACT_TYPE", "goal"),
+        help="Artifact type cho BRD session (E2E_ARTIFACT_TYPE, mặc định goal).",
     )
     parser.add_argument(
         "--tool-action",
