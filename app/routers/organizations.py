@@ -17,9 +17,11 @@ from app.schemas.response import ApiResponse
 from app.services.organization_service import OrgService
 
 router = APIRouter(prefix="/orgs", tags=["Organizations"])
+alias_router = APIRouter(prefix="/organizations", tags=["Organizations"])
 
 
 @router.get("/me", response_model=ApiResponse[list[OrgResponse]])
+@alias_router.get("", response_model=ApiResponse[list[OrgResponse]])
 async def list_my_orgs(
     user: User = Depends(current_user),
     service: OrgService = Depends(get_org_service),

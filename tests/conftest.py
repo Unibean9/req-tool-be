@@ -1,4 +1,3 @@
-import pytest
 import pytest_asyncio
 from httpx import AsyncClient, ASGITransport
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -24,7 +23,7 @@ TestSessionFactory = async_sessionmaker(
 db_module.engine = test_engine
 db_module.async_session_factory = TestSessionFactory
 
-import app.main as main_module
+import app.main as main_module  # noqa: E402
 main_module.engine = test_engine
 
 

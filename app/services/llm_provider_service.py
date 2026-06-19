@@ -1,0 +1,228 @@
+import asyncio
+import re
+import time
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from fastapi import HTTPException, status
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.config import settings
+from app.core.crypto import decrypt_token, encrypt_token
+from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
+from app.schemas.llm_provider import LLMProviderHealthCheckResult, LLMProviderKeyRequest
+from app.services.llm_clients import DEFAULT_MODEL_BY_PROVIDER, LLMClientFactory
+
+
+class CooldownError(Exception):
+    pass
+
+
+class ProviderUnavailableError(Exception):
+    pass
+
+
+SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
+DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
+
+
+def _sanitize_error(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
+    return SECRET_PATTERN.sub("[REDACTED]", message)[:500]
+
+
+def _resolve_api_key(config: LLMProviderConfig) -> str:
+    if config.encrypted_api_key:
+        value = decrypt_token(config.encrypted_api_key)
+        if value is None:
+            raise ValueError("Encrypted API key could not be decrypted — possible key rotation mismatch")
+        return value
+    raise ValueError("Config không có API key")
+
+
+def _decrypt_required(value: str | None, field_name: str) -> str:
+    if not value:
+        raise ValueError(f"Config thiếu {field_name}")
+    decrypted = decrypt_token(value)
+    if decrypted is None:
+        raise ValueError(f"{field_name} không thể giải mã — có thể lệch key rotation")
+    return decrypted
+
+
+def _resolve_secret_key(config: LLMProviderConfig) -> str | None:
+    if not config.encrypted_secret_key:
+        return None
+    return _decrypt_required(config.encrypted_secret_key, "secret_key")
+
+
+class LLMProviderService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create(self, *, user_id: uuid.UUID, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderConfig:
+        body = self._key_schema(body)
+        existing = await self._get_first_user_config(user_id)
+        if existing is not None:
+            await self._disable_user_configs_except(user_id, existing.id)
+            values = self._values_from_key_request(body)
+            for field, value in values.items():
+                setattr(existing, field, value)
+            existing.is_default = True
+            existing.status = LLMProviderStatus.DRAFT
+            existing.last_checked_at = None
+            existing.last_check_error = None
+            await self.db.flush()
+            return existing
+        await self._unset_user_default(user_id)
+        values = self._values_from_key_request(body)
+        config = LLMProviderConfig(
+            user_id=user_id,
+            is_default=True,
+            status=LLMProviderStatus.DRAFT,
+            **values,
+        )
+        self.db.add(config)
+        await self.db.flush()
+        return config
+
+    async def list(self, *, user_id: uuid.UUID) -> list[LLMProviderConfig]:
+        result = await self.db.execute(
+            select(LLMProviderConfig)
+            .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
+            .order_by(LLMProviderConfig.created_at, LLMProviderConfig.id)
+        )
+        return list(result.scalars().all())
+
+    async def get(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderConfig:
+        result = await self.db.execute(
+            select(LLMProviderConfig).where(
+                LLMProviderConfig.id == config_id,
+                LLMProviderConfig.user_id == user_id,
+                LLMProviderConfig.status != LLMProviderStatus.DISABLED,
+            )
+        )
+        config = result.scalar_one_or_none()
+        if config is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy cấu hình LLM provider")
+        return config
+
+    async def update(
+        self,
+        *,
+        user_id: uuid.UUID,
+        config_id: uuid.UUID,
+        body: LLMProviderKeyRequest | dict[str, Any],
+    ) -> LLMProviderConfig:
+        schema = self._key_schema(body)
+        config = await self.get(user_id=user_id, config_id=config_id)
+        values = {
+            "status": LLMProviderStatus.DRAFT,
+            "last_checked_at": None,
+            "last_check_error": None,
+            "is_default": True,
+        }
+        values.update(self._values_from_key_request(schema))
+        await self._unset_user_default(user_id, exclude_id=config_id)
+        if values:
+            await self.db.execute(
+                update(LLMProviderConfig)
+                .where(LLMProviderConfig.id == config_id, LLMProviderConfig.user_id == user_id)
+                .values(**values)
+            )
+            await self.db.flush()
+            await self.db.refresh(config)
+        return config
+
+    async def delete(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> None:
+        config = await self.get(user_id=user_id, config_id=config_id)
+        config.status = LLMProviderStatus.DISABLED
+        config.is_default = False
+        await self.db.flush()
+
+    async def health_check(self, *, user_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderHealthCheckResult:
+        config = await self.get(user_id=user_id, config_id=config_id)
+        now = datetime.now(UTC)
+        if config.last_checked_at and now - config.last_checked_at < timedelta(seconds=30):
+            raise CooldownError("Health-check đang trong thời gian cooldown")
+        start = time.perf_counter()
+        try:
+            provider_reply = await asyncio.wait_for(
+                _ping_provider(config),
+                timeout=settings.llm_provider_health_timeout_seconds,
+            )
+        except Exception as exc:
+            config.status = LLMProviderStatus.ERROR
+            config.last_checked_at = now
+            config.last_check_error = _sanitize_error(exc)
+            await self.db.flush()
+            raise ProviderUnavailableError(config.last_check_error)
+        config.status = LLMProviderStatus.ACTIVE
+        config.last_checked_at = now
+        config.last_check_error = None
+        await self.db.flush()
+        await self.db.refresh(config)
+        response_time_ms = max(0, round((time.perf_counter() - start) * 1000))
+        return LLMProviderHealthCheckResult(
+            config=config,
+            response_time_ms=response_time_ms,
+            provider_reply=provider_reply,
+        )
+
+    async def _unset_user_default(self, user_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
+        query = update(LLMProviderConfig).where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_default.is_(True))
+        if exclude_id:
+            query = query.where(LLMProviderConfig.id != exclude_id)
+        await self.db.execute(query.values(is_default=False))
+
+    async def _get_first_user_config(self, user_id: uuid.UUID) -> LLMProviderConfig | None:
+        result = await self.db.execute(
+            select(LLMProviderConfig)
+            .where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
+            .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.created_at, LLMProviderConfig.id)
+        )
+        return result.scalars().first()
+
+    async def _disable_user_configs_except(self, user_id: uuid.UUID, config_id: uuid.UUID) -> None:
+        await self.db.execute(
+            update(LLMProviderConfig)
+            .where(
+                LLMProviderConfig.user_id == user_id,
+                LLMProviderConfig.id != config_id,
+                LLMProviderConfig.status != LLMProviderStatus.DISABLED,
+            )
+            .values(status=LLMProviderStatus.DISABLED, is_default=False)
+        )
+
+    def _key_schema(self, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderKeyRequest:
+        if isinstance(body, LLMProviderKeyRequest):
+            return body
+        return LLMProviderKeyRequest.model_validate(body)
+
+    def _values_from_key_request(self, body: LLMProviderKeyRequest) -> dict[str, Any]:
+        provider_type = body.provider_type or DEFAULT_PROVIDER_TYPE
+        provider_name = provider_type.value
+        values: dict[str, Any] = {
+            "provider_type": provider_type,
+            "name": provider_name,
+            "base_url": None,
+            "region": body.region,
+            "model_name": body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+            "encrypted_api_key": encrypt_token(body.api_key),
+            "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
+        }
+        return values
+
+
+async def _ping_provider(config: LLMProviderConfig) -> str | None:
+    api_key = _resolve_api_key(config)
+    secret_key = _resolve_secret_key(config)
+    client = LLMClientFactory.create(
+        provider_type=config.provider_type,
+        api_key=api_key,
+        secret_key=secret_key,
+        region=config.region,
+        model=config.model_name,
+    )
+    return await client.ping()
