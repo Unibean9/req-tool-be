@@ -106,6 +106,8 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     session_id = uuid.UUID(cfg["thread_id"])
 
     message = (state.get("analysis_result") or {}).get("message", "")
+    if not message:
+        raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
 
     async with session_factory() as db:
         already_saved = (
@@ -204,5 +206,6 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
         f"Context hiện tại:\n{artifact_context}\n\n"
         f"Hội thoại gần đây:\n{messages_summary}\n\n"
-        "Trả về JSON với next_action (ask/propose/done), confidence (0-1), gaps, message (nếu ask), proposals (nếu propose)."
+        "Trả về JSON với next_action (ask/propose/done), confidence (0-1), gaps, proposals (nếu propose). "
+        "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user)."
     )
