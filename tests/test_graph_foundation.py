@@ -103,6 +103,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "last_agent_run_id": None,
         "turn_count": 0,
         "missing_context": [],
+        "user_confirmed": None,
     }
 
     assert state["turn_count"] == 0
@@ -116,6 +117,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "last_agent_run_id",
         "turn_count",
         "missing_context",
+        "user_confirmed",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

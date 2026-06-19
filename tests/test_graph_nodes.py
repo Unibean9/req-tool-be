@@ -188,11 +188,11 @@ def test_route_node_ask_routes_to_ask_human():
     assert route_node(state) == "ask_human"
 
 
-def test_route_node_propose_routes_to_propose_artifacts():
+def test_route_node_propose_routes_to_confirm():
     from app.graphs.nodes import route_node
 
     state = _state(turn_count=2, analysis_result={"next_action": "propose"})
-    assert route_node(state) == "propose_artifacts"
+    assert route_node(state) == "confirm"
 
 
 def test_route_node_done_routes_to_end():
