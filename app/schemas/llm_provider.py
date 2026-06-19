@@ -1,49 +1,18 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field
 
 from app.models.llm_provider import LLMProviderStatus, ProviderType
 
 
-class LLMProviderConfigCreate(BaseModel):
+class LLMProviderKeyRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    provider_type: ProviderType
-    name: str = Field(min_length=1, max_length=255)
-    base_url: str | None = Field(default=None, max_length=512)
-    model_name: str | None = Field(default=None, max_length=255)
-    api_key: str | None = None
-    secret_ref: str | None = Field(default=None, max_length=255)
-    is_default: bool = False
-
-    @model_validator(mode="after")
-    def validate_secret_source(self) -> "LLMProviderConfigCreate":
-        if bool(self.api_key) == bool(self.secret_ref):
-            raise ValueError("Phải cung cấp đúng một trong hai trường api_key hoặc secret_ref")
-        if self.secret_ref and not self.secret_ref.startswith("LLM_KEY_"):
-            raise ValueError("secret_ref phải bắt đầu bằng LLM_KEY_")
-        return self
-
-
-class LLMProviderConfigUpdate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    provider_type: ProviderType | None = None
-    name: str | None = Field(default=None, min_length=1, max_length=255)
-    base_url: str | None = Field(default=None, max_length=512)
-    model_name: str | None = Field(default=None, max_length=255)
-    api_key: str | None = None
-    secret_ref: str | None = Field(default=None, max_length=255)
-    is_default: bool | None = None
-
-    @model_validator(mode="after")
-    def validate_secret_ref(self) -> "LLMProviderConfigUpdate":
-        if self.api_key and self.secret_ref:
-            raise ValueError("Chỉ được cập nhật một loại secret trong một request")
-        if self.secret_ref and not self.secret_ref.startswith("LLM_KEY_"):
-            raise ValueError("secret_ref phải bắt đầu bằng LLM_KEY_")
-        return self
+    provider_type: ProviderType = ProviderType.OPENAI
+    api_key: str = Field(min_length=1)
+    secret_key: str | None = Field(default=None, min_length=1)
+    region: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class LLMProviderConfigRead(BaseModel):
@@ -55,9 +24,10 @@ class LLMProviderConfigRead(BaseModel):
     provider_type: ProviderType
     name: str
     base_url: str | None
+    region: str | None
     model_name: str | None
-    secret_ref: str | None = Field(default=None, exclude=True)
     encrypted_api_key: str | None = Field(default=None, exclude=True)
+    encrypted_secret_key: str | None = Field(default=None, exclude=True)
     status: LLMProviderStatus
     is_default: bool
     last_checked_at: datetime | None
@@ -72,5 +42,11 @@ class LLMProviderConfigRead(BaseModel):
 
     @computed_field
     @property
-    def has_secret_ref(self) -> bool:
-        return bool(self.secret_ref)
+    def secret_key_set(self) -> bool:
+        return bool(self.encrypted_secret_key)
+
+
+class LLMProviderHealthCheckResult(BaseModel):
+    config: LLMProviderConfigRead
+    response_time_ms: int
+    provider_reply: str | None = None

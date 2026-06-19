@@ -20,27 +20,24 @@ async def test_auth_org_project_foundation_routes_work(client):
 
 
 @pytest.mark.asyncio
-async def test_top_level_org_project_routes_work(client):
+async def test_top_level_project_routes_are_removed(client):
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
 
     orgs_resp = await client.get(f"{BASE}/organizations", headers=headers)
+    projects_resp = await client.get(f"{BASE}/projects", headers=headers)
     create_resp = await client.post(
         f"{BASE}/projects",
         json={"org_id": org["id"], "name": "Minimal Project"},
         headers=headers,
     )
-
-    assert orgs_resp.status_code == 200
-    assert create_resp.status_code == 201, create_resp.text
-
-    project = create_resp.json()["data"]
-    projects_resp = await client.get(f"{BASE}/projects", headers=headers)
     project_resp = await client.get(f"{BASE}/projects/{project['id']}", headers=headers)
 
-    assert projects_resp.status_code == 200
-    assert project_resp.status_code == 200
-    assert "proposed_solutions" not in project_resp.json()["data"]
+    assert orgs_resp.status_code == 200
+    assert projects_resp.status_code == 404
+    assert create_resp.status_code == 404
+    assert project_resp.status_code == 404
 
 
 @pytest.mark.asyncio

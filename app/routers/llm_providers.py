@@ -8,7 +8,7 @@ from app.core.responses import created, ok
 from app.database import get_db
 from app.deps import current_user
 from app.models.user import User
-from app.schemas.llm_provider import LLMProviderConfigCreate, LLMProviderConfigRead, LLMProviderConfigUpdate
+from app.schemas.llm_provider import LLMProviderConfigRead, LLMProviderHealthCheckResult, LLMProviderKeyRequest
 from app.schemas.response import ApiResponse
 from app.services.llm_provider_service import CooldownError, LLMProviderService, ProviderUnavailableError
 
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/projects/{project_id}/llm-provider-configs", tags=["
 @router.post("", response_model=ApiResponse[LLMProviderConfigRead], status_code=status.HTTP_201_CREATED)
 async def create_llm_provider_config(
     project_id: uuid.UUID,
-    body: LLMProviderConfigCreate,
+    body: LLMProviderKeyRequest,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -51,7 +51,7 @@ async def get_llm_provider_config(
 async def update_llm_provider_config(
     project_id: uuid.UUID,
     config_id: uuid.UUID,
-    body: LLMProviderConfigUpdate,
+    body: LLMProviderKeyRequest,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -71,7 +71,7 @@ async def delete_llm_provider_config(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/{config_id}/health-check", response_model=ApiResponse[LLMProviderConfigRead])
+@router.post("/{config_id}/health-check", response_model=ApiResponse[LLMProviderHealthCheckResult])
 async def health_check_llm_provider_config(
     project_id: uuid.UUID,
     config_id: uuid.UUID,

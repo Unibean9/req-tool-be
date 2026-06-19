@@ -1,6 +1,6 @@
 import asyncio
-import os
 import re
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -11,12 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_token, encrypt_token
 from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
-from app.schemas.llm_provider import LLMProviderConfigCreate, LLMProviderConfigUpdate
-
-try:
-    from openai import AsyncOpenAI
-except Exception:  # pragma: no cover - optional dependency
-    AsyncOpenAI = None
+from app.schemas.llm_provider import LLMProviderHealthCheckResult, LLMProviderKeyRequest
+from app.services.llm_clients import DEFAULT_MODEL_BY_PROVIDER, LLMClientFactory
 
 
 class CooldownError(Exception):
@@ -28,6 +24,7 @@ class ProviderUnavailableError(Exception):
 
 
 SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
+DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
 
 
 def _sanitize_error(message: str) -> str:
@@ -35,13 +32,6 @@ def _sanitize_error(message: str) -> str:
 
 
 def _resolve_api_key(config: LLMProviderConfig) -> str:
-    if config.secret_ref:
-        if not config.secret_ref.startswith("LLM_KEY_"):
-            raise ValueError("secret_ref phải bắt đầu bằng LLM_KEY_")
-        value = os.environ.get(config.secret_ref)
-        if not value:
-            raise ValueError("Không tìm thấy biến môi trường chứa API key")
-        return value
     if config.encrypted_api_key:
         value = decrypt_token(config.encrypted_api_key)
         if value is None:
@@ -50,24 +40,46 @@ def _resolve_api_key(config: LLMProviderConfig) -> str:
     raise ValueError("Config không có API key")
 
 
+def _decrypt_required(value: str | None, field_name: str) -> str:
+    if not value:
+        raise ValueError(f"Config thiếu {field_name}")
+    decrypted = decrypt_token(value)
+    if decrypted is None:
+        raise ValueError(f"{field_name} không thể giải mã — có thể lệch key rotation")
+    return decrypted
+
+
+def _resolve_secret_key(config: LLMProviderConfig) -> str | None:
+    if not config.encrypted_secret_key:
+        return None
+    return _decrypt_required(config.encrypted_secret_key, "secret_key")
+
+
 class LLMProviderService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def create(self, *, project_id: uuid.UUID, body: LLMProviderConfigCreate | dict[str, Any]) -> LLMProviderConfig:
-        body = self._create_schema(body)
-        if body.is_default:
-            await self._unset_project_default(project_id)
+    async def create(self, *, project_id: uuid.UUID, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderConfig:
+        body = self._key_schema(body)
+        existing = await self._get_first_project_config(project_id)
+        if existing is not None:
+            await self._disable_project_configs_except(project_id, existing.id)
+            values = self._values_from_key_request(body)
+            for field, value in values.items():
+                setattr(existing, field, value)
+            existing.is_default = True
+            existing.status = LLMProviderStatus.DRAFT
+            existing.last_checked_at = None
+            existing.last_check_error = None
+            await self.db.flush()
+            return existing
+        await self._unset_project_default(project_id)
+        values = self._values_from_key_request(body)
         config = LLMProviderConfig(
             project_id=project_id,
-            provider_type=body.provider_type,
-            name=body.name,
-            base_url=body.base_url,
-            model_name=body.model_name,
-            secret_ref=body.secret_ref,
-            encrypted_api_key=encrypt_token(body.api_key) if body.api_key else None,
-            is_default=body.is_default,
+            is_default=True,
             status=LLMProviderStatus.DRAFT,
+            **values,
         )
         self.db.add(config)
         await self.db.flush()
@@ -99,25 +111,18 @@ class LLMProviderService:
         *,
         project_id: uuid.UUID,
         config_id: uuid.UUID,
-        body: LLMProviderConfigUpdate | dict[str, Any],
+        body: LLMProviderKeyRequest | dict[str, Any],
     ) -> LLMProviderConfig:
-        schema = self._update_schema(body)
+        schema = self._key_schema(body)
         config = await self.get(project_id=project_id, config_id=config_id)
-        values = schema.model_dump(exclude_unset=True)
-        key_changed = False
-        if values.pop("api_key", None) is not None:
-            values["encrypted_api_key"] = encrypt_token(schema.api_key or "")
-            values["secret_ref"] = None
-            key_changed = True
-        elif "secret_ref" in values:
-            values["encrypted_api_key"] = None
-            key_changed = True
-        if key_changed:
-            values["status"] = LLMProviderStatus.DRAFT
-            values["last_checked_at"] = None
-            values["last_check_error"] = None
-        if values.get("is_default") is True:
-            await self._unset_project_default(project_id, exclude_id=config_id)
+        values = {
+            "status": LLMProviderStatus.DRAFT,
+            "last_checked_at": None,
+            "last_check_error": None,
+            "is_default": True,
+        }
+        values.update(self._values_from_key_request(schema))
+        await self._unset_project_default(project_id, exclude_id=config_id)
         if values:
             await self.db.execute(
                 update(LLMProviderConfig)
@@ -134,16 +139,14 @@ class LLMProviderService:
         config.is_default = False
         await self.db.flush()
 
-    async def health_check(self, *, project_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderConfig:
+    async def health_check(self, *, project_id: uuid.UUID, config_id: uuid.UUID) -> LLMProviderHealthCheckResult:
         config = await self.get(project_id=project_id, config_id=config_id)
         now = datetime.now(UTC)
         if config.last_checked_at and now - config.last_checked_at < timedelta(seconds=30):
             raise CooldownError("Health-check đang trong thời gian cooldown")
-        handler = HEALTH_CHECKS.get(config.provider_type)
-        if handler is None:
-            raise ProviderUnavailableError("Provider chưa được hỗ trợ")
+        start = time.perf_counter()
         try:
-            await asyncio.wait_for(handler(config), timeout=5.0)
+            provider_reply = await asyncio.wait_for(_ping_provider(config), timeout=5.0)
         except Exception as exc:
             config.status = LLMProviderStatus.ERROR
             config.last_checked_at = now
@@ -154,7 +157,13 @@ class LLMProviderService:
         config.last_checked_at = now
         config.last_check_error = None
         await self.db.flush()
-        return config
+        await self.db.refresh(config)
+        response_time_ms = max(0, round((time.perf_counter() - start) * 1000))
+        return LLMProviderHealthCheckResult(
+            config=config,
+            response_time_ms=response_time_ms,
+            provider_reply=provider_reply,
+        )
 
     async def _unset_project_default(self, project_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
         query = update(LLMProviderConfig).where(LLMProviderConfig.project_id == project_id, LLMProviderConfig.is_default.is_(True))
@@ -162,37 +171,53 @@ class LLMProviderService:
             query = query.where(LLMProviderConfig.id != exclude_id)
         await self.db.execute(query.values(is_default=False))
 
-    def _create_schema(self, body: LLMProviderConfigCreate | dict[str, Any]) -> LLMProviderConfigCreate:
-        if isinstance(body, LLMProviderConfigCreate):
+    async def _get_first_project_config(self, project_id: uuid.UUID) -> LLMProviderConfig | None:
+        result = await self.db.execute(
+            select(LLMProviderConfig)
+            .where(LLMProviderConfig.project_id == project_id, LLMProviderConfig.status != LLMProviderStatus.DISABLED)
+            .order_by(LLMProviderConfig.is_default.desc(), LLMProviderConfig.created_at, LLMProviderConfig.id)
+        )
+        return result.scalars().first()
+
+    async def _disable_project_configs_except(self, project_id: uuid.UUID, config_id: uuid.UUID) -> None:
+        await self.db.execute(
+            update(LLMProviderConfig)
+            .where(
+                LLMProviderConfig.project_id == project_id,
+                LLMProviderConfig.id != config_id,
+                LLMProviderConfig.status != LLMProviderStatus.DISABLED,
+            )
+            .values(status=LLMProviderStatus.DISABLED, is_default=False)
+        )
+
+    def _key_schema(self, body: LLMProviderKeyRequest | dict[str, Any]) -> LLMProviderKeyRequest:
+        if isinstance(body, LLMProviderKeyRequest):
             return body
-        return LLMProviderConfigCreate.model_validate(body)
+        return LLMProviderKeyRequest.model_validate(body)
 
-    def _update_schema(self, body: LLMProviderConfigUpdate | dict[str, Any]) -> LLMProviderConfigUpdate:
-        if isinstance(body, LLMProviderConfigUpdate):
-            return body
-        return LLMProviderConfigUpdate.model_validate(body)
-
-
-async def _check_openai_compatible(config: LLMProviderConfig) -> None:
-    if AsyncOpenAI is None:
-        raise RuntimeError("openai package is not installed")
-    client = AsyncOpenAI(api_key=_resolve_api_key(config), base_url=config.base_url)
-    await client.models.list()
-
-
-async def _check_bedrock(config: LLMProviderConfig) -> None:
-    _resolve_api_key(config)
-    await asyncio.to_thread(lambda: True)
+    def _values_from_key_request(self, body: LLMProviderKeyRequest) -> dict[str, Any]:
+        provider_type = body.provider_type or DEFAULT_PROVIDER_TYPE
+        provider_name = provider_type.value
+        values: dict[str, Any] = {
+            "provider_type": provider_type,
+            "name": provider_name,
+            "base_url": None,
+            "region": body.region,
+            "model_name": DEFAULT_MODEL_BY_PROVIDER[provider_type],
+            "encrypted_api_key": encrypt_token(body.api_key),
+            "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
+        }
+        return values
 
 
-async def _check_noop(config: LLMProviderConfig) -> None:
-    _resolve_api_key(config)
-
-
-HEALTH_CHECKS = {
-    ProviderType.OPENAI_COMPATIBLE: _check_openai_compatible,
-    ProviderType.AZURE_OPENAI: _check_noop,
-    ProviderType.ANTHROPIC: _check_noop,
-    ProviderType.BEDROCK: _check_bedrock,
-    ProviderType.GEMINI: _check_noop,
-}
+async def _ping_provider(config: LLMProviderConfig) -> str | None:
+    api_key = _resolve_api_key(config)
+    secret_key = _resolve_secret_key(config)
+    client = LLMClientFactory.create(
+        provider_type=config.provider_type,
+        api_key=api_key,
+        secret_key=secret_key,
+        region=config.region,
+        model=config.model_name,
+    )
+    return await client.ping()

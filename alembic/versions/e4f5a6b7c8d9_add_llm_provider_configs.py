@@ -20,7 +20,7 @@ depends_on: Union[str, Sequence[str], None] = None
 def upgrade() -> None:
     op.execute(sa.text("DROP TYPE IF EXISTS providertype CASCADE"))
     op.execute(sa.text("DROP TYPE IF EXISTS llmproviderstatus CASCADE"))
-    op.execute(sa.text("CREATE TYPE providertype AS ENUM ('openai_compatible', 'azure_openai', 'anthropic', 'bedrock', 'gemini')"))
+    op.execute(sa.text("CREATE TYPE providertype AS ENUM ('bedrock', 'openai', 'google', 'anthropic')"))
     op.execute(sa.text("CREATE TYPE llmproviderstatus AS ENUM ('draft', 'active', 'error', 'disabled')"))
     op.create_table(
         "llm_provider_configs",
@@ -32,15 +32,16 @@ def upgrade() -> None:
         sa.Column("provider_type", postgresql.ENUM(name="providertype", create_type=False), nullable=False),
         sa.Column("name", sa.String(255), nullable=False),
         sa.Column("base_url", sa.String(512), nullable=True),
+        sa.Column("region", sa.String(64), nullable=True),
         sa.Column("model_name", sa.String(255), nullable=True),
-        sa.Column("secret_ref", sa.String(255), nullable=True),
         sa.Column("encrypted_api_key", sa.Text(), nullable=True),
+        sa.Column("encrypted_secret_key", sa.Text(), nullable=True),
         sa.Column("status", postgresql.ENUM(name="llmproviderstatus", create_type=False), nullable=False),
         sa.Column("is_default", sa.Boolean(), nullable=False, server_default=sa.text("FALSE")),
         sa.Column("last_checked_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_check_error", sa.Text(), nullable=True),
         sa.CheckConstraint("(org_id IS NULL) != (project_id IS NULL)", name="ck_llm_provider_scope_xor"),
-        sa.CheckConstraint("(secret_ref IS NULL) != (encrypted_api_key IS NULL)", name="ck_llm_provider_secret_xor"),
+        sa.CheckConstraint("encrypted_api_key IS NOT NULL", name="ck_llm_provider_api_key_required"),
         sa.ForeignKeyConstraint(["org_id"], ["organizations.id"]),
         sa.ForeignKeyConstraint(["project_id"], ["projects.id"]),
         sa.PrimaryKeyConstraint("id"),

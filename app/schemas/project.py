@@ -11,10 +11,6 @@ class ProjectCreateRequest(BaseModel):
     description: str | None = None
 
 
-class ProjectCreateTopLevelRequest(ProjectCreateRequest):
-    org_id: uuid.UUID
-
-
 class ProjectUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

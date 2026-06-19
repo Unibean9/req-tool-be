@@ -86,7 +86,6 @@ api_v1.include_router(users.router)
 api_v1.include_router(organizations.router)
 api_v1.include_router(organizations.alias_router)
 api_v1.include_router(projects.router)
-api_v1.include_router(projects.alias_router)
 api_v1.include_router(artifacts.router)
 api_v1.include_router(artifact_links.router)
 api_v1.include_router(source_documents.router)
@@ -109,38 +108,3 @@ async def health():
     async with async_session_factory() as session:
         await session.execute(text("SELECT 1"))
     return {"status": "ok", "db": "connected"}
-
-
-@app.get("/health/bedrock", tags=["System Health"])
-async def health_bedrock():
-    import asyncio
-    from app.config import settings
-
-    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
-        return {
-            "status": "disabled",
-            "model": settings.bedrock_notation_model,
-            "region": settings.aws_region,
-            "message": "AWS credentials not configured — rule-based notation only",
-        }
-
-    def _ping():
-        import boto3
-        client = boto3.client(
-            "bedrock-runtime",
-            region_name=settings.aws_region,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-        )
-        resp = client.converse(
-            modelId=settings.bedrock_notation_model,
-            messages=[{"role": "user", "content": [{"text": "ping"}]}],
-            inferenceConfig={"maxTokens": 5, "temperature": 0.0},
-        )
-        return resp["output"]["message"]["content"][0]["text"].strip()
-
-    try:
-        reply = await asyncio.to_thread(_ping)
-        return {"status": "ok", "model": settings.bedrock_notation_model, "region": settings.aws_region, "reply": reply}
-    except Exception as exc:
-        return {"status": "error", "model": settings.bedrock_notation_model, "region": settings.aws_region, "message": str(exc)}
