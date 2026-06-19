@@ -11,9 +11,21 @@ from starlette.requests import Request
 from app.config import settings
 from app.database import engine
 from app.core.errors import http_exception_handler, validation_exception_handler, unhandled_exception_handler
-from app.routers import admin, github_auth, users, organizations, projects, actors, github, sync
-from app.routers import stakeholders, nfrs, project_business, estimates, health
-from app.routers.requirements import epics, features, stories, tasks
+from app.routers import (
+    admin,
+    agent_sessions,
+    artifact_links,
+    artifacts,
+    auth,
+    exports,
+    github_auth,
+    llm_providers,
+    organizations,
+    projects,
+    source_documents,
+    users,
+    workflow,
+)
 
 
 def _run_migrations() -> None:
@@ -42,6 +54,28 @@ async def lifespan(app: FastAPI):
     if settings.app_env == "development":
         from scripts.seed_dev_users import seed
         await seed()
+
+    from pathlib import Path
+    from app.graphs.personas import load_personas, loaded_roles
+
+    _bmad_candidates = [
+        Path(__file__).parent.parent / "prompts",
+    ]
+    for _candidate in _bmad_candidates:
+        if _candidate.exists():
+            load_personas(_candidate)
+            break
+
+    if loaded_roles():
+        print(f"[personas] loaded: {loaded_roles()}")
+    else:
+        print("[personas] no BMAD skills found — system=None for all sessions")
+
+    from app.database import async_session_factory
+    from app.graphs.checkpointer import DelegatingCheckpointer
+    from app.graphs.graph import build_graph
+    app.state.compiled_graph = build_graph(DelegatingCheckpointer(async_session_factory))
+
     yield
     await engine.dispose()
 
@@ -69,22 +103,19 @@ app.add_exception_handler(Exception, unhandled_exception_handler)
 
 api_v1 = APIRouter(prefix="/api/v1")
 api_v1.include_router(admin.router)
+api_v1.include_router(auth.router)
 api_v1.include_router(github_auth.router)
 api_v1.include_router(users.router)
 api_v1.include_router(organizations.router)
+api_v1.include_router(organizations.alias_router)
 api_v1.include_router(projects.router)
-api_v1.include_router(actors.router)
-api_v1.include_router(epics.router)
-api_v1.include_router(features.router)
-api_v1.include_router(stories.router)
-api_v1.include_router(tasks.router)
-api_v1.include_router(github.router)
-api_v1.include_router(sync.router)
-api_v1.include_router(stakeholders.router)
-api_v1.include_router(nfrs.router)
-api_v1.include_router(project_business.router)
-api_v1.include_router(estimates.router)
-api_v1.include_router(health.router)
+api_v1.include_router(artifacts.router)
+api_v1.include_router(artifact_links.router)
+api_v1.include_router(source_documents.router)
+api_v1.include_router(workflow.router)
+api_v1.include_router(exports.router)
+api_v1.include_router(llm_providers.router)
+api_v1.include_router(agent_sessions.router)
 
 app.include_router(api_v1)
 
@@ -101,38 +132,3 @@ async def health():
     async with async_session_factory() as session:
         await session.execute(text("SELECT 1"))
     return {"status": "ok", "db": "connected"}
-
-
-@app.get("/health/bedrock", tags=["System Health"])
-async def health_bedrock():
-    import asyncio
-    from app.config import settings
-
-    if not settings.aws_access_key_id or not settings.aws_secret_access_key:
-        return {
-            "status": "disabled",
-            "model": settings.bedrock_notation_model,
-            "region": settings.aws_region,
-            "message": "AWS credentials not configured — rule-based notation only",
-        }
-
-    def _ping():
-        import boto3
-        client = boto3.client(
-            "bedrock-runtime",
-            region_name=settings.aws_region,
-            aws_access_key_id=settings.aws_access_key_id,
-            aws_secret_access_key=settings.aws_secret_access_key,
-        )
-        resp = client.converse(
-            modelId=settings.bedrock_notation_model,
-            messages=[{"role": "user", "content": [{"text": "ping"}]}],
-            inferenceConfig={"maxTokens": 5, "temperature": 0.0},
-        )
-        return resp["output"]["message"]["content"][0]["text"].strip()
-
-    try:
-        reply = await asyncio.to_thread(_ping)
-        return {"status": "ok", "model": settings.bedrock_notation_model, "region": settings.aws_region, "reply": reply}
-    except Exception as exc:
-        return {"status": "error", "model": settings.bedrock_notation_model, "region": settings.aws_region, "message": str(exc)}

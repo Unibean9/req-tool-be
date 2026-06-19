@@ -125,7 +125,7 @@ class AuthService:
 
     async def get_user_for_dev_login(self, email: str) -> User:
         result = await self.db.execute(
-            select(User).where(User.email == email, User.is_active == True)
+            select(User).where(User.email == email, User.is_active.is_(True))
         )
         user = result.scalar_one_or_none()
         if not user:

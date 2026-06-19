@@ -1,8 +1,13 @@
 import uuid
+from typing import TYPE_CHECKING
+
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy import String, ForeignKey, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from app.models.base import Base, AuditMixin
+
+if TYPE_CHECKING:
+    from app.models.user import User
 
 
 class Organization(AuditMixin, Base):
