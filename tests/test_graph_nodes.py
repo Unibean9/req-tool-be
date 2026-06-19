@@ -1,6 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -94,13 +94,13 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value={
+    mock_llm.generate = AsyncMock(return_value=({
         "next_action": "ask",
         "confidence": 0.3,
         "gaps": ["thiếu business context"],
         "message": "Bạn có thể mô tả thêm về mục tiêu không?",
         "proposals": [],
-    })
+    }, None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -125,13 +125,13 @@ async def test_analyze_node_high_confidence_returns_propose_action(client, db_se
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value={
+    mock_llm.generate = AsyncMock(return_value=({
         "next_action": "propose",
         "confidence": 0.9,
         "gaps": [],
         "message": "",
         "proposals": [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "..."}],
-    })
+    }, None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -155,7 +155,7 @@ async def test_analyze_node_creates_agent_run_record(client, db_session):
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value={"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []})
+    mock_llm.generate = AsyncMock(return_value=({"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []}, None))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -167,6 +167,41 @@ async def test_analyze_node_creates_agent_run_record(client, db_session):
     async with TestSessionFactory() as db:
         run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()
         assert run.session_id == agent_session.id
+        # usage = None → token_usage None, nhưng latency luôn đo được (int không âm)
+        assert run.token_usage is None
+        assert isinstance(run.latency_ms, int)
+        assert run.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_records_token_usage_and_latency(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(
+        {"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []},
+        {"input": 5, "output": 10, "total": 15},
+    ))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    run_id = uuid.UUID(result["last_agent_run_id"])
+    async with TestSessionFactory() as db:
+        run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()
+        assert run.token_usage == {"input": 5, "output": 10, "total": 15}
+        assert isinstance(run.latency_ms, int)
+        assert run.latency_ms >= 0
 
 
 # ---------------------------------------------------------------------------

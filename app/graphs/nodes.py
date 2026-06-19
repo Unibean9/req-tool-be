@@ -1,3 +1,4 @@
+import time
 import uuid
 from typing import Any
 
@@ -70,15 +71,22 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         workflow_area=state["workflow_area"],
         agent_role=cfg.get("agent_role"),
     )
-    analysis_result = await llm_client.generate(
+    started_at = time.monotonic()
+    analysis_result, usage = await llm_client.generate(
         messages=[{"role": "user", "content": prompt}],
         system=system_prompt,
         max_tokens=2000,
         response_format=ANALYSIS_SCHEMA,
     )
+    latency_ms = int((time.monotonic() - started_at) * 1000)
 
     async with session_factory() as db:
-        run = AgentRun(session_id=session_id, analysis_result=analysis_result)
+        run = AgentRun(
+            session_id=session_id,
+            analysis_result=analysis_result,
+            token_usage=usage,
+            latency_ms=latency_ms,
+        )
         db.add(run)
         await db.commit()
         run_id = str(run.id)

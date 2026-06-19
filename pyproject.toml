@@ -1,3 +1,8 @@
 [tool.ruff]
 line-length = 120
 extend-exclude = ["alembic/versions"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: test gọi LLM thật, chỉ chạy khi có JUDGE_API_KEY",
+]
