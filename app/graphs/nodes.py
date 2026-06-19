@@ -53,6 +53,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     session_id = uuid.UUID(cfg["thread_id"])
     project_id = uuid.UUID(cfg["project_id"])
     llm_client = cfg["llm_client"]
+    if llm_client is None:
+        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
 
     async with session_factory() as db:
         artifacts = await read_artifacts(
@@ -128,8 +130,14 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
 
-    interrupt({"type": "ask_human", "message": message})
-    return {}
+    user_response = interrupt({"type": "ask_human", "message": message})
+    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
+    return {
+        "messages": [
+            {"role": "assistant", "content": message},
+            {"role": "user", "content": user_content},
+        ]
+    }
 
 
 async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:

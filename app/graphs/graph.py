@@ -18,7 +18,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         "propose_artifacts": "propose_artifacts",
         END: END,
     })
-    builder.add_edge("ask_human", END)
+    builder.add_edge("ask_human", "analyze")
     builder.add_edge("propose_artifacts", END)
 
     return builder.compile(checkpointer=checkpointer)

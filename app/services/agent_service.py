@@ -56,7 +56,7 @@ class AgentService:
                 step_key=step_key,
                 workflow_area=workflow_area,
                 agent_role=agent_role,
-                status=AgentSessionStatus.ACTIVE,
+                status=AgentSessionStatus.WAITING_FOR_HUMAN,
                 graph_checkpoint={},
                 missing_context=missing or None,
                 provider_config_id=provider_config_id,
@@ -83,24 +83,6 @@ class AgentService:
                     "session_id": str(existing.id) if existing else None,
                 },
             )
-
-        if llm_client is None:
-            llm_client = await self._resolve_llm_client(provider_config_id)
-
-        asyncio.create_task(
-            self._run_graph(
-                session_id=session.id,
-                project_id=project_id,
-                artifact_type=artifact_type,
-                step_key=step_key,
-                workflow_area=workflow_area,
-                agent_role=agent_role,
-                missing_context=missing,
-                llm_client=llm_client,
-                initial_state=None,
-                resume_command=None,
-            )
-        )
 
         return {"session_id": str(session.id), "missing_context": missing}
 
@@ -139,8 +121,10 @@ class AgentService:
                 400,
                 detail="Session đang chờ approval tool calls, không phải user message",
             )
-        if session.interrupt_type != AgentSessionInterruptType.ASK_HUMAN:
+        if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, None):
             raise HTTPException(400, detail="Session không ở trạng thái chờ user message")
+
+        is_first_message = session.interrupt_type is None
 
         msg = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content)
         self.db.add(msg)
@@ -150,6 +134,23 @@ class AgentService:
 
         if llm_client is None:
             llm_client = await self._resolve_llm_client(session.provider_config_id)
+
+        if is_first_message:
+            initial_state = {
+                "artifact_type": session.artifact_type,
+                "workflow_area": session.workflow_area,
+                "step_key": session.step_key,
+                "messages": [{"role": "user", "content": content}],
+                "analysis_result": None,
+                "pending_tool_call_ids": [],
+                "last_agent_run_id": None,
+                "turn_count": 0,
+                "missing_context": session.missing_context or [],
+            }
+            resume_command = None
+        else:
+            initial_state = None
+            resume_command = Command(resume={"content": content})
 
         asyncio.create_task(
             self._run_graph(
@@ -161,8 +162,8 @@ class AgentService:
                 agent_role=session.agent_role,
                 missing_context=session.missing_context or [],
                 llm_client=llm_client,
-                initial_state=None,
-                resume_command=Command(resume={"content": content}),
+                initial_state=initial_state,
+                resume_command=resume_command,
             )
         )
 

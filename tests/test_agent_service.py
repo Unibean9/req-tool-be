@@ -467,3 +467,46 @@ async def _make_propose_session(db_session, project_id):
     db_session.add(tc2)
     await db_session.flush()
     return session, run, tc1, tc2
+
+
+# ---------------------------------------------------------------------------
+# Regression: create_session không chạy graph ngay; first message khởi động graph
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_create_session_does_not_start_graph(client, db_session, _no_background_tasks):
+    """create_session phải tạo session WAITING_FOR_HUMAN mà không schedule _run_graph."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    await svc.create_session(project_id=project_id, artifact_type="intent")
+
+    _no_background_tasks.assert_not_called()
+
+    session = (await db_session.execute(
+        select(AgentSession).where(AgentSession.project_id == project_id)
+    )).scalar_one()
+    assert session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+    assert session.interrupt_type is None
+
+
+@pytest.mark.asyncio
+async def test_first_user_message_starts_graph_fresh(client, db_session, _no_background_tasks):
+    """Message đầu tiên (interrupt_type=None) phải invoke graph với initial_state, không resume."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="intent", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=None,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="Xin chào")
+
+    _no_background_tasks.assert_called_once()
+    scheduled = _no_background_tasks.call_args.args[0]
+    assert scheduled.cr_code.co_name == "_run_graph"

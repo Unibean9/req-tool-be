@@ -2,13 +2,14 @@
 
 Load biến từ .env với prefix E2E_:
     E2E_BASE_URL            URL server (mặc định http://127.0.0.1:8000)
-    E2E_TIMEOUT             Timeout poll agent (giây, mặc định 60)
+    E2E_TIMEOUT             Timeout poll agent (giây, mặc định 180)
+    E2E_REQUEST_TIMEOUT     Timeout mỗi HTTP request (giây, mặc định 60)
     E2E_LLM_PROVIDER_TYPE   openai | bedrock | ...
     E2E_LLM_API_KEY         API key / AWS access key
     E2E_LLM_SECRET_KEY      AWS secret key (chỉ Bedrock)
     E2E_LLM_REGION          AWS region (chỉ Bedrock)
     E2E_LLM_MODEL_NAME      Tên model (tuỳ chọn)
-    E2E_ARTIFACT_TYPE       Artifact type dùng cho BRD session (mặc định brd)
+    E2E_ARTIFACT_TYPE       Artifact type dùng cho BRD session (mặc định goal)
     E2E_TOOL_ACTION         approve | reject (mặc định approve)
 
 Ví dụ:
@@ -82,7 +83,7 @@ def _expect_status(response: httpx.Response, expected: int | set[int], label: st
     expected_set = expected if isinstance(expected, set) else {expected}
     if response.status_code not in expected_set:
         raise E2EFailure(
-            f"{label}: status={response.status_code}, expected={sorted(expected_set)}, body={response.text[:500]}"
+            f"{label}: status={response.status_code}, expected={sorted(expected_set)}, body={response.text[:2000]}"
         )
 
 
@@ -275,6 +276,7 @@ async def scenario_no_provider(client: httpx.AsyncClient, args: argparse.Namespa
     log("\n[scenario: no-provider] Agent không có provider → phải failed")
     ctx = await bootstrap_context(client, label="no-provider")
     session_id = await start_brd_session(ctx, artifact_type=args.artifact_type)
+    await send_user_message(ctx, session_id, "Bắt đầu")
     session = await poll_session(ctx, session_id, timeout_s=args.timeout, desired=TERMINAL_STATUSES)
 
     if session["status"] != "failed":
@@ -301,6 +303,7 @@ async def scenario_ask_human(client: httpx.AsyncClient, args: argparse.Namespace
         raise E2EFailure("Scenario ask-human cần E2E_LLM_API_KEY")
 
     session_id = await start_brd_session(ctx, artifact_type=args.artifact_type)
+    await send_user_message(ctx, session_id, "Hãy bắt đầu phân tích và hỏi các thông tin cần thiết.")
     session = await poll_session(ctx, session_id, timeout_s=args.timeout)
 
     # Nếu agent tự hoàn thành mà không hỏi, cũng OK
@@ -351,6 +354,7 @@ async def scenario_propose(client: httpx.AsyncClient, args: argparse.Namespace) 
         raise E2EFailure("Scenario propose cần E2E_LLM_API_KEY")
 
     session_id = await start_brd_session(ctx, artifact_type=args.artifact_type)
+    await send_user_message(ctx, session_id, "Hãy tạo BRD draft ngay, bao gồm scope và mục tiêu đo được.")
     session = await poll_session(ctx, session_id, timeout_s=args.timeout)
 
     if session["status"] == "completed":
@@ -435,9 +439,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=[],
         help="Có thể truyền nhiều lần. Mặc định: all.",
     )
-    parser.add_argument("--timeout", type=float, default=float(os.getenv("E2E_TIMEOUT", "60")),
+    parser.add_argument("--timeout", type=float, default=float(os.getenv("E2E_TIMEOUT", "180")),
                         help="Timeout poll agent (giây).")
-    parser.add_argument("--request-timeout", type=float, default=30.0)
+    parser.add_argument("--request-timeout", type=float, default=float(os.getenv("E2E_REQUEST_TIMEOUT", "60")),
+                        help="Timeout mỗi HTTP request (E2E_REQUEST_TIMEOUT, mặc định 60 giây).")
     parser.add_argument("--health-check", action="store_true",
                         help="Gọi health-check provider trước khi chạy agent.")
     parser.add_argument(
