@@ -1,16 +1,16 @@
 """Eval baseline harness.
 
-Chạy toàn bộ golden set qua judge, in bảng điểm baseline từng tiêu chí và
-inter-run variance (O3 + O4). KHÔNG assert ngưỡng cứng ở giai đoạn này —
-mục tiêu là in baseline, không gate chất lượng.
+Runs the whole golden set through the judge, printing a per-criterion
+baseline table and inter-run variance (O3 + O4). Does NOT assert hard
+thresholds at this stage — the goal is to print the baseline, not gate quality.
 
-- Test mock (mặc định): không gọi LLM thật, kiểm tra harness chạy đúng shape.
-- Test integration (marker `integration`): dùng judge LLM thật, chỉ chạy khi
-  có biến môi trường JUDGE_API_KEY.
+- Mock test (default): no real LLM call, verifies the harness runs with the
+  right shape.
+- Integration test (marker `integration`): uses a real LLM judge, only runs
+  when the JUDGE_API_KEY environment variable is set.
 """
 
 import json
-import os
 import statistics
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -28,7 +28,7 @@ def _load_fixtures() -> list[dict]:
 
 
 async def run_eval_baseline(llm_client, n: int = 3) -> list[dict]:
-    """Chấm từng fixture: baseline 1 lần + variance qua n lần. Trả list kết quả và in bảng."""
+    """Score each fixture: baseline once + variance over n runs. Returns the result list and prints a table."""
     rows: list[dict] = []
     print("\n=== EVAL BASELINE ===")
     for fixture in _load_fixtures():
@@ -84,17 +84,20 @@ async def test_baseline_runs_over_all_fixtures_with_mock(capsys):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_baseline_with_real_judge(capsys):
-    if not os.getenv("JUDGE_API_KEY"):
-        pytest.skip("Cần JUDGE_API_KEY để chạy judge thật")
+    from tests.eval.config import judge_settings
 
-    from app.config import settings
+    if not judge_settings.judge_api_key:
+        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy judge thật")
+
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
 
     client = LLMClientFactory.create(
-        provider_type=ProviderType(settings.judge_provider),
-        api_key=os.environ["JUDGE_API_KEY"],
-        model=settings.judge_model,
+        provider_type=ProviderType(judge_settings.judge_provider),
+        api_key=judge_settings.judge_api_key,
+        model=judge_settings.judge_model,
+        region=judge_settings.judge_region,
+        secret_key=judge_settings.judge_secret_key or None,
     )
 
     rows = await run_eval_baseline(client, n=3)

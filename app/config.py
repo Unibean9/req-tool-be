@@ -44,11 +44,6 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     bedrock_notation_model: str = "google.gemma-3-4b-it"
 
-    # LLM judge — model mạnh cố định cho eval harness, tách khỏi provider của session agent
-    judge_provider: str = "anthropic"
-    judge_model: str = "claude-3-5-sonnet-20241022"
-    judge_api_key: str = ""
-
     app_env: str = "development"
     app_debug: bool = False
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]

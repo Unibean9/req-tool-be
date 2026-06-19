@@ -1,8 +1,8 @@
-"""LLM-as-judge: chấm artifact requirements theo rubric, trả điểm có cấu trúc.
+"""LLM-as-judge: score requirements artifacts against the rubric, returning structured scores.
 
-Tái dùng cơ chế `response_format` của `app.services.llm_clients` (giống
-`ANALYSIS_SCHEMA`). Judge dùng model mạnh cố định (cấu hình ở `app.config`),
-tách khỏi provider của session agent.
+Reuses the `response_format` mechanism of `app.services.llm_clients` (like
+`ANALYSIS_SCHEMA`). The judge uses a fixed strong model (configured in
+`app.config`), decoupled from the agent session's provider.
 """
 
 from typing import Any
@@ -69,7 +69,7 @@ def _validate(result: Any) -> dict[str, Any]:
 
 
 async def judge_artifact(artifact_text: str, rubric_criteria: dict, llm_client) -> dict[str, Any]:
-    """Chấm một artifact, trả dict {scores, overall, rationale}. Raise ValueError nếu sai shape."""
+    """Score one artifact, returning {scores, overall, rationale}. Raises ValueError on a bad shape."""
     result, _usage = await llm_client.generate(
         messages=[{"role": "user", "content": _build_prompt(artifact_text)}],
         system=_JUDGE_SYSTEM,
@@ -80,5 +80,5 @@ async def judge_artifact(artifact_text: str, rubric_criteria: dict, llm_client) 
 
 
 async def judge_multiple(artifact_text: str, rubric_criteria: dict, llm_client, n: int = 3) -> list[dict[str, Any]]:
-    """Chạy judge n lần trên cùng input để đo inter-run variance (O4)."""
+    """Run the judge n times on the same input to measure inter-run variance (O4)."""
     return [await judge_artifact(artifact_text, rubric_criteria, llm_client) for _ in range(n)]

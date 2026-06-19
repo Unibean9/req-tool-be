@@ -1,23 +1,31 @@
-def test_settings_reads_judge_config_from_env(monkeypatch):
+def test_judge_settings_reads_from_env(monkeypatch):
     monkeypatch.setenv("JUDGE_PROVIDER", "openai")
     monkeypatch.setenv("JUDGE_MODEL", "gpt-4o")
 
-    from app.config import Settings
+    from tests.eval.config import JudgeSettings
 
-    settings = Settings()
+    settings = JudgeSettings()
 
     assert settings.judge_provider == "openai"
     assert settings.judge_model == "gpt-4o"
 
 
-def test_settings_has_judge_defaults(monkeypatch):
+def test_judge_settings_has_strong_defaults(monkeypatch):
     monkeypatch.delenv("JUDGE_PROVIDER", raising=False)
     monkeypatch.delenv("JUDGE_MODEL", raising=False)
 
-    from app.config import Settings
+    from tests.eval.config import JudgeSettings
 
-    settings = Settings()
+    # Judge dùng model mạnh cố định, tách khỏi provider của session agent
+    settings = JudgeSettings(_env_file=None)
 
-    # Mặc định: judge dùng model mạnh cố định, tách khỏi provider của session agent
     assert settings.judge_provider
     assert settings.judge_model
+
+
+def test_judge_config_not_in_application_settings():
+    from app.config import Settings
+
+    # Cấu hình judge phải nằm ở .env.test, KHÔNG thuộc Settings ứng dụng (.env)
+    assert not hasattr(Settings(), "judge_provider")
+    assert not hasattr(Settings(), "judge_model")

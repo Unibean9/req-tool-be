@@ -1,9 +1,9 @@
-"""Rubric chấm chất lượng artifact requirements.
+"""Rubric for scoring requirements-artifact quality.
 
-Thuần Python — KHÔNG phụ thuộc LLM hay DB. Định nghĩa các tiêu chí theo
-ISO/IEC/IEEE 29148 (6 đặc tính chất lượng) cộng INVEST (user story) và
-SMART (goal). Mỗi tiêu chí gồm `name`, `description` và `guidance` (hướng
-dẫn cho judge khi chấm điểm 0.0–1.0).
+Pure Python — NO LLM or DB dependency. Defines the criteria from
+ISO/IEC/IEEE 29148 (6 quality characteristics) plus INVEST (user story) and
+SMART (goal). Each criterion holds `name`, `description` and `guidance`
+(instructions for the judge when scoring 0.0–1.0).
 """
 
 # key → {"name", "description", "guidance"}
@@ -54,7 +54,7 @@ RUBRIC_CRITERIA: dict[str, dict[str, str]] = {
 
 
 def render_criteria_block() -> str:
-    """Kết xuất rubric thành đoạn text để nhúng vào prompt của judge."""
+    """Render the rubric as a text block to embed in the judge prompt."""
     lines = []
     for key, spec in RUBRIC_CRITERIA.items():
         lines.append(f"- {key} ({spec['name']}): {spec['description']} {spec['guidance']}")
