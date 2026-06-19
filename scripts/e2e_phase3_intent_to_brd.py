@@ -397,20 +397,15 @@ async def fetch_created_artifacts(ctx: RunContext, session_id: str) -> list[dict
         if tc.get("created_artifact_id") and tc["status"] in {"approved", "executed"}
     ]
 
+    # Artifact API exposes a list endpoint; there is no GET by artifact id.
+    all_arts = _data(await _req(ctx.client, "GET", f"/projects/{ctx.project_id}/artifacts",
+                                headers=ctx.headers))
     if not artifact_ids:
-        # Fallback: lấy tất cả artifact mới nhất của project
         log("  (không tìm thấy artifact qua tool calls, fallback: list artifacts)")
-        all_arts = _data(await _req(ctx.client, "GET", f"/projects/{ctx.project_id}/artifacts",
-                                    headers=ctx.headers))
         return [a for a in all_arts if a.get("type") == "goal"]
 
-    arts = []
-    for aid in artifact_ids:
-        art = _data(await _req(ctx.client, "GET",
-                                f"/projects/{ctx.project_id}/artifacts/{aid}",
-                                headers=ctx.headers))
-        arts.append(art)
-    return arts
+    by_id = {art["id"]: art for art in all_arts}
+    return [by_id[aid] for aid in artifact_ids if aid in by_id]
 
 
 def export_brd_md(artifacts: list[dict[str, Any]], *, output_path: Path) -> None:
