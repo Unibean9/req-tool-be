@@ -3,6 +3,16 @@ from app.models.user import User
 from app.models.organization import Organization, OrgMember
 from app.models.project import Project
 from app.models.llm_provider import LLMProviderConfig
+from app.models.agent import (
+    AgentMessage,
+    AgentMessageRole,
+    AgentRun,
+    AgentSession,
+    AgentSessionInterruptType,
+    AgentSessionStatus,
+    AgentToolCall,
+    AgentToolCallStatus,
+)
 from app.models.artifact import (
     Artifact,
     ArtifactEvidence,
@@ -21,6 +31,14 @@ __all__ = [
     "OrgMember",
     "Project",
     "LLMProviderConfig",
+    "AgentMessage",
+    "AgentMessageRole",
+    "AgentRun",
+    "AgentSession",
+    "AgentSessionInterruptType",
+    "AgentSessionStatus",
+    "AgentToolCall",
+    "AgentToolCallStatus",
     "Artifact",
     "ArtifactEvidence",
     "ArtifactLink",

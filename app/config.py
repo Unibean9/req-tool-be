@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     app_debug: bool = False
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
+    max_agent_turns: int = 10
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

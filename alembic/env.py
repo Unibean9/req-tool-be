@@ -9,6 +9,10 @@ from alembic import context
 
 from app.models import Base  # noqa: F401
 from app.models import (  # noqa: F401
+    AgentMessage,
+    AgentRun,
+    AgentSession,
+    AgentToolCall,
     Artifact,
     ArtifactEvidence,
     ArtifactLink,

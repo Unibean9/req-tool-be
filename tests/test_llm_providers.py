@@ -352,7 +352,7 @@ async def test_post_config_requires_auth(client):
         json=_create_body(api_key="sk-secret"),
     )
 
-    assert resp.status_code == 403
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
@@ -432,7 +432,6 @@ async def test_health_check_endpoint_returns_200_on_success(client, monkeypatch)
     headers = await make_auth_headers(client)
     create_resp = await client.post(f"{BASE}/users/me/llm-provider-configs", json=_create_body(api_key="sk-1"), headers=headers)
     config_id = create_resp.json()["data"]["id"]
-    user_id = await _user_id_from_headers(headers)
 
     async def fake_health_check(self, user_id, config_id):
         config = await self.get(user_id=user_id, config_id=config_id)

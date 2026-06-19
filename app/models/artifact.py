@@ -222,9 +222,14 @@ class ArtifactVersion(AuditMixin, Base):
     parent_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("artifact_versions.id"), nullable=True, index=True)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True)
     source_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("source_documents.id"), nullable=True, index=True)
-    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-    provider_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    agent_run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_runs.id"), nullable=True, index=True)
+    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_tool_calls.id", use_alter=True, name="fk_artifact_versions_tool_call"),
+        nullable=True,
+        index=True,
+    )
+    provider_config_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("llm_provider_configs.id"), nullable=True, index=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     extra_metadata: Mapped[Any] = jsonb_column("metadata", nullable=False, default=dict)
 
