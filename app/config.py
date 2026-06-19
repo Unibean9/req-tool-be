@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     jwt_refresh_token_expire_days: int = 7
 
     encryption_key: str = ""
+    encryption_key_previous: str = ""
     password_pepper: str = ""
 
     github_client_id: str = ""
@@ -47,6 +48,8 @@ class Settings(BaseSettings):
     app_debug: bool = False
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
+    max_agent_turns: int = 10
+    llm_provider_health_timeout_seconds: float = 25.0
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

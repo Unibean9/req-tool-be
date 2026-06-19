@@ -38,3 +38,27 @@ async def require_project_access(project_id: uuid.UUID, user, db: AsyncSession) 
     return project
 
 
+async def require_project_member_404(project_id: uuid.UUID, user, db: AsyncSession) -> Project:
+    """404 for both non-existent project and non-member (prevents project existence leak)."""
+    result = await db.execute(select(Project).where(Project.id == project_id))
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy dự án")
+    member = await db.execute(
+        select(OrgMember).where(OrgMember.org_id == project.org_id, OrgMember.user_id == user.id)
+    )
+    if not member.scalar_one_or_none():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy dự án")
+    return project
+
+
+async def require_project_owner(project_id: uuid.UUID, user, db: AsyncSession) -> Project:
+    project = await require_project_access(project_id, user, db)
+    member = await db.execute(
+        select(OrgMember).where(OrgMember.org_id == project.org_id, OrgMember.user_id == user.id)
+    )
+    org_member = member.scalar_one()
+    # Hiện model OrgMember chỉ có owner/member; nếu thêm admin role cần mở rộng guard này.
+    if org_member.role != "owner":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Yêu cầu quyền owner")
+    return project

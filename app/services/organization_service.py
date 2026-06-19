@@ -69,6 +69,8 @@ class OrgService:
         membership = OrgMember(org_id=org.id, user_id=user.id, role="owner")
         self.db.add(membership)
         await self.db.flush()
+        await self.db.commit()
+        await self.db.refresh(org)
         return org
 
     async def get(self, org_id: uuid.UUID) -> OrgResponse:
