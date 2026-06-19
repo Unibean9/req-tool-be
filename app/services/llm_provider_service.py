@@ -9,6 +9,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
 from app.schemas.llm_provider import LLMProviderHealthCheckResult, LLMProviderKeyRequest
@@ -27,7 +28,8 @@ SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
 DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
 
 
-def _sanitize_error(message: str) -> str:
+def _sanitize_error(exc: Exception) -> str:
+    message = str(exc).strip() or exc.__class__.__name__
     return SECRET_PATTERN.sub("[REDACTED]", message)[:500]
 
 
@@ -146,11 +148,14 @@ class LLMProviderService:
             raise CooldownError("Health-check đang trong thời gian cooldown")
         start = time.perf_counter()
         try:
-            provider_reply = await asyncio.wait_for(_ping_provider(config), timeout=5.0)
+            provider_reply = await asyncio.wait_for(
+                _ping_provider(config),
+                timeout=settings.llm_provider_health_timeout_seconds,
+            )
         except Exception as exc:
             config.status = LLMProviderStatus.ERROR
             config.last_checked_at = now
-            config.last_check_error = _sanitize_error(str(exc))
+            config.last_check_error = _sanitize_error(exc)
             await self.db.flush()
             raise ProviderUnavailableError(config.last_check_error)
         config.status = LLMProviderStatus.ACTIVE

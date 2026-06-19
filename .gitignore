@@ -21,6 +21,7 @@ ENV/
 
 # Environment / secrets — never commit
 .env
+.env.test
 *.env
 
 # IDE

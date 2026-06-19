@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
     max_agent_turns: int = 10
+    llm_provider_health_timeout_seconds: float = 25.0
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

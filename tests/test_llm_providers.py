@@ -15,6 +15,7 @@ from app.services.llm_provider_service import (
     LLMProviderService,
     ProviderUnavailableError,
     _resolve_api_key,
+    _sanitize_error,
 )
 from tests.conftest import BASE
 from tests.helpers import make_auth_headers
@@ -531,6 +532,26 @@ async def test_health_check_endpoint_returns_503_on_provider_failure(client, mon
     resp = await client.post(f"{BASE}/users/me/llm-provider-configs/{config_id}/health-check", headers=headers)
 
     assert resp.status_code == 503
+    assert resp.json()["detail"] == "Provider lỗi"
+
+
+@pytest.mark.asyncio
+async def test_health_check_endpoint_returns_non_empty_detail_on_timeout(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    create_resp = await client.post(f"{BASE}/users/me/llm-provider-configs", json=_create_body(api_key="sk-1"), headers=headers)
+    config_id = create_resp.json()["data"]["id"]
+
+    async def fake_health_check(self, user_id, config_id):
+        raise ProviderUnavailableError("TimeoutError")
+
+    monkeypatch.setattr(LLMProviderService, "health_check", fake_health_check)
+
+    resp = await client.post(f"{BASE}/users/me/llm-provider-configs/{config_id}/health-check", headers=headers)
+
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "TimeoutError"
 
 
 @pytest.mark.asyncio
@@ -560,6 +581,10 @@ def test_router_does_not_reference_resolve_api_key():
 
     assert "_resolve_api_key" not in names
     assert "get_provider_key_for_use" not in names
+
+
+def test_health_check_timeout_error_message_is_not_empty():
+    assert _sanitize_error(TimeoutError()) == "TimeoutError"
 
 
 @pytest.mark.asyncio
