@@ -153,9 +153,13 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
     run_id = uuid.UUID(state["last_agent_run_id"])
     tool_call_ids: list[str] = []
 
+    session_artifact_type = state["artifact_type"]
+
     async with session_factory() as db:
         for proposal in proposals:
-            artifact_type = proposal.get("artifact_type", "")
+            # Dùng artifact_type của session, không phụ thuộc vào giá trị LLM trả về
+            # vì LLM có thể trả về type không hợp lệ (vd: "brd" thay vì "goal")
+            artifact_type = session_artifact_type
             try:
                 await create_artifact(
                     artifact_type=artifact_type,

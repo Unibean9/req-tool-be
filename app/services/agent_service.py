@@ -22,6 +22,7 @@ from app.models.agent import (
 from app.models.artifact import (
     Artifact,
     ArtifactStatus,
+    ArtifactType,
     ArtifactVersion,
     ChangeSource,
     VersionStatus,
@@ -308,7 +309,15 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
     ) -> tuple[Artifact, ArtifactVersion]:
-        artifact_type = snapshot.get("artifact_type", "")
+        raw_type = snapshot.get("artifact_type", "")
+        try:
+            artifact_type = ArtifactType(raw_type)
+        except ValueError:
+            raise HTTPException(
+                400,
+                detail=f"Artifact type không hợp lệ: '{raw_type}'. "
+                       f"Giá trị hợp lệ: {[e.value for e in ArtifactType]}",
+            )
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
