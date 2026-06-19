@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.models.agent import (
     AgentMessage,
@@ -163,7 +164,7 @@ class AgentService:
             resume_command = None
         else:
             initial_state = None
-            resume_command = Command(resume={"content": content})
+            resume_command = self._resume_command(session, {"content": content})
 
         asyncio.create_task(
             self._run_graph(
@@ -413,6 +414,7 @@ class AgentService:
         if llm_client is None:
             llm_client = await self._resolve_llm_client(session_row.provider_config_id)
 
+        resume_command = self._resume_command(session_row, {"all_resolved": True})
         session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
         await self.db.commit()
@@ -428,7 +430,7 @@ class AgentService:
                 missing_context=session_row.missing_context or [],
                 llm_client=llm_client,
                 initial_state=None,
-                resume_command=Command(resume={"all_resolved": True}),
+                resume_command=resume_command,
             )
         )
 
@@ -500,6 +502,40 @@ class AgentService:
                 "agent_role": agent_role,
             }
         }
+
+    def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
+        interrupt_id = self._latest_interrupt_id(session)
+        if interrupt_id:
+            return Command(resume={interrupt_id: value})
+        return Command(resume=value)
+
+    def _latest_interrupt_id(self, session: AgentSession) -> str | None:
+        payload = session.graph_checkpoint or {}
+        pending_writes = payload.get("pending_writes") or []
+        if not pending_writes:
+            return None
+
+        checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=self.session_factory)
+        fallback_id: str | None = None
+        for item in reversed(pending_writes):
+            try:
+                _, channel, value = checker._load_pending_write(item)
+            except Exception:
+                continue
+            if channel != "__interrupt__":
+                continue
+            interrupts = value if isinstance(value, list) else [value]
+            for interrupt in reversed(interrupts):
+                interrupt_id = getattr(interrupt, "id", None)
+                interrupt_value = getattr(interrupt, "value", None)
+                if not interrupt_id:
+                    continue
+                fallback_id = str(interrupt_id)
+                if not isinstance(interrupt_value, dict):
+                    continue
+                if interrupt_value.get("type") == session.interrupt_type:
+                    return str(interrupt_id)
+        return fallback_id
 
     async def _resolve_llm_client(self, provider_config_id: uuid.UUID | None) -> Any:
         if not provider_config_id:
