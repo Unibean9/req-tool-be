@@ -395,30 +395,49 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
     session_artifact_type = state["artifact_type"]
 
     async with session_factory() as db:
-        for proposal in proposals:
-            # Dùng artifact_type của session, không phụ thuộc vào giá trị LLM trả về
-            # vì LLM có thể trả về type không hợp lệ (vd: "brd" thay vì "goal")
-            artifact_type = session_artifact_type
-            try:
-                await create_artifact(
-                    artifact_type=artifact_type,
-                    title=proposal.get("title", ""),
-                    body=proposal.get("body", ""),
-                    rationale=proposal.get("rationale", ""),
-                    context={"allowed_types": [artifact_type]},
-                )
-            except ApprovalRequired as exc:
-                tool_call = AgentToolCall(
-                    run_id=run_id,
-                    tool_name=exc.tool_name,
-                    input_snapshot=exc.args_snapshot,
-                    status=AgentToolCallStatus.PROPOSED,
-                )
-                db.add(tool_call)
-                await db.flush()
-                tool_call_ids.append(str(tool_call.id))
-            except GovernanceDenied:
-                continue
+        # Idempotency on resume: LangGraph re-executes this node from the top when
+        # the interrupt is resumed. Without this guard it would re-create the tool
+        # calls every time. If tool calls already exist for this run and none are
+        # still PROPOSED, the user has already approved/rejected them — finish the
+        # turn (no status change → _run_graph marks it COMPLETED) instead of
+        # looping back into PROPOSE_ARTIFACTS.
+        existing = (
+            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run_id))
+        ).scalars().all()
+        if existing:
+            still_proposed = [tc for tc in existing if tc.status == AgentToolCallStatus.PROPOSED]
+            if not still_proposed:
+                # All proposals already approved/rejected — finish the turn. No
+                # status change here, so _run_graph marks the session COMPLETED.
+                return {"pending_tool_call_ids": []}
+            # Re-entry while still awaiting a decision: reuse existing tool calls
+            # (don't duplicate) and fall through to re-pause.
+            tool_call_ids = [str(tc.id) for tc in still_proposed]
+        else:
+            for proposal in proposals:
+                # Dùng artifact_type của session, không phụ thuộc vào giá trị LLM trả về
+                # vì LLM có thể trả về type không hợp lệ (vd: "brd" thay vì "goal")
+                artifact_type = session_artifact_type
+                try:
+                    await create_artifact(
+                        artifact_type=artifact_type,
+                        title=proposal.get("title", ""),
+                        body=proposal.get("body", ""),
+                        rationale=proposal.get("rationale", ""),
+                        context={"allowed_types": [artifact_type]},
+                    )
+                except ApprovalRequired as exc:
+                    tool_call = AgentToolCall(
+                        run_id=run_id,
+                        tool_name=exc.tool_name,
+                        input_snapshot=exc.args_snapshot,
+                        status=AgentToolCallStatus.PROPOSED,
+                    )
+                    db.add(tool_call)
+                    await db.flush()
+                    tool_call_ids.append(str(tool_call.id))
+                except GovernanceDenied:
+                    continue
 
         locale = state.get("locale") or "vi"
         already_saved = await _agent_message_already_saved(db, session_id, state.get("last_agent_run_id"), "")

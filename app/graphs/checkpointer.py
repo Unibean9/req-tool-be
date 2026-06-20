@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
@@ -15,6 +16,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentSession
+
+# Per-session locks serialize the read-modify-write on the single graph_checkpoint
+# JSON column. LangGraph issues checkpoint writes concurrently within a turn; without
+# this, concurrent aput/aput_writes clobber each other's pending_writes, corrupting
+# resume non-deterministically. All checkpoint ops for a thread run in one event loop,
+# so an in-process asyncio.Lock is sufficient.
+_session_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(session_id: str) -> asyncio.Lock:
+    lock = _session_locks.get(session_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _session_locks[session_id] = lock
+    return lock
 
 
 class DelegatingCheckpointer(BaseCheckpointSaver):
@@ -61,17 +77,27 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         new_versions: ChannelVersions,
     ) -> RunnableConfig:
         serde_type, checkpoint_bytes = self.serde.dumps_typed(checkpoint)
-        payload = {
-            "data": base64.b64encode(checkpoint_bytes).decode("ascii"),
-            "serde_type": serde_type,
-            "metadata": dict(metadata),
-            "new_versions": dict(new_versions),
-            "pending_writes": [],
-        }
-        async with self.session_factory() as db:
-            session = await self._get_session(db)
-            session.graph_checkpoint = payload
-            await db.commit()
+        checkpoint_id = checkpoint["id"]
+        async with _lock_for(str(self.session_id)):
+            async with self.session_factory() as db:
+                session = await self._get_session(db)
+                prior = session.graph_checkpoint or {}
+                # Keep only writes already recorded for THIS checkpoint (LangGraph
+                # writes a step's values before its aput); drop superseded checkpoints'
+                # writes so stale interrupts never leak into the next turn's resume.
+                kept = [
+                    item for item in prior.get("pending_writes", [])
+                    if item.get("checkpoint_id") == checkpoint_id
+                ]
+                session.graph_checkpoint = {
+                    "data": base64.b64encode(checkpoint_bytes).decode("ascii"),
+                    "serde_type": serde_type,
+                    "metadata": dict(metadata),
+                    "new_versions": dict(new_versions),
+                    "checkpoint_id": checkpoint_id,
+                    "pending_writes": kept,
+                }
+                await db.commit()
 
         return self._checkpoint_config(config, checkpoint)
 
@@ -84,12 +110,18 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
             return None
 
         checkpoint = self._load_checkpoint(payload)
+        current_id = payload.get("checkpoint_id")
+        pending = [
+            self._load_pending_write(item)
+            for item in payload.get("pending_writes", [])
+            if current_id is None or item.get("checkpoint_id") == current_id
+        ]
         return CheckpointTuple(
             config=self._checkpoint_config(config, checkpoint),
             checkpoint=checkpoint,
             metadata=payload.get("metadata") or {},
             parent_config=None,
-            pending_writes=[self._load_pending_write(item) for item in payload.get("pending_writes", [])],
+            pending_writes=pending,
         )
 
     async def aput_writes(
@@ -99,15 +131,18 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         task_id: str,
         task_path: str = "",
     ) -> None:
-        async with self.session_factory() as db:
-            session = await self._get_session(db)
-            payload = dict(session.graph_checkpoint or {})
-            payload["pending_writes"] = [
-                *payload.get("pending_writes", []),
-                *[self._dump_pending_write(task_id, channel, value) for channel, value in writes],
-            ]
-            session.graph_checkpoint = payload
-            await db.commit()
+        checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
+        async with _lock_for(str(self.session_id)):
+            async with self.session_factory() as db:
+                session = await self._get_session(db)
+                payload = dict(session.graph_checkpoint or {})
+                cid = checkpoint_id or payload.get("checkpoint_id")
+                payload["pending_writes"] = [
+                    *payload.get("pending_writes", []),
+                    *[self._dump_pending_write(task_id, channel, value, cid) for channel, value in writes],
+                ]
+                session.graph_checkpoint = payload
+                await db.commit()
 
     async def alist(
         self,
@@ -133,13 +168,16 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         checkpoint_bytes = base64.b64decode(payload["data"])
         return self.serde.loads_typed((payload["serde_type"], checkpoint_bytes))
 
-    def _dump_pending_write(self, task_id: str, channel: str, value: Any) -> dict[str, Any]:
+    def _dump_pending_write(
+        self, task_id: str, channel: str, value: Any, checkpoint_id: str | None = None
+    ) -> dict[str, Any]:
         serde_type, value_bytes = self.serde.dumps_typed(value)
         return {
             "task_id": task_id,
             "channel": channel,
             "serde_type": serde_type,
             "data": base64.b64encode(value_bytes).decode("ascii"),
+            "checkpoint_id": checkpoint_id,
         }
 
     def _load_pending_write(self, item: dict[str, Any]) -> tuple[str, str, Any]:

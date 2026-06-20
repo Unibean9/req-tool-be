@@ -649,7 +649,7 @@ class AgentService:
     def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
         if interrupt_ids:
-            return Command(resume={interrupt_ids[-1]: value})
+            return Command(resume={iid: value for iid in interrupt_ids})
         return Command(resume=value)
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
@@ -658,9 +658,13 @@ class AgentService:
         if not pending_writes:
             return []
 
+        current_id = payload.get("checkpoint_id")
         checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=self.session_factory)
         interrupt_ids: list[str] = []
+        seen: set[str] = set()
         for item in reversed(pending_writes):
+            if current_id is not None and item.get("checkpoint_id") != current_id:
+                continue
             try:
                 _, channel, value = checker._load_pending_write(item)
             except Exception:
@@ -670,15 +674,13 @@ class AgentService:
             interrupts = value if isinstance(value, list) else [value]
             for interrupt in reversed(interrupts):
                 interrupt_id = getattr(interrupt, "id", None)
-                interrupt_value = getattr(interrupt, "value", None)
                 if not interrupt_id:
                     continue
                 interrupt_id = str(interrupt_id)
-                if not isinstance(interrupt_value, dict):
-                    interrupt_ids.append(interrupt_id)
+                if interrupt_id in seen:
                     continue
-                if interrupt_value.get("type") == session.interrupt_type:
-                    interrupt_ids.append(interrupt_id)
+                seen.add(interrupt_id)
+                interrupt_ids.append(interrupt_id)
         return list(reversed(interrupt_ids))
 
     async def _resolve_llm_client(self, provider_config_id: uuid.UUID | None) -> tuple[Any, Any | None]:

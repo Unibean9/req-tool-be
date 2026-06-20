@@ -355,7 +355,11 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
 
 
 @pytest.mark.asyncio
-async def test_resume_command_targets_latest_interrupt_id_when_multiple_pending(db_session):
+async def test_resume_command_keys_all_interrupt_ids_when_multiple_pending(db_session):
+    # When more than one interrupt is pending, LangGraph rejects an unkeyed
+    # Command(resume=...) ("you must specify the interrupt id when resuming").
+    # Keying only the latest would leave the other pending and trigger that error
+    # on the next resume — so the reply must address EVERY pending interrupt.
     from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
 
@@ -391,7 +395,10 @@ async def test_resume_command_targets_latest_interrupt_id_when_multiple_pending(
 
     command = svc._resume_command(session, {"content": "Có"})
 
-    assert command.resume == {INTERRUPT_ID_2: {"content": "Có"}}
+    assert command.resume == {
+        INTERRUPT_ID_1: {"content": "Có"},
+        INTERRUPT_ID_2: {"content": "Có"},
+    }
 
 
 @pytest.mark.asyncio
