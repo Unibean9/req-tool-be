@@ -116,6 +116,7 @@ class AgentEventService:
                     "session_id": message.session_id,
                     "role": message.role,
                     "content": message.content,
+                    "payload": message.payload,
                     "created_at": message.created_at,
                     "updated_at": message.updated_at,
                 }

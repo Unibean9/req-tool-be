@@ -761,6 +761,312 @@ async def test_resume_from_old_topology_checkpoint(client, db_session):
 
 
 # ---------------------------------------------------------------------------
+# Phase 5 — Payload Envelope (options / blocks / locale) (S6, S7)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_payload_kind_question(mock_interrupt, client, db_session):
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(analysis_result={"next_action": "ask", "message": "Mục tiêu chính là gì?"})
+    state["locale"] = "vi"
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.payload["kind"] == "question"
+        assert msg.payload["locale"] == "vi"
+        assert msg.content == "Mục tiêu chính là gì?"
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_confirm_node_payload_options_two_choices(mock_interrupt, client, db_session):
+    from app.graphs.nodes import confirm_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await confirm_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.payload["kind"] == "confirm"
+        assert len(msg.payload["options"]) >= 2
+        for opt in msg.payload["options"]:
+            assert "id" in opt and "label" in opt and "value" in opt
+        assert msg.content
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_propose_artifacts_node_payload_blocks(mock_interrupt, client, db_session):
+    from app.graphs.nodes import propose_artifacts_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "Mô tả"}]
+    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
+    state["locale"] = "vi"
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await propose_artifacts_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == agent_session.id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                )
+            )
+        ).scalar_one()
+        assert msg.payload["kind"] == "proposal"
+        assert isinstance(msg.payload["blocks"], list)
+        assert len(msg.payload["blocks"]) >= 1
+        assert msg.content
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_propose_artifacts_node_idempotent_on_resume(mock_interrupt, client, db_session):
+    from app.graphs.nodes import propose_artifacts_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    proposals = [{"artifact_type": "goal", "title": "T", "body": "B"}]
+    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
+    state["locale"] = "vi"
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await propose_artifacts_node(state, config)
+    await propose_artifacts_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msgs = (
+            await db.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == agent_session.id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                )
+            )
+        ).scalars().all()
+        assert len(msgs) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — One-question Rhythm (S8)
+# ---------------------------------------------------------------------------
+
+def test_analysis_schema_accepts_answer_assessment_and_acknowledgment():
+    from app.graphs.nodes import ANALYSIS_SCHEMA
+
+    props = ANALYSIS_SCHEMA["properties"]
+    assert "answer_assessment" in props
+    assert "acknowledgment" in props
+    # Additive only — required set must not change.
+    assert ANALYSIS_SCHEMA["required"] == ["next_action", "confidence"]
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_missing_optional_fields_no_error(mock_interrupt, client, db_session):
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state(analysis_result={"next_action": "ask", "confidence": 0.7, "message": "Deadline?"})
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.content == "Deadline?"
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_prepends_acknowledgment_when_present(mock_interrupt, client, db_session):
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state(analysis_result={
+        "next_action": "ask",
+        "confidence": 0.7,
+        "message": "Deadline là khi nào?",
+        "answer_assessment": "complete",
+        "acknowledgment": "Đã rõ mục tiêu.",
+    })
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert "Đã rõ mục tiêu." in msg.content
+        assert "Deadline là khi nào?" in msg.content
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_no_acknowledgment_first_turn(mock_interrupt, client, db_session):
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state(analysis_result={
+        "next_action": "ask",
+        "confidence": 0.7,
+        "message": "Mục tiêu là gì?",
+        "acknowledgment": "",
+    })
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.content == "Mục tiêu là gì?"
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_idempotent_on_resume(mock_interrupt, client, db_session):
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(analysis_result={
+        "next_action": "ask",
+        "confidence": 0.7,
+        "message": "Deadline?",
+        "acknowledgment": "Lần đầu.",
+    })
+    state["locale"] = "vi"
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+    # Resume: same run_id but a different acknowledgment must NOT create a second message.
+    state["analysis_result"]["acknowledgment"] = "Lần hai khác hẳn."
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msgs = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalars().all()
+        assert len(msgs) == 1
+
+
+def test_analyst_prompt_includes_one_question_directive():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    prompt = _build_analyst_prompt(_state(), [])
+    assert any(token in prompt for token in ("1 câu", "một câu", "one question"))
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_ask_human_node_non_string_acknowledgment_no_crash(mock_interrupt, client, db_session):
+    """LLM may return a non-string acknowledgment (schema not enforced at runtime) — must not crash."""
+    from app.graphs.nodes import ask_human_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state(analysis_result={
+        "next_action": "ask",
+        "confidence": 0.7,
+        "message": "Deadline?",
+        "acknowledgment": 42,
+    })
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await ask_human_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert "Deadline?" in msg.content
+
+
+# ---------------------------------------------------------------------------
 # build_graph tests
 # ---------------------------------------------------------------------------
 

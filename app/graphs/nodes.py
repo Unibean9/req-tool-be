@@ -30,6 +30,10 @@ ANALYSIS_SCHEMA = {
         "confidence": {"type": "number"},
         "gaps": {"type": "array", "items": {"type": "string"}},
         "message": {"type": "string"},
+        # Phase 6 (one-question rhythm) — both optional, additive. The critic still imports this
+        # schema unchanged; `required` stays ["next_action", "confidence"].
+        "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
+        "acknowledgment": {"type": "string"},
         "proposals": {
             "type": "array",
             "items": {
@@ -86,6 +90,25 @@ SUMMARY_SYSTEM = (
     "Bạn là trợ lý tóm tắt hội thoại yêu cầu sản phẩm. "
     "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
 )
+
+# Phase 5 — quick-action options for confirm_node, per locale. FE renders these as buttons; the
+# chosen value is POSTed back as a normal message (Open Question Q3 decision — no new endpoint).
+_CONFIRM_OPTIONS = {
+    "vi": [
+        {"id": "create", "label": "Tạo artifact", "value": "create"},
+        {"id": "explore", "label": "Khám phá thêm", "value": "explore"},
+    ],
+    "en": [
+        {"id": "create", "label": "Create artifact", "value": "create"},
+        {"id": "explore", "label": "Explore more", "value": "explore"},
+    ],
+}
+
+# Heading text for proposal payload blocks, per locale.
+_PROPOSAL_HEADINGS = {
+    "vi": "Tôi đề xuất các artifact sau",
+    "en": "I propose the following artifacts",
+}
 
 
 async def intent_router_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
@@ -281,22 +304,38 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
 
-    message = (state.get("analysis_result") or {}).get("message", "")
+    analysis_result = state.get("analysis_result") or {}
+    message = analysis_result.get("message", "")
     if not message:
         raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
 
+    # Phase 6 one-question rhythm: prepend the acknowledgment of the user's previous answer when the
+    # LLM supplied one. Both fields are optional — never KeyError on a turn that omits them.
+    # str() guard: the LLM may return a non-string here (schema is not enforced at runtime),
+    # and .strip() on a non-string would crash the node before the interrupt fires.
+    acknowledgment = str(analysis_result.get("acknowledgment") or "").strip()
+    content = f"{acknowledgment} {message}".strip() if acknowledgment else message
+
+    locale = state.get("locale") or "vi"
+    run_id = state.get("last_agent_run_id")
+
     async with session_factory() as db:
-        already_saved = (
-            await db.execute(
-                select(exists().where(
-                    AgentMessage.session_id == session_id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                    AgentMessage.content == message,
-                ))
-            )
-        ).scalar()
+        already_saved = await _agent_message_already_saved(db, session_id, run_id, content)
         if not already_saved:
-            db.add(AgentMessage(session_id=session_id, role=AgentMessageRole.AGENT, content=message))
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=content,
+                    payload={
+                        "kind": "question",
+                        "locale": locale,
+                        "options": [],
+                        "blocks": [],
+                        "run_id": run_id,
+                    },
+                )
+            )
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == session_id))
         ).scalar_one()
@@ -304,14 +343,40 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
 
-    user_response = interrupt({"type": "ask_human", "message": message})
+    user_response = interrupt({"type": "ask_human", "message": content})
     user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
     return {
         "messages": [
-            {"role": "assistant", "content": message},
+            {"role": "assistant", "content": content},
             {"role": "user", "content": user_content},
         ]
     }
+
+
+async def _agent_message_already_saved(db, session_id, run_id, content) -> bool:
+    """Idempotency guard for nodes that save one agent message then interrupt.
+
+    Keyed on last_agent_run_id (stored in payload.run_id) so it stays correct when the content
+    varies across resumes — e.g. a different acknowledgment in Phase 6. Falls back to content match
+    when no run_id is available. NOTE: the fallback needs a non-empty content to be meaningful —
+    callers that always have a run_id (propose_artifacts_node) may pass content="" safely; callers
+    relying on the fallback (ask_human_node when run_id is None) must pass real content.
+    """
+    if run_id:
+        condition = AgentMessage.payload["run_id"].as_string() == str(run_id)
+    else:
+        condition = AgentMessage.content == content
+    return bool(
+        (
+            await db.execute(
+                select(exists().where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                    condition,
+                ))
+            )
+        ).scalar()
+    )
 
 
 async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
@@ -354,6 +419,32 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
                 tool_call_ids.append(str(tool_call.id))
             except GovernanceDenied:
                 continue
+
+        locale = state.get("locale") or "vi"
+        already_saved = await _agent_message_already_saved(db, session_id, state.get("last_agent_run_id"), "")
+        if not already_saved:
+            titles = [p.get("title", "") for p in proposals if p.get("title")]
+            blocks = [
+                {"type": "heading", "text": _PROPOSAL_HEADINGS.get(locale, _PROPOSAL_HEADINGS["vi"])},
+                {"type": "list", "items": titles},
+            ]
+            content = _PROPOSAL_HEADINGS.get(locale, _PROPOSAL_HEADINGS["vi"]) + "\n" + "\n".join(
+                f"- {t}" for t in titles
+            )
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=content,
+                    payload={
+                        "kind": "proposal",
+                        "locale": locale,
+                        "options": [],
+                        "blocks": blocks,
+                        "run_id": state.get("last_agent_run_id"),
+                    },
+                )
+            )
 
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == session_id))
@@ -411,7 +502,11 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         "Trả về JSON với next_action (ask/propose/done), confidence (0-1), gaps, proposals (nếu propose). "
         "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user). "
         "Lưu ý: nếu user vừa từ chối tạo artifact và yêu cầu khám phá thêm, hãy tiếp tục hỏi các góc độ "
-        "chưa được đề cập thay vì đề xuất lại ngay."
+        "chưa được đề cập thay vì đề xuất lại ngay.\n\n"
+        "NHỊP HỎI ĐÁP: mỗi lượt chỉ hỏi đúng 1 câu (one question) trong field message. Trước khi hỏi, "
+        "hãy ghi nhận câu trả lời gần nhất của user vào field acknowledgment (1 câu ngắn) và đánh giá "
+        "answer_assessment là 'complete'/'partial'/'none'. Nếu 'partial', hãy đào sâu cùng gap đó thay vì "
+        "chuyển sang gap mới."
         f"{language_lock}"
     )
 
@@ -450,11 +545,20 @@ async def confirm_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     session_id = uuid.UUID(cfg["thread_id"])
 
     artifact_type = state["artifact_type"]
-    message = (
-        f"Tôi đã có đủ thông tin để tạo **{artifact_type}**. "
-        "Bạn có muốn tôi tiến hành tạo không?\n\n"
-        "Nếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm."
-    )
+    locale = state.get("locale") or "vi"
+    if locale == "en":
+        message = (
+            f"I have enough information to create **{artifact_type}**. "
+            "Would you like me to proceed?\n\n"
+            "If not, let me know which angle you'd like to explore further."
+        )
+    else:
+        message = (
+            f"Tôi đã có đủ thông tin để tạo **{artifact_type}**. "
+            "Bạn có muốn tôi tiến hành tạo không?\n\n"
+            "Nếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm."
+        )
+    options = _CONFIRM_OPTIONS.get(locale, _CONFIRM_OPTIONS["vi"])
 
     async with session_factory() as db:
         already_saved = (
@@ -467,7 +571,14 @@ async def confirm_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             )
         ).scalar()
         if not already_saved:
-            db.add(AgentMessage(session_id=session_id, role=AgentMessageRole.AGENT, content=message))
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=message,
+                    payload={"kind": "confirm", "locale": locale, "options": options, "blocks": []},
+                )
+            )
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == session_id))
         ).scalar_one()

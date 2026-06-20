@@ -173,6 +173,106 @@ async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_ses
     assert "graph_checkpoint" not in snapshot["session"]
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 — payload exposed in snapshot (S6, S7)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_snapshot_messages_include_payload(client, db_session):
+    project_id = await _project_id(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={"secret": "leak"},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        AgentMessage(
+            session_id=session.id,
+            role=AgentMessageRole.AGENT,
+            content="Mục tiêu là gì?",
+            payload={"kind": "question", "locale": "vi", "options": [], "blocks": []},
+        )
+    )
+    await db_session.flush()
+
+    snapshot = await AgentEventService(db_session).build_snapshot(
+        project_id=project_id, session_id=session.id, user_id=owner_id
+    )
+
+    assert snapshot["messages"][0]["payload"]["kind"] == "question"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_mixed_legacy_and_new_messages(client, db_session):
+    project_id = await _project_id(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add_all([
+        AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content="legacy", payload=None),
+        AgentMessage(
+            session_id=session.id,
+            role=AgentMessageRole.AGENT,
+            content="mới",
+            payload={"kind": "question", "locale": "vi"},
+        ),
+    ])
+    await db_session.flush()
+
+    snapshot = await AgentEventService(db_session).build_snapshot(
+        project_id=project_id, session_id=session.id, user_id=owner_id
+    )
+
+    assert snapshot["messages"][0]["payload"] is None
+    assert snapshot["messages"][1]["payload"]["kind"] == "question"
+
+
+@pytest.mark.asyncio
+async def test_snapshot_with_payload_still_no_graph_checkpoint(client, db_session):
+    project_id = await _project_id(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={"secret": "leak"},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        AgentMessage(
+            session_id=session.id,
+            role=AgentMessageRole.AGENT,
+            content="x",
+            payload={"kind": "question", "locale": "vi"},
+        )
+    )
+    await db_session.flush()
+
+    snapshot = await AgentEventService(db_session).build_snapshot(
+        project_id=project_id, session_id=session.id, user_id=owner_id
+    )
+
+    assert "graph_checkpoint" not in snapshot["session"]
+
+
 @pytest.mark.asyncio
 async def test_agent_event_snapshot_rejects_non_owner(client, db_session):
     project_id = await _project_id(client)
