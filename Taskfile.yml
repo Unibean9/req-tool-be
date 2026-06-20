@@ -14,13 +14,13 @@ tasks:
   docker:up:
     desc: Start Docker services
     cmds:
-      - docker compose up -d
+      - docker compose -f docker/docker-compose.dev.yml --env-file docker/.env up -d
 
   docker:reset:
     desc: Reset Docker services and database state
     cmds:
-      - docker compose down -v
-      - docker compose up -d
+      - docker compose -f docker/docker-compose.dev.yml --env-file docker/.env down -v
+      - docker compose -f docker/docker-compose.dev.yml --env-file docker/.env up -d
 
   dev:
     desc: Run FastAPI development server
