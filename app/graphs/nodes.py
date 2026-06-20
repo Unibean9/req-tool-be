@@ -47,13 +47,147 @@ ANALYSIS_SCHEMA = {
     "required": ["next_action", "confidence"],
 }
 
+SUMMARY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+    },
+    "required": ["summary"],
+}
+
+INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "intent": {"type": "string", "enum": ["greeting", "smalltalk", "task", "unclear"]},
+        "locale": {"type": "string", "enum": ["vi", "en"]},
+    },
+    "required": ["intent", "locale"],
+}
+
+INTENT_SYSTEM = (
+    "Bạn là bộ phân loại ý định cho một trợ lý phân tích yêu cầu sản phẩm. "
+    "Chỉ phân loại, không trả lời người dùng."
+)
+
+# Hard-coded greeting templates per locale — stable for the live demo, no LLM call.
+_GREETING_TEMPLATES = {
+    "vi": (
+        "Xin chào! Tôi là trợ lý phân tích yêu cầu. Tôi có thể giúp bạn làm rõ ý tưởng và "
+        "xây dựng các artifact như mục tiêu, vấn đề, user story... Bạn muốn bắt đầu từ đâu?"
+    ),
+    "en": (
+        "Hello! I'm your requirements analysis assistant. I can help you clarify ideas and "
+        "build artifacts such as goals, problems, and user stories. Where would you like to start?"
+    ),
+}
+
+
+SUMMARY_SYSTEM = (
+    "Bạn là trợ lý tóm tắt hội thoại yêu cầu sản phẩm. "
+    "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
+)
+
+
+async def intent_router_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    """Classify the user's intent (greeting/smalltalk/task/unclear) and lock the locale.
+
+    Entry point of the graph. Runs only on the first invocation — on resume LangGraph re-enters
+    the interrupted node directly, so this never re-runs mid-conversation.
+    """
+    cfg = config["configurable"]
+    llm_client = cfg["llm_client"]
+    if llm_client is None:
+        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+
+    last_user = ""
+    for m in reversed(state.get("messages") or []):
+        role, content = _msg_role_content(m)
+        if role == "user":
+            last_user = content
+            break
+
+    prompt = (
+        "Phân loại tin nhắn của người dùng và phát hiện ngôn ngữ.\n\n"
+        f"Tin nhắn: {last_user!r}\n\n"
+        "intent: 'greeting' nếu chỉ là chào hỏi; 'smalltalk' nếu tán gẫu không liên quan công việc; "
+        "'task' nếu là yêu cầu phân tích/tạo artifact; 'unclear' nếu không rõ.\n"
+        "locale: 'vi' nếu tiếng Việt, 'en' nếu tiếng Anh."
+    )
+    result, _usage = await llm_client.generate(
+        messages=[{"role": "user", "content": prompt}],
+        system=INTENT_SYSTEM,
+        max_tokens=200,
+        response_format=INTENT_SCHEMA,
+    )
+    if isinstance(result, dict):
+        intent = result.get("intent") or "task"
+        locale = result.get("locale") or "vi"
+    else:
+        intent, locale = "task", "vi"
+    return {"intent": intent, "locale": locale}
+
+
+def route_after_intent(state: WorkflowState) -> str:
+    if state.get("intent") in ("greeting", "smalltalk"):
+        return "greeting"
+    return "analyze"
+
+
+async def greeting_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    """Greet the user with a locale-templated message and pause for their reply.
+
+    Saves an agent message with payload.kind='greeting', sets WAITING_FOR_HUMAN/ASK_HUMAN, and
+    interrupts — exactly like ask_human, so the turn never silently completes. No LLM call, no AgentRun.
+    """
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    session_id = uuid.UUID(cfg["thread_id"])
+
+    locale = state.get("locale") or "vi"
+    message = _GREETING_TEMPLATES.get(locale, _GREETING_TEMPLATES["vi"])
+
+    async with session_factory() as db:
+        already_saved = (
+            await db.execute(
+                select(exists().where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                    AgentMessage.content == message,
+                ))
+            )
+        ).scalar()
+        if not already_saved:
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=message,
+                    payload={"kind": "greeting", "locale": locale},
+                )
+            )
+        session_row = (
+            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+        ).scalar_one()
+        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        await db.commit()
+
+    user_response = interrupt({"type": "ask_human", "message": message})
+    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
+    return {
+        "messages": [
+            {"role": "assistant", "content": message},
+            {"role": "user", "content": user_content},
+        ]
+    }
+
 
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
     project_id = uuid.UUID(cfg["project_id"])
-    llm_client = cfg["llm_client"]
+    llm_client = cfg.get("strong_llm_client") or cfg["llm_client"]
     if llm_client is None:
         raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
 
@@ -96,6 +230,38 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
     }
+
+
+async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    if route_before_analyze(state) != "summarize":
+        return {"conversation_summary": state.get("conversation_summary", "")}
+
+    cfg = config["configurable"]
+    llm_client = cfg["llm_client"]
+    if llm_client is None:
+        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+
+    prompt = _build_summary_prompt(state)
+    result, _usage = await llm_client.generate(
+        messages=[{"role": "user", "content": prompt}],
+        system=SUMMARY_SYSTEM,
+        max_tokens=1000,
+        response_format=SUMMARY_SCHEMA,
+    )
+    if isinstance(result, dict):
+        summary = str(result.get("summary", "")).strip()
+    else:
+        summary = str(result or "").strip()
+    return {"conversation_summary": summary or state.get("conversation_summary", "")}
+
+
+def route_before_analyze(state: WorkflowState) -> str:
+    messages = state.get("messages") or []
+    trigger = settings.summary_trigger_every
+    messages_after_initial_user = max(0, len(messages) - 1)
+    if trigger > 0 and messages_after_initial_user > 0 and messages_after_initial_user % trigger == 0:
+        return "summarize"
+    return "analyze"
 
 
 def route_node(state: WorkflowState) -> str:
@@ -217,10 +383,26 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
     ) or "(chưa có artifact nào)"
 
+    conversation_summary = (state.get("conversation_summary") or "").strip()
+    message_window = (state.get("messages") or [])[-3:] if conversation_summary else (state.get("messages") or [])[-5:]
     messages_summary = "\n".join(
         f"{role}: {content}"
-        for role, content in (_msg_role_content(m) for m in (state.get("messages") or [])[-5:])
+        for role, content in (_msg_role_content(m) for m in message_window)
     ) or "(chưa có hội thoại)"
+    if conversation_summary:
+        messages_summary = (
+            "Tóm tắt hội thoại đã tích lũy:\n"
+            f"{conversation_summary}\n\n"
+            "Ba tin nhắn gần nhất:\n"
+            f"{messages_summary}"
+        )
+
+    locale = (state.get("locale") or "").strip()
+    language_lock = (
+        f"\n\nQUAN TRỌNG: Trả lời TOÀN BỘ bằng ngôn ngữ '{locale}'. Tuyệt đối không trộn lẫn ngôn ngữ khác."
+        if locale
+        else ""
+    )
 
     return (
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
@@ -230,6 +412,27 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user). "
         "Lưu ý: nếu user vừa từ chối tạo artifact và yêu cầu khám phá thêm, hãy tiếp tục hỏi các góc độ "
         "chưa được đề cập thay vì đề xuất lại ngay."
+        f"{language_lock}"
+    )
+
+
+def _build_summary_prompt(state: WorkflowState) -> str:
+    current_summary = (state.get("conversation_summary") or "").strip() or "(chưa có)"
+    recent_messages = "\n".join(
+        f"{role}: {content}"
+        for role, content in (_msg_role_content(m) for m in (state.get("messages") or [])[-settings.summary_trigger_every:])
+    ) or "(chưa có hội thoại mới)"
+
+    return (
+        "Cập nhật tóm tắt chạy cho hội thoại yêu cầu sản phẩm.\n\n"
+        f"TÓM TẮT HIỆN TẠI:\n{current_summary}\n\n"
+        f"HỘI THOẠI MỚI:\n{recent_messages}\n\n"
+        "Trả về đúng bốn section sau:\n"
+        "Yêu cầu đã xác nhận\n"
+        "Ràng buộc — KHÔNG paraphrase\n"
+        "Khoảng trống chưa rõ\n"
+        "Quyết định đã thống nhất\n\n"
+        "Trong section ràng buộc, giữ nguyên verbatim mọi số liệu, deadline, tên riêng và giới hạn phạm vi."
     )
 
 

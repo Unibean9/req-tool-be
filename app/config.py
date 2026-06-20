@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     auto_migrate: bool = True
     max_agent_turns: int = 10
     llm_provider_health_timeout_seconds: float = 25.0
+    agent_turn_timeout_seconds: float = 90.0
+    summary_trigger_every: int = 6
 
     # Quality gate — reflection critic loop
     max_critique_rounds: int = 2

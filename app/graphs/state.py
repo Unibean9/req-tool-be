@@ -8,6 +8,7 @@ class WorkflowState(TypedDict):
     workflow_area: str
     step_key: str | None
     messages: Annotated[list[dict[str, Any]], add_messages]
+    conversation_summary: str
     analysis_result: dict[str, Any] | None
     pending_tool_call_ids: list[str]
     last_agent_run_id: str | None
@@ -16,4 +17,5 @@ class WorkflowState(TypedDict):
     user_confirmed: bool | None
     critique_rounds: int
     quality_report: dict[str, Any] | None
-
+    locale: str | None
+    intent: str | None

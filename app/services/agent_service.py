@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.models.agent import (
@@ -127,13 +128,15 @@ class AgentService:
     ) -> AgentMessage:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
-        if session.status != AgentSessionStatus.WAITING_FOR_HUMAN:
-            raise HTTPException(400, detail="Session không ở trạng thái chờ người dùng")
+        # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
+        if session.status == AgentSessionStatus.ACTIVE:
+            return await self._queue_message(session.id, content)
+        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+            raise HTTPException(400, detail="Session đã kết thúc, không thể nhận thêm message")
+        # status == WAITING_FOR_HUMAN below.
+        # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
-            raise HTTPException(
-                400,
-                detail="Session đang chờ approval tool calls, không phải user message",
-            )
+            return await self._queue_message(session.id, content)
         if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, None):
             raise HTTPException(400, detail="Session không ở trạng thái chờ user message")
 
@@ -145,8 +148,9 @@ class AgentService:
         session.interrupt_type = None
         await self.db.commit()
 
+        strong_llm_client = None
         if llm_client is None:
-            llm_client = await self._resolve_llm_client(session.provider_config_id)
+            llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
 
         if is_first_message:
             initial_state = {
@@ -154,12 +158,15 @@ class AgentService:
                 "workflow_area": session.workflow_area,
                 "step_key": session.step_key,
                 "messages": [{"role": "user", "content": content}],
+                "conversation_summary": "",
                 "analysis_result": None,
                 "pending_tool_call_ids": [],
                 "last_agent_run_id": None,
                 "turn_count": 0,
                 "missing_context": session.missing_context or [],
                 "user_confirmed": None,
+                "locale": None,
+                "intent": None,
             }
             resume_command = None
         else:
@@ -176,11 +183,28 @@ class AgentService:
                 agent_role=session.agent_role,
                 missing_context=session.missing_context or [],
                 llm_client=llm_client,
+                strong_llm_client=strong_llm_client,
                 initial_state=initial_state,
                 resume_command=resume_command,
             )
         )
 
+        return msg
+
+    async def _queue_message(self, session_id: uuid.UUID, content: str) -> AgentMessage:
+        """Persist a user message as queued (payload.queued=True) without starting a graph turn.
+
+        Drained later by _drain_queue once the current turn ends COMPLETED/FAILED.
+        """
+        msg = AgentMessage(
+            session_id=session_id,
+            role=AgentMessageRole.USER,
+            content=content,
+            payload={"queued": True},
+        )
+        self.db.add(msg)
+        await self.db.commit()
+        await self.db.refresh(msg)
         return msg
 
     async def list_messages(
@@ -411,8 +435,9 @@ class AgentService:
         if pending_count > 0:
             return
 
+        strong_llm_client = None
         if llm_client is None:
-            llm_client = await self._resolve_llm_client(session_row.provider_config_id)
+            llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
 
         resume_command = self._resume_command(session_row, {"all_resolved": True})
         session_row.status = AgentSessionStatus.ACTIVE
@@ -429,6 +454,7 @@ class AgentService:
                 agent_role=session_row.agent_role,
                 missing_context=session_row.missing_context or [],
                 llm_client=llm_client,
+                strong_llm_client=strong_llm_client,
                 initial_state=None,
                 resume_command=resume_command,
             )
@@ -445,32 +471,52 @@ class AgentService:
         agent_role: str | None,
         missing_context: list[str],
         llm_client: Any,
+        strong_llm_client: Any = None,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
     ) -> None:
-        config = self._make_config(session_id, project_id, llm_client, agent_role)
+        config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
+        timeout = settings.agent_turn_timeout_seconds
         try:
             if resume_command is not None:
-                await self.graph.ainvoke(resume_command, config)
+                # wait_for MUST wrap ainvoke INSIDE this coroutine. Wrapping from outside would raise
+                # CancelledError (a BaseException) which `except Exception` cannot catch → session stuck ACTIVE.
+                await asyncio.wait_for(self.graph.ainvoke(resume_command, config), timeout=timeout)
             else:
                 state = initial_state or {
                     "artifact_type": artifact_type,
                     "workflow_area": workflow_area,
                     "step_key": step_key,
                     "messages": [],
+                    "conversation_summary": "",
                     "analysis_result": None,
                     "pending_tool_call_ids": [],
                     "last_agent_run_id": None,
                     "turn_count": 0,
                     "missing_context": missing_context,
                     "user_confirmed": None,
+                    "locale": None,
+                    "intent": None,
                 }
-                await self.graph.ainvoke(state, config)
+                await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
                 if row.status == AgentSessionStatus.ACTIVE:
                     row.status = AgentSessionStatus.COMPLETED
+                await db.commit()
+        except asyncio.TimeoutError:
+            async with self.session_factory() as db:
+                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
+                    row.status = AgentSessionStatus.FAILED
+                    db.add(
+                        AgentMessage(
+                            session_id=session_id,
+                            role=AgentMessageRole.AGENT,
+                            content=_agent_timeout_message(timeout),
+                        )
+                    )
                 await db.commit()
         except Exception as exc:
             async with self.session_factory() as db:
@@ -486,12 +532,108 @@ class AgentService:
                     )
                 await db.commit()
 
+        # Drain queued messages at the END of every turn — covers both handle_user_message and the
+        # approve/reject path via _check_and_resume. Only fires after COMPLETED/FAILED (see _drain_queue);
+        # a turn that paused at WAITING_FOR_HUMAN is awaiting a specific input and must not be fed a queued one.
+        await self._drain_queue(
+            session_id=session_id,
+            project_id=project_id,
+            artifact_type=artifact_type,
+            step_key=step_key,
+            workflow_area=workflow_area,
+            agent_role=agent_role,
+            missing_context=missing_context,
+            llm_client=llm_client,
+            strong_llm_client=strong_llm_client,
+        )
+
+    async def _drain_queue(
+        self,
+        *,
+        session_id: uuid.UUID,
+        project_id: uuid.UUID,
+        artifact_type: str,
+        step_key: str | None,
+        workflow_area: str,
+        agent_role: str | None,
+        missing_context: list[str],
+        llm_client: Any,
+        strong_llm_client: Any = None,
+    ) -> None:
+        async with self.session_factory() as db:
+            session_row = (
+                await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+            ).scalar_one()
+            # Only drain after a turn truly ended. WAITING_FOR_HUMAN means the graph paused on a
+            # specific question/approval — feeding a queued message here would be the wrong input.
+            if session_row.status not in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+                return
+
+            queued = (
+                await db.execute(
+                    select(AgentMessage)
+                    .where(
+                        AgentMessage.session_id == session_id,
+                        AgentMessage.role == AgentMessageRole.USER,
+                        AgentMessage.payload["queued"].as_boolean().is_(True),
+                    )
+                    .order_by(AgentMessage.created_at.asc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if queued is None:
+                return
+
+            # Mark dequeued (reassign dict so SQLAlchemy detects the JSON change).
+            new_payload = dict(queued.payload or {})
+            new_payload["queued"] = False
+            queued.payload = new_payload
+            content = queued.content
+
+            session_row.status = AgentSessionStatus.ACTIVE
+            session_row.interrupt_type = None
+            await db.commit()
+
+        initial_state = {
+            "artifact_type": artifact_type,
+            "workflow_area": workflow_area,
+            "step_key": step_key,
+            "messages": [{"role": "user", "content": content}],
+            "conversation_summary": "",
+            "analysis_result": None,
+            "pending_tool_call_ids": [],
+            "last_agent_run_id": None,
+            "turn_count": 0,
+            "missing_context": missing_context,
+            "user_confirmed": None,
+            "locale": None,
+            "intent": None,
+        }
+        # Max 1 graph task per session: this runs only after the prior turn finished.
+        asyncio.create_task(
+            self._run_graph(
+                session_id=session_id,
+                project_id=project_id,
+                artifact_type=artifact_type,
+                step_key=step_key,
+                workflow_area=workflow_area,
+                agent_role=agent_role,
+                missing_context=missing_context,
+                llm_client=llm_client,
+                strong_llm_client=strong_llm_client,
+                initial_state=initial_state,
+                resume_command=None,
+            )
+        )
+
     def _make_config(
         self,
         session_id: uuid.UUID,
         project_id: uuid.UUID,
         llm_client: Any,
         agent_role: str | None = None,
+        *,
+        strong_llm_client: Any = None,
     ) -> dict[str, Any]:
         return {
             "configurable": {
@@ -499,6 +641,7 @@ class AgentService:
                 "project_id": str(project_id),
                 "session_factory": self.session_factory,
                 "llm_client": llm_client,
+                "strong_llm_client": strong_llm_client,
                 "agent_role": agent_role,
             }
         }
@@ -538,9 +681,9 @@ class AgentService:
                     interrupt_ids.append(interrupt_id)
         return list(reversed(interrupt_ids))
 
-    async def _resolve_llm_client(self, provider_config_id: uuid.UUID | None) -> Any:
+    async def _resolve_llm_client(self, provider_config_id: uuid.UUID | None) -> tuple[Any, Any | None]:
         if not provider_config_id:
-            return None
+            return None, None
         from app.core.crypto import decrypt_token
         from app.models.llm_provider import LLMProviderConfig
         from app.services.llm_clients import LLMClientFactory
@@ -549,7 +692,7 @@ class AgentService:
             await self.db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == provider_config_id))
         ).scalar_one_or_none()
         if not config_row or not config_row.encrypted_api_key:
-            return None
+            return None, None
         api_key = decrypt_token(config_row.encrypted_api_key)
         if not api_key:
             raise ValueError("API key không thể giải mã — có thể lệch key rotation")
@@ -558,13 +701,30 @@ class AgentService:
             secret_key = decrypt_token(config_row.encrypted_secret_key)
             if not secret_key:
                 raise ValueError("secret_key không thể giải mã — có thể lệch key rotation")
-        return LLMClientFactory.create(
+        default_client = LLMClientFactory.create(
             provider_type=config_row.provider_type,
             api_key=api_key,
             secret_key=secret_key,
             model=config_row.model_name,
             region=config_row.region,
         )
+        strong_client = None
+        if config_row.strong_model_name:
+            strong_client = LLMClientFactory.create(
+                provider_type=config_row.provider_type,
+                api_key=api_key,
+                secret_key=secret_key,
+                model=config_row.strong_model_name,
+                region=config_row.region,
+            )
+        return default_client, strong_client
+
+
+def _agent_timeout_message(timeout: float) -> str:
+    return (
+        f"Agent mất quá nhiều thời gian để phản hồi (quá {int(timeout)}s) nên lượt này đã được dừng. "
+        "Bạn vui lòng thử gửi lại yêu cầu."
+    )
 
 
 def _agent_failure_message(exc: Exception) -> str:

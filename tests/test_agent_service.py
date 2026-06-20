@@ -111,9 +111,10 @@ async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypa
         db_session.add(config)
         await db_session.flush()
 
-        client = await _make_service(db_session)._resolve_llm_client(config.id)
+        client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
 
         assert client is sentinel
+        assert strong_client is None
         assert captured["provider_type"] == ProviderType.BEDROCK
         assert captured["api_key"] == "AKIATEST"
         assert captured["secret_key"] == "aws-secret"
@@ -123,6 +124,110 @@ async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypa
         monkeypatch.setattr(settings, "encryption_key", original_key)
         monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
         crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_returns_strong_when_configured(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        created = []
+
+        def fake_create(**kwargs):
+            client = object()
+            created.append((kwargs, client))
+            return client
+
+        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.BEDROCK,
+            name="Bedrock",
+            encrypted_api_key=encrypt_token("AKIATEST"),
+            encrypted_secret_key=encrypt_token("aws-secret"),
+            region="us-east-1",
+            model_name="amazon.nova-lite-v1:0",
+            strong_model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert default_client is created[0][1]
+        assert strong_client is created[1][1]
+        assert [item[0]["model"] for item in created] == [
+            "amazon.nova-lite-v1:0",
+            "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        ]
+        assert all(item[0]["api_key"] == "AKIATEST" for item in created)
+        assert all(item[0]["secret_key"] == "aws-secret" for item in created)
+        assert all(item[0]["region"] == "us-east-1" for item in created)
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        created = []
+
+        def fake_create(**kwargs):
+            client = object()
+            created.append((kwargs, client))
+            return client
+
+        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.OPENAI,
+            name="OpenAI",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="gpt-4o-mini",
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert default_client is created[0][1]
+        assert strong_client is None
+        assert len(created) == 1
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+def test_make_config_exposes_strong_llm_client(db_session):
+    svc = _make_service(db_session)
+    session_id = uuid.uuid4()
+    project_id = uuid.uuid4()
+    default_client = object()
+    strong_client = object()
+
+    config = svc._make_config(
+        session_id,
+        project_id,
+        default_client,
+        agent_role="analyst",
+        strong_llm_client=strong_client,
+    )
+
+    assert config["configurable"]["llm_client"] is default_client
+    assert config["configurable"]["strong_llm_client"] is strong_client
 
 
 @pytest.mark.asyncio
@@ -319,7 +424,28 @@ async def test_handle_user_message_rejects_non_owner(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_handle_user_message_propose_artifacts_raises_400(client, db_session):
+async def test_handle_user_message_when_active_returns_200_and_queues(client, db_session, _no_background_tasks):
+    """S2 — gửi message khi session ACTIVE: không 400, message được xếp hàng."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tạo đi")
+
+    assert msg.role == AgentMessageRole.USER
+    assert msg.payload["queued"] is True
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_propose_artifacts_returns_200_and_queues(client, db_session, _no_background_tasks):
+    """S2 (không carve-out) — PROPOSE_ARTIFACTS cũng xếp hàng thay vì 400."""
     project_id = await _setup(client)
     svc = _make_service(db_session)
 
@@ -331,10 +457,200 @@ async def test_handle_user_message_propose_artifacts_raises_400(client, db_sessi
     db_session.add(session)
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await svc.handle_user_message(project_id=project_id, session_id=session.id, content="ok")
+    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="ok tạo đi")
 
-    assert exc.value.status_code == 400
+    assert msg.payload["queued"] is True
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_queued_message_not_a_second_graph_task(client, db_session, _no_background_tasks):
+    """Xếp hàng khi ACTIVE không được spawn graph task thứ hai."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="hello")
+
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_processes_queued_messages_after_completed(client, db_session, _no_background_tasks):
+    """Sau khi lượt kết thúc COMPLETED, message queued được dequeue và một lượt mới được lên lịch."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.COMPLETED,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    queued = AgentMessage(
+        session_id=session.id, role=AgentMessageRole.USER, content="tạo đi", payload={"queued": True}
+    )
+    db_session.add(queued)
+    await db_session.flush()
+
+    await svc._drain_queue(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+    )
+
+    await db_session.refresh(queued)
+    assert queued.payload["queued"] is False
+    _no_background_tasks.assert_called_once()
+    scheduled = _no_background_tasks.call_args.args[0]
+    assert scheduled.cr_code.co_name == "_run_graph"
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_does_not_fire_after_waiting_for_human(client, db_session, _no_background_tasks):
+    """Lượt kết thúc WAITING_FOR_HUMAN: KHÔNG drain — message queued vẫn còn nguyên."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    queued = AgentMessage(
+        session_id=session.id, role=AgentMessageRole.USER, content="tạo đi", payload={"queued": True}
+    )
+    db_session.add(queued)
+    await db_session.flush()
+
+    await svc._drain_queue(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+    )
+
+    await db_session.refresh(queued)
+    assert queued.payload["queued"] is True
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_graph_timeout_sets_session_failed(client, db_session, monkeypatch):
+    """ainvoke vượt timeout → asyncio.TimeoutError bắt được BÊN TRONG _run_graph → session FAILED + message lỗi."""
+    project_id = await _setup(client)
+
+    async def _slow(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    graph = _mock_graph()
+    graph.ainvoke = _slow
+    svc = _make_service(db_session, graph)
+    monkeypatch.setattr(settings, "agent_turn_timeout_seconds", 0.01)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert updated.status == AgentSessionStatus.FAILED
+    assert any(m.role == AgentMessageRole.AGENT for m in messages)
+
+
+@pytest.mark.asyncio
+async def test_run_graph_timeout_does_not_affect_normal_flow(client, db_session, monkeypatch):
+    """ainvoke trả về ngay với timeout rộng → session COMPLETED, không FAILED."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    svc = _make_service(db_session, graph)
+    monkeypatch.setattr(settings, "agent_turn_timeout_seconds", 90.0)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    assert updated.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, db_session):
+    """Fallback state (initial_state=None) phải có locale+intent để không KeyError khi graph đọc state."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    passed_state = graph.ainvoke.call_args.args[0]
+    assert "locale" in passed_state and passed_state["locale"] is None
+    assert "intent" in passed_state and passed_state["intent"] is None
+
+
+@pytest.mark.asyncio
+async def test_drain_json_path_query_correctness(client, db_session):
+    """JSON-path query payload.queued==True trả về đúng 1 row (pin correctness cho sqlite + postgres)."""
+    project_id = await _setup(client)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.COMPLETED,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add_all([
+        AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content="a", payload={"queued": True}),
+        AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content="b", payload={"queued": False}),
+    ])
+    await db_session.flush()
+
+    rows = (
+        await db_session.execute(
+            select(AgentMessage).where(
+                AgentMessage.session_id == session.id,
+                AgentMessage.payload["queued"].as_boolean().is_(True),
+            )
+        )
+    ).scalars().all()
+
+    assert len(rows) == 1
+    assert rows[0].content == "a"
 
 
 @pytest.mark.asyncio

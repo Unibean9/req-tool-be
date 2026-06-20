@@ -16,6 +16,10 @@ def _config(llm_client):
     return {"configurable": {"llm_client": llm_client}}
 
 
+def _config_with_strong(default_client, strong_client):
+    return {"configurable": {"llm_client": default_client, "strong_llm_client": strong_client}}
+
+
 def _critic_result(overall: float) -> dict:
     return {
         "scores": {"unambiguous": overall, "verifiable": overall},
@@ -62,6 +66,20 @@ async def test_gate_passes_clean_proposal():
     assert out["quality_report"]["passed"] is True
     assert out["critique_rounds"] == 1
     assert route_after_gate({**out, "quality_report": out["quality_report"]}) == "propose_artifacts"
+
+
+@pytest.mark.asyncio
+async def test_quality_gate_uses_strong_client_when_present():
+    default_llm = AsyncMock()
+    default_llm.generate = AsyncMock()
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock(return_value=(_critic_result(0.8), None))
+
+    out = await quality_gate_node(_state([_clean_proposal()]), _config_with_strong(default_llm, strong_llm))
+
+    assert out["quality_report"]["passed"] is True
+    strong_llm.generate.assert_called_once()
+    default_llm.generate.assert_not_called()
 
 
 # --- Group 2: Missing required fields (hard block, critic not called) ---

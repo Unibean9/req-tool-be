@@ -40,6 +40,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "workflow_area": "analysis",
         "step_key": None,
         "messages": [],
+        "conversation_summary": "",
         "analysis_result": analysis_result,
         "pending_tool_call_ids": [],
         "last_agent_run_id": None,
@@ -111,6 +112,213 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
     assert result["analysis_result"]["next_action"] == "ask"
     assert result["turn_count"] == 1
     assert result["last_agent_run_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_analyze_uses_strong_client_when_present(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    default_llm = AsyncMock()
+    default_llm.generate = AsyncMock()
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock(return_value=({
+        "next_action": "done",
+        "confidence": 0.9,
+        "gaps": [],
+        "proposals": [],
+    }, None))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), default_llm)
+    config["configurable"]["strong_llm_client"] = strong_llm
+
+    await analyze_node(state, config)
+
+    strong_llm.generate.assert_called_once()
+    default_llm.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_falls_back_to_default_when_strong_absent(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    default_llm = AsyncMock()
+    default_llm.generate = AsyncMock(return_value=({
+        "next_action": "done",
+        "confidence": 0.9,
+        "gaps": [],
+        "proposals": [],
+    }, None))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), default_llm)
+    config["configurable"]["strong_llm_client"] = None
+
+    await analyze_node(state, config)
+
+    default_llm.generate.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_summarize_triggers_at_threshold(monkeypatch):
+    from app.graphs.nodes import route_before_analyze, summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+    state = _state()
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(7)]
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=("Tóm tắt mới", None))
+
+    result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert route_before_analyze(state) == "summarize"
+    assert result["conversation_summary"] == "Tóm tắt mới"
+    llm.generate.assert_called_once()
+
+
+def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
+    from app.graphs.nodes import route_before_analyze
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+
+    routes = {}
+    for count in [1, 3, 5, 7, 9, 11, 13]:
+        state = _state()
+        state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(count)]
+        routes[count] = route_before_analyze(state)
+
+    assert routes == {
+        1: "analyze",
+        3: "analyze",
+        5: "analyze",
+        7: "summarize",
+        9: "analyze",
+        11: "analyze",
+        13: "summarize",
+    }
+
+
+@pytest.mark.asyncio
+async def test_summarize_skipped_below_threshold(monkeypatch):
+    from app.graphs.nodes import route_before_analyze, summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+    state = _state()
+    state["conversation_summary"] = "Tóm tắt cũ"
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(5)]
+    llm = AsyncMock()
+    llm.generate = AsyncMock()
+
+    result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert route_before_analyze(state) == "analyze"
+    assert result["conversation_summary"] == "Tóm tắt cũ"
+    llm.generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_summary_preserves_constraints_verbatim(monkeypatch):
+    from app.graphs.nodes import summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 2)
+    state = _state()
+    state["messages"] = [
+        {"role": "user", "content": "Tạo MVP"},
+        {"role": "user", "content": "Ngân sách tối đa 50 triệu"},
+        {"role": "assistant", "content": "Đã ghi nhận"},
+    ]
+    summary = (
+        "Yêu cầu đã xác nhận\n- Làm MVP\n"
+        "Ràng buộc — KHÔNG paraphrase\n- Ngân sách tối đa 50 triệu\n"
+        "Khoảng trống chưa rõ\n- Thời hạn\n"
+        "Quyết định đã thống nhất\n- Chưa có"
+    )
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=(summary, None))
+
+    result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert "Ràng buộc — KHÔNG paraphrase" in result["conversation_summary"]
+    assert "Ngân sách tối đa 50 triệu" in result["conversation_summary"]
+
+
+@pytest.mark.asyncio
+async def test_summarize_node_uses_default_client(monkeypatch):
+    from app.graphs.nodes import summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 2)
+    state = _state()
+    state["messages"] = [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "B"},
+        {"role": "user", "content": "C"},
+    ]
+    default_llm = AsyncMock()
+    default_llm.generate = AsyncMock(return_value=("Tóm tắt", None))
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock()
+    config = _config(str(uuid.uuid4()), str(uuid.uuid4()), default_llm)
+    config["configurable"]["strong_llm_client"] = strong_llm
+
+    await summarize_node(state, config)
+
+    default_llm.generate.assert_called_once()
+    strong_llm.generate.assert_not_called()
+
+
+def test_build_prompt_uses_summary_when_present():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state()
+    state["conversation_summary"] = "Ràng buộc — KHÔNG paraphrase\n- Ngân sách tối đa 50 triệu"
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(5)]
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "Tóm tắt hội thoại đã tích lũy" in prompt
+    assert "Ngân sách tối đa 50 triệu" in prompt
+    assert "Tin nhắn 1" not in prompt
+    assert "Tin nhắn 2" in prompt
+
+
+def test_build_prompt_falls_back_to_5_messages_when_empty():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(6)]
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "Tóm tắt hội thoại đã tích lũy" not in prompt
+    assert "Tin nhắn 0" not in prompt
+    assert "Tin nhắn 1" in prompt
+
+
+@pytest.mark.asyncio
+async def test_messages_not_truncated_by_summarize(monkeypatch):
+    from app.graphs.nodes import summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 3)
+    state = _state()
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(3)]
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=("Tóm tắt", None))
+
+    await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert len(state["messages"]) == 3
 
 
 @pytest.mark.asyncio
@@ -331,6 +539,225 @@ async def test_governed_unknown_write_tool_raises_governance_denied():
 
     with pytest.raises(GovernanceDenied):
         await create_artifact(artifact_type="unknown_type", title="Test", body="", context={"allowed_types": ["goal"]})
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — intent_router + greeting + language-lock (S4, S5)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_intent_router_classifies_greeting():
+    from app.graphs.nodes import intent_router_node
+
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=({"intent": "greeting", "locale": "vi"}, None))
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "hello"}]
+
+    result = await intent_router_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["intent"] == "greeting"
+    assert result["locale"] == "vi"
+
+
+@pytest.mark.asyncio
+async def test_intent_router_classifies_task():
+    from app.graphs.nodes import intent_router_node
+
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=({"intent": "task", "locale": "en"}, None))
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "I need a user story"}]
+
+    result = await intent_router_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["intent"] == "task"
+    assert result["locale"] == "en"
+
+
+@pytest.mark.asyncio
+async def test_intent_router_raises_when_llm_client_none():
+    from app.graphs.nodes import intent_router_node
+
+    config = _config(str(uuid.uuid4()), str(uuid.uuid4()), llm_client=None)
+    config["configurable"]["llm_client"] = None
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "hello"}]
+
+    with pytest.raises(ValueError):
+        await intent_router_node(state, config)
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_greeting_node_saves_message_and_no_agent_run(mock_interrupt, client, db_session):
+    from app.graphs.nodes import greeting_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await greeting_node(state, config)
+
+    mock_interrupt.assert_called_once()
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.role == AgentMessageRole.AGENT
+        assert msg.content
+        assert msg.payload["kind"] == "greeting"
+
+        runs = (await db.execute(select(AgentRun).where(AgentRun.session_id == agent_session.id))).scalars().all()
+        assert runs == []
+
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
+        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+        assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_greeting_node_english_locale(mock_interrupt, client, db_session):
+    from app.graphs.nodes import greeting_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "en"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await greeting_node(state, config)
+
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert "Hello" in msg.content
+        assert msg.payload["locale"] == "en"
+
+
+def test_analyst_prompt_includes_language_lock_directive():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state_vi = _state()
+    state_vi["locale"] = "vi"
+    prompt_vi = _build_analyst_prompt(state_vi, [])
+    assert "'vi'" in prompt_vi
+
+    state_en = _state()
+    state_en["locale"] = "en"
+    prompt_en = _build_analyst_prompt(state_en, [])
+    assert "'en'" in prompt_en
+    assert "'vi'" not in prompt_en
+
+
+def test_graph_routes_task_to_analyze():
+    from app.graphs.nodes import route_after_intent
+
+    assert route_after_intent({"intent": "task"}) == "analyze"
+    assert route_after_intent({"intent": "unclear"}) == "analyze"
+    assert route_after_intent({"intent": "greeting"}) == "greeting"
+    assert route_after_intent({"intent": "smalltalk"}) == "greeting"
+
+
+def _smart_llm():
+    """LLM mock that branches on response_format to drive intent_router then analyze→ask."""
+    from app.graphs.nodes import ANALYSIS_SCHEMA, INTENT_SCHEMA
+
+    intent_calls = []
+    llm = AsyncMock()
+
+    async def _generate(*, messages, system, max_tokens, response_format=None):
+        if response_format is INTENT_SCHEMA:
+            intent_calls.append(1)
+            return {"intent": "task", "locale": "vi"}, None
+        if response_format is ANALYSIS_SCHEMA:
+            return {"next_action": "ask", "confidence": 0.3, "gaps": [], "message": "Bạn cần gì thêm?", "proposals": []}, None
+        return {}, None
+
+    llm.generate = _generate
+    return llm, intent_calls
+
+
+@pytest.mark.asyncio
+async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_session):
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.types import Command
+
+    from app.graphs.graph import build_graph
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm, intent_calls = _smart_llm()
+    saver = MemorySaver()
+    graph = build_graph(checkpointer=saver)
+    config = _config(str(agent_session.id), str(project_id), llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "tôi cần tạo intent"}]
+    await graph.ainvoke(state, config)
+    assert len(intent_calls) == 1
+
+    # Resume the ask_human interrupt — must NOT re-enter intent_router.
+    await graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
+    assert len(intent_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_from_old_topology_checkpoint(client, db_session):
+    """Checkpoint lưu dưới topology cũ (entry 'analyze', không có intent_router) vẫn resume được."""
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.graph import END, StateGraph
+    from langgraph.types import Command
+
+    from app.graphs.graph import build_graph
+    from app.graphs.nodes import analyze_node, ask_human_node, route_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm, _ = _smart_llm()
+    saver = MemorySaver()
+    config = _config(str(agent_session.id), str(project_id), llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    # OLD topology: entry point "analyze", no intent_router node.
+    old = StateGraph(WorkflowState)
+    old.add_node("analyze", analyze_node)
+    old.add_node("ask_human", ask_human_node)
+    old.set_entry_point("analyze")
+    old.add_conditional_edges("analyze", route_node, {"ask_human": "ask_human", "confirm": "ask_human", END: END})
+    old.add_edge("ask_human", END)
+    old_graph = old.compile(checkpointer=saver)
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "tôi cần tạo intent"}]
+    await old_graph.ainvoke(state, config)
+
+    # NEW topology resumes the SAME checkpoint — must not crash on the missing intent_router node.
+    new_graph = build_graph(checkpointer=saver)
+    await new_graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
 
 
 # ---------------------------------------------------------------------------

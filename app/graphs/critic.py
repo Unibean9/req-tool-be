@@ -111,7 +111,7 @@ def _merge_proposals(old_result: dict, new_proposals: list[dict]) -> dict:
 
 async def quality_gate_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
-    llm_client = cfg["llm_client"]
+    llm_client = cfg.get("strong_llm_client") or cfg["llm_client"]
 
     analysis_result = state.get("analysis_result") or {}
     proposals = analysis_result.get("proposals") or []

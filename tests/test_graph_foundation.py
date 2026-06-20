@@ -98,6 +98,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "workflow_area": "analysis",
         "step_key": "intent_vision",
         "messages": [{"role": "user", "content": "Xin chào"}],
+        "conversation_summary": "",
         "analysis_result": None,
         "pending_tool_call_ids": [],
         "last_agent_run_id": None,
@@ -106,6 +107,8 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "user_confirmed": None,
         "critique_rounds": 0,
         "quality_report": None,
+        "locale": None,
+        "intent": None,
     }
 
     assert state["turn_count"] == 0
@@ -114,6 +117,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "workflow_area",
         "step_key",
         "messages",
+        "conversation_summary",
         "analysis_result",
         "pending_tool_call_ids",
         "last_agent_run_id",
@@ -122,6 +126,8 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "user_confirmed",
         "critique_rounds",
         "quality_report",
+        "locale",
+        "intent",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

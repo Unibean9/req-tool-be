@@ -26,10 +26,20 @@ def test_graph_has_quality_gate_node():
     assert "quality_gate" in _node_names()
 
 
+def test_graph_has_summarize_node():
+    assert "summarize" in _node_names()
+
+
 def test_quality_gate_has_loopback_edge():
     pairs = _edge_pairs()
     assert ("quality_gate", "quality_gate") in pairs
     assert ("quality_gate", "propose_artifacts") in pairs
+
+
+def test_ask_human_can_route_through_summarize_before_analyze():
+    pairs = _edge_pairs()
+    assert ("ask_human", "summarize") in pairs
+    assert ("summarize", "analyze") in pairs
 
 
 # --- Group 2: Routing through the compiled graph (finding #2) ---
