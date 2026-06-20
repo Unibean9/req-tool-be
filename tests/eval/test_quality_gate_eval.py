@@ -1,4 +1,4 @@
-"""Phase 5 — Eval surface for the quality gate.
+"""Eval surface for the quality gate.
 
 Measures the before/after delta when a low-quality proposal passes through the
 gate. The mock test (default) asserts the gate transforms content (content-based,

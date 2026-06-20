@@ -1,4 +1,4 @@
-"""E2E happy-case Phase 3: intent artifact → agent Q&A → BRD artifact → brd.md
+"""E2E happy-case: intent artifact → agent Q&A → BRD artifact → brd.md
 
 Flow:
   1. Setup: đăng ký user, tạo org/project
@@ -173,21 +173,21 @@ async def _req(
 
 async def bootstrap_context(client: httpx.AsyncClient, *, verbose: bool) -> RunContext:
     suffix = uuid.uuid4().hex[:8]
-    email = f"e2e-phase3-{suffix}@example.com"
+    email = f"e2e-i2b-{suffix}@example.com"
     log(f"[setup] Tạo user {email}")
 
     await _req(client, "POST", "/auth/register",
-               json={"email": email, "password": _PASSWORD, "full_name": "E2E Phase3"},
+               json={"email": email, "password": _PASSWORD, "full_name": "E2E i2b"},
                expected=201)
     token = _data(await _req(client, "POST", "/auth/login",
                               json={"email": email, "password": _PASSWORD}))["access_token"]
     headers = {"Authorization": f"Bearer {token}"}
 
     org = _data(await _req(client, "POST", "/orgs", headers=headers,
-                            json={"name": f"Phase3 Org {suffix}"}, expected=201))
+                            json={"name": f"Org {suffix}"}, expected=201))
     project = _data(await _req(client, "POST", f"/orgs/{org['id']}/projects", headers=headers,
-                                json={"name": f"Phase3 Project {suffix}",
-                                      "description": "E2E phase3 intent → BRD"},
+                                json={"name": f"Project {suffix}",
+                                      "description": "E2E intent → BRD"},
                                 expected=201))
     log(f"[setup] project_id={project['id']}")
     return RunContext(client=client, headers=headers, org_id=org["id"],
@@ -195,7 +195,7 @@ async def bootstrap_context(client: httpx.AsyncClient, *, verbose: bool) -> RunC
 
 
 async def seed_intent(ctx: RunContext) -> str:
-    """Tạo intent artifact — prerequisite để agent biết context phase 3."""
+    """Tạo intent artifact — prerequisite để agent biết context i2b."""
     log("[seed] Tạo intent artifact")
     resp = await _req(ctx.client, "POST", f"/projects/{ctx.project_id}/artifacts",
                       headers=ctx.headers,
@@ -208,7 +208,7 @@ async def seed_intent(ctx: RunContext) -> str:
                               "Mục tiêu: giảm thất thoát thông tin, tăng minh bạch quyết định, "
                               "rút ngắn vòng lặp phê duyệt."
                           ),
-                          "metadata": {"source": "e2e-phase3"},
+                          "metadata": {"source": "e2e-i2b"},
                       },
                       expected=201)
     artifact = _data(resp)
@@ -476,7 +476,7 @@ async def run(args: argparse.Namespace) -> None:
         ctx.provider_config_id = await setup_provider(ctx, health_check=args.health_check)
 
         # 4. Tạo session
-        log("\n[phase3] Bắt đầu session agent: intent → goal (BRD)")
+        log("\n[i2b] Bắt đầu session agent: intent → goal (BRD)")
         session_id = await start_session(ctx)
 
         # 5. Kick off với context đầy đủ
@@ -501,7 +501,7 @@ async def run(args: argparse.Namespace) -> None:
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="E2E Phase 3 happy case: intent → BRD artifact → brd.md")
+    parser = argparse.ArgumentParser(description="E2E i2b happy case: intent → BRD artifact → brd.md")
     parser.add_argument("--base-url", default=os.getenv("E2E_BASE_URL", "http://127.0.0.1:8000"))
     parser.add_argument("--timeout", type=float, default=float(os.getenv("E2E_TIMEOUT", "300")),
                         help="Timeout poll agent giây (E2E_TIMEOUT, mặc định 300)")

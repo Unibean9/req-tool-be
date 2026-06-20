@@ -1,4 +1,4 @@
-"""Phase 4 — Graph wiring (edge-loop). Tests written before editing graph.py."""
+"""Graph wiring (edge-loop). Tests written before editing graph.py."""
 
 from unittest.mock import AsyncMock
 

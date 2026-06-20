@@ -1,4 +1,4 @@
-"""Phase 3 — Critic Node (edge-loop). Tests written before implementation."""
+"""Critic Node (edge-loop). Tests written before implementation."""
 
 from unittest.mock import AsyncMock
 

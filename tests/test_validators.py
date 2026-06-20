@@ -1,4 +1,4 @@
-"""Phase 2 — Deterministic validator (pure Python). Tests written before implementation."""
+"""Deterministic validator (pure Python). Tests written before implementation."""
 
 from app.graphs.validators import ValidationResult, validate_proposal
 

@@ -1,5 +1,5 @@
 """
-Phase 9 integration tests — end-to-end wiring.
+Integration tests — end-to-end wiring.
 Uses real graph execution with mock LLM.
 """
 import uuid

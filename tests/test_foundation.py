@@ -1,4 +1,4 @@
-"""Phase 1 — Foundation: verify rubric move + state/config extension."""
+"""Foundation: verify rubric move + state/config extension."""
 
 
 def test_rubric_importable_from_app():
