@@ -22,3 +22,5 @@ class WorkflowState(TypedDict):
     slot_coverage: dict[str, str] | None
     coverage_ratio: float | None
     coverage_complete: bool | None
+    coverage_stall_count: int | None
+    last_asked_slot: str | None

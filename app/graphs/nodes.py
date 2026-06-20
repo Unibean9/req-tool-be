@@ -10,7 +10,12 @@ from sqlalchemy import exists, select
 from app.config import settings
 from app.graphs.personas import get_persona
 from app.graphs.policy import ApprovalRequired, GovernanceDenied, ancestor_types
-from app.graphs.slot_schema import BRD_SLOTS, SLOT_DESCRIPTIONS, compute_coverage
+from app.graphs.slot_schema import (
+    BRD_SLOTS,
+    COVERAGE_STALL_LIMIT,
+    SLOT_DESCRIPTIONS,
+    compute_coverage,
+)
 from app.graphs.state import WorkflowState
 from app.graphs.tools import create_artifact, read_artifacts
 from app.models.agent import (
@@ -63,6 +68,14 @@ SUMMARY_SCHEMA = {
         "summary": {"type": "string"},
     },
     "required": ["summary"],
+}
+
+FOLLOWUP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {"type": "string"},
+    },
+    "required": ["message"],
 }
 
 INTENT_SCHEMA = {
@@ -255,6 +268,13 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
     slot_assessment = analysis_result.get("slot_assessment") if isinstance(analysis_result, dict) else None
+    # Optimistic credit: last turn the hint pinned `last_asked_slot` and the user has now
+    # answered that exact question. A fresh 'empty' grade for it is the model under-reporting
+    # its own prior question — the root cause of the verbatim-repeated ask. Credit it 'partial'
+    # so coverage advances and the hint rotates to the next slot instead of repeating.
+    last_asked = state.get("last_asked_slot")
+    if slot_assessment is not None and last_asked and slot_assessment.get(last_asked) == "empty":
+        slot_assessment = {**slot_assessment, last_asked: "partial"}
     # slot-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
     # separate from "reported empty {}" (evaluated as missing -> gate), so non-slot-aware
     # turns such as non-BRD artifacts or confident proposals continue normally.
@@ -262,6 +282,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         coverage = {"slot_coverage": None, "coverage_ratio": None, "coverage_complete": None}
     else:
         coverage = compute_coverage(artifact_type, slot_assessment)
+    # Stall counter: increment when a gated turn fails to raise coverage, reset otherwise.
+    # route_node and the coverage hint read it to escape a non-advancing elicitation loop.
+    prev_ratio = state.get("coverage_ratio")
+    new_ratio = coverage["coverage_ratio"]
+    if new_ratio is None or coverage["coverage_complete"] or prev_ratio is None or new_ratio > prev_ratio:
+        coverage["coverage_stall_count"] = 0
+    else:
+        coverage["coverage_stall_count"] = (state.get("coverage_stall_count") or 0) + 1
     if isinstance(analysis_result, dict):
         analysis_result = {
             **analysis_result,
@@ -284,6 +312,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
+        # Record the slot this turn's hint pinned (the slot just asked) so the next turn's
+        # hint can rotate off it — the deterministic guard against re-asking the same slot.
+        "last_asked_slot": _coverage_hint_target(state),
         **coverage,
     }
 
@@ -327,7 +358,10 @@ def route_node(state: WorkflowState) -> str:
     action = (state.get("analysis_result") or {}).get("next_action", "done")
     # slot-coverage gate (phase brd-slot-coverage): block early propose/done for BRD keys.
     # coverage_complete is only False for a BRD key below threshold; None/True fail open.
-    if state.get("coverage_complete") is False and action in ("propose", "done"):
+    # Stall escape: once coverage stops advancing, relax the gate so a model that chronically
+    # under-reports slots cannot trap the user in an endless ask loop.
+    stalled = (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT
+    if state.get("coverage_complete") is False and not stalled and action in ("propose", "done"):
         return "ask_human"
     if action == "ask":
         return "ask_human"
@@ -345,11 +379,15 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     message = analysis_result.get("message", "")
     if not message:
         # The slot-coverage gate can redirect a propose/done turn (which carries no message)
-        # to ask_human when coverage is incomplete. Fall back to a generic follow-up so
-        # elicitation continues; the next analyze turn gets the coverage hint to steer the
-        # real question. A genuine ask turn with no message is still a bug -> raise.
+        # to ask_human when coverage is incomplete. Ask the LLM to repair that into a
+        # conversational follow-up; keep a static fallback only for empty repair results.
+        # A genuine ask turn with no message is still a bug -> raise.
         if analysis_result.get("next_action") in ("propose", "done"):
-            message = "Bạn có thể chia sẻ thêm thông tin để mình hoàn thiện phần này không?"
+            message = await _build_missing_coverage_followup(state, config)
+            message = message or (
+                "Mình cần làm rõ thêm một ý trước khi có thể viết phần này chắc hơn. "
+                "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
+            )
         else:
             raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
 
@@ -567,10 +605,11 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         "Nếu next_action='ask', bắt buộc có field message (string câu hỏi cụ thể gửi cho user). "
         "Lưu ý: nếu user vừa từ chối tạo artifact và yêu cầu khám phá thêm, hãy tiếp tục hỏi các góc độ "
         "chưa được đề cập thay vì đề xuất lại ngay.\n\n"
-        "NHỊP HỎI ĐÁP: mỗi lượt chỉ hỏi đúng 1 câu (one question) trong field message. Trước khi hỏi, "
-        "hãy ghi nhận câu trả lời gần nhất của user vào field acknowledgment (1 câu ngắn) và đánh giá "
-        "answer_assessment là 'complete'/'partial'/'none'. Nếu 'partial', hãy đào sâu cùng gap đó thay vì "
-        "chuyển sang gap mới."
+        "NHỊP HỎI ĐÁP: mỗi lượt chỉ có một câu hỏi chính trong field message, nhưng KHÔNG được trả lời "
+        "cụt chỉ bằng câu hỏi. Hãy viết tự nhiên: 1 câu dẫn dắt/ghi nhận ngắn để nối với nội dung user "
+        "vừa nói, rồi mới đặt đúng một câu hỏi chính. Trước khi hỏi, hãy ghi nhận câu trả lời gần nhất "
+        "của user vào field acknowledgment (ngắn, có tương tác) và đánh giá answer_assessment là "
+        "'complete'/'partial'/'none'. Nếu 'partial', hãy đào sâu cùng gap đó thay vì chuyển sang gap mới."
         f"{_build_slot_directive(state)}"
         f"{coverage_hint}"
         f"{language_lock}"
@@ -587,28 +626,108 @@ def _build_slot_directive(state: WorkflowState) -> str:
     slot_spec = BRD_SLOTS.get(artifact_type)
     if not slot_spec:
         return ""
-    required = ", ".join(slot_spec["required"])
-    return (
-        f"\n\nĐÁNH GIÁ ĐỘ PHỦ: với loại '{artifact_type}', LUÔN trả thêm field slot_assessment — một "
-        f"object đánh giá từng chiều thông tin bắt buộc ({required}) ở mức 'filled'/'partial'/'empty' "
-        "dựa trên những gì user đã cung cấp. Khi các chiều này chưa đủ, hãy tiếp tục hỏi thay vì propose."
+    slot_lines = "\n".join(
+        f"- {slot}: {SLOT_DESCRIPTIONS.get(slot, slot)}"
+        for slot in slot_spec["required"]
     )
+    return (
+        f"\n\nĐÁNH GIÁ ĐỘ PHỦ: với loại '{artifact_type}', LUÔN trả field slot_assessment — object chấm "
+        "trạng thái TỪNG slot bắt buộc dưới đây dựa trên TOÀN BỘ thông tin user đã cung cấp:\n"
+        f"{slot_lines}\n"
+        "Quy tắc chấm: 'filled' khi user đã cung cấp thông tin rõ ràng cho slot đó; 'partial' khi mới có "
+        "một phần hoặc còn mơ hồ; 'empty' khi chưa có gì. Nếu câu trả lời mới nhất của user đã đáp ứng "
+        "một slot, PHẢI nâng slot đó lên 'filled' hoặc 'partial' — tuyệt đối không giữ nguyên 'empty'. "
+        "Chỉ tiếp tục hỏi khi còn slot 'empty'/'partial'; khi đa số slot đã 'filled' thì chuyển sang propose."
+    )
+
+
+def _pick_weak_slot(slot_coverage: dict[str, str], required_slots: list[str], exclude: str | None = None) -> str | None:
+    """First 'empty' (then 'partial') required slot, skipping `exclude`.
+
+    `exclude` is the slot the previous turn already asked about; skipping it stops the
+    hint re-pinning the same slot two turns running when the model under-grades.
+    """
+    for status in ("empty", "partial"):
+        for slot in required_slots:
+            if slot != exclude and slot_coverage.get(slot) == status:
+                return slot
+    return None
+
+
+def _coverage_hint_target(state: WorkflowState) -> str | None:
+    """Required slot the coverage hint will pin this turn, or None when it won't.
+
+    None means: coverage is OK/untracked, the loop has stalled, or the only weak slot left
+    is the one asked last turn — in every case re-pinning would repeat the question, so the
+    hint steers the model to move on instead. analyze_node persists this as last_asked_slot.
+    """
+    if state.get("coverage_complete") is not False:
+        return None
+    if (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
+        return None
+    artifact_type = state.get("artifact_type") or ""
+    slot_coverage = state.get("slot_coverage") or {}
+    required_slots = (BRD_SLOTS.get(artifact_type) or {}).get("required") or []
+    return _pick_weak_slot(slot_coverage, required_slots, exclude=state.get("last_asked_slot"))
 
 
 def _build_coverage_hint(state: WorkflowState) -> str:
     if state.get("coverage_complete") is not False:
         return ""
     artifact_type = state.get("artifact_type")
+    weak_slot = _coverage_hint_target(state)
+    # weak_slot is None when the loop stalled OR the only slot still weak is the one we just
+    # asked — either way re-pinning would reproduce the previous question verbatim, so steer
+    # the model to synthesize what it has and move on or propose.
+    if weak_slot is None:
+        return (
+            f"\n\nCoverage '{artifact_type}': độ phủ không tăng sau nhiều lượt hỏi. Đừng lặp lại cùng câu "
+            "hỏi — hãy tổng hợp thông tin đã có và chuyển sang propose, hoặc hỏi một góc độ hoàn toàn khác."
+        )
     slot_coverage = state.get("slot_coverage") or {}
-    required_slots = (BRD_SLOTS.get(artifact_type or "") or {}).get("required") or []
-    weak_slot = next((slot for slot in required_slots if slot_coverage.get(slot) == "empty"), None)
-    if weak_slot is None:
-        weak_slot = next((slot for slot in required_slots if slot_coverage.get(slot) == "partial"), None)
-    if weak_slot is None:
-        return ""
     description = SLOT_DESCRIPTIONS.get(weak_slot, weak_slot)
     status = (slot_coverage.get(weak_slot) or "empty").upper()
-    return f"\n\nCoverage '{artifact_type}': {weak_slot}={status} -> hỏi về {description} tiếp theo, một câu duy nhất."
+    return (
+        f"\n\nCoverage '{artifact_type}': {weak_slot}={status} -> tiếp theo cần hỏi về {description}. "
+        "Không được trả lời cụt chỉ bằng câu hỏi; hãy có một câu dẫn dắt ngắn, rồi đặt một câu hỏi chính."
+    )
+
+
+async def _build_missing_coverage_followup(state: WorkflowState, config: RunnableConfig) -> str:
+    llm_client = config["configurable"].get("llm_client")
+    if llm_client is None:
+        return ""
+    artifact_type = state.get("artifact_type") or "artifact"
+    locale = state.get("locale") or "vi"
+    slot_coverage = state.get("slot_coverage") or {}
+    missing_slots = [
+        f"{slot}={status}"
+        for slot, status in slot_coverage.items()
+        if status in ("empty", "partial")
+    ]
+    recent_messages = "\n".join(
+        f"{role}: {content}"
+        for role, content in (_msg_role_content(m) for m in (state.get("messages") or [])[-3:])
+    ) or "(chưa có hội thoại)"
+    prompt = (
+        "Bạn là BA/PM đang tiếp tục khai thác yêu cầu BRD.\n"
+        f"Loại artifact: {artifact_type}\n"
+        f"Slot còn thiếu hoặc chưa chắc: {', '.join(missing_slots) or '(không rõ)'}\n"
+        f"Hội thoại gần đây:\n{recent_messages}\n\n"
+        "Hãy viết một message tự nhiên gửi cho user: có một câu dẫn dắt/ghi nhận ngắn, "
+        "sau đó đặt đúng một câu hỏi chính để khai thác slot còn thiếu quan trọng nhất. "
+        f"Không trả lời cụt chỉ bằng câu hỏi. Trả lời toàn bộ bằng ngôn ngữ '{locale}'. "
+        "Trả về JSON chỉ gồm field message."
+    )
+    result, _usage = await llm_client.generate(
+        messages=[{"role": "user", "content": prompt}],
+        system=f"Bạn viết câu hỏi làm rõ yêu cầu bằng ngôn ngữ '{locale}', ngắn gọn và tự nhiên.",
+        max_tokens=300,
+        response_format=FOLLOWUP_SCHEMA,
+    )
+    if isinstance(result, dict):
+        return str(result.get("message") or "").strip()
+    return str(result or "").strip()
 
 
 def _build_summary_prompt(state: WorkflowState) -> str:

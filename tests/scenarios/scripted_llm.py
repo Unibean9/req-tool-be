@@ -47,6 +47,8 @@ class ScriptedLLM:
         Response for the quality-gate critic (default: passes the gate).
     summary:
         Response for `summarize_node`.
+    followup:
+        Response for missing-coverage follow-up repair.
     """
 
     def __init__(
@@ -56,6 +58,7 @@ class ScriptedLLM:
         intent: dict[str, Any] | None = None,
         critic: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
+        followup: dict[str, Any] | None = None,
     ) -> None:
         self._brain = list(brain or [])
         self._brain_idx = 0
@@ -76,6 +79,9 @@ class ScriptedLLM:
             "suggestions": [],
         }
         self._summary = summary or {"summary": ""}
+        self._followup = followup or {
+            "message": "Mình cần làm rõ thêm phần còn thiếu trước khi viết artifact. Bạn có thể mô tả thêm điểm quan trọng nhất không?"
+        }
         # Audit trail of every routed call — surfaced in the transcript.
         self.calls: list[dict[str, Any]] = []
 
@@ -109,6 +115,8 @@ class ScriptedLLM:
             return "critic"
         if set(props.keys()) == {"summary"}:
             return "summary"
+        if set(props.keys()) == {"message"}:
+            return "followup"
         if "next_action" in props:
             if system and system.strip() == _REGENERATE_SYSTEM.strip():
                 return "regenerate"
@@ -123,6 +131,8 @@ class ScriptedLLM:
             return dict(self._critic)
         if route == "summary":
             return dict(self._summary)
+        if route == "followup":
+            return dict(self._followup)
         if route == "regenerate":
             # Echo the last brain turn's proposals (already-improved content is
             # the responsibility of the scenario's critic score, not this stub).

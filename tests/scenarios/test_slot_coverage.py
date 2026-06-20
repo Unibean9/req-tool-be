@@ -235,7 +235,7 @@ async def test_slot_coverage_does_not_gate_non_brd(client, scenario_env, scenari
 
 async def test_gate_redirects_done_without_message_does_not_crash(client, scenario_env, scenario_project):
     """A `done` turn with incomplete coverage is gated to ask_human; it carries no message,
-    so ask_human_node must fall back to a generic question instead of raising."""
+    so ask_human_node must repair it into a conversational question instead of raising."""
     headers, project = scenario_project
     done_turn = {
         "next_action": "done",
@@ -248,7 +248,15 @@ async def test_gate_redirects_done_without_message_does_not_crash(client, scenar
     scenario = Scenario(
         name="gate-redirects-done-no-message",
         artifact_type="problem",
-        llm=ScriptedLLM(brain=[done_turn]),
+        llm=ScriptedLLM(
+            brain=[done_turn],
+            followup={
+                "message": (
+                    "Mình thấy phần vấn đề vẫn còn thiếu bối cảnh để viết chắc hơn. "
+                    "Ai đang bị ảnh hưởng trực tiếp bởi tình huống này?"
+                )
+            },
+        ),
         actions=[{"type": "send", "content": "Vấn đề đăng ký lớp, chưa rõ chi tiết."}],
         expect={},
     )
@@ -260,7 +268,8 @@ async def test_gate_redirects_done_without_message_does_not_crash(client, scenar
     assert recorder.summary["final_interrupt"] == "ask_human"
     agent_messages = [m for m in recorder.steps[-1]["snapshot"]["messages"] if m["role"] == "agent"]
     assert agent_messages[-1]["payload"]["kind"] == "question"
-    assert agent_messages[-1]["content"].strip()  # non-empty fallback question
+    assert agent_messages[-1]["content"].startswith("Mình thấy phần vấn đề")
+    assert agent_messages[-1]["content"].count("?") == 1
 
 
 async def test_get_checkpoint_field_reads_coverage_ratio(client, scenario_env, scenario_project):

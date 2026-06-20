@@ -412,6 +412,8 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
     assert "Coverage" in prompt
     assert "root_cause" in prompt
     assert "EMPTY" in prompt
+    assert "trả lời cụt chỉ bằng câu hỏi" in prompt
+    assert "một câu hỏi chính" in prompt
 
 
 def test_no_coverage_hint_when_complete():
@@ -1211,7 +1213,8 @@ def test_analyst_prompt_includes_one_question_directive():
     from app.graphs.nodes import _build_analyst_prompt
 
     prompt = _build_analyst_prompt(_state(), [])
-    assert any(token in prompt for token in ("1 câu", "một câu", "one question"))
+    assert "một câu hỏi chính" in prompt
+    assert "trả lời cụt chỉ bằng câu hỏi" in prompt
 
 
 @pytest.mark.asyncio

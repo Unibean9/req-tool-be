@@ -100,6 +100,11 @@ BRD_SLOTS: dict[str, dict[str, list[str]]] = {
     },
 }
 
+# Consecutive non-improving coverage turns before the gate relaxes and the hint
+# switches from "ask the same slot" to "move on / propose" — bounds the elicitation
+# loop well under max_agent_turns so a model that under-reports slots cannot nag forever.
+COVERAGE_STALL_LIMIT = 2
+
 # brd_key -> coverage threshold for required slots.
 COVERAGE_THRESHOLD: dict[str, float] = {
     "intent": 0.8,
