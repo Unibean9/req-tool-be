@@ -43,6 +43,7 @@ class LLMProviderConfig(AuditMixin, Base):
     base_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     region: Mapped[str | None] = mapped_column(String(64), nullable=True)
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    strong_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     encrypted_secret_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     status: Mapped[LLMProviderStatus] = enum_column(LLMProviderStatus, nullable=False, default=LLMProviderStatus.DRAFT, index=True)

@@ -10,7 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.models.agent import AgentMessage, AgentRun, AgentSession, AgentSessionStatus, AgentToolCall
+from app.models.agent import (
+    AgentMessage,
+    AgentRun,
+    AgentSession,
+    AgentSessionInterruptType,
+    AgentSessionStatus,
+    AgentToolCall,
+)
 
 
 class AgentEventService:
@@ -98,6 +105,7 @@ class AgentEventService:
                 "artifact_type": session.artifact_type,
                 "workflow_area": session.workflow_area,
                 "status": session.status,
+                "ui_status": _ui_status(session.status, session.interrupt_type),
                 "interrupt_type": session.interrupt_type,
                 "missing_context": session.missing_context,
                 "updated_at": session.updated_at,
@@ -108,6 +116,7 @@ class AgentEventService:
                     "session_id": message.session_id,
                     "role": message.role,
                     "content": message.content,
+                    "payload": message.payload,
                     "created_at": message.created_at,
                     "updated_at": message.updated_at,
                 }
@@ -129,6 +138,25 @@ class AgentEventService:
                 for tool_call in tool_calls
             ],
         }
+
+
+def _ui_status(status: Any, interrupt_type: Any) -> str:
+    """Derive a coarse UI-facing status from session.status + interrupt_type.
+
+    Pure mapping, no DB. Accepts enum members or their string values so it works both
+    inside build_snapshot (enums) and against serialized rows. See spec section 4.2.
+    """
+    status_val = getattr(status, "value", status)
+    interrupt_val = getattr(interrupt_type, "value", interrupt_type)
+    if status_val == AgentSessionStatus.ACTIVE.value:
+        return "processing"
+    if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
+        if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
+            return "waiting_approval"
+        return "waiting_input"
+    if status_val == AgentSessionStatus.FAILED.value:
+        return "error"
+    return "idle"
 
 
 def _sse(*, event: str, data: dict[str, Any], event_id: str) -> str:

@@ -113,6 +113,29 @@ async def test_create_config_stores_user_selected_model_name(client, db_session,
 
 
 @pytest.mark.asyncio
+async def test_create_and_read_strong_model_name(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+
+    row = await LLMProviderService(db_session).create(
+        user_id=user_id,
+        body={
+            "provider_type": "openai",
+            "api_key": "sk-secret",
+            "model_name": "gpt-4o-mini",
+            "strong_model_name": "gpt-4.1",
+        },
+    )
+
+    payload = LLMProviderConfigRead.model_validate(row).model_dump()
+
+    assert row.strong_model_name == "gpt-4.1"
+    assert payload["strong_model_name"] == "gpt-4.1"
+
+
+@pytest.mark.asyncio
 async def test_post_config_accepts_model_name_and_returns_it(client, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()

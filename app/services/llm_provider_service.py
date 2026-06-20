@@ -209,6 +209,7 @@ class LLMProviderService:
             "base_url": None,
             "region": body.region,
             "model_name": body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+            "strong_model_name": body.strong_model_name,
             "encrypted_api_key": encrypt_token(body.api_key),
             "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
         }

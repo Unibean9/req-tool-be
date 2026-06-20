@@ -14,6 +14,7 @@ class LLMProviderKeyRequest(BaseModel):
     secret_key: str | None = Field(default=None, min_length=1)
     region: str | None = Field(default=None, min_length=1, max_length=64)
     model_name: str | None = Field(default=None, min_length=1, max_length=255)
+    strong_model_name: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class LLMProviderConfigRead(BaseModel):
@@ -26,6 +27,7 @@ class LLMProviderConfigRead(BaseModel):
     base_url: str | None
     region: str | None
     model_name: str | None
+    strong_model_name: str | None
     encrypted_api_key: str | None = Field(default=None, exclude=True)
     encrypted_secret_key: str | None = Field(default=None, exclude=True)
     status: LLMProviderStatus

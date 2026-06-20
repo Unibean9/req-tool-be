@@ -34,7 +34,7 @@ class LLMClient(Protocol):
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | dict[str, Any]:
+    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
         pass
 
 
@@ -62,7 +62,7 @@ class OpenAILLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | dict[str, Any]:
+    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
         import httpx
 
         input_messages = _openai_messages(messages, system)
@@ -84,7 +84,7 @@ class OpenAILLMClient:
             data = response.json()
 
         text = _extract_openai_text(data)
-        return _parse_generate_text(text, response_format)
+        return _parse_generate_text(text, response_format), _extract_openai_usage(data)
 
 
 class GoogleLLMClient:
@@ -117,7 +117,7 @@ class GoogleLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | dict[str, Any]:
+    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
         import httpx
 
         generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
@@ -142,7 +142,7 @@ class GoogleLLMClient:
             data = response.json()
 
         text = _extract_google_text(data)
-        return _parse_generate_text(text, response_format)
+        return _parse_generate_text(text, response_format), _extract_google_usage(data)
 
 
 class AnthropicLLMClient:
@@ -172,7 +172,7 @@ class AnthropicLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | dict[str, Any]:
+    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
         import httpx
 
         body: dict[str, Any] = {
@@ -194,7 +194,7 @@ class AnthropicLLMClient:
             data = response.json()
 
         text = _extract_anthropic_text(data)
-        return _parse_generate_text(text, response_format)
+        return _parse_generate_text(text, response_format), _extract_anthropic_usage(data)
 
 
 class BedrockLLMClient:
@@ -213,12 +213,13 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | dict[str, Any]:
+    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
         if self.config.secret_key:
-            text = await self._generate_with_iam_keys(messages, system, max_tokens, response_format)
+            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format)
         else:
-            text = await self._generate_with_api_key(messages, system, max_tokens, response_format)
-        return _parse_generate_text(text, response_format)
+            data = await self._generate_with_api_key(messages, system, max_tokens, response_format)
+        text = _extract_bedrock_text(data)
+        return _parse_generate_text(text, response_format), _extract_bedrock_usage(data)
 
     async def _ping_with_iam_keys(self) -> str | None:
         def _ping() -> str | None:
@@ -263,8 +264,8 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | None:
-        def _generate() -> str | None:
+    ) -> dict[str, Any]:
+        def _generate() -> dict[str, Any]:
             import boto3
 
             client_kwargs: dict[str, Any] = {
@@ -281,8 +282,7 @@ class BedrockLLMClient:
             bedrock_system = _bedrock_system(system, response_format)
             if bedrock_system:
                 converse_kwargs["system"] = bedrock_system
-            response = client.converse(**converse_kwargs)
-            return _extract_bedrock_text(response)
+            return client.converse(**converse_kwargs)
 
         return await asyncio.to_thread(_generate)
 
@@ -292,7 +292,7 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> str | None:
+    ) -> dict[str, Any]:
         import httpx
 
         region = self.config.region or "us-east-1"
@@ -312,8 +312,7 @@ class BedrockLLMClient:
                 json=body,
             )
             response.raise_for_status()
-            data = response.json()
-        return _extract_bedrock_text(data)
+            return response.json()
 
 
 class LLMClientFactory:
@@ -350,6 +349,46 @@ def _extract_bedrock_text(data: dict[str, Any]) -> str | None:
     if not content:
         return None
     return content[0].get("text")
+
+
+def _normalize_usage(input_tokens: Any, output_tokens: Any, total_tokens: Any = None) -> dict[str, int] | None:
+    """Chuẩn hoá token usage về {"input", "output", "total"}; trả None nếu provider không cung cấp."""
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+    inp = int(input_tokens or 0)
+    out = int(output_tokens or 0)
+    total = int(total_tokens) if total_tokens is not None else inp + out
+    return {"input": inp, "output": out, "total": total}
+
+
+def _extract_openai_usage(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return _normalize_usage(usage.get("input_tokens"), usage.get("output_tokens"), usage.get("total_tokens"))
+
+
+def _extract_anthropic_usage(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return _normalize_usage(usage.get("input_tokens"), usage.get("output_tokens"))
+
+
+def _extract_google_usage(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usageMetadata")
+    if not usage:
+        return None
+    return _normalize_usage(
+        usage.get("promptTokenCount"), usage.get("candidatesTokenCount"), usage.get("totalTokenCount")
+    )
+
+
+def _extract_bedrock_usage(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return _normalize_usage(usage.get("inputTokens"), usage.get("outputTokens"), usage.get("totalTokens"))
 
 
 def _parse_generate_text(text: str | None, response_format: dict[str, Any] | None) -> str | dict[str, Any]:

@@ -53,6 +53,7 @@ class AgentMessageResponse(BaseModel):
     session_id: uuid.UUID
     role: AgentMessageRole
     content: str
+    payload: Any | None = None
     created_at: datetime | None
     updated_at: datetime | None
 
