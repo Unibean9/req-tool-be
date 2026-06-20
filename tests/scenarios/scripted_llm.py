@@ -1,0 +1,170 @@
+"""Deterministic scripted LLM client for behavior scenarios.
+
+The whole graph (intent_router, analyze, summarize, quality_gate critic +
+regenerate) calls a single `llm_client.generate(...)`. This client routes each
+call to a scripted/auto response by inspecting `response_format` and `system`,
+so a scenario only needs to script the analyst "brain" turns — everything else
+gets a sensible default.
+
+Routing keys (matching app/graphs):
+- INTENT_SCHEMA   -> has property "intent"            -> intent response
+- SUMMARY_SCHEMA  -> property set == {"summary"}      -> summary response
+- CRITIC_SCHEMA   -> has property "suggestions"       -> critic response
+- ANALYSIS_SCHEMA -> has property "next_action":
+    * system == regenerate system  -> regenerate response (improved proposals)
+    * otherwise                    -> next scripted analyze "brain" turn
+
+`generate` returns `(result_dict, usage)` like the real clients; usage is None
+(AgentRun.token_usage is nullable).
+"""
+
+from typing import Any
+
+from app.graphs.critic import _REGENERATE_SYSTEM
+
+
+# A terminal analyze turn used when a scenario's brain script is exhausted.
+_DONE_TURN: dict[str, Any] = {
+    "next_action": "done",
+    "confidence": 1.0,
+    "gaps": [],
+    "message": "",
+    "proposals": [],
+}
+
+
+class ScriptedLLM:
+    """A scripted, deterministic stand-in for an LLM client.
+
+    Parameters
+    ----------
+    brain:
+        Ordered analyze responses (ANALYSIS_SCHEMA shape). Consumed one per
+        `analyze_node` run. When exhausted, a terminal "done" turn is returned.
+    intent:
+        Response for `intent_router_node` (default: task / vi).
+    critic:
+        Response for the quality-gate critic (default: passes the gate).
+    summary:
+        Response for `summarize_node`.
+    """
+
+    def __init__(
+        self,
+        *,
+        brain: list[dict[str, Any]] | None = None,
+        intent: dict[str, Any] | None = None,
+        critic: dict[str, Any] | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        self._brain = list(brain or [])
+        self._brain_idx = 0
+        self._intent = intent or {"intent": "task", "locale": "vi"}
+        self._critic = critic or {
+            "scores": {
+                "unambiguous": 0.9,
+                "verifiable": 0.85,
+                "complete": 0.9,
+                "consistent": 0.9,
+                "traceable": 0.8,
+                "feasible": 0.85,
+                "invest": None,
+                "smart": None,
+            },
+            "overall": 0.88,
+            "rationale": "Các proposal rõ ràng và khả thi.",
+            "suggestions": [],
+        }
+        self._summary = summary or {"summary": ""}
+        # Audit trail of every routed call — surfaced in the transcript.
+        self.calls: list[dict[str, Any]] = []
+
+    # ------------------------------------------------------------------
+    # LLM client protocol
+    # ------------------------------------------------------------------
+
+    async def generate(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str | None = None,
+        max_tokens: int | None = None,
+        response_format: dict[str, Any] | None = None,
+        **_kwargs: Any,
+    ) -> tuple[Any, None]:
+        route = self._route(response_format, system)
+        result = self._respond(route)
+        self.calls.append({"route": route, "result": result})
+        return result, None
+
+    # ------------------------------------------------------------------
+    # Internal routing
+    # ------------------------------------------------------------------
+
+    def _route(self, response_format: dict[str, Any] | None, system: str | None) -> str:
+        props = ((response_format or {}).get("properties")) or {}
+        if "intent" in props:
+            return "intent"
+        if "suggestions" in props:
+            return "critic"
+        if set(props.keys()) == {"summary"}:
+            return "summary"
+        if "next_action" in props:
+            if system and system.strip() == _REGENERATE_SYSTEM.strip():
+                return "regenerate"
+            return "analyze"
+        # Unknown call shape — fall back to a harmless analyze "done".
+        return "analyze"
+
+    def _respond(self, route: str) -> Any:
+        if route == "intent":
+            return dict(self._intent)
+        if route == "critic":
+            return dict(self._critic)
+        if route == "summary":
+            return dict(self._summary)
+        if route == "regenerate":
+            # Echo the last brain turn's proposals (already-improved content is
+            # the responsibility of the scenario's critic score, not this stub).
+            last = self._brain[self._brain_idx - 1] if self._brain_idx > 0 else _DONE_TURN
+            return {"next_action": "propose", "confidence": 0.9, "proposals": last.get("proposals", [])}
+        # route == "analyze"
+        if self._brain_idx < len(self._brain):
+            turn = self._brain[self._brain_idx]
+            self._brain_idx += 1
+            return dict(turn)
+        return dict(_DONE_TURN)
+
+
+# ---------------------------------------------------------------------------
+# Brain-turn builders — keep scenario definitions terse and readable.
+# ---------------------------------------------------------------------------
+
+def ask(message: str, *, acknowledgment: str = "", gaps: list[str] | None = None) -> dict[str, Any]:
+    """An analyze turn that asks the user one question."""
+    turn: dict[str, Any] = {
+        "next_action": "ask",
+        "confidence": 0.4,
+        "gaps": gaps or [],
+        "message": message,
+    }
+    if acknowledgment:
+        turn["acknowledgment"] = acknowledgment
+        turn["answer_assessment"] = "complete"
+    return turn
+
+
+def propose(*proposals: dict[str, Any], confidence: float = 0.9) -> dict[str, Any]:
+    """An analyze turn that proposes artifacts (routes through confirm -> gate)."""
+    return {
+        "next_action": "propose",
+        "confidence": confidence,
+        "gaps": [],
+        "message": "",
+        "proposals": list(proposals),
+    }
+
+
+def artifact(artifact_type: str, title: str, body: str, rationale: str = "") -> dict[str, Any]:
+    """A single proposal block."""
+    return {"artifact_type": artifact_type, "title": title, "body": body, "rationale": rationale}
