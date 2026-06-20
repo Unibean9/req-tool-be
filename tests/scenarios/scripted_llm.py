@@ -23,6 +23,19 @@ from typing import Any
 from app.graphs.critic import _REGENERATE_SYSTEM
 
 
+# Test-harness-only schema: a binary judgment of whether an agent question maps to a focus
+# slot of the artifact_type (M2). Never sent to a production LLM.
+ON_TOPIC_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "on_topic": {"type": "boolean"},
+        "matched_slot": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+    "required": ["on_topic"],
+}
+
+
 # A terminal analyze turn used when a scenario's brain script is exhausted.
 _DONE_TURN: dict[str, Any] = {
     "next_action": "done",
@@ -59,6 +72,7 @@ class ScriptedLLM:
         critic: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
         followup: dict[str, Any] | None = None,
+        judge: dict[str, Any] | None = None,
     ) -> None:
         self._brain = list(brain or [])
         self._brain_idx = 0
@@ -79,6 +93,9 @@ class ScriptedLLM:
             "suggestions": [],
         }
         self._summary = summary or {"summary": ""}
+        # Default judge passes (on_topic=True) — see test_m2 note: this is infra wiring, not a
+        # real M2 measurement (which needs a real LLM judge outside CI).
+        self._judge = judge or {"on_topic": True, "matched_slot": "", "reason": ""}
         self._followup = followup or {
             "message": "Mình cần làm rõ thêm phần còn thiếu trước khi viết artifact. Bạn có thể mô tả thêm điểm quan trọng nhất không?"
         }
@@ -109,6 +126,10 @@ class ScriptedLLM:
 
     def _route(self, response_format: dict[str, Any] | None, system: str | None) -> str:
         props = ((response_format or {}).get("properties")) or {}
+        # Judge guard MUST be first: a future schema carrying both on_topic and next_action would
+        # otherwise route to "analyze" and the judge branch would never run.
+        if "on_topic" in props:
+            return "judge"
         if "intent" in props:
             return "intent"
         if "suggestions" in props:
@@ -125,6 +146,8 @@ class ScriptedLLM:
         return "analyze"
 
     def _respond(self, route: str) -> Any:
+        if route == "judge":
+            return dict(self._judge)
         if route == "intent":
             return dict(self._intent)
         if route == "critic":

@@ -36,11 +36,11 @@ ANALYSIS_SCHEMA = {
         "confidence": {"type": "number"},
         "gaps": {"type": "array", "items": {"type": "string"}},
         "message": {"type": "string"},
-        # Phase 6 (one-question rhythm) — both optional, additive. The critic still imports this
+        # (one-question rhythm) — both optional, additive. The critic still imports this
         # schema unchanged; `required` stays ["next_action", "confidence"].
         "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
         "acknowledgment": {"type": "string"},
-        # Phase 1 (BRD slot coverage) — optional, additive, and consumed at runtime by analyze_node.
+        # (BRD slot coverage) — optional, additive, and consumed at runtime by analyze_node.
         "slot_assessment": {
             "type": "object",
             "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
@@ -110,7 +110,7 @@ SUMMARY_SYSTEM = (
     "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
 )
 
-# Phase 5 — quick-action options for confirm_node, per locale. FE renders these as buttons; the
+# — quick-action options for confirm_node, per locale. FE renders these as buttons; the
 # chosen value is POSTed back as a normal message (Open Question Q3 decision — no new endpoint).
 _CONFIRM_OPTIONS = {
     "vi": [
@@ -356,12 +356,23 @@ def route_node(state: WorkflowState) -> str:
         return END
 
     action = (state.get("analysis_result") or {}).get("next_action", "done")
-    # slot-coverage gate (phase brd-slot-coverage): block early propose/done for BRD keys.
-    # coverage_complete is only False for a BRD key below threshold; None/True fail open.
-    # Stall escape: once coverage stops advancing, relax the gate so a model that chronically
-    # under-reports slots cannot trap the user in an endless ask loop.
+    # slot-coverage gate (LLM-led soft gate): two tiers. coverage_complete is only False for a
+    # BRD key below threshold; None/True fail open. Stall escape relaxes both tiers once coverage
+    # stops advancing so a chronically under-reporting model cannot trap the user in an ask loop.
     stalled = (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT
-    if state.get("coverage_complete") is False and not stalled and action in ("propose", "done"):
+    coverage_incomplete = state.get("coverage_complete") is False
+    # Tier 1 — hard floor: 0 slot filled blocks even with a user override. MUST stay before tier 2
+    # (and no return may be inserted between them): otherwise a turn-1 propose containing an
+    # affirmative token would slip past the floor. Diff-agent plan must not reorder these.
+    if coverage_incomplete and not stalled and _below_minimum_floor(state) and action in ("propose", "done"):
+        return "ask_human"
+    # Tier 2 — soft gate: past the floor, yield to an explicit user request to create now.
+    if (
+        coverage_incomplete
+        and not stalled
+        and not _user_requests_propose(state)
+        and action in ("propose", "done")
+    ):
         return "ask_human"
     if action == "ask":
         return "ask_human"
@@ -391,7 +402,7 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         else:
             raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
 
-    # Phase 6 one-question rhythm: prepend the acknowledgment of the user's previous answer when the
+    # one-question rhythm: prepend the acknowledgment of the user's previous answer when the
     # LLM supplied one. Both fields are optional — never KeyError on a turn that omits them.
     # str() guard: the LLM may return a non-string here (schema is not enforced at runtime),
     # and .strip() on a non-string would crash the node before the interrupt fires.
@@ -643,7 +654,8 @@ def _build_slot_directive(state: WorkflowState) -> str:
         "Quy tắc chấm: 'filled' khi user đã cung cấp thông tin rõ ràng cho slot đó; 'partial' khi mới có "
         "một phần hoặc còn mơ hồ; 'empty' khi chưa có gì. Nếu câu trả lời mới nhất của user đã đáp ứng "
         "một slot, PHẢI nâng slot đó lên 'filled' hoặc 'partial' — tuyệt đối không giữ nguyên 'empty'. "
-        "Chỉ tiếp tục hỏi khi còn slot 'empty'/'partial'; khi đa số slot đã 'filled' thì chuyển sang propose."
+        "Đây là rubric tham chiếu để bạn tự đánh giá độ đầy đủ, KHÔNG phải checklist hỏi tuần tự: bạn tự "
+        "quyết slot nào nên khai thác tiếp theo dựa trên mạch hội thoại, và tự quyết khi nào đã đủ để propose."
     )
 
 
@@ -661,11 +673,13 @@ def _pick_weak_slot(slot_coverage: dict[str, str], required_slots: list[str], ex
 
 
 def _coverage_hint_target(state: WorkflowState) -> str | None:
-    """Required slot the coverage hint will pin this turn, or None when it won't.
+    """Required slot to exclude from this turn's gap inventory, or None when none applies.
 
-    None means: coverage is OK/untracked, the loop has stalled, or the only weak slot left
-    is the one asked last turn — in every case re-pinning would repeat the question, so the
-    hint steers the model to move on instead. analyze_node persists this as last_asked_slot.
+    analyze_node persists this as last_asked_slot; _build_coverage_hint drops it from the gap
+    list so the same slot is not re-offered two turns running (best-effort anti-repeat — the
+    LLM may still pick a different listed slot). None means coverage is OK/untracked, the loop
+    has stalled, or the only weak slot left is the one asked last turn, in which case the hint
+    steers the model to move on instead of repeating.
     """
     if state.get("coverage_complete") is not False:
         return None
@@ -690,12 +704,25 @@ def _build_coverage_hint(state: WorkflowState) -> str:
             f"\n\nCoverage '{artifact_type}': độ phủ không tăng sau nhiều lượt hỏi. Đừng lặp lại cùng câu "
             "hỏi — hãy tổng hợp thông tin đã có và chuyển sang propose, hoặc hỏi một góc độ hoàn toàn khác."
         )
+    # Gap-inventory: list every weak slot (empty first, then partial) so the LLM picks the angle
+    # that fits the conversation instead of being pinned to one scripted question. last_asked_slot
+    # is excluded for best-effort anti-repeat — see _coverage_hint_target.
     slot_coverage = state.get("slot_coverage") or {}
-    description = SLOT_DESCRIPTIONS.get(weak_slot, weak_slot)
-    status = (slot_coverage.get(weak_slot) or "empty").upper()
+    required_slots = (BRD_SLOTS.get(artifact_type) or {}).get("required") or []
+    last_asked = state.get("last_asked_slot")
+    gap_lines = [
+        f"- {SLOT_DESCRIPTIONS.get(slot, slot)} ({status})"
+        for status in ("empty", "partial")
+        for slot in required_slots
+        if slot != last_asked and slot_coverage.get(slot) == status
+    ]
+    inventory = "\n".join(gap_lines)
     return (
-        f"\n\nCoverage '{artifact_type}': {weak_slot}={status} -> tiếp theo cần hỏi về {description}. "
-        "Không được trả lời cụt chỉ bằng câu hỏi; hãy có một câu dẫn dắt ngắn, rồi đặt một câu hỏi chính."
+        f"\n\nCoverage '{artifact_type}': các khía cạnh còn thiếu hoặc chưa rõ (rubric tham chiếu, "
+        "không phải thứ tự bắt buộc):\n"
+        f"{inventory}\n"
+        "Tự chọn angle phù hợp nhất với mạch hội thoại để khai thác tiếp — không nhất thiết theo thứ tự "
+        "trên. Không được trả lời cụt chỉ bằng câu hỏi; hãy có một câu dẫn dắt ngắn, rồi đặt một câu hỏi chính."
     )
 
 
@@ -762,6 +789,32 @@ _YES_KEYWORDS = {"có", "yes", "đồng ý", "ok", "oke", "okay", "tạo", "đư
 def _is_affirmative(text: str) -> bool:
     tokens = set(text.lower().split())
     return bool(tokens & _YES_KEYWORDS)
+
+
+def _user_requests_propose(state: WorkflowState) -> bool:
+    """Whether the latest user message asks to create the artifact now.
+
+    Reuses _is_affirmative (already tested for confirm_node). Known limitation: short tokens
+    like "có"/"ok" can false-positive in a long sentence; the route_node hard floor caps the
+    blast radius at the 0-filled state only — past the floor a false-positive can advance an
+    incomplete BRD to confirm. See Risks in the plan.
+    """
+    for m in reversed(state.get("messages") or []):
+        role, content = _msg_role_content(m)
+        if role == "user":
+            return _is_affirmative(content)
+    return False
+
+
+def _below_minimum_floor(state: WorkflowState) -> bool:
+    """True when no required slot is filled yet — blocks propose-from-greeting.
+
+    slot_coverage is None for non-BRD artifacts -> return False (fail-open, do not block).
+    """
+    slot_coverage = state.get("slot_coverage")
+    if not slot_coverage:
+        return False
+    return not any(v == "filled" for v in slot_coverage.values())
 
 
 async def confirm_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:

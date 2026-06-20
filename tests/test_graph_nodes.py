@@ -421,7 +421,8 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
 
     assert "Coverage" in prompt
     assert "root_cause" in prompt
-    assert "EMPTY" in prompt
+    # Gap-inventory marker — distinguishes the coverage hint from the slot directive.
+    assert "các khía cạnh còn thiếu" in prompt
     assert "trả lời cụt chỉ bằng câu hỏi" in prompt
     assert "một câu hỏi chính" in prompt
 

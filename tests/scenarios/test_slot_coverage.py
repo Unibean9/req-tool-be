@@ -272,6 +272,121 @@ async def test_gate_redirects_done_without_message_does_not_crash(client, scenar
     assert agent_messages[-1]["content"].count("?") == 1
 
 
+# ---------------------------------------------------------------------------
+# Eval scenarios for the LLM-led rebalance — M1 (no consecutive repeat), M2 (on-topic judge
+# infra), M3 (ask->propose timing incl. user override).
+# ---------------------------------------------------------------------------
+
+async def test_m2_question_maps_to_slot():
+    """M2 — judge infrastructure only.
+
+    The scripted judge defaults on_topic=True regardless of the question, so this confirms the
+    judge route is wired, NOT that questions are actually on-topic. Real M2 needs a live LLM
+    judge outside CI (see plan.md M2). Asserting more here would be false confidence.
+    """
+    from tests.scenarios.scripted_llm import ON_TOPIC_SCHEMA, ScriptedLLM
+
+    llm = ScriptedLLM(brain=[])
+    result, _usage = await llm.generate(
+        messages=[{"role": "user", "content": "Ai là người tài trợ sáng kiến này?"}],
+        response_format=ON_TOPIC_SCHEMA,
+    )
+
+    assert result["on_topic"] is True
+    assert llm.calls[-1]["route"] == "judge"
+
+
+async def test_m3_proposes_when_coverage_sufficient(client, scenario_env, scenario_project):
+    """M3 — once coverage is met the agent reaches confirm (proposes on time)."""
+    headers, project = scenario_project
+    required = BRD_SLOTS["intent"]["required"]
+    final_turn = propose(artifact("intent", "Intent hoàn chỉnh", "Nội dung đầy đủ cho intent."))
+    final_turn["slot_assessment"] = _full(required)
+    scenario = Scenario(
+        name="m3-proposes-when-sufficient",
+        artifact_type="intent",
+        llm=ScriptedLLM(brain=[final_turn]),
+        actions=[{"type": "send", "content": "Đây là toàn bộ thông tin đầy đủ cho intent."}],
+        expect={"min_coverage": COVERAGE_THRESHOLD["intent"]},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, uuid.UUID(project["id"]), scenario)
+
+    recorder = await driver.run()
+
+    assert recorder.summary["final_interrupt"] == "ask_human"
+    final_msgs = [m for m in recorder.steps[-1]["snapshot"]["messages"] if m["role"] == "agent"]
+    assert final_msgs[-1]["payload"]["kind"] == "confirm"
+
+
+async def test_m3_user_override_respected(client, scenario_env, scenario_project):
+    """M3 (soft gate) — coverage incomplete but the user says "cứ tạo đi" -> agent proceeds.
+
+    Past the minimum floor (1 slot filled) and below the stall limit, so the only reason the
+    gate yields is the user override — this is the soft gate exercised end-to-end.
+    """
+    headers, project = scenario_project
+    block_turn = ask("Vì sao sáng kiến này cần làm bây giờ?", slot_assessment={"why_now": "filled"})
+    override_turn = {
+        **propose(artifact("intent", "Intent nháp", "Nội dung sơ bộ cho intent.")),
+        "message": "Bạn bổ sung thêm thông tin còn thiếu được không?",
+        "slot_assessment": {"why_now": "filled"},
+    }
+    scenario = Scenario(
+        name="m3-user-override-respected",
+        artifact_type="intent",
+        llm=ScriptedLLM(brain=[block_turn, override_turn]),
+        actions=[
+            {"type": "send", "content": "Tôi cần làm rõ intent."},
+            {"type": "send", "content": "cứ tạo đi"},
+        ],
+        expect={},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, uuid.UUID(project["id"]), scenario)
+
+    recorder = await driver.run()
+
+    final_msgs = [m for m in recorder.steps[-1]["snapshot"]["messages"] if m["role"] == "agent"]
+    assert final_msgs[-1]["payload"]["kind"] == "confirm"
+
+
+async def test_m1_last_asked_slot_no_consecutive_repeat(client, scenario_env, scenario_project):
+    """M1 — drive a real multi-turn HTTP conversation under chronic under-grading and assert the
+    persisted last_asked_slot never repeats two turns running.
+
+    Unlike the unit test (which calls analyze_node directly), this exercises the full
+    HTTP -> graph -> checkpointer path. Anti-repeat is best-effort by design (the hint steers the
+    LLM but does not bind it); here the scripted brain emits no slot credit, isolating the
+    deterministic rotation of the exclusion target.
+    """
+    headers, project = scenario_project
+    scenario = Scenario(
+        name="m1-no-consecutive-repeat",
+        artifact_type="intent",
+        llm=ScriptedLLM(
+            brain=[
+                ask("Câu hỏi khai thác 1?", slot_assessment={}),
+                ask("Câu hỏi khai thác 2?", slot_assessment={}),
+                ask("Câu hỏi khai thác 3?", slot_assessment={}),
+            ]
+        ),
+        actions=[],
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, uuid.UUID(project["id"]), scenario)
+    scenario_env.set_llm(scenario.llm)
+    data = await driver._create_session()
+    driver.session_id = uuid.UUID(data["session_id"])
+
+    sequence: list[str | None] = []
+    for content in ["Tôi cần làm rõ intent.", "Trả lời thứ nhất.", "Trả lời thứ hai."]:
+        await driver._send_message(content)
+        await scenario_env.drain(driver.session_id)
+        sequence.append(await scenario_env.get_checkpoint_field(driver.session_id, "last_asked_slot"))
+
+    asked = [slot for slot in sequence if slot is not None]
+    assert asked, sequence
+    assert all(a != b for a, b in zip(asked, asked[1:])), sequence
+
+
 async def test_get_checkpoint_field_reads_coverage_ratio(client, scenario_env, scenario_project):
     """Direct test of the harness helper used to assert min_coverage."""
     headers, project = scenario_project

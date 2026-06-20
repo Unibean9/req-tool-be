@@ -47,6 +47,33 @@ def test_slot_directive_empty_for_non_brd():
     assert _build_slot_directive(_state(artifact_type="functional_requirement")) == ""
 
 
+def test_slot_directive_is_rubric_not_script():
+    """The directive is a reference rubric, not a sequential march.
+
+    The old timing sentence forced 'only keep asking while slots are empty/partial; propose
+    when most are filled' — that scaffolding is what produced robotic, off-focus questions.
+    The directive must drop it and frame the slots as a reference rubric the LLM consults,
+    letting the LLM choose ask->propose timing from full context.
+    """
+    from app.graphs.nodes import _build_slot_directive
+
+    directive = _build_slot_directive(_state(artifact_type="intent"))
+
+    # The hard sequential-timing sentence must be gone.
+    assert "Chỉ tiếp tục hỏi khi còn slot" not in directive
+    # Reference-rubric framing must be present.
+    assert "rubric" in directive.lower() or "tham chiếu" in directive
+
+
+def test_slot_directive_emit_mandate_unchanged():
+    """compute_coverage still depends on the LLM emitting slot_assessment every turn."""
+    from app.graphs.nodes import _build_slot_directive
+
+    directive = _build_slot_directive(_state(artifact_type="intent"))
+
+    assert "slot_assessment" in directive
+
+
 # ---------------------------------------------------------------------------
 # Fix 2 — stall detection relaxes the gate and rewrites the hint
 # ---------------------------------------------------------------------------
@@ -57,8 +84,59 @@ def test_route_gate_blocks_below_stall_limit():
     state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
     state["coverage_complete"] = False
     state["coverage_stall_count"] = 0
+    # Past the floor (1 slot filled) so this exercises the soft gate, not the hard floor; and
+    # the user message carries no affirmative token so the block is for the right reason.
+    state["slot_coverage"] = {"why_now": "filled", "sponsor": "empty"}
+    state["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
 
     assert route_node(state) == "ask_human"
+
+
+def test_route_gate_respects_user_override():
+    """Soft gate: coverage incomplete but the user requests creation -> respect the override."""
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"why_now": "filled", "sponsor": "empty"}
+    state["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
+
+    assert route_node(state) == "confirm"
+
+
+def test_route_gate_blocks_at_zero_filled_even_with_user_override():
+    """Hard floor: 0 slot filled (propose-from-greeting) -> chặn kể cả user override."""
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"why_now": "empty", "sponsor": "empty"}
+    state["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
+
+    assert route_node(state) == "ask_human"
+
+
+def test_user_requests_propose_detects_signal():
+    from app.graphs.nodes import _user_requests_propose
+
+    yes = _state(artifact_type="intent")
+    yes["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
+    assert _user_requests_propose(yes) is True
+
+    no = _state(artifact_type="intent")
+    no["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
+    assert _user_requests_propose(no) is False
+
+
+def test_below_minimum_floor():
+    from app.graphs.nodes import _below_minimum_floor
+
+    assert _below_minimum_floor({"slot_coverage": {"why_now": "empty", "sponsor": "empty"}}) is True
+    assert _below_minimum_floor({"slot_coverage": {"why_now": "filled", "sponsor": "empty"}}) is False
+    # None coverage (non-BRD) -> fail-open, not below floor.
+    assert _below_minimum_floor({"slot_coverage": None}) is False
 
 
 def test_route_gate_relaxes_after_stall():
@@ -103,7 +181,61 @@ def test_coverage_hint_normal_below_stall():
     hint = _build_coverage_hint(state)
 
     assert "không tăng" not in hint
+    # Gap-inventory lists ALL weak slots, not a single pinned one.
     assert SLOT_DESCRIPTIONS["why_now"] in hint
+    assert SLOT_DESCRIPTIONS["sponsor"] in hint
+
+
+def test_coverage_hint_lists_all_weak_slots():
+    """The hint is a gap inventory, not a pinned single question.
+
+    It must list every empty/partial slot with its description and invite the LLM to pick the
+    angle that fits the conversation — instead of dictating 'next ask about X'.
+    """
+    from app.graphs.nodes import _build_coverage_hint
+
+    state = _state(artifact_type="intent")
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {
+        "why_now": "empty",
+        "sponsor": "empty",
+        "expected_outcome": "partial",
+        "success_state": "empty",
+    }
+
+    hint = _build_coverage_hint(state)
+
+    # Every weak slot appears with its human description.
+    for slot in ("why_now", "sponsor", "expected_outcome", "success_state"):
+        assert SLOT_DESCRIPTIONS[slot] in hint
+    # The old pinned-question phrasing must be gone.
+    assert "tiếp theo cần hỏi về" not in hint
+    # LLM is invited to choose the angle, not marched through a checklist.
+    assert "angle" in hint or "góc độ" in hint
+
+
+def test_coverage_hint_excludes_last_asked_slot():
+    """The slot asked last turn must not reappear in the gap list (anti-repeat exclusion)."""
+    from app.graphs.nodes import _build_coverage_hint
+
+    state = _state(artifact_type="intent")
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {
+        "why_now": "empty",
+        "sponsor": "empty",
+        "expected_outcome": "empty",
+        "success_state": "empty",
+    }
+    state["last_asked_slot"] = "why_now"
+
+    hint = _build_coverage_hint(state)
+
+    # A not-yet-asked slot is offered.
+    assert SLOT_DESCRIPTIONS["sponsor"] in hint
+    # The just-asked slot is dropped entirely from the inventory.
+    assert SLOT_DESCRIPTIONS["why_now"] not in hint
 
 
 def test_coverage_hint_rotates_off_last_asked_slot():
