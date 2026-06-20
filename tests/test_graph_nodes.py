@@ -46,6 +46,16 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "last_agent_run_id": None,
         "turn_count": turn_count,
         "missing_context": [],
+        "user_confirmed": None,
+        "critique_rounds": 0,
+        "quality_report": None,
+        "locale": None,
+        "intent": None,
+        "slot_coverage": None,
+        "coverage_ratio": None,
+        "coverage_complete": None,
+        "coverage_stall_count": None,
+        "last_asked_slot": None,
     }
 
 
@@ -1215,6 +1225,9 @@ def test_analyst_prompt_includes_one_question_directive():
     prompt = _build_analyst_prompt(_state(), [])
     assert "một câu hỏi chính" in prompt
     assert "trả lời cụt chỉ bằng câu hỏi" in prompt
+    assert "KHÔNG hỏi lại cùng nội dung/gap" in prompt
+    assert "chuyển progression sang phần khác" in prompt
+    assert "gap chưa được khai thác" in prompt
 
 
 @pytest.mark.asyncio

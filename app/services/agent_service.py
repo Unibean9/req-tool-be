@@ -505,6 +505,7 @@ class AgentService:
                     "coverage_ratio": None,
                     "coverage_complete": None,
                     "coverage_stall_count": None,
+                    "last_asked_slot": None,
                 }
                 await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 

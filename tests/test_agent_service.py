@@ -720,6 +720,7 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
     assert passed_state["slot_coverage"] is None
     assert passed_state["coverage_ratio"] is None
     assert passed_state["coverage_complete"] is None
+    assert passed_state["last_asked_slot"] is None
 
 
 @pytest.mark.asyncio

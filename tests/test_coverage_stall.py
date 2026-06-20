@@ -207,6 +207,51 @@ async def test_analyze_credits_last_asked_slot_when_regraded_empty(client, db_se
 
 
 @pytest.mark.asyncio
+async def test_original_scenario_no_consecutive_repeat_under_chronic_undergrade(client, db_session):
+    """Reproduce the production transcript (SLR/PRISMA "why now" loop).
+
+    Worst case: the model chronically grades every slot 'empty' even after the user answers —
+    exactly the condition that produced 3 verbatim-repeated questions. Drive analyze_node turn
+    by turn (threading state as LangGraph would) and assert the deterministic hint never steers
+    toward the same slot twice in a row, and the loop escapes via the stall break.
+
+    Pre-fix this loop pinned why_now every turn (no rotation, no credit) -> the asserted list
+    would be [why_now, why_now, ...] and fail. The fix makes it rotate and terminate.
+    """
+    from app.graphs.nodes import _coverage_hint_target, analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    all_empty = {"why_now": "empty", "sponsor": "empty", "expected_outcome": "empty", "success_state": "empty"}
+    mock_llm = _AsyncLLM(all_empty)
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    state = _state(artifact_type="intent")
+    pinned_sequence: list[str | None] = []
+    stall_broke = False
+    for _ in range(6):
+        # Slot this turn's hint steers the question toward (None -> no pin / stall break).
+        pinned_sequence.append(_coverage_hint_target(state))
+        result = await analyze_node(state, config)
+        state = {**state, **result}
+        if (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
+            stall_broke = True
+            break
+
+    asked = [slot for slot in pinned_sequence if slot is not None]
+    # No two consecutive turns ask about the same slot -> no verbatim repeated question.
+    assert asked, pinned_sequence
+    assert all(a != b for a, b in zip(asked, asked[1:])), pinned_sequence
+    # The chronic-undergrade loop is bounded: it escapes via the stall break instead of nagging.
+    assert stall_broke
+
+
+@pytest.mark.asyncio
 async def test_analyze_stall_zero_when_no_slot_assessment(client, db_session):
     """No slot_assessment -> fail-open coverage -> stall counter resets to 0."""
     result, _ = await _run_analyze(client, db_session, None, prev_ratio=0.0, prev_stall=2)
