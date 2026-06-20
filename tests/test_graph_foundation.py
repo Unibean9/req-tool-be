@@ -109,6 +109,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "quality_report": None,
         "locale": None,
         "intent": None,
+        "slot_coverage": None,
+        "coverage_ratio": None,
+        "coverage_complete": None,
     }
 
     assert state["turn_count"] == 0
@@ -128,6 +131,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "quality_report",
         "locale",
         "intent",
+        "slot_coverage",
+        "coverage_ratio",
+        "coverage_complete",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

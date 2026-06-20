@@ -10,6 +10,7 @@ from sqlalchemy import exists, select
 from app.config import settings
 from app.graphs.personas import get_persona
 from app.graphs.policy import ApprovalRequired, GovernanceDenied, ancestor_types
+from app.graphs.slot_schema import BRD_SLOTS, SLOT_DESCRIPTIONS, compute_coverage
 from app.graphs.state import WorkflowState
 from app.graphs.tools import create_artifact, read_artifacts
 from app.models.agent import (
@@ -34,6 +35,11 @@ ANALYSIS_SCHEMA = {
         # schema unchanged; `required` stays ["next_action", "confidence"].
         "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
         "acknowledgment": {"type": "string"},
+        # Phase 1 (BRD slot coverage) — optional, additive, and consumed at runtime by analyze_node.
+        "slot_assessment": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
+        },
         "proposals": {
             "type": "array",
             "items": {
@@ -248,6 +254,20 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         response_format=ANALYSIS_SCHEMA,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
+    slot_assessment = analysis_result.get("slot_assessment") if isinstance(analysis_result, dict) else None
+    # slot-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
+    # separate from "reported empty {}" (evaluated as missing -> gate), so non-slot-aware
+    # turns such as non-BRD artifacts or confident proposals continue normally.
+    if slot_assessment is None:
+        coverage = {"slot_coverage": None, "coverage_ratio": None, "coverage_complete": None}
+    else:
+        coverage = compute_coverage(artifact_type, slot_assessment)
+    if isinstance(analysis_result, dict):
+        analysis_result = {
+            **analysis_result,
+            "coverage_ratio": coverage["coverage_ratio"],
+            "coverage_complete": coverage["coverage_complete"],
+        }
 
     async with session_factory() as db:
         run = AgentRun(
@@ -264,6 +284,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
+        **coverage,
     }
 
 
@@ -304,6 +325,10 @@ def route_node(state: WorkflowState) -> str:
         return END
 
     action = (state.get("analysis_result") or {}).get("next_action", "done")
+    # slot-coverage gate (phase brd-slot-coverage): block early propose/done for BRD keys.
+    # coverage_complete is only False for a BRD key below threshold; None/True fail open.
+    if state.get("coverage_complete") is False and action in ("propose", "done"):
+        return "ask_human"
     if action == "ask":
         return "ask_human"
     if action == "propose":
@@ -319,7 +344,14 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     analysis_result = state.get("analysis_result") or {}
     message = analysis_result.get("message", "")
     if not message:
-        raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
+        # The slot-coverage gate can redirect a propose/done turn (which carries no message)
+        # to ask_human when coverage is incomplete. Fall back to a generic follow-up so
+        # elicitation continues; the next analyze turn gets the coverage hint to steer the
+        # real question. A genuine ask turn with no message is still a bug -> raise.
+        if analysis_result.get("next_action") in ("propose", "done"):
+            message = "Bạn có thể chia sẻ thêm thông tin để mình hoàn thiện phần này không?"
+        else:
+            raise ValueError("ask_human_node: LLM returned next_action='ask' but no message field")
 
     # Phase 6 one-question rhythm: prepend the acknowledgment of the user's previous answer when the
     # LLM supplied one. Both fields are optional — never KeyError on a turn that omits them.
@@ -427,8 +459,8 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
             tool_call_ids = [str(tc.id) for tc in still_proposed]
         else:
             for proposal in proposals:
-                # Dùng artifact_type của session, không phụ thuộc vào giá trị LLM trả về
-                # vì LLM có thể trả về type không hợp lệ (vd: "brd" thay vì "goal")
+                # Use the session artifact_type instead of trusting the LLM value because
+                # the LLM can return an invalid type such as "brd" instead of "goal".
                 artifact_type = session_artifact_type
                 try:
                     await create_artifact(
@@ -525,6 +557,7 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         if locale
         else ""
     )
+    coverage_hint = _build_coverage_hint(state)
 
     return (
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
@@ -538,8 +571,44 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         "hãy ghi nhận câu trả lời gần nhất của user vào field acknowledgment (1 câu ngắn) và đánh giá "
         "answer_assessment là 'complete'/'partial'/'none'. Nếu 'partial', hãy đào sâu cùng gap đó thay vì "
         "chuyển sang gap mới."
+        f"{_build_slot_directive(state)}"
+        f"{coverage_hint}"
         f"{language_lock}"
     )
+
+
+def _build_slot_directive(state: WorkflowState) -> str:
+    """For BRD artifact types, instruct the LLM to always report slot_assessment.
+
+    Without this the gate is a no-op in production: slot_assessment is optional in the
+    schema, so an LLM that omits it never gets coverage computed (None -> fail-open).
+    """
+    artifact_type = state.get("artifact_type") or ""
+    slot_spec = BRD_SLOTS.get(artifact_type)
+    if not slot_spec:
+        return ""
+    required = ", ".join(slot_spec["required"])
+    return (
+        f"\n\nĐÁNH GIÁ ĐỘ PHỦ: với loại '{artifact_type}', LUÔN trả thêm field slot_assessment — một "
+        f"object đánh giá từng chiều thông tin bắt buộc ({required}) ở mức 'filled'/'partial'/'empty' "
+        "dựa trên những gì user đã cung cấp. Khi các chiều này chưa đủ, hãy tiếp tục hỏi thay vì propose."
+    )
+
+
+def _build_coverage_hint(state: WorkflowState) -> str:
+    if state.get("coverage_complete") is not False:
+        return ""
+    artifact_type = state.get("artifact_type")
+    slot_coverage = state.get("slot_coverage") or {}
+    required_slots = (BRD_SLOTS.get(artifact_type or "") or {}).get("required") or []
+    weak_slot = next((slot for slot in required_slots if slot_coverage.get(slot) == "empty"), None)
+    if weak_slot is None:
+        weak_slot = next((slot for slot in required_slots if slot_coverage.get(slot) == "partial"), None)
+    if weak_slot is None:
+        return ""
+    description = SLOT_DESCRIPTIONS.get(weak_slot, weak_slot)
+    status = (slot_coverage.get(weak_slot) or "empty").upper()
+    return f"\n\nCoverage '{artifact_type}': {weak_slot}={status} -> hỏi về {description} tiếp theo, một câu duy nhất."
 
 
 def _build_summary_prompt(state: WorkflowState) -> str:

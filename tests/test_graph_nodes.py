@@ -394,6 +394,38 @@ def test_build_prompt_falls_back_to_5_messages_when_empty():
     assert "Tin nhắn 1" in prompt
 
 
+def test_coverage_hint_injected_in_prompt_when_incomplete():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    state["slot_coverage"] = {
+        "who": "filled",
+        "obstacle": "filled",
+        "root_cause": "empty",
+        "frequency": "empty",
+        "impact": "empty",
+    }
+    state["coverage_complete"] = False
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "Coverage" in prompt
+    assert "root_cause" in prompt
+    assert "EMPTY" in prompt
+
+
+def test_no_coverage_hint_when_complete():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    state["slot_coverage"] = {"root_cause": "filled"}
+    state["coverage_complete"] = True
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "Coverage" not in prompt
+
+
 @pytest.mark.asyncio
 async def test_messages_not_truncated_by_summarize(monkeypatch):
     from app.graphs.nodes import summarize_node
@@ -463,7 +495,7 @@ async def test_analyze_node_creates_agent_run_record(client, db_session):
     async with TestSessionFactory() as db:
         run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()
         assert run.session_id == agent_session.id
-        # usage = None → token_usage None, nhưng latency luôn đo được (int không âm)
+        # usage = None -> token_usage None, but latency is always measured as a non-negative int.
         assert run.token_usage is None
         assert isinstance(run.latency_ms, int)
         assert run.latency_ms >= 0
@@ -532,6 +564,65 @@ def test_route_node_done_routes_to_end():
 
     state = _state(turn_count=2, analysis_result={"next_action": "done"})
     assert route_node(state) == END
+
+
+def test_slot_gate_blocks_propose_when_incomplete():
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+
+    assert route_node(state) == "ask_human"
+
+
+def test_slot_gate_allows_propose_when_complete():
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = True
+
+    assert route_node(state) == "confirm"
+
+
+def test_slot_gate_blocks_done_when_incomplete():
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "done"})
+    state["coverage_complete"] = False
+
+    assert route_node(state) == "ask_human"
+
+
+def test_slot_gate_never_overrides_turn_limit():
+    from app.graphs.nodes import route_node
+    from langgraph.graph import END
+
+    state = _state(artifact_type="problem", turn_count=10, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+
+    assert route_node(state) == END
+
+
+def test_slot_gate_none_coverage_fails_open():
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = None
+
+    assert route_node(state) == "confirm"
+
+
+@pytest.mark.parametrize(
+    "brd_key",
+    ["intent", "goal", "stakeholder", "capability", "constraint", "assumption", "risk", "open_question"],
+)
+def test_slot_gate_blocks_propose_for_each_brd_key(brd_key):
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type=brd_key, turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+
+    assert route_node(state) == "ask_human"
 
 
 # ---------------------------------------------------------------------------
@@ -811,7 +902,7 @@ async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_s
 
 @pytest.mark.asyncio
 async def test_resume_from_old_topology_checkpoint(client, db_session):
-    """Checkpoint lưu dưới topology cũ (entry 'analyze', không có intent_router) vẫn resume được."""
+    """A checkpoint saved under the old topology still resumes without intent_router."""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, StateGraph
     from langgraph.types import Command

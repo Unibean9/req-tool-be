@@ -127,6 +127,15 @@ class ScenarioDriver:
             final_interrupt=final.get("interrupt_type"),
             brain_turns_consumed=self.scenario.llm._brain_idx,
         )
+
+        # Slot-coverage harness: only scenarios that opt in via expect["min_coverage"]
+        # touch this path, so the 11 existing scenarios stay byte-for-byte unaffected.
+        if "min_coverage" in self.scenario.expect:
+            min_coverage = self.scenario.expect["min_coverage"]
+            coverage_ratio = await self.env.get_checkpoint_field(self.session_id, "coverage_ratio")
+            assert coverage_ratio is not None, "expect.min_coverage set but coverage_ratio missing from checkpoint"
+            assert coverage_ratio >= min_coverage, f"coverage_ratio {coverage_ratio} < min_coverage {min_coverage}"
+
         return self.recorder
 
     async def _apply(self, action: dict[str, Any]) -> None:

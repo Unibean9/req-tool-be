@@ -140,7 +140,13 @@ class ScriptedLLM:
 # Brain-turn builders — keep scenario definitions terse and readable.
 # ---------------------------------------------------------------------------
 
-def ask(message: str, *, acknowledgment: str = "", gaps: list[str] | None = None) -> dict[str, Any]:
+def ask(
+    message: str,
+    *,
+    acknowledgment: str = "",
+    gaps: list[str] | None = None,
+    slot_assessment: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """An analyze turn that asks the user one question."""
     turn: dict[str, Any] = {
         "next_action": "ask",
@@ -151,6 +157,8 @@ def ask(message: str, *, acknowledgment: str = "", gaps: list[str] | None = None
     if acknowledgment:
         turn["acknowledgment"] = acknowledgment
         turn["answer_assessment"] = "complete"
+    if slot_assessment is not None:
+        turn["slot_assessment"] = slot_assessment
     return turn
 
 

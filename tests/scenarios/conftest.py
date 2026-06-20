@@ -19,7 +19,6 @@ that would otherwise hit the real database / a real LLM:
 """
 
 import asyncio
-import tempfile
 import uuid
 from pathlib import Path
 from typing import Any
@@ -30,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.services.agent_service as agent_service_module
 from app.database import get_db
-from app.graphs.checkpointer import DelegatingCheckpointer
+from app.graphs.checkpointer import AgentSessionCheckpointer, DelegatingCheckpointer
 from app.graphs.graph import build_graph
 from app.main import app
 from app.models.agent import AgentSession
@@ -38,8 +37,9 @@ from app.models.base import Base
 from app.services.agent_service import AgentService
 from tests.helpers import create_org, create_project, make_auth_headers
 
-# Dedicated file-based engine — one connection per session, real isolation.
-_DB_PATH = Path(tempfile.gettempdir()) / "reqtool_scenarios.sqlite"
+# Keep the DB file in the workspace so scenario tests do not depend on Windows Temp capacity.
+_DB_PATH = Path(__file__).parents[2] / ".pytest_cache" / "reqtool_scenarios.sqlite"
+_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _SCENARIO_DB_URL = f"sqlite+aiosqlite:///{_DB_PATH.as_posix()}"
 scenario_engine = create_async_engine(_SCENARIO_DB_URL)
 ScenarioSessionFactory = async_sessionmaker(scenario_engine, class_=AsyncSession, expire_on_commit=False)
@@ -103,6 +103,16 @@ class ScenarioEnv:
                 await db.execute(select(AgentSession).where(AgentSession.id == session_id))
             ).scalar_one_or_none()
             return row.status.value if row else None
+
+    async def get_checkpoint_field(self, session_id: uuid.UUID, field: str) -> Any:
+        checkpointer = AgentSessionCheckpointer(
+            session_id=str(session_id),
+            session_factory=ScenarioSessionFactory,
+        )
+        checkpoint = await checkpointer.aget_tuple({"configurable": {"thread_id": str(session_id)}})
+        if checkpoint is None:
+            return None
+        return (checkpoint.checkpoint.get("channel_values") or {}).get(field)
 
     async def drain(self, session_id: uuid.UUID, *, max_coros: int = 50) -> str | None:
         """Run every captured graph coroutine to completion, in order."""

@@ -22,6 +22,14 @@ _PROBLEM_BODY = (
     "Tác động: tỉ lệ tham gia buổi nhóm dưới 60%."
 )
 
+_PROBLEM_FULL_SLOT_ASSESSMENT = {
+    "who": "filled",
+    "obstacle": "filled",
+    "root_cause": "filled",
+    "frequency": "filled",
+    "impact": "filled",
+}
+
 _STAKEHOLDER_BODY = (
     "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; "
     "(2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; "
@@ -52,14 +60,14 @@ _NFR_BODY = (
     "Dữ liệu lịch cá nhân được mã hoá khi lưu và chỉ trưởng nhóm xem được bản tổng hợp."
 )
 
-# Epic must carry INVEST "testable" signals (acceptance / khi-thì).
+# Epic must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _EPIC_BODY = (
     "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, "
     "gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, "
     "thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi."
 )
 
-# Story must carry INVEST "testable" signals (acceptance / khi-thì).
+# Story must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _STORY_BODY = (
     "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học "
     "mà không phải hỏi từng người.\n"
@@ -181,8 +189,10 @@ def reject_proposal() -> Scenario:
 
 def problem_propose_approve() -> Scenario:
     """Happy path for a `problem` artifact — used by the aggregated-document test."""
+    turn = propose(artifact("problem", "Vấn đề: Điều phối lịch học nhóm thủ công", _PROBLEM_BODY))
+    turn["slot_assessment"] = _PROBLEM_FULL_SLOT_ASSESSMENT
     llm = ScriptedLLM(
-        brain=[propose(artifact("problem", "Vấn đề: Điều phối lịch học nhóm thủ công", _PROBLEM_BODY))]
+        brain=[turn]
     )
     return _scenario(
         "problem-propose-approve",

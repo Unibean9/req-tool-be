@@ -19,3 +19,6 @@ class WorkflowState(TypedDict):
     quality_report: dict[str, Any] | None
     locale: str | None
     intent: str | None
+    slot_coverage: dict[str, str] | None
+    coverage_ratio: float | None
+    coverage_complete: bool | None
