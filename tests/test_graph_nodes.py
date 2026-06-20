@@ -115,6 +115,94 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
 
 @pytest.mark.asyncio
+async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_session):
+    """A `problem` session must see its `intent` predecessor as analyst context.
+
+    Regression: analyze_node previously read only same-type artifacts, so a
+    derived type (problem/goal/...) never saw the upstream source it derives
+    from — leaving the analyst blind to intent and hurting traceability.
+    """
+    from app.graphs.nodes import analyze_node
+    from app.models.artifact import Artifact
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    # An existing intent artifact in the project — the predecessor of `problem`.
+    intent_title = "Intent: Điều phối lịch học nhóm cho sinh viên"
+    db_session.add(
+        Artifact(project_id=project_id, type="intent", title=intent_title, extra_metadata={}, status="draft")
+    )
+    await db_session.commit()
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="problem", workflow_area="analysis", graph_checkpoint={}
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(
+        return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
+    )
+
+    state = _state(artifact_type="problem")
+    config = _config(str(session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+
+    prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert intent_title in prompt, "Predecessor intent title must appear in the analyst prompt context"
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_session):
+    """A deep type (`story`) must see its full ancestry, not just the direct parent.
+
+    `story`'s only declared predecessor is `epic`, but provenance runs all the way
+    up to `intent`. The context loader uses the transitive closure, so both the
+    direct parent (`epic`) and a distant ancestor (`intent`) must reach the prompt.
+    """
+    from app.graphs.nodes import analyze_node
+    from app.models.artifact import Artifact
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    intent_title = "Intent: Điều phối lịch học nhóm"
+    epic_title = "Epic: Đồng bộ và đối chiếu lịch nhóm"
+    db_session.add(Artifact(project_id=project_id, type="intent", title=intent_title, extra_metadata={}, status="draft"))
+    db_session.add(Artifact(project_id=project_id, type="epic", title=epic_title, extra_metadata={}, status="draft"))
+    await db_session.commit()
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="story", workflow_area="analysis", graph_checkpoint={}
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(
+        return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
+    )
+
+    state = _state(artifact_type="story")
+    config = _config(str(session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+
+    prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert epic_title in prompt, "Direct parent (epic) must appear in the prompt"
+    assert intent_title in prompt, "Distant ancestor (intent) must appear via transitive closure"
+
+
+@pytest.mark.asyncio
 async def test_analyze_uses_strong_client_when_present(client, db_session):
     from app.graphs.nodes import analyze_node
 

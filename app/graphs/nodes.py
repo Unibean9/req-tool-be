@@ -9,7 +9,7 @@ from sqlalchemy import exists, select
 
 from app.config import settings
 from app.graphs.personas import get_persona
-from app.graphs.policy import ApprovalRequired, GovernanceDenied
+from app.graphs.policy import ApprovalRequired, GovernanceDenied, ancestor_types
 from app.graphs.state import WorkflowState
 from app.graphs.tools import create_artifact, read_artifacts
 from app.models.agent import (
@@ -214,13 +214,25 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     if llm_client is None:
         raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
 
+    # Context for the analyst = artifacts of the current type (avoid duplicates)
+    # plus its full transitive ancestry — the upstream sources it must derive
+    # from (e.g. a `story` traces back through `epic` ... up to `intent`). Using
+    # the closure (not just direct parents) makes provenance complete for every
+    # type regardless of how ARTIFACT_PREDECESSORS declares it; dedup keeps it
+    # token-light since read_artifacts returns title-only rows (no body).
+    artifact_type = state["artifact_type"]
+    context_types = [artifact_type, *ancestor_types(artifact_type)]
     async with session_factory() as db:
-        artifacts = await read_artifacts(
-            db=db,
-            project_id=project_id,
-            artifact_type=state["artifact_type"],
-            context={"workflow_area": state["workflow_area"]},
-        )
+        artifacts: list[dict[str, Any]] = []
+        for context_type in context_types:
+            artifacts.extend(
+                await read_artifacts(
+                    db=db,
+                    project_id=project_id,
+                    artifact_type=context_type,
+                    context={"workflow_area": state["workflow_area"]},
+                )
+            )
 
     prompt = _build_analyst_prompt(state, artifacts)
     system_prompt = get_persona(
