@@ -157,8 +157,12 @@ async def finalize(
 
 
 # ---------------------------------------------------------------------------
-# write_note — explore/critique scratchpad (no interrupt, no DB, no approval)
+# critique_note / explore_note — mode-bearing scratchpad notes
+# (no interrupt, no DB, no approval)
 # ---------------------------------------------------------------------------
+# Splitting the former single write_note into two named angles makes the analytical move a
+# first-class menu choice and lets analyze_node derive `active_mode` from the tool picked, so
+# proactive S1 coverage no longer depends on the model self-reporting active_mode.
 
 async def _write_note_impl(content: str, tool_call_id: str):
     # The note lives in the message history (decision 3): no `notes` state field, no DB row. It
@@ -167,11 +171,20 @@ async def _write_note_impl(content: str, tool_call_id: str):
 
 
 @tool
-async def write_note(
+async def critique_note(
     content: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Ghi một note phân tích/phản biện vào scratchpad trước khi hỏi hoặc draft (không cần duyệt)."""
+    """Ghi chú phản biện: soi điểm yếu, giả định rủi ro hay mâu thuẫn trong thông tin hiện có (không cần duyệt)."""
+    return await _write_note_impl(content, tool_call_id)
+
+
+@tool
+async def explore_note(
+    content: str,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Ghi chú khám phá: mở rộng góc nhìn, nêu hướng hoặc phương án chưa được xét tới (không cần duyệt)."""
     return await _write_note_impl(content, tool_call_id)
 
 
@@ -179,10 +192,13 @@ async def write_note(
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
-# After this many consecutive write_note turns the loop must ask_user/write_draft instead of
+# After this many consecutive note turns the loop must ask_user/write_draft instead of
 # noting again — the only guard against an infinite note loop (S4). Tune via T8 once the loop is
 # wired (Phase 5); start at 3.
 NOTE_STEP_LIMIT = 3
+
+# The scratchpad note tools, gated together as one family against the step-limit.
+NOTE_TOOL_NAMES = ("critique_note", "explore_note")
 
 
 def _tool_call_names(message) -> list[str]:
@@ -191,11 +207,11 @@ def _tool_call_names(message) -> list[str]:
     return [tc["name"] for tc in tool_calls if isinstance(tc, dict) and tc.get("name")]
 
 
-def _consecutive_write_notes(messages: list) -> int:
-    """Count write_note turns since the last ask_user/write_draft — derived from history (N2).
+def _consecutive_note_turns(messages: list) -> int:
+    """Count note turns since the last ask_user/write_draft — derived from history (N2).
 
     Counts per turn (per AIMessage), not per call: the limit is "N consecutive note turns", so a
-    turn that batches two write_note calls is still one turn against the step-limit.
+    turn that batches two note calls is still one turn against the step-limit.
     """
     count = 0
     for message in reversed(messages or []):
@@ -204,7 +220,7 @@ def _consecutive_write_notes(messages: list) -> int:
             continue
         if any(name in ("ask_user", "write_draft") for name in names):
             break
-        if "write_note" in names:
+        if any(name in NOTE_TOOL_NAMES for name in names):
             count += 1
     return count
 
@@ -214,11 +230,11 @@ def get_available_tools(state: WorkflowState) -> list:
 
     - `finalize` only once `working_draft` is non-empty (the single hard-gate; absent/None/blank
       → CLOSED, never crashes).
-    - `write_note` dropped after NOTE_STEP_LIMIT consecutive notes, forcing ask_user/write_draft.
+    - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes, forcing ask_user/write_draft.
     """
-    tools = [ask_user, write_draft, write_note]
+    tools = [ask_user, write_draft, critique_note, explore_note]
     if (state.get("working_draft") or "").strip():
         tools.append(finalize)
-    if _consecutive_write_notes(state.get("messages")) >= NOTE_STEP_LIMIT:
-        tools = [t for t in tools if t.name != "write_note"]
+    if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
+        tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
     return tools

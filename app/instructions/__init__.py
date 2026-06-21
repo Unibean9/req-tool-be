@@ -1,3 +1,10 @@
+"""Instruction layer — role-scoped decision frames for the analyst.
+
+An *instruction* steers the model's policy (which mode/tool to pick, when to finalize),
+not the per-turn payload. The harness owns schema and state (TOOL_SELECTION_SCHEMA plus
+the prompt assembled from runtime context in analyze_node); these files own judgment. They
+live inside the app so they ship and version with the code, and are loaded once at startup.
+"""
 from pathlib import Path
 
 # artifact_type → role key
@@ -19,7 +26,7 @@ _WORKFLOW_AREA_MAP: dict[str, str] = {
     "requirements":     "product_manager",
 }
 
-# role key → filename inside prompts dir
+# role key → filename inside this package
 _ROLE_PROMPT_FILE: dict[str, str] = {
     "business_analyst": "business-analyst.md",
     "product_manager":  "product-manager.md",
@@ -28,24 +35,26 @@ _ROLE_PROMPT_FILE: dict[str, str] = {
 _CACHE: dict[str, str] = {}
 
 
-def load_personas(base_path: Path | None) -> None:
-    """Load and cache prompt files from base_path. Called once at startup. Safe with None."""
+def load_instructions(base_path: Path | None = None) -> None:
+    """Load and cache instruction files. Called once at startup.
+
+    Defaults to this package's own directory; an override is accepted for tests.
+    """
     _CACHE.clear()
-    if base_path is None:
-        return
+    base = base_path or Path(__file__).parent
     for role, filename in _ROLE_PROMPT_FILE.items():
-        path = base_path / filename
+        path = base / filename
         if path.exists():
             _CACHE[role] = path.read_text(encoding="utf-8")
 
 
-def get_persona(
+def get_instruction(
     artifact_type: str,
     workflow_area: str,
     agent_role: str | None,
 ) -> str | None:
     """
-    Return cached prompt content for the resolved role, or None if not found.
+    Return cached instruction content for the resolved role, or None if not found.
     Priority: explicit agent_role > artifact_type map > workflow_area fallback.
     """
     role = (

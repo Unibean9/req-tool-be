@@ -1,12 +1,12 @@
 """Phase 4 — Explore Tools + Dynamic Gating.
 
-Adds the `write_note` scratchpad tool and `get_available_tools(state)`, the state-driven gate
-that decides which tools the loop may pick each turn. Two gates:
+Adds the note scratchpad tools (`critique_note`/`explore_note`) and `get_available_tools(state)`,
+the state-driven gate that decides which tools the loop may pick each turn. Two gates:
 - `finalize` appears only once `working_draft` is non-empty (the single hard-gate).
-- `write_note` is dropped after N consecutive note turns, forcing the loop to ask_user/write_draft
+- the note tools are dropped after N consecutive note turns, forcing the loop to ask_user/write_draft
   so it cannot spam notes forever (S4 — no infinite loop).
 
-`write_note_count` is derived on-the-fly from message history (N2) — no new state field.
+The consecutive-note count is derived on-the-fly from message history (N2) — no new state field.
 
 The bind_tools/system-prompt wiring into analyze_node (spec steps 4–5) and the T7 emergent-chain
 eval are deferred to Phase 5: the production LLMClient has no bind_tools and analyze_node emits no
@@ -24,8 +24,8 @@ def _names(tools):
 
 
 def _note_turn(call_id: str):
-    """An AIMessage choosing write_note — one note turn in the loop's history."""
-    return AIMessage(content="", tool_calls=[{"id": call_id, "name": "write_note", "args": {"content": "x"}}])
+    """An AIMessage choosing a note tool — one note turn in the loop's history."""
+    return AIMessage(content="", tool_calls=[{"id": call_id, "name": "critique_note", "args": {"content": "x"}}])
 
 
 # ---------------------------------------------------------------------------
@@ -56,14 +56,15 @@ def test_step_limit_forces_ask_or_draft_after_N_notes():
     messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
     names = _names(get_available_tools({"messages": messages}))
 
-    # write_note is dropped, so the loop is forced toward ask_user/write_draft.
-    assert "write_note" not in names
+    # the note tools are dropped, so the loop is forced toward ask_user/write_draft.
+    assert "critique_note" not in names and "explore_note" not in names
     assert "ask_user" in names or "write_draft" in names
 
 
 def test_write_note_available_below_step_limit():
     messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT - 1)]
-    assert "write_note" in _names(get_available_tools({"messages": messages}))
+    names = _names(get_available_tools({"messages": messages}))
+    assert "critique_note" in names and "explore_note" in names
 
 
 # ---------------------------------------------------------------------------

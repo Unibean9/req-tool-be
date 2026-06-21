@@ -9,7 +9,7 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
-from app.graphs.personas import get_persona
+from app.instructions import get_instruction
 from app.graphs.policy import ancestor_types
 from app.graphs.slot_schema import (
     BRD_SLOTS,
@@ -34,7 +34,7 @@ from app.models.agent import (
 TOOL_SELECTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "tool": {"type": "string", "enum": ["ask_user", "write_draft", "finalize", "write_note"]},
+        "tool": {"type": "string", "enum": ["ask_user", "write_draft", "finalize", "critique_note", "explore_note"]},
         "message": {"type": "string"},
         "title": {"type": "string"},
         "body": {"type": "string"},
@@ -59,8 +59,13 @@ _TOOL_ARG_KEYS = {
     "ask_user": ["message"],
     "write_draft": ["title", "body"],
     "finalize": ["summary"],
-    "write_note": ["content"],
+    "critique_note": ["content"],
+    "explore_note": ["content"],
 }
+
+# Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
+# picked tool so proactive S1 coverage no longer depends on the model self-reporting it.
+_NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "explore"}
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -233,7 +238,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
 
     prompt = _build_tool_selection_prompt(state, artifacts, draft_body)
     response_format = TOOL_SELECTION_SCHEMA
-    system_prompt = get_persona(
+    system_prompt = get_instruction(
         artifact_type=state["artifact_type"],
         workflow_area=state["workflow_area"],
         agent_role=cfg.get("agent_role"),
@@ -280,7 +285,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # selection that names a tool not currently offered down to a safe ask_user (S4). Done before
     # persist so analysis_result records the tool actually dispatched.
     if isinstance(analysis_result, dict):
-        analysis_result = {**analysis_result, "tool": _gate_selected_tool(state, analysis_result.get("tool"))}
+        gated_tool = _gate_selected_tool(state, analysis_result.get("tool"))
+        analysis_result = {**analysis_result, "tool": gated_tool}
+        # Derive active_mode from a note tool so S1 proactive coverage is tool-driven, not
+        # dependent on the model also filling active_mode (which it reliably defaults to 'qa').
+        if gated_tool in _NOTE_TOOL_MODE:
+            analysis_result["active_mode"] = _NOTE_TOOL_MODE[gated_tool]
 
     async with session_factory() as db:
         run = AgentRun(
@@ -551,7 +561,8 @@ def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], dr
         f"là một trong: {tool_menu}.\n"
         "- ask_user: hỏi người dùng một câu làm rõ — kèm field 'message'.\n"
         "- write_draft: đề xuất bản nháp artifact để duyệt — kèm 'title' và 'body'.\n"
-        "- write_note: ghi chú phân tích/phản biện vào scratchpad (không cần duyệt) — kèm 'content'.\n"
+        "- critique_note: ghi chú phản biện (soi điểm yếu/giả định rủi ro) vào scratchpad — kèm 'content'.\n"
+        "- explore_note: ghi chú khám phá (mở rộng góc nhìn/phương án) vào scratchpad — kèm 'content'.\n"
         "- finalize: chốt phiên — kèm 'summary' (chỉ khả dụng khi đã có draft).\n"
         "Luôn kèm 'active_mode' (qa/critique/explore/draft) và 'confidence' (0-1). Khi đã rõ đủ, cập nhật "
         "draft qua field 'draft_update' (bồi đắp tăng dần, không bịa nội dung chưa có). Không lặp lại câu "
@@ -581,9 +592,12 @@ def _build_mode_directive(state: WorkflowState) -> str:
             f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
         )
     return (
-        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): sau khi đã có ≥2 lượt làm rõ hoàn chỉnh, hãy chủ động chuyển "
-        "active_mode sang 'critique' (soi điểm yếu/giả định) hoặc 'explore' (mở rộng góc nhìn) "
-        "thay vì chỉ tiếp tục hỏi, và đặt tên chế độ trong field active_mode."
+        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): active_mode mô tả GÓC tiếp cận của lượt này, kể cả khi bạn vẫn "
+        "dùng ask_user. Sau khoảng 2 lượt đã nắm bối cảnh cơ bản — hoặc NGAY khi người dùng hỏi nhận "
+        "định/giả định/rủi ro/hướng đi của bạn — hãy chủ động chuyển active_mode sang 'critique' (soi "
+        "điểm yếu/giả định) hoặc 'explore' (mở rộng góc nhìn) thay vì để 'qa'. Có thể chọn "
+        "critique_note/explore_note để ghi lại phân tích trước khi phản hồi. Đừng mặc định 'qa' khi "
+        "bạn đang phản biện hay khám phá."
     )
 
 

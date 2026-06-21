@@ -106,8 +106,8 @@ async def test_empty_tool_selection_ends_turn(client, db_session):
 
 @pytest.mark.asyncio
 async def test_write_note_selection_dispatches_without_crash(client, db_session):
-    """write_note is offered by get_available_tools, so the compiled ToolNode must carry it or its
-    dispatch raises. Exercises a real graph turn: analyze picks write_note -> ToolNode -> loops back."""
+    """critique_note is offered by get_available_tools, so the compiled ToolNode must carry it or its
+    dispatch raises. Exercises a real graph turn: analyze picks the note -> ToolNode -> loops back."""
     from app.graphs.graph import build_graph
     from langgraph.checkpoint.memory import MemorySaver
     from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
@@ -117,7 +117,7 @@ async def test_write_note_selection_dispatches_without_crash(client, db_session)
 
     # First a note, then an ask so the loop pauses for the human instead of running unbounded.
     llm = ScriptedLLM(tool_brain=[
-        tool_select("write_note", content="Giả định: user là sinh viên.", active_mode="critique"),
+        tool_select("critique_note", content="Giả định: user là sinh viên.", active_mode="critique"),
         tool_select("ask_user", message="Bạn muốn xây gì?"),
     ])
     graph = build_graph(checkpointer=MemorySaver())
