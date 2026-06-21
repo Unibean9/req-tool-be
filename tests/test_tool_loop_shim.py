@@ -95,6 +95,29 @@ async def test_tool_selection_unavailable_tool_coerced_to_ask(monkeypatch, clien
 
 
 @pytest.mark.asyncio
+async def test_empty_tool_selection_ends_turn(monkeypatch, client, db_session):
+    """An empty selection (no tool) is the loop terminal: a plain AIMessage with no tool_calls so
+    route_node ends the turn instead of dispatching."""
+    monkeypatch.setattr(settings, "tool_loop_only", True)
+    from app.graphs.nodes import analyze_node
+    from tests.scenarios.scripted_llm import ScriptedLLM
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm = ScriptedLLM(tool_brain=[])  # exhausted immediately -> {} -> done
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), llm_client=llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    out = await analyze_node(state, config)
+    ai = out["messages"][-1]
+    assert isinstance(ai, AIMessage)
+    assert not ai.tool_calls
+    assert route_node({**state, **out}) == END
+
+
+@pytest.mark.asyncio
 async def test_write_note_selection_dispatches_without_crash(monkeypatch, client, db_session):
     """write_note is offered by get_available_tools, so the compiled ToolNode must carry it or its
     dispatch raises. Exercises a real graph turn: analyze picks write_note -> ToolNode -> loops back."""

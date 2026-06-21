@@ -495,7 +495,7 @@ class AgentService:
             if resume_command is not None:
                 # wait_for MUST wrap ainvoke INSIDE this coroutine. Wrapping from outside would raise
                 # CancelledError (a BaseException) which `except Exception` cannot catch → session stuck ACTIVE.
-                await asyncio.wait_for(self.graph.ainvoke(resume_command, config), timeout=timeout)
+                result = await asyncio.wait_for(self.graph.ainvoke(resume_command, config), timeout=timeout)
             else:
                 state = initial_state or {
                     "artifact_type": artifact_type,
@@ -519,11 +519,17 @@ class AgentService:
                     "working_draft": None,
                     "mode_hint": None,
                 }
-                await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
+                result = await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
+            # The graph paused iff its final state carries an __interrupt__. When it instead reached
+            # END, a WAITING_FOR_HUMAN left behind by a tool re-running on resume (tool-loop: the tool
+            # re-sets WAITING before its interrupt() returns the resume value) is stale → COMPLETED.
+            graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-                if row.status == AgentSessionStatus.ACTIVE:
+                if row.status == AgentSessionStatus.ACTIVE or (
+                    graph_ended and row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+                ):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
         except asyncio.TimeoutError:

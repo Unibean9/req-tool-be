@@ -197,8 +197,9 @@ class ScriptedLLM:
                 turn = self._tool_brain[self._tool_brain_idx]
                 self._tool_brain_idx += 1
                 return dict(turn)
-            # Exhausted -> finalize selection, the tool-loop equivalent of the _DONE_TURN fallback.
-            return {"tool": "finalize", "summary": ""}
+            # Exhausted -> empty selection (no tool). The shim emits a plain AIMessage and route_node
+            # ends the turn: the tool-loop equivalent of the enum _DONE_TURN terminal.
+            return {}
         if route == "judge":
             return dict(self._judge)
         if route == "intent":

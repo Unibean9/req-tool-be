@@ -394,14 +394,19 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     }
     # Tool-loop shim: emit the selected tool as an AIMessage(tool_calls) so route_node dispatches it
     # to the ToolNode. tool_call.id = AgentRun.id keeps the tool idempotency keys aligned on resume.
+    # tool=None means the analyst is done: emit a plain AIMessage (no tool_calls) so route_node ends.
     if settings.tool_loop_only and isinstance(analysis_result, dict):
-        tool = analysis_result["tool"]
-        args = {key: analysis_result.get(key, "") for key in _TOOL_ARG_KEYS[tool]}
-        # A pick coerced to ask_user (gated-out tool) often carries no message — never ask a blank
-        # question; fall back to the same prompt the coverage-gate uses.
-        if tool == "ask_user" and not str(args.get("message") or "").strip():
-            args["message"] = _COERCED_ASK_FALLBACK
-        result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
+        tool = analysis_result.get("tool")
+        if tool:
+            args = {key: analysis_result.get(key, "") for key in _TOOL_ARG_KEYS[tool]}
+            # A pick coerced to ask_user (gated-out tool) often carries no message — never ask a blank
+            # question; fall back to the same prompt the coverage-gate uses.
+            if tool == "ask_user" and not str(args.get("message") or "").strip():
+                args["message"] = _COERCED_ASK_FALLBACK
+            result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
+        else:
+            done_message = str(analysis_result.get("summary") or analysis_result.get("message") or "")
+            result["messages"] = [AIMessage(content=done_message)]
     return result
 
 
@@ -785,13 +790,16 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     return bool(getattr(messages[-1], "tool_calls", None))
 
 
-def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str:
-    """Clamp the analyst's tool pick to the currently offered set; fall back to ask_user.
+def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | None:
+    """Clamp the analyst's tool pick to the currently offered set.
 
-    get_available_tools applies the finalize hard-gate (only with a non-empty working_draft) and the
-    write_note step-limit, so a pick outside that set — or an unknown/None pick — degrades to a safe
-    clarifying question instead of dispatching an ungated tool.
+    - No pick (None/empty) → None: the loop is done, route_node ends the turn.
+    - A pick outside get_available_tools (e.g. finalize before working_draft exists, an unknown name)
+      → ask_user: a gated-out tool must not dispatch, so degrade to a safe clarifying question.
+    - An offered pick → itself.
     """
+    if not selected:
+        return None
     from app.graphs.agent_tools import get_available_tools
 
     available = {t.name for t in get_available_tools(state)}
