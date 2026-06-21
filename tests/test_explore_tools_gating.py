@@ -82,18 +82,3 @@ async def test_write_note_appends_to_messages():
     assert isinstance(msg, ToolMessage)
     assert "Giả định X" in msg.content
     assert msg.tool_call_id == "call_1"
-
-
-# ---------------------------------------------------------------------------
-# T6 — ScriptedLLM.bind_tools stub returns self and records bound tools
-# ---------------------------------------------------------------------------
-
-def test_scripted_llm_bind_tools_returns_self():
-    from app.graphs.agent_tools import write_note
-    from tests.scenarios.scripted_llm import ScriptedLLM
-
-    llm = ScriptedLLM()
-    returned = llm.bind_tools([write_note])
-
-    assert returned is llm
-    assert llm._bound_tools == [write_note]

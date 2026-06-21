@@ -14,28 +14,11 @@ from langchain_core.tools import tool
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode
 
-from app.graphs.nodes import ANALYSIS_SCHEMA
 from tests.scenarios.scripted_llm import (
     TOOL_CALL_SCHEMA,
     ScriptedLLM,
-    ask,
     tool_call,
 )
-
-
-@pytest.mark.asyncio
-async def test_scripted_llm_ignores_tools_kwarg_when_no_tool_call_route():
-    """T3 — a normal ask scenario keeps its enum behaviour even when `tools=` is passed."""
-    llm = ScriptedLLM(brain=[ask("Bạn muốn xây gì?")])
-
-    result, usage = await llm.generate(
-        messages=[],
-        response_format=ANALYSIS_SCHEMA,
-        tools=[{"name": "noop"}],
-    )
-
-    assert result["next_action"] == "ask"
-    assert usage is None
 
 
 @pytest.mark.asyncio

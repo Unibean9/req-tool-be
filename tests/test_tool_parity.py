@@ -76,23 +76,6 @@ async def test_ask_user_tool_idempotent_on_resume(mock_interrupt, client, db_ses
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_ask_human_node_uses_shared_helper(client, db_session):
-    from app.graphs import nodes
-
-    project_id = await _project(client)
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={"next_action": "ask", "message": "Cần gì thêm?"})
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    with patch.object(nodes, "_save_and_interrupt_ask", new=AsyncMock(return_value="ok")) as helper:
-        await nodes.ask_human_node(state, config)
-
-    helper.assert_awaited_once()
-
-
-@pytest.mark.asyncio
 async def test_ask_user_tool_uses_shared_helper(client, db_session):
     from app.graphs import nodes
     from app.graphs.agent_tools import _ask_user_impl

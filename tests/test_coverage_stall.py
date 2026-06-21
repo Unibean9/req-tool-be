@@ -1,4 +1,4 @@
-"""Tests for the slot-coverage root-cause fix.
+"""Tests for the slot-coverage root-cause fix (tool-loop world).
 
 Two defects produced the verbatim-repeated question observed in production:
   - the slot directive listed opaque slot keys with no description/rubric, so the
@@ -7,18 +7,20 @@ Two defects produced the verbatim-repeated question observed in production:
     same weakest slot every turn until the turn cap.
 
 These tests lock the fix: the directive now carries descriptions + a grading
-rubric + an instruction to credit the latest answer, and a stall counter both
-relaxes the gate and rewrites the hint once coverage stops advancing.
+rubric + an instruction to credit the latest answer, and a stall counter rewrites
+the hint once coverage stops advancing.
+
+The agent is now a PURE LangGraph tool-loop: analyze_node always emits a tool
+selection (TOOL_SELECTION_SCHEMA) and route_node no longer vetoes on coverage.
+The coverage STALL COUNTER and HINT logic are unchanged and still tested here; the
+removed route_node floor/stall ROUTING branch is no longer exercised.
 """
 
 import uuid
 
 import pytest
-from sqlalchemy import select
 
 from app.graphs.slot_schema import COVERAGE_STALL_LIMIT, SLOT_DESCRIPTIONS
-from app.models.agent import AgentRun
-from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 
@@ -75,98 +77,8 @@ def test_slot_directive_emit_mandate_unchanged():
 
 
 # ---------------------------------------------------------------------------
-# Fix 2 — stall detection relaxes the gate and rewrites the hint
+# Fix 2 — stall detection rewrites the coverage hint
 # ---------------------------------------------------------------------------
-
-def test_route_propose_past_floor_honoured_without_override():
-    """Phase 0: past the tier-1 floor, propose is honoured regardless of an affirmative token.
-
-    Pre-Phase-0 this returned ask_human (tier-2 required an explicit user request). Tier-2 is
-    removed, so coverage incompleteness no longer vetoes routing once past the floor.
-    """
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    # Past the floor (1 slot filled); no affirmative token -> pre-Phase-0 tier-2 would have blocked.
-    state["slot_coverage"] = {"why_now": "filled", "sponsor": "empty"}
-    state["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
-
-    assert route_node(state) == "confirm"
-
-
-def test_route_gate_blocks_at_zero_filled_even_with_user_override():
-    """Hard floor: 0 slot filled (propose-from-greeting) -> chặn kể cả user override."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"why_now": "empty", "sponsor": "empty"}
-    state["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
-
-    assert route_node(state) == "ask_human"
-
-
-def test_route_propose_past_floor_no_affirmative_goes_confirm():
-    """M9 (Phase 0): once past the tier-1 floor, a model 'propose' is honoured even when
-    coverage is incomplete and the user message carries no affirmative token.
-
-    Pre-Phase-0 the tier-2 soft gate forced this back to ask_human (it required an explicit
-    user request via _user_requests_propose). Phase 0 removes tier-2: coverage is a prompt
-    signal, not a routing veto. The graph must not override the model's judgement here.
-    """
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    # required slots for 'problem': who/obstacle/root_cause/frequency/impact.
-    # who+obstacle filled -> past the floor (>=1 filled); the rest empty -> coverage incomplete.
-    state["slot_coverage"] = {
-        "who": "filled",
-        "obstacle": "filled",
-        "root_cause": "empty",
-        "frequency": "empty",
-        "impact": "empty",
-    }
-    # No affirmative token: pre-Phase-0 tier-2 would have blocked on this.
-    state["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
-
-    assert route_node(state) == "confirm"
-
-
-def test_user_requests_propose_detects_signal():
-    from app.graphs.nodes import _user_requests_propose
-
-    yes = _state(artifact_type="intent")
-    yes["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
-    assert _user_requests_propose(yes) is True
-
-    no = _state(artifact_type="intent")
-    no["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
-    assert _user_requests_propose(no) is False
-
-
-def test_below_minimum_floor():
-    from app.graphs.nodes import _below_minimum_floor
-
-    assert _below_minimum_floor({"slot_coverage": {"why_now": "empty", "sponsor": "empty"}}) is True
-    assert _below_minimum_floor({"slot_coverage": {"why_now": "filled", "sponsor": "empty"}}) is False
-    # None coverage (non-BRD) -> fail-open, not below floor.
-    assert _below_minimum_floor({"slot_coverage": None}) is False
-
-
-def test_route_gate_relaxes_after_stall():
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = COVERAGE_STALL_LIMIT
-
-    assert route_node(state) == "confirm"
-
 
 def test_coverage_hint_breaks_loop_on_stall():
     from app.graphs.nodes import _build_coverage_hint
@@ -306,16 +218,22 @@ async def _run_analyze(client, db_session, slot_assessment, prev_ratio, prev_sta
 
 
 class _AsyncLLM:
+    """Tool-loop analyst stub: scripts an ask_user selection that reports slot_assessment.
+
+    analyze_node reads slot_assessment off the returned dict to compute coverage and maintain the
+    stall counter; the named tool only drives the emitted AIMessage (irrelevant to these asserts).
+    """
+
     def __init__(self, slot_assessment):
         self._slot_assessment = slot_assessment
 
     async def generate(self, **kwargs):
         return (
             {
-                "next_action": "ask",
+                "tool": "ask_user",
+                "message": "Câu hỏi tiếp theo?",
                 "confidence": 0.3,
                 "gaps": [],
-                "message": "Câu hỏi tiếp theo?",
                 "slot_assessment": self._slot_assessment,
             },
             None,

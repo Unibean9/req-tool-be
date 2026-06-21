@@ -61,7 +61,7 @@ async def _setup(client):
 @pytest.mark.asyncio
 async def test_analyze_node_persists_coverage_fields():
     from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM
+    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     fake_db = _FakeAnalyzeSession()
 
@@ -69,20 +69,19 @@ async def test_analyze_node_persists_coverage_fields():
         return fake_db
 
     llm = ScriptedLLM(
-        brain=[
-            {
-                "next_action": "ask",
-                "confidence": 0.4,
-                "gaps": [],
-                "message": "Tần suất xảy ra như thế nào?",
-                "slot_assessment": {
+        tool_brain=[
+            tool_select(
+                "ask_user",
+                message="Tần suất xảy ra như thế nào?",
+                confidence=0.4,
+                slot_assessment={
                     "who": "filled",
                     "obstacle": "filled",
                     "root_cause": "partial",
                     "frequency": "empty",
                     "impact": "empty",
                 },
-            }
+            )
         ]
     )
     state = {

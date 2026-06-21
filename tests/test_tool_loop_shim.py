@@ -4,39 +4,29 @@ The production LLM clients only emit JSON dicts (response_format), never native 
 shim lets the tool-loop run on that same JSON discipline: analyze_node asks for a TOOL_SELECTION_SCHEMA
 dict and converts it into an AIMessage(tool_calls=[...]) that the ToolNode dispatches.
 
-These tests pin the flag-gated routing (T1) and the dict→AIMessage conversion (T1b). The flag
-defaults false, so the enum path stays the live default until Slice C flips it.
+These tests pin the tool-loop routing (T1) and the dict→AIMessage conversion (T1b).
 """
 
 import pytest
 from langchain_core.messages import AIMessage
 from langgraph.graph import END
 
-from app.config import settings
 from app.graphs.nodes import route_node
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 from tests.test_tool_parity import _project
 
 
 # ---------------------------------------------------------------------------
-# T1 — feature flag routing behavior
+# T1 — tool-loop routing behavior
 # ---------------------------------------------------------------------------
 
-def test_tool_loop_only_false_uses_enum_path(monkeypatch):
-    monkeypatch.setattr(settings, "tool_loop_only", False)
-    state = {"turn_count": 0, "analysis_result": {"next_action": "ask", "message": "x"}}
-    assert route_node(state) == "ask_human"
-
-
-def test_tool_loop_only_true_routes_tool_calls(monkeypatch):
-    monkeypatch.setattr(settings, "tool_loop_only", True)
+def test_tool_calls_route_to_tools():
     ai = AIMessage(content="", tool_calls=[{"id": "r1", "name": "ask_user", "args": {"message": "x"}}])
     state = {"turn_count": 0, "messages": [ai], "analysis_result": None}
     assert route_node(state) == "tools"
 
 
-def test_tool_loop_only_true_no_tool_calls_routes_end(monkeypatch):
-    monkeypatch.setattr(settings, "tool_loop_only", True)
+def test_no_tool_calls_routes_end():
     state = {"turn_count": 0, "messages": [AIMessage(content="hi")], "analysis_result": None}
     assert route_node(state) == END
 
@@ -46,8 +36,7 @@ def test_tool_loop_only_true_no_tool_calls_routes_end(monkeypatch):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_tool_selection_converts_to_ai_message_tool_calls(monkeypatch, client, db_session):
-    monkeypatch.setattr(settings, "tool_loop_only", True)
+async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_session):
     from app.graphs.nodes import analyze_node
     from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
@@ -72,10 +61,9 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(monkeypatch, cli
 
 
 @pytest.mark.asyncio
-async def test_tool_selection_unavailable_tool_coerced_to_ask(monkeypatch, client, db_session):
+async def test_tool_selection_unavailable_tool_coerced_to_ask(client, db_session):
     """finalize hard-gate: with an empty working_draft finalize is not offered, so a model that
     picks it anyway is coerced to ask_user rather than dispatching an ungated finalize (S4)."""
-    monkeypatch.setattr(settings, "tool_loop_only", True)
     from app.graphs.nodes import analyze_node
     from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
@@ -95,10 +83,9 @@ async def test_tool_selection_unavailable_tool_coerced_to_ask(monkeypatch, clien
 
 
 @pytest.mark.asyncio
-async def test_empty_tool_selection_ends_turn(monkeypatch, client, db_session):
+async def test_empty_tool_selection_ends_turn(client, db_session):
     """An empty selection (no tool) is the loop terminal: a plain AIMessage with no tool_calls so
     route_node ends the turn instead of dispatching."""
-    monkeypatch.setattr(settings, "tool_loop_only", True)
     from app.graphs.nodes import analyze_node
     from tests.scenarios.scripted_llm import ScriptedLLM
 
@@ -118,10 +105,9 @@ async def test_empty_tool_selection_ends_turn(monkeypatch, client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_write_note_selection_dispatches_without_crash(monkeypatch, client, db_session):
+async def test_write_note_selection_dispatches_without_crash(client, db_session):
     """write_note is offered by get_available_tools, so the compiled ToolNode must carry it or its
     dispatch raises. Exercises a real graph turn: analyze picks write_note -> ToolNode -> loops back."""
-    monkeypatch.setattr(settings, "tool_loop_only", True)
     from app.graphs.graph import build_graph
     from langgraph.checkpoint.memory import MemorySaver
     from tests.scenarios.scripted_llm import ScriptedLLM, tool_select

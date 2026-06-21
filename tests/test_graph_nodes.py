@@ -14,8 +14,6 @@ from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
     AgentSessionStatus,
-    AgentToolCall,
-    AgentToolCallStatus,
 )
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
@@ -379,13 +377,13 @@ async def test_summarize_node_uses_default_client(monkeypatch):
 
 
 def test_build_prompt_uses_summary_when_present():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
     state["conversation_summary"] = "Ràng buộc — KHÔNG paraphrase\n- Ngân sách tối đa 50 triệu"
     state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(5)]
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "Tóm tắt hội thoại đã tích lũy" in prompt
     assert "Ngân sách tối đa 50 triệu" in prompt
@@ -394,12 +392,12 @@ def test_build_prompt_uses_summary_when_present():
 
 
 def test_build_prompt_falls_back_to_5_messages_when_empty():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
     state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(6)]
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "Tóm tắt hội thoại đã tích lũy" not in prompt
     assert "Tin nhắn 0" not in prompt
@@ -411,9 +409,9 @@ def test_build_prompt_includes_synthesis_directive():
     not emit a thin one-paragraph artifact. Without this directive the prompt only says
     'proposals (nếu propose)', which produces shallow artifacts even after full elicitation.
     """
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
-    prompt = _build_analyst_prompt(_state(), [])
+    prompt = _build_tool_selection_prompt(_state(), [])
 
     assert "ĐỘ SÂU NỘI DUNG" in prompt
     # Must steer toward exploiting all gathered information, not summarizing thinly.
@@ -423,7 +421,7 @@ def test_build_prompt_includes_synthesis_directive():
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     state["slot_coverage"] = {
@@ -435,7 +433,7 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
     }
     state["coverage_complete"] = False
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "Coverage" in prompt
     assert "root_cause" in prompt
@@ -446,13 +444,13 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
 
 
 def test_no_coverage_hint_when_complete():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     state["slot_coverage"] = {"root_cause": "filled"}
     state["coverage_complete"] = True
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "Coverage" not in prompt
 
@@ -573,191 +571,6 @@ def test_route_node_max_turns_routes_to_end():
 
     state = _state(turn_count=10, analysis_result={"next_action": "propose"})
     assert route_node(state) == END
-
-
-def test_route_node_ask_routes_to_ask_human():
-    from app.graphs.nodes import route_node
-
-    state = _state(turn_count=2, analysis_result={"next_action": "ask"})
-    assert route_node(state) == "ask_human"
-
-
-def test_route_node_propose_routes_to_confirm():
-    from app.graphs.nodes import route_node
-
-    state = _state(turn_count=2, analysis_result={"next_action": "propose"})
-    assert route_node(state) == "confirm"
-
-
-def test_route_node_done_routes_to_end():
-    from app.graphs.nodes import route_node
-    from langgraph.graph import END
-
-    state = _state(turn_count=2, analysis_result={"next_action": "done"})
-    assert route_node(state) == END
-
-
-def test_slot_gate_floor_blocks_propose_at_zero_filled():
-    """Phase 0: only the tier-1 floor blocks now — propose-from-greeting (0 slot filled)."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"who": "empty", "obstacle": "empty", "root_cause": "empty"}
-
-    assert route_node(state) == "ask_human"
-
-
-def test_slot_gate_allows_propose_past_floor_when_incomplete():
-    """Phase 0: past the floor, incomplete coverage no longer vetoes propose (tier-2 removed)."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"who": "filled", "obstacle": "empty", "root_cause": "empty"}
-
-    assert route_node(state) == "confirm"
-
-
-def test_slot_gate_allows_propose_when_complete():
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = True
-
-    assert route_node(state) == "confirm"
-
-
-def test_slot_gate_floor_blocks_done_at_zero_filled():
-    """Phase 0: the tier-1 floor also catches a 'done' from greeting (0 slot filled)."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "done"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"who": "empty", "obstacle": "empty", "root_cause": "empty"}
-
-    assert route_node(state) == "ask_human"
-
-
-def test_slot_gate_never_overrides_turn_limit():
-    from app.graphs.nodes import route_node
-    from langgraph.graph import END
-
-    state = _state(artifact_type="problem", turn_count=10, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-
-    assert route_node(state) == END
-
-
-def test_slot_gate_none_coverage_fails_open():
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = None
-
-    assert route_node(state) == "confirm"
-
-
-@pytest.mark.parametrize(
-    "brd_key",
-    ["intent", "goal", "stakeholder", "capability", "constraint", "assumption", "risk", "open_question"],
-)
-def test_slot_gate_floor_blocks_propose_at_zero_filled_for_each_brd_key(brd_key):
-    """Phase 0: the tier-1 floor (0 slot filled) blocks propose-from-greeting across BRD keys."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type=brd_key, turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"a": "empty", "b": "empty"}
-
-    assert route_node(state) == "ask_human"
-
-
-# ---------------------------------------------------------------------------
-# ask_human_node tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_saves_message_and_interrupts(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={"next_action": "ask", "message": "Cần thêm thông tin về người dùng"})
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    mock_interrupt.assert_called_once()
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(
-                select(AgentMessage).where(AgentMessage.session_id == agent_session.id)
-            )
-        ).scalar_one()
-        assert msg.role == AgentMessageRole.AGENT
-        assert "người dùng" in msg.content
-
-        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
-        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-        assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
-
-
-# ---------------------------------------------------------------------------
-# propose_artifacts_node tests
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_propose_artifacts_node_creates_tool_calls_for_each_proposal(mock_interrupt, client, db_session):
-    from app.graphs.nodes import propose_artifacts_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    proposals = [
-        {"artifact_type": "goal", "title": "Tăng doanh thu", "body": "Mô tả 1"},
-        {"artifact_type": "goal", "title": "Giảm chi phí", "body": "Mô tả 2"},
-    ]
-    analysis_result = {"next_action": "propose", "confidence": 0.9, "proposals": proposals}
-    state = _state(analysis_result=analysis_result)
-    state["last_agent_run_id"] = str(run.id)
-
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    result = await propose_artifacts_node(state, config)
-
-    assert len(result["pending_tool_call_ids"]) == 2
-    mock_interrupt.assert_called_once()
-
-    async with TestSessionFactory() as db:
-        tool_calls = (
-            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
-        ).scalars().all()
-        assert len(tool_calls) == 2
-        assert all(tc.status == AgentToolCallStatus.PROPOSED for tc in tool_calls)
-        assert all(tc.tool_name == "create_artifact" for tc in tool_calls)
-
-        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
-        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-        assert session_row.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS
 
 
 # ---------------------------------------------------------------------------
@@ -881,16 +694,16 @@ async def test_greeting_node_english_locale(mock_interrupt, client, db_session):
 
 
 def test_analyst_prompt_includes_language_lock_directive():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state_vi = _state()
     state_vi["locale"] = "vi"
-    prompt_vi = _build_analyst_prompt(state_vi, [])
+    prompt_vi = _build_tool_selection_prompt(state_vi, [])
     assert "'vi'" in prompt_vi
 
     state_en = _state()
     state_en["locale"] = "en"
-    prompt_en = _build_analyst_prompt(state_en, [])
+    prompt_en = _build_tool_selection_prompt(state_en, [])
     assert "'en'" in prompt_en
     assert "'vi'" not in prompt_en
 
@@ -905,8 +718,8 @@ def test_graph_routes_task_to_analyze():
 
 
 def _smart_llm():
-    """LLM mock that branches on response_format to drive intent_router then analyze→ask."""
-    from app.graphs.nodes import ANALYSIS_SCHEMA, INTENT_SCHEMA
+    """LLM mock that branches on response_format to drive intent_router then analyze→ask_user."""
+    from app.graphs.nodes import INTENT_SCHEMA, TOOL_SELECTION_SCHEMA
 
     intent_calls = []
     llm = AsyncMock()
@@ -915,8 +728,8 @@ def _smart_llm():
         if response_format is INTENT_SCHEMA:
             intent_calls.append(1)
             return {"intent": "task", "locale": "vi"}, None
-        if response_format is ANALYSIS_SCHEMA:
-            return {"next_action": "ask", "confidence": 0.3, "gaps": [], "message": "Bạn cần gì thêm?", "proposals": []}, None
+        if response_format is TOOL_SELECTION_SCHEMA:
+            return {"tool": "ask_user", "message": "Bạn cần gì thêm?", "confidence": 0.3, "active_mode": "qa"}, None
         return {}, None
 
     llm.generate = _generate
@@ -952,353 +765,17 @@ async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_s
     assert len(intent_calls) == 1
 
 
-@pytest.mark.asyncio
-async def test_resume_from_old_topology_checkpoint(client, db_session):
-    """A checkpoint saved under the old topology still resumes without intent_router."""
-    from langgraph.checkpoint.memory import MemorySaver
-    from langgraph.graph import END, StateGraph
-    from langgraph.types import Command
-
-    from app.graphs.graph import build_graph
-    from app.graphs.nodes import analyze_node, ask_human_node, route_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    llm, _ = _smart_llm()
-    saver = MemorySaver()
-    config = _config(str(agent_session.id), str(project_id), llm)
-    config["configurable"]["session_factory"] = _session_factory()
-
-    # OLD topology: entry point "analyze", no intent_router node.
-    old = StateGraph(WorkflowState)
-    old.add_node("analyze", analyze_node)
-    old.add_node("ask_human", ask_human_node)
-    old.set_entry_point("analyze")
-    old.add_conditional_edges("analyze", route_node, {"ask_human": "ask_human", "confirm": "ask_human", END: END})
-    old.add_edge("ask_human", END)
-    old_graph = old.compile(checkpointer=saver)
-
-    state = _state()
-    state["messages"] = [{"role": "user", "content": "tôi cần tạo intent"}]
-    await old_graph.ainvoke(state, config)
-
-    # NEW topology resumes the SAME checkpoint — must not crash on the missing intent_router node.
-    new_graph = build_graph(checkpointer=saver)
-    await new_graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
-
-
-# ---------------------------------------------------------------------------
-# Phase 5 — Payload Envelope (options / blocks / locale) (S6, S7)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_payload_kind_question(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    state = _state(analysis_result={"next_action": "ask", "message": "Mục tiêu chính là gì?"})
-    state["locale"] = "vi"
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert msg.payload["kind"] == "question"
-        assert msg.payload["locale"] == "vi"
-        assert msg.content == "Mục tiêu chính là gì?"
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_confirm_node_payload_options_two_choices(mock_interrupt, client, db_session):
-    from app.graphs.nodes import confirm_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state()
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await confirm_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert msg.payload["kind"] == "confirm"
-        assert len(msg.payload["options"]) >= 2
-        for opt in msg.payload["options"]:
-            assert "id" in opt and "label" in opt and "value" in opt
-        assert msg.content
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_propose_artifacts_node_payload_blocks(mock_interrupt, client, db_session):
-    from app.graphs.nodes import propose_artifacts_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "Mô tả"}]
-    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
-    state["locale"] = "vi"
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await propose_artifacts_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(
-                select(AgentMessage).where(
-                    AgentMessage.session_id == agent_session.id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                )
-            )
-        ).scalar_one()
-        assert msg.payload["kind"] == "proposal"
-        assert isinstance(msg.payload["blocks"], list)
-        assert len(msg.payload["blocks"]) >= 1
-        assert msg.content
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_propose_artifacts_node_idempotent_on_resume(mock_interrupt, client, db_session):
-    from app.graphs.nodes import propose_artifacts_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    proposals = [{"artifact_type": "goal", "title": "T", "body": "B"}]
-    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
-    state["locale"] = "vi"
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await propose_artifacts_node(state, config)
-    await propose_artifacts_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msgs = (
-            await db.execute(
-                select(AgentMessage).where(
-                    AgentMessage.session_id == agent_session.id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                )
-            )
-        ).scalars().all()
-        assert len(msgs) == 1
-
-
 # ---------------------------------------------------------------------------
 # Phase 6 — One-question Rhythm (S8)
 # ---------------------------------------------------------------------------
 
 def test_analysis_schema_accepts_answer_assessment_and_acknowledgment():
-    from app.graphs.nodes import ANALYSIS_SCHEMA
+    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 
-    props = ANALYSIS_SCHEMA["properties"]
+    props = TOOL_SELECTION_SCHEMA["properties"]
     assert "answer_assessment" in props
     assert "acknowledgment" in props
-    # Additive only — required set must not change.
-    assert ANALYSIS_SCHEMA["required"] == ["next_action", "confidence"]
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_missing_optional_fields_no_error(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={"next_action": "ask", "confidence": 0.7, "message": "Deadline?"})
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert msg.content == "Deadline?"
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_prepends_acknowledgment_when_present(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={
-        "next_action": "ask",
-        "confidence": 0.7,
-        "message": "Deadline là khi nào?",
-        "answer_assessment": "complete",
-        "acknowledgment": "Đã rõ mục tiêu.",
-    })
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert "Đã rõ mục tiêu." in msg.content
-        assert "Deadline là khi nào?" in msg.content
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_no_acknowledgment_first_turn(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={
-        "next_action": "ask",
-        "confidence": 0.7,
-        "message": "Mục tiêu là gì?",
-        "acknowledgment": "",
-    })
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert msg.content == "Mục tiêu là gì?"
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_idempotent_on_resume(mock_interrupt, client, db_session):
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    state = _state(analysis_result={
-        "next_action": "ask",
-        "confidence": 0.7,
-        "message": "Deadline?",
-        "acknowledgment": "Lần đầu.",
-    })
-    state["locale"] = "vi"
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-    # Resume: same run_id but a different acknowledgment must NOT create a second message.
-    state["analysis_result"]["acknowledgment"] = "Lần hai khác hẳn."
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msgs = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalars().all()
-        assert len(msgs) == 1
-
-
-def test_analyst_prompt_includes_one_question_directive():
-    from app.graphs.nodes import _build_analyst_prompt
-
-    prompt = _build_analyst_prompt(_state(), [])
-    assert "một câu hỏi chính" in prompt
-    assert "trả lời cụt chỉ bằng câu hỏi" in prompt
-    assert "KHÔNG hỏi lại cùng nội dung/gap" in prompt
-    assert "chuyển progression sang phần khác" in prompt
-    assert "gap chưa được khai thác" in prompt
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_ask_human_node_non_string_acknowledgment_no_crash(mock_interrupt, client, db_session):
-    """LLM may return a non-string acknowledgment (schema not enforced at runtime) — must not crash."""
-    from app.graphs.nodes import ask_human_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state(analysis_result={
-        "next_action": "ask",
-        "confidence": 0.7,
-        "message": "Deadline?",
-        "acknowledgment": 42,
-    })
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await ask_human_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert "Deadline?" in msg.content
+    assert TOOL_SELECTION_SCHEMA["required"] == ["tool"]
 
 
 # ---------------------------------------------------------------------------
@@ -1341,12 +818,12 @@ async def _add_artifact_with_version(
 
 
 def test_build_prompt_includes_draft_body_block_when_present():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
     body = "Người dùng: sinh viên. Trở ngại: trùng lịch học nhóm."
-    prompt = _build_analyst_prompt(state, [], draft_body=body)
+    prompt = _build_tool_selection_prompt(state, [], draft_body=body)
 
     assert "DRAFT ĐANG CÓ" in prompt
     assert body in prompt
@@ -1357,11 +834,11 @@ def test_build_prompt_includes_draft_body_block_when_present():
 
 def test_build_prompt_no_draft_block_when_absent():
     """Regression guard: create-from-scratch prompt unchanged when no draft exists."""
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
-    baseline = _build_analyst_prompt(state, [])
-    with_none = _build_analyst_prompt(state, [], draft_body=None)
+    baseline = _build_tool_selection_prompt(state, [])
+    with_none = _build_tool_selection_prompt(state, [], draft_body=None)
 
     assert "DRAFT ĐANG CÓ" not in with_none
     assert with_none == baseline
@@ -1454,21 +931,21 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
 
 def test_analysis_schema_accepts_draft_update():
     """`draft_update` is additive and optional — the required set must not change."""
-    from app.graphs.nodes import ANALYSIS_SCHEMA
+    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 
-    assert "draft_update" in ANALYSIS_SCHEMA["properties"]
-    assert ANALYSIS_SCHEMA["properties"]["draft_update"]["type"] == "string"
-    assert ANALYSIS_SCHEMA["required"] == ["next_action", "confidence"]
+    assert "draft_update" in TOOL_SELECTION_SCHEMA["properties"]
+    assert TOOL_SELECTION_SCHEMA["properties"]["draft_update"]["type"] == "string"
+    assert TOOL_SELECTION_SCHEMA["required"] == ["tool"]
 
 
 def test_build_prompt_includes_working_draft_block_when_present():
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
     state["working_draft"] = "## Vấn đề\n- Sinh viên trùng lịch học nhóm với giờ làm thêm."
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "DRAFT ĐANG XÂY DỰNG" in prompt
     assert state["working_draft"] in prompt
@@ -1478,14 +955,14 @@ def test_build_prompt_includes_working_draft_block_when_present():
 
 def test_build_prompt_no_working_draft_block_when_absent():
     """Regression guard: prompt unchanged when no running draft exists."""
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
-    baseline = _build_analyst_prompt(state, [])
+    baseline = _build_tool_selection_prompt(state, [])
     state["working_draft"] = None
 
-    assert "DRAFT ĐANG XÂY DỰNG" not in _build_analyst_prompt(state, [])
-    assert _build_analyst_prompt(state, []) == baseline
+    assert "DRAFT ĐANG XÂY DỰNG" not in _build_tool_selection_prompt(state, [])
+    assert _build_tool_selection_prompt(state, []) == baseline
 
 
 @pytest.mark.asyncio
@@ -1548,75 +1025,16 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
     assert result["working_draft"] == prior
 
 
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_propose_artifacts_node_seeds_body_from_working_draft(mock_interrupt, client, db_session):
-    """The accumulated running draft, not a freshly synthesized body, is the source of truth."""
-    from app.graphs.nodes import propose_artifacts_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    draft = "## Mục tiêu\n- Nội dung tích lũy qua nhiều lượt."
-    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "body một lượt"}]
-    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
-    state["working_draft"] = draft
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await propose_artifacts_node(state, config)
-
-    async with TestSessionFactory() as db:
-        tool_call = (
-            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
-        ).scalars().one()
-        assert tool_call.input_snapshot["body"] == draft
-        assert tool_call.input_snapshot["title"] == "Tăng doanh thu"
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_propose_artifacts_node_keeps_proposal_body_without_draft(mock_interrupt, client, db_session):
-    """Regression: with no running draft, behaviour is unchanged (proposal body used)."""
-    from app.graphs.nodes import propose_artifacts_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-    run = await _make_agent_run(db_session, agent_session)
-
-    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "body một lượt"}]
-    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
-    state["last_agent_run_id"] = str(run.id)
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await propose_artifacts_node(state, config)
-
-    async with TestSessionFactory() as db:
-        tool_call = (
-            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
-        ).scalars().one()
-        assert tool_call.input_snapshot["body"] == "body một lượt"
-
-
 # ---------------------------------------------------------------------------
 # Phase 1 (multi-angle): active_mode + mode_hint + proactive directive
 # ---------------------------------------------------------------------------
 
 def test_active_mode_field_in_analysis_schema():
     """T1: `active_mode` is additive and optional — the required set must not change."""
-    from app.graphs.nodes import ANALYSIS_SCHEMA
+    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 
-    assert "active_mode" in ANALYSIS_SCHEMA["properties"]
-    assert "active_mode" not in ANALYSIS_SCHEMA.get("required", [])
+    assert "active_mode" in TOOL_SELECTION_SCHEMA["properties"]
+    assert "active_mode" not in TOOL_SELECTION_SCHEMA.get("required", [])
 
 
 @pytest.mark.asyncio
@@ -1654,37 +1072,37 @@ async def test_active_mode_passes_through_analyze_node(client, db_session):
 
 def test_mode_hint_injects_directive_into_prompt():
     """T4a: a user-supplied mode_hint must surface the requested mode in the prompt."""
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="goal")
     state["mode_hint"] = "critique"
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "critique" in prompt
 
 
 def test_no_mode_hint_injects_proactive_rule():
     """T4b: with no hint, the prompt must carry the proactive mode-switch rule."""
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="goal")
     state["mode_hint"] = None
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert "chủ động chuyển" in prompt
 
 
 def test_mode_directive_precedes_language_lock():
     """The mode directive must sit before the language lock (lock stays last by contract)."""
-    from app.graphs.nodes import _build_analyst_prompt
+    from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="goal")
     state["locale"] = "vi"
     state["mode_hint"] = "explore"
 
-    prompt = _build_analyst_prompt(state, [])
+    prompt = _build_tool_selection_prompt(state, [])
 
     assert prompt.index("explore") < prompt.index("ngôn ngữ 'vi'")
 

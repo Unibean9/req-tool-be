@@ -10,7 +10,6 @@ import uuid
 
 import pytest
 
-from app.config import settings
 from tests.scenarios.driver import Scenario, ScenarioDriver
 from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
@@ -23,16 +22,11 @@ _GOAL_BODY = (
 )
 
 
-@pytest.fixture
-def _tool_loop_on(monkeypatch):
-    monkeypatch.setattr(settings, "tool_loop_only", True)
-
-
 # ---------------------------------------------------------------------------
 # T5 — HITL round-trip + artifact creation through the tool-loop
 # ---------------------------------------------------------------------------
 
-async def test_tool_loop_ask_then_draft_approve(_tool_loop_on, client, scenario_env, scenario_project):
+async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_project):
     """ask_user (interrupt/resume) → write_draft (approve → artifact) → exhausted brain ends turn."""
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])
@@ -66,7 +60,7 @@ async def test_tool_loop_ask_then_draft_approve(_tool_loop_on, client, scenario_
     assert len(questions) == 1
 
 
-async def test_tool_loop_reject_draft(_tool_loop_on, client, scenario_env, scenario_project):
+async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     """Rejecting the proposed write_draft creates no artifact; the turn still completes."""
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])

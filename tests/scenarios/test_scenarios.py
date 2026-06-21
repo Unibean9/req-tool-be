@@ -16,7 +16,9 @@ from tests.scenarios.library import ALL_SCENARIOS
 
 pytestmark = pytest.mark.asyncio
 
-_AGENT_PAYLOAD_KINDS = {"greeting", "question", "confirm", "proposal"}
+# Tool-loop surfaces proposals as proposed tool calls, not chat messages; the only agent chat
+# messages are greetings and ask_user questions.
+_AGENT_PAYLOAD_KINDS = {"greeting", "question"}
 
 
 @pytest.mark.parametrize("factory", ALL_SCENARIOS, ids=lambda f: f().name)
@@ -40,15 +42,17 @@ async def test_behavior_scenario(factory, client, scenario_env, scenario_project
         f"{scenario.name}: expected >= {scenario.expect['min_artifacts']} artifacts, got {len(artifacts)}"
     )
 
-    # Every agent message carries a typed payload envelope.
+    # Every agent chat message carries a typed payload envelope.
     final_snapshot = recorder.steps[-1]["snapshot"]
     agent_msgs = [m for m in final_snapshot["messages"] if m["role"] == "agent"]
-    assert agent_msgs, f"{scenario.name}: agent produced no messages"
     for m in agent_msgs:
         payload = m.get("payload") or {}
         assert payload.get("kind") in _AGENT_PAYLOAD_KINDS, (
             f"{scenario.name}: unexpected agent payload kind {payload.get('kind')!r}"
         )
+    # A scenario that produces artifacts must surface a proposed draft as a tool call.
+    if scenario.expect["min_artifacts"] > 0:
+        assert final_snapshot["tool_calls"], f"{scenario.name}: expected a proposed write_draft tool call"
 
     # --- Eval: score produced artifacts and record into the transcript ---
     scored = await score_artifacts(artifacts, mock_judge())

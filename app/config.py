@@ -49,10 +49,6 @@ class Settings(BaseSettings):
     cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
     max_agent_turns: int = 10
-    # Tool-loop cutover gate (Phase 5). false = enum path (next_action) drives routing; true =
-    # analyze_node emits an AIMessage(tool_calls) via the shim adapter and route_node dispatches on
-    # tool_calls only. Rollback = flip back to false, no deployment needed.
-    tool_loop_only: bool = False
     llm_provider_health_timeout_seconds: float = 25.0
     agent_turn_timeout_seconds: float = 90.0
     summary_trigger_every: int = 6

@@ -125,7 +125,7 @@ class ScenarioDriver:
             artifact_type=self.scenario.artifact_type,
             final_status=final.get("status"),
             final_interrupt=final.get("interrupt_type"),
-            brain_turns_consumed=self.scenario.llm._brain_idx,
+            brain_turns_consumed=self.scenario.llm._tool_brain_idx,
         )
 
         # Slot-coverage harness: only scenarios that opt in via expect["min_coverage"]
