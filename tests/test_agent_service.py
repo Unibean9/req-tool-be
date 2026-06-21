@@ -106,7 +106,9 @@ async def test_analyze_node_persists_coverage_fields():
         "coverage_complete": None,
     }
 
-    with patch("app.graphs.nodes.read_artifacts", AsyncMock(return_value=[])):
+    with patch("app.graphs.nodes.read_artifacts", AsyncMock(return_value=[])), patch(
+        "app.graphs.nodes.read_current_body", AsyncMock(return_value=None)
+    ):
         result = await analyze_node(
             state,
             {

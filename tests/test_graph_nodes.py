@@ -1303,6 +1303,149 @@ async def test_ask_human_node_non_string_acknowledgment_no_crash(mock_interrupt,
 # build_graph tests
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Phase A1 (C2): load current draft body just-in-time
+# ---------------------------------------------------------------------------
+
+async def _add_artifact_with_version(
+    db_session, project_id: uuid.UUID, artifact_type: str, title: str, body: str
+):
+    """Create an artifact with a current version pointing at `body`.
+
+    Mirrors the flush ordering of the service layer: artifact → version →
+    current_version_id, so `current_version` resolves to the version just made.
+    """
+    from app.models.artifact import Artifact, ArtifactVersion, ChangeSource, VersionStatus
+
+    artifact = Artifact(
+        project_id=project_id, type=artifact_type, title=title, extra_metadata={}, status="draft"
+    )
+    db_session.add(artifact)
+    await db_session.flush()
+    version = ArtifactVersion(
+        artifact_id=artifact.id,
+        version_number=1,
+        title=title,
+        body=body,
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.AI_GENERATION,
+        extra_metadata={},
+    )
+    db_session.add(version)
+    await db_session.flush()
+    artifact.current_version_id = version.id
+    await db_session.commit()
+    return artifact
+
+
+def test_build_prompt_includes_draft_body_block_when_present():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
+    body = "Người dùng: sinh viên. Trở ngại: trùng lịch học nhóm."
+    prompt = _build_analyst_prompt(state, [], draft_body=body)
+
+    assert "DRAFT ĐANG CÓ" in prompt
+    assert body in prompt
+    assert "không hỏi lại" in prompt.lower()
+    # draft block must precede the language lock (kept last by contract)
+    assert prompt.index("DRAFT ĐANG CÓ") < prompt.index("ngôn ngữ 'vi'")
+
+
+def test_build_prompt_no_draft_block_when_absent():
+    """Regression guard: create-from-scratch prompt unchanged when no draft exists."""
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    baseline = _build_analyst_prompt(state, [])
+    with_none = _build_analyst_prompt(state, [], draft_body=None)
+
+    assert "DRAFT ĐANG CÓ" not in with_none
+    assert with_none == baseline
+
+
+@pytest.mark.asyncio
+async def test_read_current_body_returns_one_when_multiple(client, db_session):
+    """Multiple drafts of the same type: returns exactly one (no crash).
+
+    Picking the *right* target for a deliberate update is the authoritative
+    target_artifact_id problem of Phase 4 — A1 only surfaces a single draft as context.
+    """
+    from app.graphs.tools import read_current_body
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    await _add_artifact_with_version(db_session, project_id, "problem", "Draft A", "body A")
+    await _add_artifact_with_version(db_session, project_id, "problem", "Draft B", "body B")
+
+    async with TestSessionFactory() as db:
+        result = await read_current_body(db=db, project_id=project_id, artifact_type="problem")
+
+    assert result is not None
+    assert result["body"] in {"body A", "body B"}
+
+
+@pytest.mark.asyncio
+async def test_read_current_body_returns_none_without_current_version(client, db_session):
+    from app.graphs.tools import read_current_body
+    from app.models.artifact import Artifact
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    # An artifact with no current_version_id must not surface as a draft.
+    db_session.add(
+        Artifact(project_id=project_id, type="problem", title="Trống", extra_metadata={}, status="draft")
+    )
+    await db_session.commit()
+
+    async with TestSessionFactory() as db:
+        result = await read_current_body(db=db, project_id=project_id, artifact_type="problem")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_session):
+    """M7/M8: a new `problem` session must see the existing draft body in its prompt."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    draft_body = "Đối tượng: sinh viên năm 2. Trở ngại: lịch học nhóm hay bị trùng giờ làm thêm."
+    await _add_artifact_with_version(db_session, project_id, "problem", "Vấn đề lịch nhóm", draft_body)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="problem", workflow_area="analysis", graph_checkpoint={}
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(
+        return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
+    )
+
+    state = _state(artifact_type="problem")
+    config = _config(str(session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+
+    prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert draft_body in prompt, "Existing draft body must be injected as context"
+    assert "DRAFT ĐANG CÓ" in prompt
+
+
 def test_build_graph_returns_compiled_graph_without_error():
     from app.graphs.graph import build_graph
 

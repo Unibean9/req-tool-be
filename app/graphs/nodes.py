@@ -17,7 +17,7 @@ from app.graphs.slot_schema import (
     compute_coverage,
 )
 from app.graphs.state import WorkflowState
-from app.graphs.tools import create_artifact, read_artifacts
+from app.graphs.tools import create_artifact, read_artifacts, read_current_body
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -252,8 +252,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                     context={"workflow_area": state["workflow_area"]},
                 )
             )
+        # Load the current draft body for this artifact_type so the analyst can mine
+        # the delta instead of re-asking what the draft already records (M7/M8).
+        draft = await read_current_body(
+            db=db, project_id=project_id, artifact_type=artifact_type
+        )
+    draft_body = draft["body"] if draft else None
 
-    prompt = _build_analyst_prompt(state, artifacts)
+    prompt = _build_analyst_prompt(state, artifacts, draft_body)
     system_prompt = get_persona(
         artifact_type=state["artifact_type"],
         workflow_area=state["workflow_area"],
@@ -574,7 +580,7 @@ def _msg_role_content(m) -> tuple[str, str]:
     return role, str(getattr(m, "content", ""))
 
 
-def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
+def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_body: str | None = None) -> str:
     artifact_context = "\n".join(
         f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
     ) or "(chưa có artifact nào)"
@@ -601,6 +607,15 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
     )
     coverage_hint = _build_coverage_hint(state)
 
+    draft_block = ""
+    if draft_body:
+        draft_block = (
+            f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}\n\n"
+            "QUAN TRỌNG: nội dung trên ĐÃ được ghi nhận. TUYỆT ĐỐI không hỏi lại thông tin đã "
+            "có trong draft. Chỉ hỏi/khai thác phần user muốn bổ sung hoặc thay đổi (delta). "
+            "Nếu user chỉ muốn cập nhật, tập trung vào điểm cần sửa, không khởi tạo lại từ đầu."
+        )
+
     return (
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
         f"Context hiện tại:\n{artifact_context}\n\n"
@@ -623,6 +638,7 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         f"{_build_synthesis_directive()}"
         f"{_build_slot_directive(state)}"
         f"{coverage_hint}"
+        f"{draft_block}"
         f"{language_lock}"
     )
 

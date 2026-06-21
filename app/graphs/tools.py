@@ -2,6 +2,7 @@ import uuid
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.graphs.policy import governed
 from app.models.artifact import Artifact, ArtifactLink
@@ -42,6 +43,31 @@ async def read_artifact_graph(
         {"source_id": str(r.source_id), "target_id": str(r.target_id), "relation_type": r.relation_type}
         for r in rows
     ]
+
+
+async def read_current_body(
+    *, db: AsyncSession, project_id: uuid.UUID, artifact_type: str
+) -> dict | None:
+    """Return the current version body of an artifact of this type, or None.
+
+    Title-only read_artifacts is not enough for M7: analyze_node needs the draft
+    content so it does not re-ask what is already recorded. Plain async (no @governed)
+    because this is an internal context-load that analyze_node calls directly like a
+    repository query, not an LLM-exposed tool.
+    """
+    row = (
+        await db.execute(
+            select(Artifact)
+            .where(Artifact.project_id == project_id, Artifact.type == artifact_type)
+            .where(Artifact.current_version_id.is_not(None))
+            .order_by(Artifact.created_at.desc())
+            .options(selectinload(Artifact.current_version))
+            .limit(1)
+        )
+    ).scalars().first()
+    if row is None or row.current_version is None:
+        return None
+    return {"artifact_id": str(row.id), "title": row.title, "body": row.current_version.body}
 
 
 @governed
