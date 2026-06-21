@@ -82,3 +82,51 @@ async def judge_artifact(artifact_text: str, rubric_criteria: dict, llm_client) 
 async def judge_multiple(artifact_text: str, rubric_criteria: dict, llm_client, n: int = 3) -> list[dict[str, Any]]:
     """Run the judge n times on the same input to measure inter-run variance (O4)."""
     return [await judge_artifact(artifact_text, rubric_criteria, llm_client) for _ in range(n)]
+
+
+# A judge for the conversation as a whole, independent of the per-artifact rubric judge above.
+# It measures multi-angle behaviour (S1/S2): how varied the agent's modes were and how many
+# turns it proactively switched. Kept separate so it never freezes the checkpoint interface (N1).
+CONVERSATION_JUDGE_SCHEMA: dict[str, Any] = {
+    "name": "conversation_judge_result",
+    "schema": {
+        "type": "object",
+        "properties": {
+            "mode_variety": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            "proactive_count": {"type": "integer", "minimum": 0},
+            "rationale": {"type": "string"},
+        },
+        "required": ["mode_variety", "proactive_count", "rationale"],
+    },
+}
+
+_CONVERSATION_JUDGE_SYSTEM = (
+    "Bạn đánh giá một hội thoại giữa trợ lý phân tích yêu cầu và người dùng theo góc độ đa chế độ. "
+    "mode_variety (0.0–1.0): mức độ trợ lý sử dụng nhiều chế độ khác nhau (hỏi/đánh giá/khám phá) "
+    "thay vì chỉ hỏi. proactive_count: số lượt trợ lý CHỦ ĐỘNG chuyển khỏi chế độ hỏi-đáp thuần. "
+    "rationale: giải thích ngắn gọn bằng tiếng Việt."
+)
+
+
+def _validate_conversation(result: Any) -> dict[str, Any]:
+    if not isinstance(result, dict):
+        raise ValueError("Conversation judge phải trả JSON object")
+    if not isinstance(result.get("mode_variety"), (int, float)):
+        raise ValueError("Conversation judge thiếu 'mode_variety' dạng số")
+    if not isinstance(result.get("proactive_count"), int) or isinstance(result.get("proactive_count"), bool):
+        raise ValueError("Conversation judge thiếu 'proactive_count' dạng số nguyên")
+    if not isinstance(result.get("rationale"), str):
+        raise ValueError("Conversation judge thiếu 'rationale' dạng chuỗi")
+    result["mode_variety"] = float(result["mode_variety"])
+    return result
+
+
+async def judge_conversation(conversation_text: str, llm_client) -> dict[str, Any]:
+    """Score one conversation for multi-angle behaviour. Raises ValueError on a bad shape."""
+    result, _usage = await llm_client.generate(
+        messages=[{"role": "user", "content": f"Đánh giá hội thoại sau:\n\n{conversation_text}"}],
+        system=_CONVERSATION_JUDGE_SYSTEM,
+        max_tokens=512,
+        response_format=CONVERSATION_JUDGE_SCHEMA,
+    )
+    return _validate_conversation(result)

@@ -45,6 +45,10 @@ ANALYSIS_SCHEMA = {
             "type": "object",
             "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
         },
+        # (multi-angle) — optional, additive. The angle this turn operates in. 'qa' is the
+        # default ask-and-clarify rhythm; the others are proactive modes the eval layer counts
+        # (mode_proactive_count) to guard against regressing to ask-only behaviour.
+        "active_mode": {"type": "string", "enum": ["qa", "critique", "explore", "draft"]},
         # (incremental write / C1) — optional, additive. Full md draft reflecting every
         # point the user has made so far; analyze_node carries it forward as working_draft.
         "draft_update": {
@@ -337,6 +341,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # hint can rotate off it — the deterministic guard against re-asking the same slot.
         "last_asked_slot": _coverage_hint_target(state),
         "working_draft": draft_update or state.get("working_draft"),
+        # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
+        # this turn's prompt, so clear it now — the next turn returns to proactive default.
+        "mode_hint": None,
         **coverage,
     }
 
@@ -673,7 +680,29 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_bod
         f"{coverage_hint}"
         f"{draft_block}"
         f"{working_draft_block}"
+        f"{_build_mode_directive(state)}"
         f"{language_lock}"
+    )
+
+
+def _build_mode_directive(state: WorkflowState) -> str:
+    """Steer the analyst's operating angle (multi-angle S1/S2).
+
+    A user-supplied `mode_hint` is an explicit "cướp lái" — switch to that mode now. With no
+    hint, nudge the agent to proactively leave plain Q&A once enough is clarified, so it chains
+    into critique/explore instead of only ever asking. The chosen angle is reported back via the
+    optional `active_mode` field, which the eval layer counts as proactive coverage.
+    """
+    mode_hint = (state.get("mode_hint") or "").strip()
+    if mode_hint:
+        return (
+            f"\n\nYÊU CẦU MODE: người dùng muốn chuyển sang chế độ '{mode_hint}'. Hãy chuyển ngay "
+            f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
+        )
+    return (
+        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): sau khi đã có ≥2 lượt làm rõ hoàn chỉnh, hãy chủ động chuyển "
+        "active_mode sang 'critique' (soi điểm yếu/giả định) hoặc 'explore' (mở rộng góc nhìn) "
+        "thay vì chỉ tiếp tục hỏi, và đặt tên chế độ trong field active_mode."
     )
 
 

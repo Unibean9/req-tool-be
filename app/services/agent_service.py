@@ -125,10 +125,13 @@ class AgentService:
         content: str,
         user_id: uuid.UUID | None = None,
         llm_client: Any = None,
+        mode_hint: str | None = None,
     ) -> AgentMessage:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
+        # A queued message carries only its content; a mode_hint on it is intentionally not
+        # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
         if session.status == AgentSessionStatus.ACTIVE:
             return await self._queue_message(session.id, content)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
@@ -173,11 +176,14 @@ class AgentService:
                 "coverage_stall_count": None,
                 "last_asked_slot": None,
                 "working_draft": None,
+                "mode_hint": mode_hint,
             }
             resume_command = None
         else:
             initial_state = None
-            resume_command = self._resume_command(session, {"content": content})
+            resume_command = self._resume_command(
+                session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
+            )
 
         asyncio.create_task(
             self._run_graph(
@@ -511,6 +517,7 @@ class AgentService:
                     "coverage_stall_count": None,
                     "last_asked_slot": None,
                     "working_draft": None,
+                    "mode_hint": None,
                 }
                 await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
@@ -628,6 +635,7 @@ class AgentService:
             "coverage_stall_count": None,
             "last_asked_slot": None,
             "working_draft": None,
+            "mode_hint": None,
         }
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
@@ -666,11 +674,16 @@ class AgentService:
             }
         }
 
-    def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
+    def _resume_command(
+        self, session: AgentSession, value: dict[str, Any], state_update: dict[str, Any] | None = None
+    ) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
-        if interrupt_ids:
-            return Command(resume={iid: value for iid in interrupt_ids})
-        return Command(resume=value)
+        resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
+        # state_update lets a resuming turn seed state (e.g. a one-shot mode_hint) before the
+        # interrupted node re-runs — applied by LangGraph as a normal channel update.
+        if state_update:
+            return Command(resume=resume, update=state_update)
+        return Command(resume=resume)
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}

@@ -109,7 +109,7 @@ async def send_message(
 ) -> Any:
     await require_project_member_404(project_id, user, db)
     msg = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).handle_user_message(
-        project_id=project_id, session_id=session_id, content=body.content, user_id=user.id
+        project_id=project_id, session_id=session_id, content=body.content, user_id=user.id, mode_hint=body.mode_hint
     )
     return ok(AgentMessageResponse.model_validate(msg))
 

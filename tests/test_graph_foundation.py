@@ -115,6 +115,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "coverage_stall_count": None,
         "last_asked_slot": None,
         "working_draft": None,
+        "mode_hint": None,
     }
 
     assert state["turn_count"] == 0
@@ -140,6 +141,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "coverage_stall_count",
         "last_asked_slot",
         "working_draft",
+        "mode_hint",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

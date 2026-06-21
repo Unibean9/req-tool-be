@@ -57,6 +57,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "coverage_stall_count": None,
         "last_asked_slot": None,
         "working_draft": None,
+        "mode_hint": None,
     }
 
 
@@ -1604,6 +1605,117 @@ async def test_propose_artifacts_node_keeps_proposal_body_without_draft(mock_int
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().one()
         assert tool_call.input_snapshot["body"] == "body một lượt"
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 (multi-angle): active_mode + mode_hint + proactive directive
+# ---------------------------------------------------------------------------
+
+def test_active_mode_field_in_analysis_schema():
+    """T1: `active_mode` is additive and optional — the required set must not change."""
+    from app.graphs.nodes import ANALYSIS_SCHEMA
+
+    assert "active_mode" in ANALYSIS_SCHEMA["properties"]
+    assert "active_mode" not in ANALYSIS_SCHEMA.get("required", [])
+
+
+@pytest.mark.asyncio
+async def test_active_mode_passes_through_analyze_node(client, db_session):
+    """T2: an `active_mode` the LLM emits survives into the persisted analysis_result.
+
+    `active_mode` lives inside analysis_result (no new state channel), so the eval layer
+    can mine it from AgentRun.analysis_result — it must not be stripped by analyze_node.
+    """
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "next_action": "ask",
+        "confidence": 0.4,
+        "gaps": [],
+        "message": "Ta thử soi lại nhé?",
+        "active_mode": "critique",
+    }, None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["analysis_result"]["active_mode"] == "critique"
+
+
+def test_mode_hint_injects_directive_into_prompt():
+    """T4a: a user-supplied mode_hint must surface the requested mode in the prompt."""
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="goal")
+    state["mode_hint"] = "critique"
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "critique" in prompt
+
+
+def test_no_mode_hint_injects_proactive_rule():
+    """T4b: with no hint, the prompt must carry the proactive mode-switch rule."""
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="goal")
+    state["mode_hint"] = None
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "chủ động chuyển" in prompt
+
+
+def test_mode_directive_precedes_language_lock():
+    """The mode directive must sit before the language lock (lock stays last by contract)."""
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="goal")
+    state["locale"] = "vi"
+    state["mode_hint"] = "explore"
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert prompt.index("explore") < prompt.index("ngôn ngữ 'vi'")
+
+
+@pytest.mark.asyncio
+async def test_mode_hint_cleared_after_single_turn(client, db_session):
+    """T5: analyze_node consumes mode_hint and clears it within the same turn."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "next_action": "ask",
+        "confidence": 0.3,
+        "gaps": [],
+        "message": "Bạn cần gì thêm?",
+    }, None))
+
+    state = _state(artifact_type="goal")
+    state["mode_hint"] = "critique"
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["mode_hint"] is None
 
 
 def test_build_graph_returns_compiled_graph_without_error():

@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -46,6 +46,9 @@ class AgentSessionCreateResponse(BaseModel):
 
 class AgentMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    # Optional one-shot steer ("cướp lái"): switch the agent's angle for this turn only.
+    # Constrained to the active_mode enum so user input can never be injected into the prompt.
+    mode_hint: Literal["qa", "critique", "explore", "draft"] | None = None
 
 
 class AgentMessageResponse(BaseModel):

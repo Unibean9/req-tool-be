@@ -25,3 +25,6 @@ class WorkflowState(TypedDict):
     coverage_stall_count: int | None
     last_asked_slot: str | None
     working_draft: str | None
+    # Multi-angle mode steering. A one-shot hint set by the user ("cướp lái" — switch the
+    # agent to critique/explore/etc.); analyze_node consumes it and clears it the same turn.
+    mode_hint: str | None

@@ -9,6 +9,7 @@ import pytest
 from app.eval.smarter_brain_checkpoint import (
     CheckpointThresholds,
     collect_token_sessions,
+    count_proactive_modes,
     evaluate_checkpoint,
     main,
 )
@@ -133,6 +134,58 @@ def test_checkpoint_counts_all_llm_calls_reported_for_a_session():
 
     assert result.candidate_token_avg == 200
     assert result.token_ratio == 2.0
+    assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 (multi-angle): mode_proactive_count hard gate (R_mode)
+# ---------------------------------------------------------------------------
+
+def test_count_proactive_modes_counts_non_qa_turns():
+    """A proactive turn is one whose active_mode is set and not the default 'qa'."""
+    rows = [
+        {"active_mode": "qa"},
+        {"active_mode": "critique"},
+        {},  # no active_mode reported — not proactive
+        {"active_mode": "explore"},
+        {"active_mode": None},  # explicit null — not proactive
+    ]
+
+    assert count_proactive_modes(rows) == 2
+
+
+def _passing_kwargs():
+    """Token/eval inputs that both pass, isolating the mode gate as the only variable."""
+    return dict(
+        baseline_sessions=[{"session_id": "b1", "token_usage": [{"total": 100}]}],
+        candidate_sessions=[{"session_id": "c1", "token_usage": [{"total": 150}]}],
+        baseline_eval_rows=[{"overall": 0.70}],
+        candidate_eval_rows=[{"overall": 0.80}],
+    )
+
+
+def test_mode_floor_fails_passed_when_count_is_zero():
+    """Hard gate: zero proactive turns must drive passed=False even when token+eval pass."""
+    result = evaluate_checkpoint(**_passing_kwargs(), mode_proactive_count=0)
+
+    assert result.token_passed is True
+    assert result.eval_passed is True
+    assert result.mode_floor_passed is False
+    assert result.passed is False
+
+
+def test_mode_floor_passes_when_count_at_least_one():
+    result = evaluate_checkpoint(**_passing_kwargs(), mode_proactive_count=1)
+
+    assert result.mode_floor_passed is True
+    assert result.passed is True
+
+
+def test_mode_floor_not_applied_when_count_absent():
+    """Backward compat: token/eval-only callers (no mode measurement) are not gated."""
+    result = evaluate_checkpoint(**_passing_kwargs())
+
+    assert result.mode_floor_passed is True
     assert result.passed is True
 
 
