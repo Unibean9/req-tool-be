@@ -14,11 +14,8 @@ relaxes the gate and rewrites the hint once coverage stops advancing.
 import uuid
 
 import pytest
-from sqlalchemy import select
 
 from app.graphs.slot_schema import COVERAGE_STALL_LIMIT, SLOT_DESCRIPTIONS
-from app.models.agent import AgentRun
-from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 
