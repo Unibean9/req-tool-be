@@ -20,6 +20,8 @@ Routing keys (matching app/graphs):
 
 from typing import Any
 
+from langchain_core.messages import AIMessage
+
 from app.graphs.critic import _REGENERATE_SYSTEM
 
 
@@ -33,6 +35,16 @@ ON_TOPIC_SCHEMA = {
         "reason": {"type": "string"},
     },
     "required": ["on_topic"],
+}
+
+
+# Test-harness-only schema marking a native tool-call turn (Phase 2). When generate sees this as
+# response_format it returns an AIMessage(tool_calls=[...]) instead of a JSON dict — the shape the
+# LangGraph ToolNode dispatches. The marker property is dunder-namespaced so it can never collide
+# with a real artifact-schema field; _route keys on it.
+TOOL_CALL_SCHEMA = {
+    "type": "object",
+    "properties": {"__tool_call__": {"type": "boolean"}},
 }
 
 
@@ -73,9 +85,13 @@ class ScriptedLLM:
         summary: dict[str, Any] | None = None,
         followup: dict[str, Any] | None = None,
         judge: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> None:
         self._brain = list(brain or [])
         self._brain_idx = 0
+        # Ordered native tool-call turns, consumed one per "tool_call"-routed generate (Phase 2).
+        self._tool_calls = list(tool_calls or [])
+        self._tool_call_idx = 0
         self._intent = intent or {"intent": "task", "locale": "vi"}
         self._critic = critic or {
             "scores": {
@@ -113,8 +129,12 @@ class ScriptedLLM:
         system: str | None = None,
         max_tokens: int | None = None,
         response_format: dict[str, Any] | None = None,
+        tools: list[Any] | None = None,
         **_kwargs: Any,
     ) -> tuple[Any, None]:
+        # `tools` is accepted but does not drive routing: the scenario's response_format decides
+        # whether a turn is a tool call (TOOL_CALL_SCHEMA) or an enum turn. Accepting the kwarg
+        # stops a future tool-bound call from silently falling through to the _DONE_TURN fallback (R2).
         route = self._route(response_format, system)
         result = self._respond(route)
         self.calls.append({"route": route, "result": result})
@@ -126,6 +146,10 @@ class ScriptedLLM:
 
     def _route(self, response_format: dict[str, Any] | None, system: str | None) -> str:
         props = ((response_format or {}).get("properties")) or {}
+        # Tool-call guard: a native tool-call turn is flagged by the dunder marker, detected before
+        # the enum branches (Phase 2).
+        if "__tool_call__" in props:
+            return "tool_call"
         # Judge guard MUST be first: a future schema carrying both on_topic and next_action would
         # otherwise route to "analyze" and the judge branch would never run.
         if "on_topic" in props:
@@ -146,6 +170,12 @@ class ScriptedLLM:
         return "analyze"
 
     def _respond(self, route: str) -> Any:
+        if route == "tool_call":
+            if self._tool_call_idx < len(self._tool_calls):
+                tc = self._tool_calls[self._tool_call_idx]
+                self._tool_call_idx += 1
+                return AIMessage(content="", tool_calls=[dict(tc)])
+            return AIMessage(content="", tool_calls=[])
         if route == "judge":
             return dict(self._judge)
         if route == "intent":
@@ -209,3 +239,8 @@ def propose(*proposals: dict[str, Any], confidence: float = 0.9) -> dict[str, An
 def artifact(artifact_type: str, title: str, body: str, rationale: str = "") -> dict[str, Any]:
     """A single proposal block."""
     return {"artifact_type": artifact_type, "title": title, "body": body, "rationale": rationale}
+
+
+def tool_call(name: str, args: dict[str, Any], *, call_id: str = "call_1") -> dict[str, Any]:
+    """A scripted native tool-call turn (Phase 2). Shape matches a LangGraph ToolNode tool_call."""
+    return {"id": call_id, "name": name, "args": args}

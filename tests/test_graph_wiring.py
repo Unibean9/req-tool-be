@@ -7,7 +7,7 @@ from langgraph.graph import END, StateGraph
 
 from app.graphs.critic import CRITIC_SCHEMA, quality_gate_node, route_after_gate
 from app.graphs.graph import build_graph
-from app.graphs.nodes import route_after_confirm
+from app.graphs.nodes import route_after_confirm, route_node
 from app.graphs.state import WorkflowState
 
 
@@ -40,6 +40,34 @@ def test_ask_human_can_route_through_summarize_before_analyze():
     pairs = _edge_pairs()
     assert ("ask_human", "summarize") in pairs
     assert ("summarize", "analyze") in pairs
+
+
+# --- Phase 2: ToolNode parallel scaffolding ---
+
+def test_tools_node_in_graph():
+    assert "tools" in _node_names()
+
+
+def test_route_node_mapping_has_tools_key():
+    # Structural check only: the "tools" branch is registered on analyze's conditional
+    # edges. It stays unreachable until Phase 5 removes the next_action enum, so this
+    # asserts the mapping wiring, not a live call-through.
+    pairs = _edge_pairs()
+    assert ("analyze", "tools") in pairs
+
+
+def test_tools_loops_back_to_analyze():
+    assert ("tools", "analyze") in _edge_pairs()
+
+
+def test_route_node_never_returns_tools_for_enum_actions():
+    # Safety net for the scaffolding: an empty ToolNode raises on dispatch, so the unreachable
+    # "tools" branch must stay unreachable for every schema-conforming next_action. If a future
+    # change lets route_node return "tools" before the node carries real tools, this fails here
+    # rather than as an opaque ValueError at runtime dispatch.
+    for action in ("ask", "propose", "done"):
+        state = {"turn_count": 0, "analysis_result": {"next_action": action}}
+        assert route_node(state) != "tools"
 
 
 # --- Group 2: Routing through the compiled graph (finding #2) ---

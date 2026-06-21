@@ -385,6 +385,11 @@ def route_node(state: WorkflowState) -> str:
         return END
 
     action = (state.get("analysis_result") or {}).get("next_action", "done")
+    # Phase 2 scaffolding: route a native tool-call turn to the parallel ToolNode. Unreachable
+    # while next_action stays enum-constrained (ask/propose/done); the branch lands now so the
+    # graph topology is final before the enum is removed (Phase 5).
+    if action == "tool_call":
+        return "tools"
     # slot-coverage gate (LLM-led): only the tier-1 hard floor remains. coverage_complete is only
     # False for a BRD key below threshold; None/True fail open. Stall escape relaxes the floor once
     # coverage stops advancing so a chronically under-reporting model cannot trap the user.
