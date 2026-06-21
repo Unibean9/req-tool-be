@@ -356,23 +356,16 @@ def route_node(state: WorkflowState) -> str:
         return END
 
     action = (state.get("analysis_result") or {}).get("next_action", "done")
-    # slot-coverage gate (LLM-led soft gate): two tiers. coverage_complete is only False for a
-    # BRD key below threshold; None/True fail open. Stall escape relaxes both tiers once coverage
-    # stops advancing so a chronically under-reporting model cannot trap the user in an ask loop.
+    # slot-coverage gate (LLM-led): only the tier-1 hard floor remains. coverage_complete is only
+    # False for a BRD key below threshold; None/True fail open. Stall escape relaxes the floor once
+    # coverage stops advancing so a chronically under-reporting model cannot trap the user.
+    # Coverage incompleteness is otherwise a prompt signal (surfaced via _build_coverage_hint), not
+    # a routing veto: past the floor the model's propose/done judgement is honoured.
     stalled = (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT
     coverage_incomplete = state.get("coverage_complete") is False
-    # Tier 1 — hard floor: 0 slot filled blocks even with a user override. MUST stay before tier 2
-    # (and no return may be inserted between them): otherwise a turn-1 propose containing an
-    # affirmative token would slip past the floor. Diff-agent plan must not reorder these.
+    # Tier 1 — hard floor: 0 slot filled blocks propose-from-greeting (guard against a model that
+    # under-reports coverage). This is the only deterministic routing gate left on the cognitive plane.
     if coverage_incomplete and not stalled and _below_minimum_floor(state) and action in ("propose", "done"):
-        return "ask_human"
-    # Tier 2 — soft gate: past the floor, yield to an explicit user request to create now.
-    if (
-        coverage_incomplete
-        and not stalled
-        and not _user_requests_propose(state)
-        and action in ("propose", "done")
-    ):
         return "ask_human"
     if action == "ask":
         return "ask_human"

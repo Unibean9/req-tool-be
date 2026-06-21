@@ -579,13 +579,28 @@ def test_route_node_done_routes_to_end():
     assert route_node(state) == END
 
 
-def test_slot_gate_blocks_propose_when_incomplete():
+def test_slot_gate_floor_blocks_propose_at_zero_filled():
+    """Phase 0: only the tier-1 floor blocks now — propose-from-greeting (0 slot filled)."""
     from app.graphs.nodes import route_node
 
     state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
     state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"who": "empty", "obstacle": "empty", "root_cause": "empty"}
 
     assert route_node(state) == "ask_human"
+
+
+def test_slot_gate_allows_propose_past_floor_when_incomplete():
+    """Phase 0: past the floor, incomplete coverage no longer vetoes propose (tier-2 removed)."""
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"who": "filled", "obstacle": "empty", "root_cause": "empty"}
+
+    assert route_node(state) == "confirm"
 
 
 def test_slot_gate_allows_propose_when_complete():
@@ -597,11 +612,14 @@ def test_slot_gate_allows_propose_when_complete():
     assert route_node(state) == "confirm"
 
 
-def test_slot_gate_blocks_done_when_incomplete():
+def test_slot_gate_floor_blocks_done_at_zero_filled():
+    """Phase 0: the tier-1 floor also catches a 'done' from greeting (0 slot filled)."""
     from app.graphs.nodes import route_node
 
     state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "done"})
     state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"who": "empty", "obstacle": "empty", "root_cause": "empty"}
 
     assert route_node(state) == "ask_human"
 
@@ -629,11 +647,14 @@ def test_slot_gate_none_coverage_fails_open():
     "brd_key",
     ["intent", "goal", "stakeholder", "capability", "constraint", "assumption", "risk", "open_question"],
 )
-def test_slot_gate_blocks_propose_for_each_brd_key(brd_key):
+def test_slot_gate_floor_blocks_propose_at_zero_filled_for_each_brd_key(brd_key):
+    """Phase 0: the tier-1 floor (0 slot filled) blocks propose-from-greeting across BRD keys."""
     from app.graphs.nodes import route_node
 
     state = _state(artifact_type=brd_key, turn_count=2, analysis_result={"next_action": "propose"})
     state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    state["slot_coverage"] = {"a": "empty", "b": "empty"}
 
     assert route_node(state) == "ask_human"
 

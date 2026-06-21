@@ -78,29 +78,20 @@ def test_slot_directive_emit_mandate_unchanged():
 # Fix 2 — stall detection relaxes the gate and rewrites the hint
 # ---------------------------------------------------------------------------
 
-def test_route_gate_blocks_below_stall_limit():
+def test_route_propose_past_floor_honoured_without_override():
+    """Phase 0: past the tier-1 floor, propose is honoured regardless of an affirmative token.
+
+    Pre-Phase-0 this returned ask_human (tier-2 required an explicit user request). Tier-2 is
+    removed, so coverage incompleteness no longer vetoes routing once past the floor.
+    """
     from app.graphs.nodes import route_node
 
     state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
     state["coverage_complete"] = False
     state["coverage_stall_count"] = 0
-    # Past the floor (1 slot filled) so this exercises the soft gate, not the hard floor; and
-    # the user message carries no affirmative token so the block is for the right reason.
+    # Past the floor (1 slot filled); no affirmative token -> pre-Phase-0 tier-2 would have blocked.
     state["slot_coverage"] = {"why_now": "filled", "sponsor": "empty"}
     state["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
-
-    assert route_node(state) == "ask_human"
-
-
-def test_route_gate_respects_user_override():
-    """Soft gate: coverage incomplete but the user requests creation -> respect the override."""
-    from app.graphs.nodes import route_node
-
-    state = _state(artifact_type="intent", turn_count=2, analysis_result={"next_action": "propose"})
-    state["coverage_complete"] = False
-    state["coverage_stall_count"] = 0
-    state["slot_coverage"] = {"why_now": "filled", "sponsor": "empty"}
-    state["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
 
     assert route_node(state) == "confirm"
 
@@ -116,6 +107,34 @@ def test_route_gate_blocks_at_zero_filled_even_with_user_override():
     state["messages"] = [{"role": "user", "content": "cứ tạo đi"}]
 
     assert route_node(state) == "ask_human"
+
+
+def test_route_propose_past_floor_no_affirmative_goes_confirm():
+    """M9 (Phase 0): once past the tier-1 floor, a model 'propose' is honoured even when
+    coverage is incomplete and the user message carries no affirmative token.
+
+    Pre-Phase-0 the tier-2 soft gate forced this back to ask_human (it required an explicit
+    user request via _user_requests_propose). Phase 0 removes tier-2: coverage is a prompt
+    signal, not a routing veto. The graph must not override the model's judgement here.
+    """
+    from app.graphs.nodes import route_node
+
+    state = _state(artifact_type="problem", turn_count=2, analysis_result={"next_action": "propose"})
+    state["coverage_complete"] = False
+    state["coverage_stall_count"] = 0
+    # required slots for 'problem': who/obstacle/root_cause/frequency/impact.
+    # who+obstacle filled -> past the floor (>=1 filled); the rest empty -> coverage incomplete.
+    state["slot_coverage"] = {
+        "who": "filled",
+        "obstacle": "filled",
+        "root_cause": "empty",
+        "frequency": "empty",
+        "impact": "empty",
+    }
+    # No affirmative token: pre-Phase-0 tier-2 would have blocked on this.
+    state["messages"] = [{"role": "user", "content": "tôi cần thêm thông tin"}]
+
+    assert route_node(state) == "confirm"
 
 
 def test_user_requests_propose_detects_signal():

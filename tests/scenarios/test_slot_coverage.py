@@ -14,11 +14,6 @@ def _full(required: list[str]) -> dict[str, str]:
     return {slot: "filled" for slot in required}
 
 
-def _partial(required: list[str]) -> dict[str, str]:
-    """Only the first required slot filled -> ratio = 1/len < threshold -> gate blocks."""
-    return {required[0]: "filled"}
-
-
 _PARTIAL_PROBLEM = {
     "who": "filled",
     "obstacle": "filled",
@@ -35,8 +30,19 @@ _FULL_PROBLEM = {
     "impact": "filled",
 }
 
+# Phase 0: after tier-2 removal only the tier-1 floor (0 slot filled) blocks. Scenarios that
+# previously relied on tier-2 to gate a past-floor propose now drive the floor with 0 filled.
+_EMPTY_PROBLEM = {
+    "who": "empty",
+    "obstacle": "empty",
+    "root_cause": "empty",
+    "frequency": "empty",
+    "impact": "empty",
+}
+
 
 async def test_problem_gate_blocks_premature_propose(client, scenario_env, scenario_project):
+    """Phase 0: the tier-1 floor blocks propose-from-greeting (0 slot filled)."""
     headers, project = scenario_project
     scenario = Scenario(
         name="problem-gate-blocks-premature-propose",
@@ -52,7 +58,7 @@ async def test_problem_gate_blocks_premature_propose(client, scenario_env, scena
                         )
                     ),
                     "message": "Bạn mô tả thêm nguyên nhân gốc rễ của vấn đề này được không?",
-                    "slot_assessment": _PARTIAL_PROBLEM,
+                    "slot_assessment": _EMPTY_PROBLEM,
                 }
             ]
         ),
@@ -167,12 +173,13 @@ async def test_brd_key_gate_and_coverage(client, scenario_env, scenario_project,
     headers, project = scenario_project
     required = BRD_SLOTS[key]["required"]
 
-    # Turn 1: brain attempts to propose with incomplete slots, but carries a fallback
-    # question so the gate can convert it into a real ask_human turn.
+    # Turn 1: brain attempts to propose from greeting (0 slot filled), but carries a fallback
+    # question so the tier-1 floor can convert it into a real ask_human turn. (Phase 0: only the
+    # floor blocks now; a past-floor partial would be honoured.)
     block_turn = {
         **propose(artifact(key, f"{key} nháp", f"Nội dung sơ bộ cho {key}.")),
         "message": "Bạn bổ sung thêm thông tin còn thiếu được không?",
-        "slot_assessment": _partial(required),
+        "slot_assessment": {slot: "empty" for slot in required},
     }
     # Turn 2: full slots -> coverage complete -> proceed to confirm.
     final_turn = propose(artifact(key, f"{key} hoàn chỉnh", f"Nội dung đầy đủ cho {key}."))
@@ -243,7 +250,7 @@ async def test_gate_redirects_done_without_message_does_not_crash(client, scenar
         "gaps": [],
         "message": "",
         "proposals": [],
-        "slot_assessment": _PARTIAL_PROBLEM,
+        "slot_assessment": _EMPTY_PROBLEM,
     }
     scenario = Scenario(
         name="gate-redirects-done-no-message",
@@ -319,10 +326,9 @@ async def test_m3_proposes_when_coverage_sufficient(client, scenario_env, scenar
 
 
 async def test_m3_user_override_respected(client, scenario_env, scenario_project):
-    """M3 (soft gate) — coverage incomplete but the user says "cứ tạo đi" -> agent proceeds.
-
-    Past the minimum floor (1 slot filled) and below the stall limit, so the only reason the
-    gate yields is the user override — this is the soft gate exercised end-to-end.
+    """M3 — coverage incomplete but past the tier-1 floor (1 slot filled) -> agent proceeds to
+    confirm. Phase 0 removed the tier-2 soft gate, so propose past the floor is now honoured
+    regardless of the user override; the "cứ tạo đi" message is incidental here.
     """
     headers, project = scenario_project
     block_turn = ask("Vì sao sáng kiến này cần làm bây giờ?", slot_assessment={"why_now": "filled"})
