@@ -52,7 +52,9 @@ _CRITIC_SYSTEM = (
 
 _REGENERATE_SYSTEM = (
     "Bạn là BA/PM analyst. Hãy chỉnh sửa lại các proposal artifact dựa trên "
-    "phản hồi chất lượng để khắc phục điểm yếu, giữ nguyên ý định ban đầu."
+    "phản hồi chất lượng để khắc phục điểm yếu, giữ nguyên ý định ban đầu. "
+    "Ưu tiên tăng ĐỘ SÂU và độ đầy đủ: khai thác toàn bộ thông tin đã có để viết body "
+    "chi tiết, có cấu trúc, không sơ sài; nhưng tuyệt đối không bịa thông tin chưa được cung cấp."
 )
 
 

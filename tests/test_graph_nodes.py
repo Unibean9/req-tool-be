@@ -404,6 +404,22 @@ def test_build_prompt_falls_back_to_5_messages_when_empty():
     assert "Tin nhắn 1" in prompt
 
 
+def test_build_prompt_includes_synthesis_directive():
+    """The propose path must instruct the LLM to mine the full context into a rich body,
+    not emit a thin one-paragraph artifact. Without this directive the prompt only says
+    'proposals (nếu propose)', which produces shallow artifacts even after full elicitation.
+    """
+    from app.graphs.nodes import _build_analyst_prompt
+
+    prompt = _build_analyst_prompt(_state(), [])
+
+    assert "ĐỘ SÂU NỘI DUNG" in prompt
+    # Must steer toward exploiting all gathered information, not summarizing thinly.
+    assert "toàn bộ" in prompt.lower() or "khai thác" in prompt
+    # Must forbid fabricating detail beyond what was gathered.
+    assert "không bịa" in prompt.lower()
+
+
 def test_coverage_hint_injected_in_prompt_when_incomplete():
     from app.graphs.nodes import _build_analyst_prompt
 

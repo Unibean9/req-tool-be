@@ -620,9 +620,28 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict]) -> str:
         "hoặc kết quả mong muốn thì phải tính là thông tin đã có và chuyển progression sang phần khác. "
         "Câu hỏi tiếp theo phải dựa trên gap chưa được khai thác trong hội thoại/context; tuyệt đối không "
         "lặp lại câu hỏi vừa hỏi."
+        f"{_build_synthesis_directive()}"
         f"{_build_slot_directive(state)}"
         f"{coverage_hint}"
         f"{language_lock}"
+    )
+
+
+def _build_synthesis_directive() -> str:
+    """Instruct the LLM to synthesize a rich artifact body when proposing.
+
+    Without this the prompt only says 'proposals (nếu propose)', so even after thorough
+    elicitation the model emits a thin, one-paragraph body. This block tells it to mine the
+    whole conversation/context into detailed, structured content — while forbidding fabrication.
+    """
+    return (
+        "\n\nĐỘ SÂU NỘI DUNG (khi next_action='propose'): body của mỗi proposal phải KHAI THÁC "
+        "toàn bộ thông tin user đã cung cấp trong hội thoại và context, viết chi tiết và có cấu "
+        "trúc rõ ràng phù hợp với loại artifact (các phần/mục liên quan, dữ kiện cụ thể, ràng buộc, "
+        "tiêu chí, ví dụ user đã nêu). KHÔNG tóm tắt sơ sài thành một đoạn ngắn, KHÔNG lặp lại câu "
+        "hỏi. Mỗi ý user đã trả lời phải được triển khai thành nội dung thực chất. Tuyệt đối KHÔNG "
+        "bịa thông tin chưa được cung cấp — chỉ đào sâu từ những gì đã thu thập; phần thật sự thiếu "
+        "thì để ngỏ, không bù bằng nội dung bịa."
     )
 
 
