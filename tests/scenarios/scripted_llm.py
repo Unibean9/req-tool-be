@@ -117,6 +117,13 @@ class ScriptedLLM:
         }
         # Audit trail of every routed call — surfaced in the transcript.
         self.calls: list[dict[str, Any]] = []
+        # Tools recorded by bind_tools so a test can assert what the loop offered (Phase 4 stub).
+        self._bound_tools: list[Any] = []
+
+    def bind_tools(self, tools: list[Any]) -> "ScriptedLLM":
+        """Harness stub: record the bound tools and return self (chaining). Not a real LLM bind."""
+        self._bound_tools = list(tools)
+        return self
 
     # ------------------------------------------------------------------
     # LLM client protocol
