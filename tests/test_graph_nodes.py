@@ -56,6 +56,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "coverage_complete": None,
         "coverage_stall_count": None,
         "last_asked_slot": None,
+        "working_draft": None,
     }
 
 
@@ -1444,6 +1445,165 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert draft_body in prompt, "Existing draft body must be injected as context"
     assert "DRAFT ĐANG CÓ" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Phase A2 (C1): incremental running draft (working_draft)
+# ---------------------------------------------------------------------------
+
+def test_analysis_schema_accepts_draft_update():
+    """`draft_update` is additive and optional — the required set must not change."""
+    from app.graphs.nodes import ANALYSIS_SCHEMA
+
+    assert "draft_update" in ANALYSIS_SCHEMA["properties"]
+    assert ANALYSIS_SCHEMA["properties"]["draft_update"]["type"] == "string"
+    assert ANALYSIS_SCHEMA["required"] == ["next_action", "confidence"]
+
+
+def test_build_prompt_includes_working_draft_block_when_present():
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
+    state["working_draft"] = "## Vấn đề\n- Sinh viên trùng lịch học nhóm với giờ làm thêm."
+
+    prompt = _build_analyst_prompt(state, [])
+
+    assert "DRAFT ĐANG XÂY DỰNG" in prompt
+    assert state["working_draft"] in prompt
+    # The running draft must precede the language lock (kept last by contract).
+    assert prompt.index("DRAFT ĐANG XÂY DỰNG") < prompt.index("ngôn ngữ 'vi'")
+
+
+def test_build_prompt_no_working_draft_block_when_absent():
+    """Regression guard: prompt unchanged when no running draft exists."""
+    from app.graphs.nodes import _build_analyst_prompt
+
+    state = _state(artifact_type="problem")
+    baseline = _build_analyst_prompt(state, [])
+    state["working_draft"] = None
+
+    assert "DRAFT ĐANG XÂY DỰNG" not in _build_analyst_prompt(state, [])
+    assert _build_analyst_prompt(state, []) == baseline
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_persists_working_draft_from_draft_update(client, db_session):
+    """M10: when the LLM emits draft_update, it becomes the running working_draft."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    new_draft = "## Mục tiêu\n- Tăng tỷ lệ giữ chân người dùng lên 30%."
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "next_action": "ask",
+        "confidence": 0.4,
+        "gaps": [],
+        "message": "Còn ràng buộc nào không?",
+        "draft_update": new_draft,
+    }, None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["working_draft"] == new_draft
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_preserves_working_draft_when_no_update(client, db_session):
+    """A turn with no draft_update must keep the prior draft, not None it out."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    prior = "## Mục tiêu\n- Đã ghi nhận từ lượt trước."
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "next_action": "ask",
+        "confidence": 0.3,
+        "gaps": [],
+        "message": "Bạn cần gì thêm?",
+    }, None))
+
+    state = _state(artifact_type="goal")
+    state["working_draft"] = prior
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["working_draft"] == prior
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_propose_artifacts_node_seeds_body_from_working_draft(mock_interrupt, client, db_session):
+    """The accumulated running draft, not a freshly synthesized body, is the source of truth."""
+    from app.graphs.nodes import propose_artifacts_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    draft = "## Mục tiêu\n- Nội dung tích lũy qua nhiều lượt."
+    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "body một lượt"}]
+    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
+    state["working_draft"] = draft
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await propose_artifacts_node(state, config)
+
+    async with TestSessionFactory() as db:
+        tool_call = (
+            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+        ).scalars().one()
+        assert tool_call.input_snapshot["body"] == draft
+        assert tool_call.input_snapshot["title"] == "Tăng doanh thu"
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_propose_artifacts_node_keeps_proposal_body_without_draft(mock_interrupt, client, db_session):
+    """Regression: with no running draft, behaviour is unchanged (proposal body used)."""
+    from app.graphs.nodes import propose_artifacts_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    proposals = [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "body một lượt"}]
+    state = _state(analysis_result={"next_action": "propose", "confidence": 0.9, "proposals": proposals})
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await propose_artifacts_node(state, config)
+
+    async with TestSessionFactory() as db:
+        tool_call = (
+            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+        ).scalars().one()
+        assert tool_call.input_snapshot["body"] == "body một lượt"
 
 
 def test_build_graph_returns_compiled_graph_without_error():

@@ -171,6 +171,8 @@ class AgentService:
                 "coverage_ratio": None,
                 "coverage_complete": None,
                 "coverage_stall_count": None,
+                "last_asked_slot": None,
+                "working_draft": None,
             }
             resume_command = None
         else:
@@ -508,6 +510,7 @@ class AgentService:
                     "coverage_complete": None,
                     "coverage_stall_count": None,
                     "last_asked_slot": None,
+                    "working_draft": None,
                 }
                 await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
@@ -623,6 +626,8 @@ class AgentService:
             "coverage_ratio": None,
             "coverage_complete": None,
             "coverage_stall_count": None,
+            "last_asked_slot": None,
+            "working_draft": None,
         }
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(

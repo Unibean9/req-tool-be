@@ -24,3 +24,4 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     coverage_stall_count: int | None
     last_asked_slot: str | None
+    working_draft: str | None

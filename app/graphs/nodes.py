@@ -45,6 +45,15 @@ ANALYSIS_SCHEMA = {
             "type": "object",
             "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
         },
+        # (incremental write / C1) — optional, additive. Full md draft reflecting every
+        # point the user has made so far; analyze_node carries it forward as working_draft.
+        "draft_update": {
+            "type": "string",
+            "description": (
+                "Bản md draft cập nhật phản ánh MỌI ý người dùng đã nêu rõ tới lượt này. "
+                "Bồi đắp tăng dần, không viết lại từ đầu, không bịa thông tin chưa có."
+            ),
+        },
         "proposals": {
             "type": "array",
             "items": {
@@ -314,6 +323,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         await db.commit()
         run_id = str(run.id)
 
+    # Incremental write (C1): carry the running draft forward. A turn that emits no
+    # draft_update keeps the prior draft instead of None-ing it out. An empty-string
+    # draft_update is treated as absent — intentional: the draft only grows, the model is
+    # never allowed to reset it mid-session (the prompt forbids rewriting from scratch).
+    draft_update = analysis_result.get("draft_update") if isinstance(analysis_result, dict) else None
+
     return {
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
@@ -321,6 +336,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # Record the slot this turn's hint pinned (the slot just asked) so the next turn's
         # hint can rotate off it — the deterministic guard against re-asking the same slot.
         "last_asked_slot": _coverage_hint_target(state),
+        "working_draft": draft_update or state.get("working_draft"),
         **coverage,
     }
 
@@ -506,6 +522,10 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
             # (don't duplicate) and fall through to re-pause.
             tool_call_ids = [str(tc.id) for tc in still_proposed]
         else:
+            # Incremental write (C1): the running draft has accumulated every point across
+            # turns, so it is a more faithful body than a one-turn synthesis. When present it
+            # supersedes proposals[].body; title/rationale still come from the LLM.
+            working_draft = state.get("working_draft")
             for proposal in proposals:
                 # Use the session artifact_type instead of trusting the LLM value because
                 # the LLM can return an invalid type such as "brd" instead of "goal".
@@ -514,7 +534,7 @@ async def propose_artifacts_node(state: WorkflowState, config: RunnableConfig) -
                     await create_artifact(
                         artifact_type=artifact_type,
                         title=proposal.get("title", ""),
-                        body=proposal.get("body", ""),
+                        body=working_draft or proposal.get("body", ""),
                         rationale=proposal.get("rationale", ""),
                         context={"allowed_types": [artifact_type]},
                     )
@@ -616,6 +636,19 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_bod
             "Nếu user chỉ muốn cập nhật, tập trung vào điểm cần sửa, không khởi tạo lại từ đầu."
         )
 
+    # Running draft (C1): the in-session draft accumulated across turns. It is newer than the
+    # persisted draft_body above, so when both exist the model treats this as the live target.
+    working_draft = (state.get("working_draft") or "").strip()
+    working_draft_block = ""
+    if working_draft:
+        working_draft_block = (
+            "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
+            f"{working_draft}\n\n"
+            "Với mỗi ý mới user vừa nêu, cập nhật draft trên qua field draft_update (bồi đắp, "
+            "không viết lại từ đầu, không bịa nội dung chưa có). KHÔNG hỏi lại nội dung đã có "
+            "trong draft."
+        )
+
     return (
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
         f"Context hiện tại:\n{artifact_context}\n\n"
@@ -639,6 +672,7 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_bod
         f"{_build_slot_directive(state)}"
         f"{coverage_hint}"
         f"{draft_block}"
+        f"{working_draft_block}"
         f"{language_lock}"
     )
 
