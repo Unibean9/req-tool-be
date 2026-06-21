@@ -2,6 +2,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
+from app.graphs.agent_tools import ask_user, finalize, write_draft
 from app.graphs.critic import quality_gate_node, route_after_gate
 from app.graphs.nodes import (
     analyze_node,
@@ -30,12 +31,10 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     builder.add_node("confirm", confirm_node)
     builder.add_node("quality_gate", quality_gate_node)
     builder.add_node("propose_artifacts", propose_artifacts_node)
-    # Phase 2 scaffolding: a ToolNode wired in parallel to the enum branches. It carries no tools
-    # yet and route_node cannot reach it until the next_action enum is removed (Phase 5); registering
-    # it now lets the harness exercise tool-call dispatch without a topology change later. Dispatching
-    # an empty ToolNode raises ValueError, so route_node must never return "tools" while it is empty —
-    # test_route_node_never_returns_tools_for_enum_actions guards that.
-    builder.add_node("tools", ToolNode([]))
+    # Phase 3: the parallel ToolNode now carries the enum-parity tools (ask_user/write_draft/
+    # finalize). route_node still cannot reach it until the next_action enum is removed (Phase 5) —
+    # test_route_node_never_returns_tools_for_enum_actions guards that the branch stays unreachable.
+    builder.add_node("tools", ToolNode([ask_user, write_draft, finalize]))
 
     # New entry point: classify intent first. greeting/smalltalk → greeting (chitchat), else → analyze.
     # On resume LangGraph re-enters the interrupted node directly, so intent_router does not re-run.

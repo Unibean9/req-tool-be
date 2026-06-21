@@ -409,10 +409,6 @@ def route_node(state: WorkflowState) -> str:
 
 
 async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
-    cfg = config["configurable"]
-    session_factory = cfg["session_factory"]
-    session_id = uuid.UUID(cfg["thread_id"])
-
     analysis_result = state.get("analysis_result") or {}
     message = analysis_result.get("message", "")
     if not message:
@@ -436,8 +432,29 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     acknowledgment = str(analysis_result.get("acknowledgment") or "").strip()
     content = f"{acknowledgment} {message}".strip() if acknowledgment else message
 
+    user_content = await _save_and_interrupt_ask(
+        state, config, content, run_id=state.get("last_agent_run_id")
+    )
+    return {
+        "messages": [
+            {"role": "assistant", "content": content},
+            {"role": "user", "content": user_content},
+        ]
+    }
+
+
+async def _save_and_interrupt_ask(state: WorkflowState, config: RunnableConfig, content: str, *, run_id) -> str:
+    """Persist one agent question (idempotently), mark the session waiting, then interrupt.
+
+    Shared by ask_human_node (run_id = last_agent_run_id) and the ask_user / finalize tools
+    (run_id = ToolCall.id). Keying the idempotency guard on run_id is what makes an HTTP-resume —
+    which re-executes the node/tool body from the top — skip the duplicate insert (R1). Returns
+    the resumed user content so the caller can fold it back into the conversation.
+    """
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    session_id = uuid.UUID(cfg["thread_id"])
     locale = state.get("locale") or "vi"
-    run_id = state.get("last_agent_run_id")
 
     async with session_factory() as db:
         already_saved = await _agent_message_already_saved(db, session_id, run_id, content)
@@ -464,13 +481,7 @@ async def ask_human_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         await db.commit()
 
     user_response = interrupt({"type": "ask_human", "message": content})
-    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
-    return {
-        "messages": [
-            {"role": "assistant", "content": content},
-            {"role": "user", "content": user_content},
-        ]
-    }
+    return user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
 
 
 async def _agent_message_already_saved(db, session_id, run_id, content) -> bool:
