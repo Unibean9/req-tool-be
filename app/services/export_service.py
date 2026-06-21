@@ -42,7 +42,10 @@ class ExportService:
         raise ValueError("Loại export không hợp lệ")
 
     async def _load_artifacts(self, project_id: uuid.UUID, include_wont: bool) -> list[ExportArtifact]:
-        query = select(Artifact).where(Artifact.project_id == project_id, Artifact.status == ArtifactStatus.ACCEPTED)
+        # Lấy cả DRAFT lẫn ACCEPTED: artifact agent sinh ra có thể còn ở DRAFT, nhưng vẫn là nội dung
+        # hợp lệ cần xuất. Loại REJECTED/ARCHIVED/NEEDS_CLARIFICATION khỏi tài liệu.
+        exportable_statuses = (ArtifactStatus.DRAFT, ArtifactStatus.ACCEPTED)
+        query = select(Artifact).where(Artifact.project_id == project_id, Artifact.status.in_(exportable_statuses))
         if not include_wont:
             query = query.where((Artifact.priority.is_(None)) | (Artifact.priority != ArtifactPriority.WONT))
         rows = (await self.db.execute(query.order_by(Artifact.created_at, Artifact.id))).scalars().all()

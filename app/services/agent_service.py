@@ -383,10 +383,12 @@ class AgentService:
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
+        # Đã qua bước human approve proposed tool call, nên artifact vào trạng thái ACCEPTED
+        # để xuất hiện trong export (BRD/SRS/PRD) thay vì kẹt ở DRAFT.
         artifact = Artifact(
             project_id=project_id,
             type=artifact_type,
-            status=ArtifactStatus.DRAFT,
+            status=ArtifactStatus.ACCEPTED,
             title=title,
             extra_metadata={},
             created_by_id=created_by_id,

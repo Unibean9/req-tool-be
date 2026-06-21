@@ -151,7 +151,7 @@ async def test_export_moscow_ordering_wont_and_status_filters(client):
     text = default_resp.text
     assert text.index("Must item") < text.index("Should item") < text.index("Could item") < text.index("Unprioritized item")
     assert "Won't item" not in text
-    assert "Draft item" not in text
+    assert "Draft item" in text
     assert "Rejected item" not in text
     assert "Won't item" in include_wont_resp.text
 
