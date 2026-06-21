@@ -2,6 +2,7 @@ import time
 import uuid
 from typing import Any
 
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import interrupt
@@ -73,6 +74,40 @@ ANALYSIS_SCHEMA = {
         },
     },
     "required": ["next_action", "confidence"],
+}
+
+# Tool-loop selection schema (Phase 5 shim). Replaces next_action: the analyst names the tool to
+# run this turn plus its args. The analytic fields are kept verbatim from ANALYSIS_SCHEMA so eval
+# (active_mode), incremental draft (draft_update) and coverage (slot_assessment) do not regress.
+TOOL_SELECTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tool": {"type": "string", "enum": ["ask_user", "write_draft", "finalize", "write_note"]},
+        "message": {"type": "string"},
+        "title": {"type": "string"},
+        "body": {"type": "string"},
+        "summary": {"type": "string"},
+        "content": {"type": "string"},
+        "confidence": {"type": "number"},
+        "gaps": {"type": "array", "items": {"type": "string"}},
+        "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
+        "acknowledgment": {"type": "string"},
+        "slot_assessment": {
+            "type": "object",
+            "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
+        },
+        "active_mode": {"type": "string", "enum": ["qa", "critique", "explore", "draft"]},
+        "draft_update": {"type": "string"},
+    },
+    "required": ["tool"],
+}
+
+# Per-tool arg names the shim copies from the selection dict into the tool_call args.
+_TOOL_ARG_KEYS = {
+    "ask_user": ["message"],
+    "write_draft": ["title", "body"],
+    "finalize": ["summary"],
+    "write_note": ["content"],
 }
 
 SUMMARY_SCHEMA = {
@@ -272,7 +307,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         )
     draft_body = draft["body"] if draft else None
 
-    prompt = _build_analyst_prompt(state, artifacts, draft_body)
+    if settings.tool_loop_only:
+        prompt = _build_tool_selection_prompt(state, artifacts, draft_body)
+        response_format = TOOL_SELECTION_SCHEMA
+    else:
+        prompt = _build_analyst_prompt(state, artifacts, draft_body)
+        response_format = ANALYSIS_SCHEMA
     system_prompt = get_persona(
         artifact_type=state["artifact_type"],
         workflow_area=state["workflow_area"],
@@ -283,7 +323,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         messages=[{"role": "user", "content": prompt}],
         system=system_prompt,
         max_tokens=2000,
-        response_format=ANALYSIS_SCHEMA,
+        response_format=response_format,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
     slot_assessment = analysis_result.get("slot_assessment") if isinstance(analysis_result, dict) else None
@@ -316,6 +356,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             "coverage_complete": coverage["coverage_complete"],
         }
 
+    # Tool-loop shim: enforce the finalize hard-gate (and reject unknown picks) by coercing a
+    # selection that names a tool not currently offered down to a safe ask_user (S4). Done before
+    # persist so analysis_result records the tool actually dispatched.
+    if settings.tool_loop_only and isinstance(analysis_result, dict):
+        analysis_result = {**analysis_result, "tool": _gate_selected_tool(state, analysis_result.get("tool"))}
+
     async with session_factory() as db:
         run = AgentRun(
             session_id=session_id,
@@ -333,7 +379,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # never allowed to reset it mid-session (the prompt forbids rewriting from scratch).
     draft_update = analysis_result.get("draft_update") if isinstance(analysis_result, dict) else None
 
-    return {
+    result = {
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
@@ -346,6 +392,23 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "mode_hint": None,
         **coverage,
     }
+    # Tool-loop shim: emit the selected tool as an AIMessage(tool_calls) so route_node dispatches it
+    # to the ToolNode. tool_call.id = AgentRun.id keeps the tool idempotency keys aligned on resume.
+    if settings.tool_loop_only and isinstance(analysis_result, dict):
+        tool = analysis_result["tool"]
+        args = {key: analysis_result.get(key, "") for key in _TOOL_ARG_KEYS[tool]}
+        # A pick coerced to ask_user (gated-out tool) often carries no message — never ask a blank
+        # question; fall back to the same prompt the coverage-gate uses.
+        if tool == "ask_user" and not str(args.get("message") or "").strip():
+            args["message"] = _COERCED_ASK_FALLBACK
+        result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
+    return result
+
+
+_COERCED_ASK_FALLBACK = (
+    "Mình cần làm rõ thêm một ý trước khi có thể viết phần này chắc hơn. "
+    "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
+)
 
 
 async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
@@ -383,6 +446,11 @@ def route_before_analyze(state: WorkflowState) -> str:
 def route_node(state: WorkflowState) -> str:
     if state["turn_count"] >= settings.max_agent_turns:
         return END
+
+    # Tool-loop path (Phase 5): analyze_node emitted an AIMessage; dispatch on its tool_calls only.
+    # No tool_calls means the loop has nothing to run this turn -> finish.
+    if settings.tool_loop_only:
+        return "tools" if _last_message_has_tool_calls(state) else END
 
     action = (state.get("analysis_result") or {}).get("next_action", "done")
     # Phase 2 scaffolding: route a native tool-call turn to the parallel ToolNode. Unreachable
@@ -650,27 +718,8 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_bod
     )
     coverage_hint = _build_coverage_hint(state)
 
-    draft_block = ""
-    if draft_body:
-        draft_block = (
-            f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}\n\n"
-            "QUAN TRỌNG: nội dung trên ĐÃ được ghi nhận. TUYỆT ĐỐI không hỏi lại thông tin đã "
-            "có trong draft. Chỉ hỏi/khai thác phần user muốn bổ sung hoặc thay đổi (delta). "
-            "Nếu user chỉ muốn cập nhật, tập trung vào điểm cần sửa, không khởi tạo lại từ đầu."
-        )
-
-    # Running draft (C1): the in-session draft accumulated across turns. It is newer than the
-    # persisted draft_body above, so when both exist the model treats this as the live target.
-    working_draft = (state.get("working_draft") or "").strip()
-    working_draft_block = ""
-    if working_draft:
-        working_draft_block = (
-            "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
-            f"{working_draft}\n\n"
-            "Với mỗi ý mới user vừa nêu, cập nhật draft trên qua field draft_update (bồi đắp, "
-            "không viết lại từ đầu, không bịa nội dung chưa có). KHÔNG hỏi lại nội dung đã có "
-            "trong draft."
-        )
+    draft_block = _build_draft_block(state, draft_body)
+    working_draft_block = _build_working_draft_block(state)
 
     return (
         f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
@@ -701,6 +750,115 @@ def _build_analyst_prompt(state: WorkflowState, artifacts: list[dict], draft_bod
     )
 
 
+def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
+    """Persisted-draft block: tell the analyst the body already on record, so it mines the delta."""
+    if not draft_body:
+        return ""
+    return (
+        f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}\n\n"
+        "QUAN TRỌNG: nội dung trên ĐÃ được ghi nhận. TUYỆT ĐỐI không hỏi lại thông tin đã "
+        "có trong draft. Chỉ hỏi/khai thác phần user muốn bổ sung hoặc thay đổi (delta). "
+        "Nếu user chỉ muốn cập nhật, tập trung vào điểm cần sửa, không khởi tạo lại từ đầu."
+    )
+
+
+def _build_working_draft_block(state: WorkflowState) -> str:
+    """Running-draft block (C1): the in-session draft accumulated across turns, newer than the
+    persisted body, so the model treats it as the live target."""
+    working_draft = (state.get("working_draft") or "").strip()
+    if not working_draft:
+        return ""
+    return (
+        "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
+        f"{working_draft}\n\n"
+        "Với mỗi ý mới user vừa nêu, cập nhật draft trên qua field draft_update (bồi đắp, "
+        "không viết lại từ đầu, không bịa nội dung chưa có). KHÔNG hỏi lại nội dung đã có "
+        "trong draft."
+    )
+
+
+def _last_message_has_tool_calls(state: WorkflowState) -> bool:
+    """Whether the most recent message carries tool_calls (a tool-loop dispatch signal)."""
+    messages = state.get("messages") or []
+    if not messages:
+        return False
+    return bool(getattr(messages[-1], "tool_calls", None))
+
+
+def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str:
+    """Clamp the analyst's tool pick to the currently offered set; fall back to ask_user.
+
+    get_available_tools applies the finalize hard-gate (only with a non-empty working_draft) and the
+    write_note step-limit, so a pick outside that set — or an unknown/None pick — degrades to a safe
+    clarifying question instead of dispatching an ungated tool.
+    """
+    from app.graphs.agent_tools import get_available_tools
+
+    available = {t.name for t in get_available_tools(state)}
+    return selected if selected in available else "ask_user"
+
+
+def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], draft_body: str | None = None) -> str:
+    """Tool-loop variant of the analyst prompt: the model picks the next tool instead of next_action.
+
+    Reuses every analytic directive of the enum prompt (synthesis/slot/coverage/draft/mode/locale);
+    only the action instruction differs — it lists the currently available tools and asks for a
+    selection. analyze_node converts the returned dict into an AIMessage(tool_calls).
+    """
+    from app.graphs.agent_tools import get_available_tools
+
+    artifact_context = "\n".join(
+        f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
+    ) or "(chưa có artifact nào)"
+
+    conversation_summary = (state.get("conversation_summary") or "").strip()
+    message_window = (state.get("messages") or [])[-3:] if conversation_summary else (state.get("messages") or [])[-5:]
+    messages_summary = "\n".join(
+        f"{role}: {content}"
+        for role, content in (_msg_role_content(m) for m in message_window)
+    ) or "(chưa có hội thoại)"
+    if conversation_summary:
+        messages_summary = (
+            "Tóm tắt hội thoại đã tích lũy:\n"
+            f"{conversation_summary}\n\n"
+            "Ba tin nhắn gần nhất:\n"
+            f"{messages_summary}"
+        )
+
+    locale = (state.get("locale") or "").strip()
+    language_lock = (
+        f"\n\nQUAN TRỌNG: Trả lời TOÀN BỘ bằng ngôn ngữ '{locale}'. Tuyệt đối không trộn lẫn ngôn ngữ khác."
+        if locale
+        else ""
+    )
+
+    tool_menu = ", ".join(t.name for t in get_available_tools(state))
+    draft_block = _build_draft_block(state, draft_body)
+    working_draft_block = _build_working_draft_block(state)
+
+    return (
+        f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
+        f"Context hiện tại:\n{artifact_context}\n\n"
+        f"Hội thoại gần đây:\n{messages_summary}\n\n"
+        "Bạn điều phối hội thoại bằng cách CHỌN MỘT công cụ cho lượt này. Trả về JSON với field 'tool' "
+        f"là một trong: {tool_menu}.\n"
+        "- ask_user: hỏi người dùng một câu làm rõ — kèm field 'message'.\n"
+        "- write_draft: đề xuất bản nháp artifact để duyệt — kèm 'title' và 'body'.\n"
+        "- write_note: ghi chú phân tích/phản biện vào scratchpad (không cần duyệt) — kèm 'content'.\n"
+        "- finalize: chốt phiên — kèm 'summary' (chỉ khả dụng khi đã có draft).\n"
+        "Luôn kèm 'active_mode' (qa/critique/explore/draft) và 'confidence' (0-1). Khi đã rõ đủ, cập nhật "
+        "draft qua field 'draft_update' (bồi đắp tăng dần, không bịa nội dung chưa có). Không lặp lại câu "
+        "hỏi đã hỏi."
+        f"{_build_synthesis_directive('dùng write_draft')}"
+        f"{_build_slot_directive(state)}"
+        f"{_build_coverage_hint(state)}"
+        f"{draft_block}"
+        f"{working_draft_block}"
+        f"{_build_mode_directive(state)}"
+        f"{language_lock}"
+    )
+
+
 def _build_mode_directive(state: WorkflowState) -> str:
     """Steer the analyst's operating angle (multi-angle S1/S2).
 
@@ -722,15 +880,16 @@ def _build_mode_directive(state: WorkflowState) -> str:
     )
 
 
-def _build_synthesis_directive() -> str:
+def _build_synthesis_directive(trigger: str = "next_action='propose'") -> str:
     """Instruct the LLM to synthesize a rich artifact body when proposing.
 
     Without this the prompt only says 'proposals (nếu propose)', so even after thorough
     elicitation the model emits a thin, one-paragraph body. This block tells it to mine the
     whole conversation/context into detailed, structured content — while forbidding fabrication.
+    `trigger` names the action that fires it: the enum default, or `dùng write_draft` in tool-loop.
     """
     return (
-        "\n\nĐỘ SÂU NỘI DUNG (khi next_action='propose'): body của mỗi proposal phải KHAI THÁC "
+        f"\n\nĐỘ SÂU NỘI DUNG (khi {trigger}): body của mỗi proposal phải KHAI THÁC "
         "toàn bộ thông tin user đã cung cấp trong hội thoại và context, viết chi tiết và có cấu "
         "trúc rõ ràng phù hợp với loại artifact (các phần/mục liên quan, dữ kiện cụ thể, ràng buộc, "
         "tiêu chí, ví dụ user đã nêu). KHÔNG tóm tắt sơ sài thành một đoạn ngắn, KHÔNG lặp lại câu "

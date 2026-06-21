@@ -86,12 +86,17 @@ class ScriptedLLM:
         followup: dict[str, Any] | None = None,
         judge: dict[str, Any] | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
+        tool_brain: list[dict[str, Any]] | None = None,
     ) -> None:
         self._brain = list(brain or [])
         self._brain_idx = 0
         # Ordered native tool-call turns, consumed one per "tool_call"-routed generate (Phase 2).
         self._tool_calls = list(tool_calls or [])
         self._tool_call_idx = 0
+        # Ordered tool-SELECTION turns (Phase 5 shim): the analyst returns a dict naming a tool,
+        # consumed one per TOOL_SELECTION_SCHEMA generate. analyze_node converts it to an AIMessage.
+        self._tool_brain = list(tool_brain or [])
+        self._tool_brain_idx = 0
         self._intent = intent or {"intent": "task", "locale": "vi"}
         self._critic = critic or {
             "scores": {
@@ -157,6 +162,10 @@ class ScriptedLLM:
         # the enum branches (Phase 2).
         if "__tool_call__" in props:
             return "tool_call"
+        # Tool-selection guard (Phase 5 shim): the schema names a tool to pick. Detected before the
+        # enum/analyze branches since the selection schema drops next_action entirely.
+        if "tool" in props:
+            return "tool_select"
         # Judge guard MUST be first: a future schema carrying both on_topic and next_action would
         # otherwise route to "analyze" and the judge branch would never run.
         if "on_topic" in props:
@@ -183,6 +192,13 @@ class ScriptedLLM:
                 self._tool_call_idx += 1
                 return AIMessage(content="", tool_calls=[dict(tc)])
             return AIMessage(content="", tool_calls=[])
+        if route == "tool_select":
+            if self._tool_brain_idx < len(self._tool_brain):
+                turn = self._tool_brain[self._tool_brain_idx]
+                self._tool_brain_idx += 1
+                return dict(turn)
+            # Exhausted -> finalize selection, the tool-loop equivalent of the _DONE_TURN fallback.
+            return {"tool": "finalize", "summary": ""}
         if route == "judge":
             return dict(self._judge)
         if route == "intent":
@@ -251,3 +267,15 @@ def artifact(artifact_type: str, title: str, body: str, rationale: str = "") -> 
 def tool_call(name: str, args: dict[str, Any], *, call_id: str = "call_1") -> dict[str, Any]:
     """A scripted native tool-call turn (Phase 2). Shape matches a LangGraph ToolNode tool_call."""
     return {"id": call_id, "name": name, "args": args}
+
+
+def tool_select(tool: str, *, active_mode: str | None = None, **args: Any) -> dict[str, Any]:
+    """A scripted tool-SELECTION turn (Phase 5 shim): the analyst names a tool plus its args.
+
+    analyze_node converts this dict into an AIMessage(tool_calls=[...]). `active_mode` is kept as a
+    top-level analytic field (eval reads it from analysis_result), the rest become the tool args.
+    """
+    turn: dict[str, Any] = {"tool": tool, **args}
+    if active_mode is not None:
+        turn["active_mode"] = active_mode
+    return turn
