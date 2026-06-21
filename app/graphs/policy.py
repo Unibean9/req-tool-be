@@ -53,6 +53,27 @@ ARTIFACT_PREDECESSORS = {
 }
 
 
+def ancestor_types(artifact_type: str) -> list[str]:
+    """All transitive predecessors of an artifact type (deduped, nearest-first).
+
+    Walks ARTIFACT_PREDECESSORS recursively so a derived type sees its full
+    upstream provenance regardless of how each entry is declared — some list the
+    whole chain, others only the direct parent. Dedup keeps the result (and any
+    prompt built from it) token-light: each ancestor type appears at most once.
+    """
+    seen: list[str] = []
+    visited: set[str] = set()
+    queue = list(ARTIFACT_PREDECESSORS.get(artifact_type, []))
+    while queue:
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        seen.append(current)
+        queue.extend(ARTIFACT_PREDECESSORS.get(current, []))
+    return seen
+
+
 T = TypeVar("T")
 
 

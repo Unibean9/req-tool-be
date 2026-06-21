@@ -1,5 +1,5 @@
 """
-Phase 8 router tests — HTTP concerns only.
+Router tests — HTTP concerns only.
 Service logic is covered by test_agent_service.py.
 """
 import uuid

@@ -107,6 +107,9 @@ class AgentMessage(AuditMixin, Base):
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
     role: Mapped[AgentMessageRole] = enum_column(AgentMessageRole, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Structured envelope (kind/locale/options/blocks/queued). Nullable + additive: content stays
+    # the mandatory fallback so legacy clients keep working when payload is None.
+    payload: Mapped[Any | None] = jsonb_column(nullable=True)
 
     session: Mapped[AgentSession] = relationship(back_populates="messages")
 
@@ -126,6 +129,8 @@ class AgentRun(AuditMixin, Base):
         nullable=True,
     )
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    token_usage: Mapped[Any | None] = jsonb_column(nullable=True)  # {"input": int, "output": int, "total": int}
+    latency_ms: Mapped[int | None] = mapped_column(nullable=True)
 
     session: Mapped[AgentSession] = relationship(back_populates="runs")
     tool_calls: Mapped[list["AgentToolCall"]] = relationship(

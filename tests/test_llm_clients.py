@@ -94,7 +94,7 @@ async def test_generate_with_response_format_returns_dict(monkeypatch, client_cl
     recorder = _install_httpx_recorder(monkeypatch, provider_payload)
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
-    result = await client.generate(
+    result, _ = await client.generate(
         messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
         system="Bạn là BA.",
         max_tokens=256,
@@ -110,7 +110,7 @@ async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch
     recorder = _install_httpx_recorder(monkeypatch, {"output_text": '{"answer": "ok"}'})
     client = OpenAILLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
 
-    result = await client.generate(
+    result, _ = await client.generate(
         messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
         system="Bạn là BA.",
         max_tokens=256,
@@ -165,7 +165,7 @@ async def test_generate_without_response_format_returns_raw_text_and_no_extra_pa
     recorder = _install_httpx_recorder(monkeypatch, provider_payload)
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
-    result = await client.generate(
+    result, _ = await client.generate(
         messages=[{"role": "user", "content": "Ping"}],
         system=None,
         max_tokens=32,
@@ -218,7 +218,7 @@ async def test_generate_parses_analysis_result_schema_for_each_provider(monkeypa
     _install_httpx_recorder(monkeypatch, provider_payload)
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
-    result = await client.generate(
+    result, _ = await client.generate(
         messages=[{"role": "user", "content": "Phân tích"}],
         system="Bạn là BA.",
         max_tokens=512,

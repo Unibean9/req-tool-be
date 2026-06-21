@@ -1,5 +1,5 @@
 """
-Phase 9 integration tests — end-to-end wiring.
+Integration tests — end-to-end wiring.
 Uses real graph execution with mock LLM.
 """
 import uuid
@@ -28,7 +28,7 @@ async def _project(client):
 
 def _mock_llm(analysis: dict):
     llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=analysis)
+    llm.generate = AsyncMock(return_value=(analysis, None))
     return llm
 
 

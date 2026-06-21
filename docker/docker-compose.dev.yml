@@ -18,5 +18,17 @@ services:
       timeout: 5s
       retries: 5
 
+  pgweb:
+    image: sosedoff/pgweb
+    container_name: reqflow_web
+    restart: unless-stopped
+    environment:
+      PGWEB_DATABASE_URL: postgresql://postgres:password@postgres:5432/reqflow?sslmode=disable
+    ports:
+      - "8080:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   postgres_data:

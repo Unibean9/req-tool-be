@@ -1,0 +1,11 @@
+{
+  "artifact_type": "story",
+  "content": "Là người dùng, tôi muốn hệ thống chạy nhanh, thân thiện và dễ dùng để làm việc tốt hơn.",
+  "expected_violations": [],
+  "expected_warnings": [
+    "weasel: nhanh",
+    "weasel: thân thiện",
+    "weasel: dễ dùng",
+    "INVEST: thiếu tiêu chí kiểm thử (acceptance criteria / given-when-then)"
+  ]
+}
