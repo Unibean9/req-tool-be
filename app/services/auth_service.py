@@ -40,9 +40,9 @@ class AuthService:
                 raise HTTPException(
                     status.HTTP_502_BAD_GATEWAY,
                     detail=f"Trao đổi token GitHub thất bại: {exc.response.status_code}",
-                )
-            except httpx.RequestError:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub")
+                ) from exc
+            except httpx.RequestError as exc:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub") from exc
 
         gh_access_token = token_resp.json().get("access_token")
         if not gh_access_token:
@@ -64,9 +64,9 @@ class AuthService:
                 raise HTTPException(
                     status.HTTP_502_BAD_GATEWAY,
                     detail=f"Lỗi GitHub API: {exc.response.status_code}",
-                )
-            except httpx.RequestError:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub")
+                ) from exc
+            except httpx.RequestError as exc:
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub") from exc
 
         gh_user = user_resp.json()
         emails = emails_resp.json()
@@ -78,7 +78,7 @@ class AuthService:
         if not verified_primary:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                detail="Tài khoản GitHub chưa có email chính đã xác minh. Vui lòng thêm và xác minh email trên GitHub trước khi liên kết.",
+                detail="Tài khoản GitHub chưa có email chính đã xác minh. Vui lòng thêm và xác minh email trên GitHub trước khi liên kết.",  # noqa: E501 — single message string
             )
 
         github_id = str(gh_user["id"])
@@ -116,7 +116,7 @@ class AuthService:
         try:
             uid = uuid.UUID(payload["sub"])
         except (KeyError, ValueError):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token không hợp lệ")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token không hợp lệ") from None
         result = await self.db.execute(select(User).where(User.id == uid))
         user = result.scalar_one_or_none()
         if not user or not user.is_active:
@@ -129,7 +129,10 @@ class AuthService:
         )
         user = result.scalar_one_or_none()
         if not user:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy người dùng đang hoạt động với email này")
+            raise HTTPException(
+                status.HTTP_404_NOT_FOUND,
+                detail="Không tìm thấy người dùng đang hoạt động với email này",
+            )
         return user
 
     def create_token_pair(self, user: User) -> tuple[str, str]:

@@ -14,7 +14,6 @@ from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessi
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -77,10 +76,10 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
     Verification of DelegatingCheckpointer + real graph is separate (round-trip test).
     """
     from contextlib import asynccontextmanager as acm
-    from tests.conftest import TestSessionFactory
+    from unittest.mock import MagicMock
 
     from app.main import app as _app
-    from unittest.mock import MagicMock
+    from tests.conftest import TestSessionFactory
 
     h, project_id = await _project(client)
 

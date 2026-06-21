@@ -1,13 +1,14 @@
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.database import get_db
-from app.models.user import User
+
 from app.core.responses import ok
-from app.schemas.organization import UserSearchResult
-from app.schemas.user import UserResponse, UserUpdateRequest
-from app.schemas.response import ApiResponse
+from app.database import get_db
 from app.deps import current_user
+from app.models.user import User
+from app.schemas.organization import UserSearchResult
+from app.schemas.response import ApiResponse
+from app.schemas.user import UserResponse, UserUpdateRequest
 
 router = APIRouter(prefix="/users", tags=["Users"])
 
@@ -40,7 +41,6 @@ async def get_me(user: User = Depends(current_user)):
 async def update_me(
     body: UserUpdateRequest,
     user: User = Depends(current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     if body.full_name is not None:
         user.full_name = body.full_name

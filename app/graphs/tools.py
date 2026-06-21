@@ -37,7 +37,11 @@ async def read_artifact_graph(
     project_id: uuid.UUID,
 ) -> list[dict]:
     rows = (
-        await db.execute(select(ArtifactLink).join(Artifact, ArtifactLink.source_id == Artifact.id).where(Artifact.project_id == project_id))
+        await db.execute(
+            select(ArtifactLink)
+            .join(Artifact, ArtifactLink.source_id == Artifact.id)
+            .where(Artifact.project_id == project_id)
+        )
     ).scalars().all()
     return [
         {"source_id": str(r.source_id), "target_id": str(r.target_id), "relation_type": r.relation_type}
@@ -70,13 +74,16 @@ async def read_current_body(
     return {"artifact_id": str(row.id), "title": row.title, "body": row.current_version.body}
 
 
+# The parameters below define each tool's schema (introspected by the agent);
+# the body is never executed because @governed intercepts the call. ARG001 is
+# therefore a false positive on these signature-only stubs.
 @governed
 async def create_artifact(
     *,
-    artifact_type: str,
-    title: str,
-    body: str,
-    rationale: str = "",
+    artifact_type: str,  # noqa: ARG001
+    title: str,  # noqa: ARG001
+    body: str,  # noqa: ARG001
+    rationale: str = "",  # noqa: ARG001
 ) -> dict:  # pragma: no cover — always intercepted by governed
     return {}
 
@@ -84,9 +91,9 @@ async def create_artifact(
 @governed
 async def update_artifact(
     *,
-    artifact_id: str,
-    title: str | None = None,
-    body: str | None = None,
+    artifact_id: str,  # noqa: ARG001
+    title: str | None = None,  # noqa: ARG001
+    body: str | None = None,  # noqa: ARG001
 ) -> dict:  # pragma: no cover
     return {}
 
@@ -94,8 +101,8 @@ async def update_artifact(
 @governed
 async def create_artifact_link(
     *,
-    source_id: str,
-    target_id: str,
-    relation_type: str,
+    source_id: str,  # noqa: ARG001
+    target_id: str,  # noqa: ARG001
+    relation_type: str,  # noqa: ARG001
 ) -> dict:  # pragma: no cover
     return {}

@@ -2,7 +2,6 @@
 
 from app.graphs.validators import ValidationResult, validate_proposal
 
-
 # --- Group 1: Required fields (violations, hard block) ---
 
 def test_missing_title_is_violation():

@@ -3,7 +3,14 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from app.models.artifact import Artifact, ArtifactEvidence, ArtifactReview, ArtifactVersion, EvidenceSourceType, RelationType
+from app.models.artifact import (
+    Artifact,
+    ArtifactEvidence,
+    ArtifactReview,
+    ArtifactVersion,
+    EvidenceSourceType,
+    RelationType,
+)
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 

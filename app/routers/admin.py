@@ -1,9 +1,12 @@
 import uuid
 from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
+
+from app.core.responses import ok
 from app.database import get_db
 from app.deps import require_admin
 from app.models.organization import Organization, OrgMember
@@ -11,7 +14,6 @@ from app.models.user import User
 from app.schemas.organization import OrgResponse
 from app.schemas.response import ApiResponse
 from app.schemas.user import UserResponse
-from app.core.responses import ok
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 

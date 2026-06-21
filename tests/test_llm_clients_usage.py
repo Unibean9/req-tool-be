@@ -9,7 +9,6 @@ from app.services.llm_clients import (
     OpenAILLMClient,
 )
 
-
 # Payload kèm usage cho từng provider — đều chuẩn hoá về {"input": 11, "output": 22, "total": 33}
 _PAYLOAD_WITH_USAGE = {
     OpenAILLMClient: {

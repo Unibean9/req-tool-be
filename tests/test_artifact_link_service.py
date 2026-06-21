@@ -4,7 +4,7 @@ import pytest
 
 from app.models import Project, User
 from app.models.artifact import Artifact, ArtifactPriority, ArtifactStatus, ArtifactType, RelationType
-from app.models.organization import OrgMember, Organization
+from app.models.organization import Organization, OrgMember
 from app.services.artifact_service import ArtifactService
 
 

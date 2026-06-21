@@ -278,7 +278,7 @@ async def test_m1_last_asked_slot_no_consecutive_repeat(client, scenario_env, sc
 
     asked = [slot for slot in sequence if slot is not None]
     assert asked, sequence
-    assert all(a != b for a, b in zip(asked, asked[1:])), sequence
+    assert all(a != b for a, b in zip(asked, asked[1:], strict=False)), sequence
 
 
 async def test_get_checkpoint_field_reads_coverage_ratio(client, scenario_env, scenario_project):

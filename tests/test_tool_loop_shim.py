@@ -15,7 +15,6 @@ from app.graphs.nodes import route_node
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 from tests.test_tool_parity import _project
 
-
 # ---------------------------------------------------------------------------
 # T1 — tool-loop routing behavior
 # ---------------------------------------------------------------------------
@@ -108,8 +107,9 @@ async def test_empty_tool_selection_ends_turn(client, db_session):
 async def test_write_note_selection_dispatches_without_crash(client, db_session):
     """critique_note is offered by get_available_tools, so the compiled ToolNode must carry it or its
     dispatch raises. Exercises a real graph turn: analyze picks the note -> ToolNode -> loops back."""
-    from app.graphs.graph import build_graph
     from langgraph.checkpoint.memory import MemorySaver
+
+    from app.graphs.graph import build_graph
     from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     project_id = await _project(client)

@@ -32,7 +32,6 @@ from app.models.agent import (
     AgentToolCallStatus,
 )
 
-
 # ---------------------------------------------------------------------------
 # ask_user — parity for the `ask` enum branch
 # ---------------------------------------------------------------------------
@@ -128,7 +127,7 @@ async def write_draft(
 # finalize — parity for the `done` enum branch, with a HITL confirmation gate
 # ---------------------------------------------------------------------------
 
-async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):  # noqa: ARG001 — state kept for signature parity with sibling tool impls
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])

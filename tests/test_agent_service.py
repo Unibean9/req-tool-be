@@ -411,8 +411,9 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
 
 @pytest.mark.asyncio
 async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
-    from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
+
+    from app.graphs.checkpointer import AgentSessionCheckpointer
 
     # 32-char hex to match the xxh3_128_hexdigest format LangGraph's interrupt() produces
     INTERRUPT_ID = "a1b2c3d4e5f6789012345678901234ab"
@@ -449,8 +450,9 @@ async def test_resume_command_keys_all_interrupt_ids_when_multiple_pending(db_se
     # Command(resume=...) ("you must specify the interrupt id when resuming").
     # Keying only the latest would leave the other pending and trigger that error
     # on the next resume — so the reply must address EVERY pending interrupt.
-    from app.graphs.checkpointer import AgentSessionCheckpointer
     from langgraph.types import Interrupt
+
+    from app.graphs.checkpointer import AgentSessionCheckpointer
 
     # 32-char hex IDs matching the xxh3_128_hexdigest format LangGraph's interrupt() produces
     INTERRUPT_ID_1 = "a1b2c3d4e5f6789012345678901234ab"

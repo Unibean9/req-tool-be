@@ -31,9 +31,9 @@ from app.schemas.artifact import (
     ArtifactReviewResponse,
     ArtifactUpdateRequest,
     ArtifactVersionResponse,
+    GraphWarning,
     SourceDocumentCreateRequest,
     SourceDocumentResponse,
-    GraphWarning,
 )
 
 
@@ -260,7 +260,9 @@ class ArtifactService:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
         result = await self.db.execute(
-            select(ArtifactEvidence).where(ArtifactEvidence.artifact_id == artifact.id).order_by(ArtifactEvidence.created_at)
+            select(ArtifactEvidence)
+            .where(ArtifactEvidence.artifact_id == artifact.id)
+            .order_by(ArtifactEvidence.created_at)
         )
         return [self.evidence_to_response(evidence) for evidence in result.scalars().all()]
 
@@ -390,7 +392,9 @@ class ArtifactService:
         )
 
     async def _get_project_artifact(self, project_id: uuid.UUID, artifact_id: uuid.UUID) -> Artifact:
-        result = await self.db.execute(select(Artifact).where(Artifact.id == artifact_id, Artifact.project_id == project_id))
+        result = await self.db.execute(
+            select(Artifact).where(Artifact.id == artifact_id, Artifact.project_id == project_id)
+        )
         artifact = result.scalar_one_or_none()
         if artifact is None:
             raise ValueError("Không tìm thấy artifact")
@@ -506,10 +510,18 @@ class ArtifactLinkService:
     async def graph(self, *, project_id: uuid.UUID, user_id: uuid.UUID) -> ArtifactGraphResponse:
         await self.artifacts._require_project_member(project_id, user_id)
         artifact_rows = (
-            await self.db.execute(select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at, Artifact.id))
+            await self.db.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id)
+                .order_by(Artifact.created_at, Artifact.id)
+            )
         ).scalars().all()
         link_rows = (
-            await self.db.execute(select(ArtifactLink).where(ArtifactLink.project_id == project_id).order_by(ArtifactLink.created_at))
+            await self.db.execute(
+                select(ArtifactLink)
+                .where(ArtifactLink.project_id == project_id)
+                .order_by(ArtifactLink.created_at)
+            )
         ).scalars().all()
 
         nodes = [
@@ -519,7 +531,9 @@ class ArtifactLinkService:
                 status=artifact.status,
                 title=artifact.title,
                 current_version_id=artifact.current_version_id,
-                current_version=await self.artifacts.version_to_response(await self.artifacts._get_current_version(artifact))
+                current_version=await self.artifacts.version_to_response(
+                    await self.artifacts._get_current_version(artifact)
+                )
                 if artifact.current_version_id
                 else None,
             )
@@ -541,7 +555,9 @@ class ArtifactLinkService:
                 warnings.append(GraphWarning(type="orphan_artifact", artifact_id=artifact.id))
             if artifact.status.value == "needs_clarification":
                 warnings.append(GraphWarning(type="needs_clarification", artifact_id=artifact.id))
-            if artifact.type.value in {"functional_requirement", "story"} and not self._has_upstream_trace(artifact, links, artifacts_by_id):
+            if artifact.type.value in {"functional_requirement", "story"} and not self._has_upstream_trace(
+                artifact, links, artifacts_by_id
+            ):
                 warnings.append(GraphWarning(type="missing_upstream_trace", artifact_id=artifact.id))
 
         for link in links:

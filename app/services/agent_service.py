@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from langgraph.types import Command
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,7 +30,6 @@ from app.models.artifact import (
     ChangeSource,
     VersionStatus,
 )
-from langgraph.types import Command
 
 
 class AgentService:
@@ -48,7 +48,6 @@ class AgentService:
         agent_role: str | None = None,
         provider_config_id: uuid.UUID | None = None,
         created_by_id: uuid.UUID | None = None,
-        llm_client: Any = None,
     ) -> dict[str, Any]:
         missing = await self._check_predecessors(project_id, artifact_type)
 
@@ -84,7 +83,7 @@ class AgentService:
                     "detail": "Active session already exists",
                     "session_id": str(existing.id) if existing else None,
                 },
-            )
+            ) from None
 
         return {"session_id": str(session.id), "missing_context": missing}
 
@@ -387,7 +386,7 @@ class AgentService:
                 400,
                 detail=f"Artifact type không hợp lệ: '{raw_type}'. "
                        f"Giá trị hợp lệ: {[e.value for e in ArtifactType]}",
-            )
+            ) from None
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
@@ -532,7 +531,7 @@ class AgentService:
                 ):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):

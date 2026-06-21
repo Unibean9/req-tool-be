@@ -6,7 +6,6 @@ from urllib.parse import quote
 
 from app.models.llm_provider import ProviderType
 
-
 DEFAULT_MODEL_BY_PROVIDER = {
     ProviderType.BEDROCK: "amazon.nova-lite-v1:0",
     ProviderType.OPENAI: "gpt-4o-mini",
@@ -474,7 +473,10 @@ def _extract_openai_text(data: dict[str, Any]) -> str | None:
 
 
 def _anthropic_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [{"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]} for item in messages]
+    return [
+        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]}
+        for item in messages
+    ]
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str | None:

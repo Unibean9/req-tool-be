@@ -24,7 +24,6 @@ from app.graphs.slot_schema import COVERAGE_STALL_LIMIT, SLOT_DESCRIPTIONS
 from tests.helpers import create_org, create_project, make_auth_headers
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 
-
 # ---------------------------------------------------------------------------
 # Fix 1 — slot directive carries meaning (descriptions + rubric + credit answer)
 # ---------------------------------------------------------------------------
@@ -315,7 +314,7 @@ async def test_original_scenario_no_consecutive_repeat_under_chronic_undergrade(
     asked = [slot for slot in pinned_sequence if slot is not None]
     # No two consecutive turns ask about the same slot -> no verbatim repeated question.
     assert asked, pinned_sequence
-    assert all(a != b for a, b in zip(asked, asked[1:])), pinned_sequence
+    assert all(a != b for a, b in zip(asked, asked[1:], strict=False)), pinned_sequence
     # The chronic-undergrade loop is bounded: it escapes via the stall break instead of nagging.
     assert stall_broke
 

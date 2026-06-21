@@ -2,7 +2,8 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, Enum as SAEnum, ForeignKey, Index, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -11,24 +12,24 @@ from sqlalchemy.types import JSON
 from app.models.base import AuditMixin, Base
 
 
-class AgentSessionStatus(str, enum.Enum):
+class AgentSessionStatus(enum.StrEnum):
     ACTIVE = "active"
     WAITING_FOR_HUMAN = "waiting_for_human"
     COMPLETED = "completed"
     FAILED = "failed"
 
 
-class AgentSessionInterruptType(str, enum.Enum):
+class AgentSessionInterruptType(enum.StrEnum):
     ASK_HUMAN = "ask_human"
     PROPOSE_ARTIFACTS = "propose_artifacts"
 
 
-class AgentMessageRole(str, enum.Enum):
+class AgentMessageRole(enum.StrEnum):
     AGENT = "agent"
     USER = "user"
 
 
-class AgentToolCallStatus(str, enum.Enum):
+class AgentToolCallStatus(enum.StrEnum):
     PROPOSED = "proposed"
     APPROVED = "approved"
     REJECTED = "rejected"
@@ -75,7 +76,9 @@ class AgentSession(AuditMixin, Base):
     artifact_type: Mapped[str] = mapped_column(String(100), nullable=False)
     workflow_area: Mapped[str] = mapped_column(String(50), nullable=False)
     step_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    status: Mapped[AgentSessionStatus] = enum_column(AgentSessionStatus, nullable=False, default=AgentSessionStatus.ACTIVE)
+    status: Mapped[AgentSessionStatus] = enum_column(
+        AgentSessionStatus, nullable=False, default=AgentSessionStatus.ACTIVE
+    )
     interrupt_type: Mapped[AgentSessionInterruptType | None] = enum_column(AgentSessionInterruptType, nullable=True)
     missing_context: Mapped[Any | None] = jsonb_column(nullable=True)
     graph_checkpoint: Mapped[Any] = jsonb_column(nullable=False, default=dict)
@@ -151,9 +154,15 @@ class AgentToolCall(AuditMixin, Base):
     run_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_runs.id"), nullable=False)
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
     input_snapshot: Mapped[Any] = jsonb_column(nullable=False, default=dict)
-    status: Mapped[AgentToolCallStatus] = enum_column(AgentToolCallStatus, nullable=False, default=AgentToolCallStatus.PROPOSED)
-    created_artifact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("artifacts.id"), nullable=True)
-    created_version_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("artifact_versions.id"), nullable=True)
+    status: Mapped[AgentToolCallStatus] = enum_column(
+        AgentToolCallStatus, nullable=False, default=AgentToolCallStatus.PROPOSED
+    )
+    created_artifact_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("artifacts.id"), nullable=True
+    )
+    created_version_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("artifact_versions.id"), nullable=True
+    )
     resolved_at: Mapped[Any] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped[AgentRun] = relationship(back_populates="tool_calls")

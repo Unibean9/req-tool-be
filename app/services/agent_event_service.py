@@ -1,8 +1,9 @@
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder

@@ -166,7 +166,7 @@ class ArtifactEvidenceResponse(BaseModel):
     created_at: datetime
 
 
-class GraphWarningType(str, enum.Enum):
+class GraphWarningType(enum.StrEnum):
     ORPHAN_ARTIFACT = "orphan_artifact"
     MISSING_UPSTREAM_TRACE = "missing_upstream_trace"
     MISSING_DOWNSTREAM_REALIZATION = "missing_downstream_realization"

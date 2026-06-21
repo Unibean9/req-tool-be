@@ -69,7 +69,7 @@ async def health_check_llm_provider_config(
     try:
         result = await LLMProviderService(db).health_check(user_id=user.id, config_id=config_id)
     except CooldownError as exc:
-        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc))
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
     except ProviderUnavailableError as exc:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return ok(result)

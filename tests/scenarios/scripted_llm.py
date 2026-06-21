@@ -19,7 +19,6 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 
-
 # Test-harness-only schema: a binary judgment of whether an agent question maps to a focus
 # slot of the artifact_type (M2). Never sent to a production LLM.
 ON_TOPIC_SCHEMA = {

@@ -185,10 +185,10 @@ def _tool_graph():
     """
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, StateGraph
+    from langgraph.prebuilt import ToolNode
 
     from app.graphs.agent_tools import ask_user, finalize, write_draft
     from app.graphs.state import WorkflowState
-    from langgraph.prebuilt import ToolNode
 
     builder = StateGraph(WorkflowState)
     builder.add_node("tools", ToolNode([ask_user, write_draft, finalize]))

@@ -1,10 +1,11 @@
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, ForeignKey, UniqueConstraint
+from sqlalchemy import ForeignKey, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
-from app.models.base import Base, AuditMixin
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.models.base import AuditMixin, Base
 
 if TYPE_CHECKING:
     from app.models.user import User
@@ -26,7 +27,9 @@ class OrgMember(AuditMixin, Base):
     __tablename__ = "org_members"
     __table_args__ = (UniqueConstraint("org_id", "user_id", name="uq_org_members_org_user"),)
 
-    org_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True)
+    org_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("organizations.id"), nullable=False, index=True
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="member")  # owner | member
 

@@ -7,7 +7,14 @@ from app.core.guards import require_project_access
 from app.core.responses import created, ok
 from app.database import get_db
 from app.deps import current_user
-from app.models.artifact import ArtifactPriority, ArtifactStatus, ArtifactType, VersionStatus, WorkflowStepKey, WorkflowStepPhase
+from app.models.artifact import (
+    ArtifactPriority,
+    ArtifactStatus,
+    ArtifactType,
+    VersionStatus,
+    WorkflowStepKey,
+    WorkflowStepPhase,
+)
 from app.models.user import User
 from app.schemas.artifact import (
     ArtifactCreateRequest,
@@ -97,7 +104,11 @@ async def delete_artifact(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-@router.post("/{artifact_id}/evidence", response_model=ApiResponse[ArtifactEvidenceResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{artifact_id}/evidence",
+    response_model=ApiResponse[ArtifactEvidenceResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_artifact_evidence(
     project_id: uuid.UUID,
     artifact_id: uuid.UUID,
@@ -129,7 +140,9 @@ async def list_artifact_evidence(
 ):
     await require_project_access(project_id, user, db)
     try:
-        evidence = await ArtifactService(db).list_evidence(project_id=project_id, artifact_id=artifact_id, user_id=user.id)
+        evidence = await ArtifactService(db).list_evidence(
+            project_id=project_id, artifact_id=artifact_id, user_id=user.id
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ok(evidence)

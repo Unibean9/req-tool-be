@@ -77,7 +77,7 @@ def ancestor_types(artifact_type: str) -> list[str]:
 T = TypeVar("T")
 
 
-def governed(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     @wraps(fn)
     async def wrapper(*args: Any, context: dict[str, Any] | None = None, **kwargs: Any) -> T:
         tool_name = fn.__name__

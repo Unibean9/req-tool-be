@@ -1,16 +1,17 @@
 import os
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+
+from fastapi import APIRouter, FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.config import settings
+from app.core.errors import http_exception_handler, unhandled_exception_handler, validation_exception_handler
 from app.database import engine
-from app.core.errors import http_exception_handler, validation_exception_handler, unhandled_exception_handler
 from app.routers import (
     admin,
     agent_sessions,
@@ -30,6 +31,7 @@ from app.routers import (
 
 def _run_migrations() -> None:
     from alembic.config import Config
+
     from alembic import command
 
     ini_path = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
@@ -120,6 +122,7 @@ async def root():
 @app.get("/health", tags=["System Health"])
 async def health():
     from sqlalchemy import text
+
     from app.database import async_session_factory
     async with async_session_factory() as session:
         await session.execute(text("SELECT 1"))

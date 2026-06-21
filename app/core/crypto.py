@@ -1,7 +1,9 @@
 import base64
 import hashlib
 from functools import lru_cache
+
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
+
 from app.config import settings
 
 

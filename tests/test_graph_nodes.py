@@ -18,7 +18,6 @@ from app.models.agent import (
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -566,8 +565,9 @@ async def test_analyze_node_records_token_usage_and_latency(client, db_session):
 # ---------------------------------------------------------------------------
 
 def test_route_node_max_turns_routes_to_end():
-    from app.graphs.nodes import route_node
     from langgraph.graph import END
+
+    from app.graphs.nodes import route_node
 
     state = _state(turn_count=10, analysis_result={"next_action": "propose"})
     assert route_node(state) == END

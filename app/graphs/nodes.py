@@ -9,7 +9,6 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
-from app.instructions import get_instruction
 from app.graphs.policy import ancestor_types
 from app.graphs.slot_schema import (
     BRD_SLOTS,
@@ -19,6 +18,7 @@ from app.graphs.slot_schema import (
 )
 from app.graphs.state import WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
+from app.instructions import get_instruction
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -716,7 +716,10 @@ def _build_summary_prompt(state: WorkflowState) -> str:
     current_summary = (state.get("conversation_summary") or "").strip() or "(chưa có)"
     recent_messages = "\n".join(
         f"{role}: {content}"
-        for role, content in (_msg_role_content(m) for m in (state.get("messages") or [])[-settings.summary_trigger_every:])
+        for role, content in (
+            _msg_role_content(m)
+            for m in (state.get("messages") or [])[-settings.summary_trigger_every:]
+        )
     ) or "(chưa có hội thoại mới)"
 
     return (
