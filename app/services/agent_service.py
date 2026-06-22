@@ -12,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
+from app.graphs.state import (
+    DEFAULT_ARTIFACT_CHAIN,
+    DEFAULT_METHOD_PROFILE,
+    DEFAULT_READINESS,
+)
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -177,6 +182,9 @@ class AgentService:
                 "risks": [],
                 "open_questions": [],
                 "draft_body": None,
+                "method_profile": dict(DEFAULT_METHOD_PROFILE),
+                "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+                "readiness": dict(DEFAULT_READINESS),
                 "working_draft": None,
                 "mode_hint": mode_hint,
             }
@@ -521,6 +529,9 @@ class AgentService:
                     "risks": [],
                     "open_questions": [],
                     "draft_body": None,
+                    "method_profile": dict(DEFAULT_METHOD_PROFILE),
+                    "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+                    "readiness": dict(DEFAULT_READINESS),
                     "working_draft": None,
                     "mode_hint": None,
                 }
@@ -648,6 +659,9 @@ class AgentService:
             "risks": [],
             "open_questions": [],
             "draft_body": None,
+            "method_profile": dict(DEFAULT_METHOD_PROFILE),
+            "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+            "readiness": dict(DEFAULT_READINESS),
             "working_draft": None,
             "mode_hint": None,
         }

@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from app.graphs.policy import GovernanceDenied
-from app.graphs.state import WorkflowState
+from app.graphs.state import (
+    DEFAULT_ARTIFACT_CHAIN,
+    DEFAULT_METHOD_PROFILE,
+    DEFAULT_READINESS,
+    WorkflowState,
+)
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -56,6 +61,9 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "risks": [],
         "open_questions": [],
         "draft_body": None,
+        "method_profile": dict(DEFAULT_METHOD_PROFILE),
+        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+        "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
         "mode_hint": None,
     }

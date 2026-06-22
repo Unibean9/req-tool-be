@@ -3,7 +3,12 @@ from langgraph.graph import add_messages
 
 from app.config import settings
 from app.graphs.policy import ARTIFACT_PREDECESSORS, ApprovalRequired, GovernanceDenied, governed
-from app.graphs.state import WorkflowState
+from app.graphs.state import (
+    DEFAULT_ARTIFACT_CHAIN,
+    DEFAULT_METHOD_PROFILE,
+    DEFAULT_READINESS,
+    WorkflowState,
+)
 
 
 @pytest.mark.asyncio
@@ -117,6 +122,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "risks": [],
         "open_questions": [],
         "draft_body": None,
+        "method_profile": dict(DEFAULT_METHOD_PROFILE),
+        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+        "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
         "mode_hint": None,
     }
@@ -146,6 +154,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "risks",
         "open_questions",
         "draft_body",
+        "method_profile",
+        "artifact_chain",
+        "readiness",
         "working_draft",
         "mode_hint",
     }

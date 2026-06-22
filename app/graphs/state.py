@@ -31,6 +31,55 @@ class OpenQuestionObject(TypedDict):
     status: str
 
 
+class MethodProfile(TypedDict):
+    """BMAD method profile (addendum §8): which planning workflow the project is in."""
+    method: str
+    planning_track: str
+    project_type: str
+    current_workflow: str
+    recommended_next_workflow: str | None
+
+
+class ArtifactChain(TypedDict):
+    """Status of each BMAD planning artifact stage (addendum §8)."""
+    brainstorming: str
+    product_brief: str
+    prd: str
+
+
+class Readiness(TypedDict):
+    """Readiness assessment across the planning lifecycle (addendum §8)."""
+    requirements_ready: bool
+    architecture_needed: str
+    implementation_ready: bool
+    blocking_gaps: list[str]
+    recommended_next_step: str | None
+
+
+# Defaults for a fresh session — a small idea starts on the quick track at brainstorm.
+DEFAULT_METHOD_PROFILE: MethodProfile = {
+    "method": "bmad_inspired",
+    "planning_track": "quick",
+    "project_type": "unknown",
+    "current_workflow": "brainstorm",
+    "recommended_next_workflow": None,
+}
+
+DEFAULT_ARTIFACT_CHAIN: ArtifactChain = {
+    "brainstorming": "missing",
+    "product_brief": "missing",
+    "prd": "missing",
+}
+
+DEFAULT_READINESS: Readiness = {
+    "requirements_ready": False,
+    "architecture_needed": "unknown",
+    "implementation_ready": False,
+    "blocking_gaps": [],
+    "recommended_next_step": None,
+}
+
+
 class WorkflowState(TypedDict):
     artifact_type: str
     workflow_area: str
@@ -60,6 +109,11 @@ class WorkflowState(TypedDict):
     # confirmed artifact even when no in-session working_draft exists yet.
     draft_body: str | None
     working_draft: str | None
+    # BMAD method layer (addendum §8) — sits above the 7-section engine; analyze_node assigns
+    # workflow_mode / planning_track each turn. Independent of active_mode.
+    method_profile: MethodProfile
+    artifact_chain: ArtifactChain
+    readiness: Readiness
     # Multi-angle mode steering. A one-shot hint set by the user to switch the
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.
     mode_hint: str | None

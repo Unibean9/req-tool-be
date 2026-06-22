@@ -17,7 +17,7 @@ from app.graphs.section_schema import (
     SECTION_TRACKED_ARTIFACT_TYPES,
     compute_section_coverage,
 )
-from app.graphs.state import WorkflowState
+from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
 from app.instructions import get_instruction
 from app.models.agent import (
@@ -70,9 +70,23 @@ TOOL_SELECTION_SCHEMA = {
             ],
         },
         "draft_update": {"type": "string"},
+        # BMAD method layer (addendum §11) — separate from active_mode. workflow_mode = planning
+        # stage of the project; planning_track = artifact-chain depth.
+        "workflow_mode": {
+            "type": "string",
+            "enum": ["brainstorm", "brief", "prd", "readiness_check",
+                     "architecture_readiness", "epic_story_readiness"],
+        },
+        "planning_track": {"type": "string", "enum": ["quick", "standard", "enterprise"]},
     },
     "required": ["tool"],
 }
+
+# Valid BMAD workflow modes and planning tracks, plus aliases the LLM may report. analyze_node
+# normalizes (alias -> lowercase/strip -> enum) and falls back to brainstorm / quick on miss.
+_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness", "epic_story_readiness"}
+_WORKFLOW_MODE_ALIASES = {"product_brief": "brief"}
+_PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 
 # Per-tool arg names the shim copies from the selection dict into the tool_call args.
 _TOOL_ARG_KEYS = {
@@ -100,6 +114,32 @@ def _normalize_active_mode(mode: str | None) -> str | None:
     if mode is None:
         return None
     return _ACTIVE_MODE_MAP.get(mode, mode)
+
+
+def _normalize_workflow_mode(mode: Any) -> str:
+    """Alias -> lowercase/strip -> enum; fall back to 'brainstorm' on anything unrecognized."""
+    raw = str(mode or "").strip().lower()
+    raw = _WORKFLOW_MODE_ALIASES.get(raw, raw)
+    return raw if raw in _WORKFLOW_MODES else "brainstorm"
+
+
+def _normalize_planning_track(track: Any) -> str:
+    raw = str(track or "").strip().lower()
+    return raw if raw in _PLANNING_TRACKS else "quick"
+
+
+def _infer_workflow_mode(state: WorkflowState) -> str:
+    """Fallback workflow_mode from section coverage when the LLM does not report one.
+
+    Low coverage everywhere -> still brainstorming. Once some signal exists, suggest the next
+    planning artifact by what the session targets. Never an override — only a default.
+    """
+    coverage = state.get("section_coverage") or {}
+    scored = {"filled": 1.0, "needs_review": 0.5, "partial": 0.5, "missing": 0.0}
+    ratios = [scored.get(v, 0.0) for v in coverage.values()]
+    if not ratios or max(ratios) < 0.3:
+        return "brainstorm"
+    return "prd" if state.get("artifact_type") == "product_brief" else "brief"
 
 # respond is a user-facing critique/exploration; its angle is the mode the model picked (defaulting
 # to critique). active_mode is derived from it and also passed as the tool's `mode` arg.
@@ -349,6 +389,19 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # never allowed to reset it mid-session (the prompt forbids rewriting from scratch).
     draft_update = analysis_result.get("draft_update") if isinstance(analysis_result, dict) else None
 
+    # BMAD method profile: take the LLM's workflow_mode (alias->enum, fallback brainstorm) or infer
+    # from coverage when omitted; planning_track normalized to quick on miss. Merge so other profile
+    # fields persist. Independent of active_mode.
+    reported = analysis_result if isinstance(analysis_result, dict) else {}
+    method_profile = dict(state.get("method_profile") or DEFAULT_METHOD_PROFILE)
+    if reported.get("workflow_mode"):
+        method_profile["current_workflow"] = _normalize_workflow_mode(reported.get("workflow_mode"))
+    else:
+        method_profile["current_workflow"] = _infer_workflow_mode(state)
+    method_profile["planning_track"] = _normalize_planning_track(
+        reported.get("planning_track") or method_profile.get("planning_track")
+    )
+
     result = {
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
@@ -356,6 +409,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
         "working_draft": draft_update or state.get("working_draft"),
+        "method_profile": method_profile,
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
