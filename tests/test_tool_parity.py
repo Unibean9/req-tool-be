@@ -107,7 +107,7 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
-    state = _state(analysis_result={"next_action": "propose"})
+    state = _state(artifact_type="requirements", analysis_result={"next_action": "propose"})
     state["last_agent_run_id"] = str(run.id)
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -120,7 +120,8 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().all()
         assert len(rows) == 1
-        assert rows[0].tool_name == "write_draft"
+        assert rows[0].tool_name == "write_draft:vision_objectives"
+        assert rows[0].input_snapshot["focus_section"] == "vision_objectives"
 
 
 @pytest.mark.asyncio
@@ -173,10 +174,10 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    state = _state()
+    state = _state(artifact_type="requirements")
     state["working_draft"] = "draft"
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5("draft".encode()).hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -304,7 +305,8 @@ async def test_write_draft_tool_call_scenario(client, db_session):
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().all()
         assert len(rows) == 1
-        assert rows[0].tool_name == "write_draft"
+        assert rows[0].tool_name == "write_draft:vision_objectives"
+        assert rows[0].input_snapshot["focus_section"] == "vision_objectives"
 
 
 @pytest.mark.asyncio
@@ -316,7 +318,7 @@ async def test_finalize_tool_call_scenario(client, db_session):
     state = _state()
     state["working_draft"] = "draft"
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5("draft".encode()).hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]
     config = _config(str(agent_session.id), str(project_id))

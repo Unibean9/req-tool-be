@@ -2,23 +2,31 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from app.graphs.section_schema import SECTION_SPECS
 from app.models.agent import (
     AgentMessageRole,
     AgentSessionInterruptType,
     AgentSessionStatus,
     AgentToolCallStatus,
 )
-from app.models.artifact import ArtifactType
 
 
 class AgentSessionCreate(BaseModel):
-    artifact_type: ArtifactType
+    artifact_type: str = Field(max_length=100)
     step_key: str | None = Field(default=None, max_length=100)
     workflow_area: str = Field(default="analysis", max_length=50)
     agent_role: str | None = Field(default=None, max_length=100)
     provider_config_id: uuid.UUID | None = None
+    focus_section: str | None = Field(default=None, max_length=100)
+
+    @field_validator("focus_section")
+    @classmethod
+    def validate_focus_section(cls, value: str | None) -> str | None:
+        if value is not None and value not in SECTION_SPECS:
+            raise ValueError("focus_section không hợp lệ")
+        return value
 
 
 class AgentSessionResponse(BaseModel):
@@ -30,6 +38,7 @@ class AgentSessionResponse(BaseModel):
     status: AgentSessionStatus
     interrupt_type: AgentSessionInterruptType | None
     missing_context: Any | None
+    focus_section: str | None = None
     agent_role: str | None
     provider_config_id: uuid.UUID | None
     created_by_id: uuid.UUID | None

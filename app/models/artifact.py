@@ -2,7 +2,7 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
@@ -28,18 +28,8 @@ class ArtifactPriority(enum.StrEnum):
 
 
 class ArtifactType(enum.StrEnum):
-    RESEARCH_OUTPUT = "research_output"
-    INTENT = "intent"
-    PROBLEM = "problem"
-    GOAL = "goal"
-    STAKEHOLDER = "stakeholder"
-    CAPABILITY = "capability"
+    REQUIREMENTS = "requirements"
     DOMAIN_ENTITY = "domain_entity"
-    BUSINESS_RULE = "business_rule"
-    CONSTRAINT = "constraint"
-    ASSUMPTION = "assumption"
-    RISK = "risk"
-    OPEN_QUESTION = "open_question"
     FUNCTIONAL_REQUIREMENT = "functional_requirement"
     NON_FUNCTIONAL_REQUIREMENT = "non_functional_requirement"
     USE_CASE = "use_case"
@@ -189,6 +179,15 @@ class WorkflowRun(AuditMixin, Base):
 
 class Artifact(AuditMixin, Base):
     __tablename__ = "artifacts"
+    __table_args__ = (
+        Index(
+            "uq_artifacts_project_requirements",
+            "project_id",
+            unique=True,
+            postgresql_where=text("type = 'requirements'"),
+            sqlite_where=text("type = 'requirements'"),
+        ),
+    )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True
@@ -212,8 +211,6 @@ class Artifact(AuditMixin, Base):
     code: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     confidence: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True)
-    nfr_category: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
-    stakeholder_role: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
     extra_metadata: Mapped[Any] = jsonb_column("metadata", nullable=False, default=dict)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True

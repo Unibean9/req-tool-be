@@ -13,6 +13,7 @@ status update — so it needs no key.
 """
 
 import hashlib
+import json
 import logging
 import uuid
 from typing import Annotated, Any
@@ -27,7 +28,7 @@ from sqlalchemy import exists, select
 from app.config import settings
 from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
-from app.graphs.section_schema import SECTION_SPECS, status_score
+from app.graphs.section_schema import ARTIFACT_TYPE_TO_SECTION, SECTION_SPECS, status_score
 from app.graphs.state import QualityReport, WorkflowState
 from app.models.agent import (
     AgentSession,
@@ -48,11 +49,33 @@ def current_draft_body(state: WorkflowState) -> str:
     through here. Divergence between any two sites (one using only working_draft) permanently locks
     DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
     """
-    focus_section = state.get("focus_section")
+    focus_section = state.get("focus_section") or ARTIFACT_TYPE_TO_SECTION.get(state.get("artifact_type", ""))
     sections_body = state.get("sections_body") or {}
-    if focus_section and focus_section in sections_body:
-        return sections_body[focus_section] or ""
+    if focus_section:
+        if focus_section in sections_body:
+            return sections_body[focus_section] or ""
+        # Focus section not drafted in this session: draft_body holds the persisted multi-section
+        # blob. Return only this section's slice — never the whole block — so a sibling section's
+        # content cannot leak into the critique hash / finalize gate / has-draft check for an
+        # undrafted section.
+        persisted = state.get("draft_body")
+        parsed = _parse_sections_blob(persisted)
+        if parsed is not None:
+            return parsed.get(focus_section) or ""
+        # Not a multi-section blob (legacy plain-string draft): preserve prior behavior.
+        return persisted or state.get("working_draft") or ""
     return state.get("draft_body") or state.get("working_draft") or ""
+
+
+def _parse_sections_blob(persisted: str | None) -> dict | None:
+    """Parse a persisted draft body as a section→text map, or None if it is not one."""
+    if not persisted:
+        return None
+    try:
+        parsed = json.loads(persisted)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def artifact_stage(state: WorkflowState) -> str:
@@ -114,7 +137,7 @@ async def _write_draft_impl(
     if not state.get("last_agent_run_id"):
         raise RuntimeError("write_draft requires last_agent_run_id in state — analyze_node must run first")
     run_id = uuid.UUID(state["last_agent_run_id"])
-    focus_section = state.get("focus_section")
+    focus_section = state.get("focus_section") or ARTIFACT_TYPE_TO_SECTION.get(state.get("artifact_type", ""))
     tool_key = f"write_draft:{focus_section}" if focus_section else "write_draft"
 
     async with session_factory() as db:

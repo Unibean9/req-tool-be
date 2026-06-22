@@ -57,8 +57,6 @@ class ArtifactService:
             code=body.code,
             title=body.title,
             confidence=body.confidence,
-            nfr_category=body.nfr_category,
-            stakeholder_role=body.stakeholder_role,
             extra_metadata=body.metadata,
             created_by_id=created_by_id,
         )
@@ -161,10 +159,6 @@ class ArtifactService:
             artifact.code = body.code
         if body.confidence is not None:
             artifact.confidence = body.confidence
-        if body.nfr_category is not None:
-            artifact.nfr_category = body.nfr_category
-        if body.stakeholder_role is not None:
-            artifact.stakeholder_role = body.stakeholder_role
         if body.metadata is not None:
             artifact.extra_metadata = body.metadata
         await self.db.flush()
@@ -360,8 +354,6 @@ class ArtifactService:
             code=artifact.code,
             title=artifact.title,
             confidence=artifact.confidence,
-            nfr_category=artifact.nfr_category,
-            stakeholder_role=artifact.stakeholder_role,
             created_by_id=artifact.created_by_id,
             created_at=artifact.created_at,
             metadata=artifact.extra_metadata or {},
@@ -573,7 +565,7 @@ class ArtifactLinkService:
         artifacts_by_id: dict[uuid.UUID, Artifact],
     ) -> bool:
         upstream_relations = {"satisfies", "derives_from"}
-        upstream_types = {"goal", "capability"}
+        upstream_types = {"requirements"}
         for link in links:
             if link.source_artifact_id != artifact.id or link.relation_type.value not in upstream_relations:
                 continue

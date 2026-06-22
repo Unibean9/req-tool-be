@@ -59,8 +59,20 @@ async def _seed_full_project(session: AsyncSession, org_id: uuid.UUID, user_id: 
     doc = SourceDocument(project_id=project.id, title="Doc", source_type=SourceType.TEXT_PASTE, extra_metadata={})
     session.add(doc)
 
-    artifact_a = Artifact(project_id=project.id, type=ArtifactType.GOAL, status=ArtifactStatus.ACCEPTED, title="A", extra_metadata={})
-    artifact_b = Artifact(project_id=project.id, type=ArtifactType.PROBLEM, status=ArtifactStatus.DRAFT, title="B", extra_metadata={})
+    artifact_a = Artifact(
+        project_id=project.id,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
+        status=ArtifactStatus.ACCEPTED,
+        title="A",
+        extra_metadata={},
+    )
+    artifact_b = Artifact(
+        project_id=project.id,
+        type=ArtifactType.EPIC,
+        status=ArtifactStatus.DRAFT,
+        title="B",
+        extra_metadata={},
+    )
     session.add_all([artifact_a, artifact_b])
     await session.flush()
 

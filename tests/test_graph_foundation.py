@@ -93,8 +93,9 @@ async def test_create_artifact_denies_type_outside_allowed_context():
     assert exc_info.value.tool_name == "create_artifact"
 
 
-def test_artifact_predecessors_goal_requires_intent_and_problem():
-    assert ARTIFACT_PREDECESSORS["goal"] == ["intent", "problem"]
+def test_artifact_predecessors_design_types_trace_to_requirements():
+    assert ARTIFACT_PREDECESSORS["requirements"] == []
+    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["requirements"]
 
 
 def test_workflow_state_structure_and_add_messages_reducer():

@@ -116,6 +116,18 @@ LEGACY_BRD_TO_SECTION: dict[str, str] = {
     "open_question": "risks_issues",
 }
 
+ARTIFACT_TYPE_TO_SECTION: dict[str, str] = {
+    **LEGACY_BRD_TO_SECTION,
+    "requirements": "vision_objectives",
+    "domain_entity": "stakeholder_register",
+    "functional_requirement": "scope_capabilities",
+    "non_functional_requirement": "constraints_assumptions",
+    "use_case": "business_rules",
+    "epic": "scope_capabilities",
+    "story": "scope_capabilities",
+    "acceptance_criteria": "business_rules",
+}
+
 # Artifact types whose elicitation is assessed against the 7-section taxonomy. Mirrors the legacy
 # BRD-slot gating: discovery artifacts report section_assessment; derived types (story, epic,
 # functional_requirement) fail open so the coverage gate never blocks them.

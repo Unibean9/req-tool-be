@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.graphs.agent_tools import _finalize_impl, get_available_tools
+from app.graphs.agent_tools import _finalize_impl, current_draft_body, get_available_tools
 
 
 def _names(state):
@@ -159,6 +159,43 @@ async def test_finalize_hard_blocks_without_current_draft_body():
 
     mock_interrupt.assert_not_called()
     assert "Không thể finalize" in command.update["messages"][0].content
+
+
+def _multi_section_blob() -> str:
+    import json
+
+    return json.dumps(
+        {"vision_objectives": "Tầm nhìn đã chốt", "problem_statement": "Vấn đề đã mô tả"},
+        ensure_ascii=False,
+    )
+
+
+def test_current_draft_body_returns_only_focus_slice_from_persisted_blob():
+    # Switching focus to a section already persisted: return only that section's slice, never the blob.
+    state = {"focus_section": "vision_objectives", "sections_body": {}, "draft_body": _multi_section_blob()}
+    assert current_draft_body(state) == "Tầm nhìn đã chốt"
+
+
+def test_current_draft_body_empty_for_undrafted_focus_section():
+    # The focus section has no content in the persisted blob → empty, NOT a sibling section's text.
+    state = {"focus_section": "scope_capabilities", "sections_body": {}, "draft_body": _multi_section_blob()}
+    assert current_draft_body(state) == ""
+
+
+def test_finalize_not_offered_for_undrafted_section_with_persisted_blob():
+    # Cross-section contamination guard: a sibling-populated blob must not make an undrafted focus
+    # section look finalizable (has_draft / finalize gate route through current_draft_body).
+    state = {
+        "messages": [],
+        "focus_section": "scope_capabilities",
+        "sections_body": {},
+        "draft_body": _multi_section_blob(),
+        "working_draft": None,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash(_multi_section_blob()),
+    }
+    assert "finalize" not in _names(state)
 
 
 @pytest.mark.asyncio

@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -177,7 +178,7 @@ async def test_create_session_goal_without_predecessors_returns_missing_context(
 
     result = await svc.create_session(project_id=project_id, artifact_type="goal")
 
-    assert set(result["missing_context"]) == {"intent", "problem"}
+    assert result["missing_context"] == []
 
 
 @pytest.mark.asyncio
@@ -331,14 +332,10 @@ def test_make_config_exposes_strong_llm_client(db_session):
 @pytest.mark.asyncio
 async def test_create_session_goal_with_intent_missing_problem(client, db_session):
     project_id = await _setup(client)
-
-    db_session.add(Artifact(project_id=project_id, type="intent", title="Intent", extra_metadata={}, status="draft"))
-    await db_session.flush()
-
     svc = _make_service(db_session)
     result = await svc.create_session(project_id=project_id, artifact_type="goal")
 
-    assert result["missing_context"] == ["problem"]
+    assert result["missing_context"] == []
 
 
 @pytest.mark.asyncio
@@ -932,6 +929,58 @@ async def test_approve_tool_call_sets_artifact_version_traceability(client, db_s
     version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.id == updated_tc.created_version_id))).scalar_one()
     assert version.agent_run_id == run.id
     assert version.tool_call_id == tc.id
+    assert json.loads(version.body)["vision_objectives"] == "Mô tả"
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_rejects_missing_focus_section(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    tc.input_snapshot = {"artifact_type": "unknown_type", "title": "Mục tiêu", "body": "Mô tả"}
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    assert exc.value.status_code == 422
+    artifacts = (await db_session.execute(select(Artifact).where(Artifact.project_id == project_id))).scalars().all()
+    assert artifacts == []
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_merges_sections_into_single_requirements_artifact(
+    client, db_session, _no_background_tasks
+):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc1, tc2 = await _make_propose_session(db_session, project_id)
+    tc1.input_snapshot = {
+        "artifact_type": "goal",
+        "title": "Vision",
+        "body": "Section A",
+        "focus_section": "vision_objectives",
+    }
+    tc2.input_snapshot = {
+        "artifact_type": "goal",
+        "title": "Problem",
+        "body": "Section B",
+        "focus_section": "problem_statement",
+    }
+    await db_session.flush()
+
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc1.id, created_by_id=None)
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=None)
+
+    artifacts = (await db_session.execute(select(Artifact).where(Artifact.project_id == project_id))).scalars().all()
+    assert len(artifacts) == 1
+    artifact = artifacts[0]
+    assert artifact.type.value == "requirements"
+    version = await db_session.get(ArtifactVersion, artifact.current_version_id)
+    assert json.loads(version.body) == {
+        "vision_objectives": "Section A",
+        "problem_statement": "Section B",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1004,7 +1053,12 @@ async def _make_single_propose_session(db_session, project_id, created_by_id=Non
 
     tc = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
-        input_snapshot={"artifact_type": "goal", "title": "Mục tiêu", "body": "Mô tả"},
+        input_snapshot={
+            "artifact_type": "goal",
+            "title": "Mục tiêu",
+            "body": "Mô tả",
+            "focus_section": "vision_objectives",
+        },
         status=AgentToolCallStatus.PROPOSED,
     )
     db_session.add(tc)
@@ -1028,12 +1082,22 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
 
     tc1 = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
-        input_snapshot={"artifact_type": "goal", "title": "Mục tiêu A", "body": "Mô tả"},
+        input_snapshot={
+            "artifact_type": "goal",
+            "title": "Mục tiêu A",
+            "body": "Mô tả",
+            "focus_section": "vision_objectives",
+        },
         status=AgentToolCallStatus.PROPOSED,
     )
     tc2 = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
-        input_snapshot={"artifact_type": "goal", "title": "Mục tiêu B", "body": "Mô tả"},
+        input_snapshot={
+            "artifact_type": "goal",
+            "title": "Mục tiêu B",
+            "body": "Mô tả",
+            "focus_section": "problem_statement",
+        },
         status=AgentToolCallStatus.PROPOSED,
     )
     db_session.add(tc1)

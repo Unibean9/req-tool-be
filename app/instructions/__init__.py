@@ -24,22 +24,9 @@ _DEFAULT_ROLE = "business_analyst"
 # Business Analyst, delivery/requirement artifacts to the Product Manager.
 ARTIFACT_ROLE_MAP: dict[str, str] = {
     # Business Analyst — discovery and problem framing
-    "research_output": "business_analyst",
-    "intent":          "business_analyst",
-    "problem":         "business_analyst",
-    "stakeholder":     "business_analyst",
-    "domain_entity":   "business_analyst",
-    "business_rule":   "business_analyst",
-    "constraint":      "business_analyst",
-    "assumption":      "business_analyst",
-    "risk":            "business_analyst",
-    "open_question":   "business_analyst",
+    "requirements":  "business_analyst",
+    "domain_entity": "business_analyst",
     # Product Manager — prioritized, testable requirements and delivery breakdown
-    "goal":                       "product_manager",
-    "capability":                 "product_manager",
-    "feature":                    "product_manager",
-    "user_story":                 "product_manager",
-    "requirement":                "product_manager",
     "functional_requirement":     "product_manager",
     "non_functional_requirement": "product_manager",
     "use_case":                   "product_manager",

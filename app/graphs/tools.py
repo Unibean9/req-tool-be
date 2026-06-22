@@ -5,7 +5,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.graphs.policy import governed
-from app.models.artifact import Artifact, ArtifactLink
+from app.models.artifact import Artifact, ArtifactLink, ArtifactType
+
+
+def _is_known_artifact_type(artifact_type: str) -> bool:
+    return artifact_type in {item.value for item in ArtifactType}
 
 
 @governed
@@ -17,6 +21,8 @@ async def read_artifacts(
 ) -> list[dict]:
     query = select(Artifact).where(Artifact.project_id == project_id)
     if artifact_type:
+        if not _is_known_artifact_type(artifact_type):
+            return []
         query = query.where(Artifact.type == artifact_type)
     rows = (await db.execute(query)).scalars().all()
     return [
@@ -59,6 +65,8 @@ async def read_current_body(
     because this is an internal context-load that analyze_node calls directly like a
     repository query, not an LLM-exposed tool.
     """
+    if not _is_known_artifact_type(artifact_type):
+        return None
     row = (
         await db.execute(
             select(Artifact)

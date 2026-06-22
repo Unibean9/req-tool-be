@@ -1,4 +1,5 @@
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -395,42 +396,71 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
     ) -> tuple[Artifact, ArtifactVersion]:
-        raw_type = snapshot.get("artifact_type", "")
-        try:
-            artifact_type = ArtifactType(raw_type)
-        except ValueError:
-            raise HTTPException(
-                400,
-                detail=f"Artifact type không hợp lệ: '{raw_type}'. "
-                       f"Giá trị hợp lệ: {[e.value for e in ArtifactType]}",
-            ) from None
+        focus_section = snapshot.get("focus_section")
+        if not focus_section:
+            raise HTTPException(422, detail="Tool call thiếu focus_section; vui lòng đề xuất lại section hiện tại")
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
-        # The proposed tool call is already human-approved, so the artifact lands in ACCEPTED
-        # to surface in exports (BRD/SRS/PRD) instead of being stuck in DRAFT.
-        artifact = Artifact(
-            project_id=project_id,
-            type=artifact_type,
-            status=ArtifactStatus.ACCEPTED,
-            title=title,
-            extra_metadata={},
-            created_by_id=created_by_id,
-        )
-        self.db.add(artifact)
-        await self.db.flush()
+        artifact = (
+            await self.db.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id, Artifact.type == ArtifactType.REQUIREMENTS)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if artifact is None:
+            artifact = Artifact(
+                project_id=project_id,
+                type=ArtifactType.REQUIREMENTS,
+                status=ArtifactStatus.ACCEPTED,
+                title="Requirements",
+                extra_metadata={},
+                created_by_id=created_by_id,
+            )
+            self.db.add(artifact)
+            try:
+                await self.db.flush()
+            except IntegrityError:
+                await self.db.rollback()
+                artifact = (
+                    await self.db.execute(
+                        select(Artifact).where(
+                            Artifact.project_id == project_id,
+                            Artifact.type == ArtifactType.REQUIREMENTS,
+                        ).with_for_update()
+                    )
+                ).scalar_one()
+
+        current_body: dict[str, Any] = {}
+        current_version = None
+        if artifact.current_version_id is not None:
+            current_version = await self.db.get(ArtifactVersion, artifact.current_version_id)
+            if current_version is not None:
+                try:
+                    parsed = json.loads(current_version.body or "{}")
+                except json.JSONDecodeError as exc:
+                    # Merging into a corrupt body would silently erase every sibling section already
+                    # approved. Fail loud instead — the body needs manual repair, not an overwrite.
+                    raise HTTPException(500, detail="Requirements artifact body bị hỏng; cần sửa thủ công") from exc
+                if not isinstance(parsed, dict):
+                    raise HTTPException(500, detail="Requirements artifact body sai định dạng; cần sửa thủ công")
+                current_body = dict(parsed)
+        current_body[focus_section] = body
+        next_version_number = (current_version.version_number + 1) if current_version is not None else 1
 
         version = ArtifactVersion(
             artifact_id=artifact.id,
-            version_number=1,
-            title=title,
-            body=body,
+            version_number=next_version_number,
+            title="Requirements",
+            body=json.dumps(current_body, ensure_ascii=False),
             status=VersionStatus.DRAFT,
             change_source=ChangeSource.AI_GENERATION,
+            parent_version_id=current_version.id if current_version is not None else None,
             agent_run_id=run_id,
             tool_call_id=tool_call_id,
             created_by_id=created_by_id,
-            extra_metadata={},
+            extra_metadata={"focus_section": focus_section, "section_title": title},
         )
         self.db.add(version)
         await self.db.flush()

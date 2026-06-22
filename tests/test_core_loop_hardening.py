@@ -9,7 +9,6 @@ from app.graphs.agent_tools import artifact_stage, current_draft_body
 from app.graphs.nodes import _degrade_reason, _missing_required_arg
 from tests.test_graph_nodes import _state
 
-
 # --------------------------------------------------------------------------- Phase 1
 
 def test_current_draft_body_prefers_draft_body_over_working_draft():
