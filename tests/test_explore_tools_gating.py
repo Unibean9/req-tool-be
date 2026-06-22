@@ -13,6 +13,8 @@ eval are deferred to Phase 5: the production LLMClient has no bind_tools and ana
 native tool_calls until the enum is removed.
 """
 
+import hashlib
+
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -21,6 +23,18 @@ from app.graphs.agent_tools import NOTE_STEP_LIMIT, get_available_tools
 
 def _names(tools):
     return [t.name for t in tools]
+
+
+def _hash(body: str) -> str:
+    return hashlib.md5(body.encode()).hexdigest()[:8]
+
+
+def _pass_gate(draft: str) -> dict:
+    """Quality-report + hash keys that satisfy the finalize gate for `draft`."""
+    return {
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash(draft),
+    }
 
 
 def _note_turn(call_id: str):
@@ -44,9 +58,36 @@ def test_finalize_not_available_without_draft_body():
 # ---------------------------------------------------------------------------
 
 def test_finalize_available_after_write_draft():
-    # Phase 5: finalize now also requires critique_rounds > 0 (spec §15.1).
-    tools = get_available_tools({"messages": [], "working_draft": "Một nội dung draft", "critique_rounds": 1})
-    assert "finalize" in _names(tools)
+    # finalize now also requires critique_rounds > 0 AND a passing, current quality gate (spec §15.1).
+    draft = "Một nội dung draft"
+    state = {"messages": [], "working_draft": draft, "critique_rounds": 1, **_pass_gate(draft)}
+    assert "finalize" in _names(get_available_tools(state))
+
+
+def test_finalize_hidden_when_gate_fails():
+    draft = "Một nội dung draft"
+    state = {
+        "messages": [],
+        "working_draft": draft,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "fail", "blocking_issues": ["x"]},
+        "last_critiqued_draft_hash": _hash(draft),
+    }
+    assert "finalize" not in _names(get_available_tools(state))
+
+
+def test_finalize_hidden_when_draft_stale():
+    draft = "Một nội dung draft"
+    state = {"messages": [], "working_draft": draft + " (đã sửa)", "critique_rounds": 1, **_pass_gate(draft)}
+    assert "finalize" not in _names(get_available_tools(state))
+
+
+def test_readiness_check_gated_on_critique_rounds():
+    draft = "Một nội dung draft"
+    no_critique = {"messages": [], "working_draft": draft, "critique_rounds": 0}
+    assert "run_readiness_check" not in _names(get_available_tools(no_critique))
+    with_critique = {"messages": [], "working_draft": draft, "critique_rounds": 1}
+    assert "run_readiness_check" in _names(get_available_tools(with_critique))
 
 
 # ---------------------------------------------------------------------------

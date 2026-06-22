@@ -48,6 +48,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "user_confirmed": None,
         "critique_rounds": 0,
         "quality_report": None,
+        "last_critiqued_draft_hash": None,
         "locale": None,
         "turn_type": None,
         "triage_reply": None,

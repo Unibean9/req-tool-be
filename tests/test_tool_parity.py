@@ -135,6 +135,7 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     state = _state()
+    state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -271,6 +272,7 @@ async def test_finalize_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
+    state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()

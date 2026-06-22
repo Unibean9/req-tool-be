@@ -56,6 +56,25 @@ class Readiness(TypedDict):
     recommended_next_step: str | None
 
 
+class QualityReport(TypedDict):
+    """Reflection feedback contract — the structured verdict run_critique writes to state.
+
+    Four base fields mirror the judge output (critique.py); the five derived fields are
+    post-classified in Python by `_run_critique_impl`. The gate result is derived from `score`
+    against `settings.critique_score_threshold`, never from whether `blocking_issues` is empty —
+    so the no-LLM degraded path (score=0.0, findings=[]) still yields "fail" (fail-safe).
+    """
+    mode: str
+    score: float
+    findings: list[str]
+    suggestions: list[str]
+    blocking_issues: list[str]
+    non_blocking_warnings: list[str]
+    revision_plan: list[str]
+    quality_gate_result: str  # "pass" | "fail" — derived from score, not from blocking_issues
+    recommended_next_action: str  # "finalize" | "revise"
+
+
 # Defaults for a fresh session — a small idea starts on the quick track at brainstorm.
 DEFAULT_METHOD_PROFILE: MethodProfile = {
     "method": "bmad_inspired",
@@ -93,7 +112,11 @@ class WorkflowState(TypedDict):
     missing_context: list[str]
     user_confirmed: bool | None
     critique_rounds: int
-    quality_report: dict[str, Any] | None
+    quality_report: QualityReport | None
+    # MD5(8) of the draft body the last run_critique scored — lets the finalize gate detect a draft
+    # edited after critique (stale report) and force a re-critique. Source body is always
+    # `draft_body or working_draft or ""` (Phase 3).
+    last_critiqued_draft_hash: str | None
     locale: str | None
     # Triage channels: the entry node classifies each fresh turn as "converse" (greeting/smalltalk)
     # or "work" (requirements analysis) and, for converse, stages the reply for converse_node.

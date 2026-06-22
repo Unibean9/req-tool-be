@@ -12,6 +12,7 @@ migration). finalize has no insert to dedup — its only DB write is an idempote
 status update — so it needs no key.
 """
 
+import hashlib
 import logging
 import uuid
 from typing import Annotated, Any
@@ -23,10 +24,11 @@ from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from sqlalchemy import exists, select
 
+from app.config import settings
 from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.section_schema import SECTION_SPECS, status_score
-from app.graphs.state import WorkflowState
+from app.graphs.state import QualityReport, WorkflowState
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
@@ -130,7 +132,24 @@ async def write_draft(
 # finalize — parity for the `done` enum branch, with a HITL confirmation gate
 # ---------------------------------------------------------------------------
 
-async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):  # noqa: ARG001 — state kept for signature parity with sibling tool impls
+async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+    # Hard-block: even if the menu gate is bypassed, never finalize over a failing quality gate.
+    # A missing report counts as "fail" — finalize requires a passing critique to exist.
+    report = state.get("quality_report")
+    if not report or report.get("quality_gate_result") != "pass":
+        blocking = (report or {}).get("blocking_issues") or []
+        detail = "; ".join(blocking) if blocking else "chưa có critique đạt ngưỡng chất lượng"
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"Không thể finalize: quality gate chưa pass ({detail}).",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
@@ -256,13 +275,47 @@ async def _run_critique_impl(
 
     cfg = config["configurable"]
     llm_client = cfg.get("strong_llm_client") or cfg.get("llm_client")
+    # Source of truth for both the critique target and the hash: draft_body wins (DB-draft
+    # sessions), else the in-session working_draft. The finalize gate reads the same expression.
     body = state.get("draft_body") or state.get("working_draft") or ""
-    report = await _invoke_judge(body, mode, llm_client)
-    summary = f"critique[{report['mode']}] score={report['score']:.2f}"
+    judged = await _invoke_judge(body, mode, llm_client)
+
+    threshold = settings.critique_score_threshold
+    score = judged["score"]
+    findings = judged["findings"]
+    suggestions = judged["suggestions"]
+    # Gate result is derived from score, NOT from blocking_issues emptiness — the no-LLM degraded
+    # path (score=0.0, findings=[]) must still "fail" so the loop can never finalize without a real
+    # critique. This is fail-safe by design, not a bug.
+    quality_gate_result = "fail" if score < threshold else "pass"
+    blocking_issues = findings if quality_gate_result == "fail" else []
+    non_blocking_warnings = findings if quality_gate_result == "pass" else []
+    revision_plan = suggestions if quality_gate_result == "fail" else []
+
+    rounds_after = (state.get("critique_rounds") or 0) + 1
+    # A passing gate steers to finalize; a failing one steers to revise. "re_critique" is never
+    # recommended — on exhausted rounds run_critique is gated off the menu, so it would be a dead
+    # signal.
+    recommended_next_action = "finalize" if quality_gate_result == "pass" else "revise"
+
+    report: QualityReport = {
+        "mode": judged["mode"],
+        "score": score,
+        "findings": findings,
+        "suggestions": suggestions,
+        "blocking_issues": blocking_issues,
+        "non_blocking_warnings": non_blocking_warnings,
+        "revision_plan": revision_plan,
+        "quality_gate_result": quality_gate_result,
+        "recommended_next_action": recommended_next_action,
+    }
+    draft_hash = hashlib.md5(body.encode()).hexdigest()[:8]
+    summary = f"critique[{report['mode']}] score={report['score']:.2f} gate={quality_gate_result}"
     return Command(
         update={
             "quality_report": report,
-            "critique_rounds": (state.get("critique_rounds") or 0) + 1,
+            "last_critiqued_draft_hash": draft_hash,
+            "critique_rounds": rounds_after,
             "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
         }
     )
@@ -471,13 +524,33 @@ NOTE_TOOL_NAMES = ("critique_note", "explore_note")
 
 # After this many run_critique calls the formal judge is gated off the menu so the loop cannot
 # spin on critique forever (spec §5.5). write_draft / ask_user stay available regardless.
-CRITIQUE_ROUNDS_MAX = 3
+# Sourced from config (max_critique_rounds) so the reflection-round cap is a single tunable.
+CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
 
 def _tool_call_names(message) -> list[str]:
     """Tool names an AIMessage selected this turn; [] for any other message."""
     tool_calls = getattr(message, "tool_calls", None) or []
     return [tc["name"] for tc in tool_calls if isinstance(tc, dict) and tc.get("name")]
+
+
+def _finalize_gate_open(state: WorkflowState) -> bool:
+    """Quality side of the finalize gate: gate passed AND the scored draft is still current.
+
+    The current draft body uses the SAME expression as `_run_critique_impl` writes the hash from
+    (`draft_body or working_draft or ""`) — diverging here would permanently lock out DB-draft
+    sessions. Escape hatch: at the rounds cap a passing gate finalizes regardless of hash, so an
+    edit after the final critique cannot wedge the loop (run_critique is capped, finalize would
+    otherwise be stuck on a stale hash).
+    """
+    report = state.get("quality_report")
+    if not report or report.get("quality_gate_result") != "pass":
+        return False
+    if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
+        return True
+    body = state.get("draft_body") or state.get("working_draft") or ""
+    current_hash = hashlib.md5(body.encode()).hexdigest()[:8]
+    return current_hash == state.get("last_critiqued_draft_hash")
 
 
 def _consecutive_note_turns(messages: list) -> int:
@@ -501,20 +574,22 @@ def _consecutive_note_turns(messages: list) -> int:
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    - `finalize` only once `working_draft` is non-empty AND critique_rounds > 0 (spec §15.1:
-      a finalize requires at least one run_critique; human confirmation in _finalize_impl is the
-      approval step, so no separate approval_status field).
+    - `finalize` only once `working_draft` is non-empty AND critique_rounds > 0 AND the quality
+      gate passed AND the scored draft is still current (hash matches) OR the rounds cap is reached
+      (escape hatch). Human confirmation in _finalize_impl is the approval step (spec §15.1).
     - `run_critique` only once a draft body exists (working_draft or DB-loaded draft_body) AND
       critique_rounds < CRITIQUE_ROUNDS_MAX. It is NOT a NOTE_TOOL, so the note step-limit never
       gates it.
+    - `run_readiness_check` needs an artifact AND at least one critique round to assess.
     - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
     - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
     has_draft = bool((state.get("working_draft") or "").strip() or (state.get("draft_body") or "").strip())
-    if (state.get("working_draft") or "").strip() and (state.get("critique_rounds") or 0) > 0:
+    critique_rounds = state.get("critique_rounds") or 0
+    if (state.get("working_draft") or "").strip() and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
-    if has_draft and (state.get("critique_rounds") or 0) < CRITIQUE_ROUNDS_MAX:
+    if has_draft and critique_rounds < CRITIQUE_ROUNDS_MAX:
         tools.append(run_critique)
     # recommend_next_workflow: available once there is a draft, or once >= 2 sections have any
     # coverage (lets the quick track recommend early, before a draft exists).
@@ -522,8 +597,9 @@ def get_available_tools(state: WorkflowState) -> list:
     sections_with_signal = sum(1 for v in coverage.values() if status_score(v) > 0.0)
     if has_draft or sections_with_signal >= 2:
         tools.append(recommend_next_workflow)
-    # run_readiness_check needs an artifact to assess.
-    if (state.get("working_draft") or "").strip():
+    # run_readiness_check needs an artifact AND a prior critique round — readiness is meaningless
+    # before any quality signal exists.
+    if (state.get("working_draft") or "").strip() and critique_rounds > 0:
         tools.append(run_readiness_check)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]

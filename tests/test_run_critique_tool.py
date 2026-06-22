@@ -71,8 +71,78 @@ async def test_run_critique_updates_quality_report():
 
     command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
 
-    assert command.update["quality_report"] is not None
-    assert command.update["quality_report"]["mode"] == "completeness"
+    report = command.update["quality_report"]
+    assert report is not None
+    assert report["mode"] == "completeness"
+    # All five derived fields are present (the reflection feedback contract).
+    for key in ("blocking_issues", "non_blocking_warnings", "revision_plan",
+                "quality_gate_result", "recommended_next_action"):
+        assert key in report
+
+
+def _scripted_client(score: float, findings: list[str], suggestions: list[str]):
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=(
+        {"score": score, "findings": findings, "suggestions": suggestions}, None
+    ))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_run_critique_pass_gate_classification():
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft body"
+    config = {"configurable": {"llm_client": _scripted_client(0.9, ["nit nhỏ"], ["mở rộng"])}}
+
+    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+
+    assert report["quality_gate_result"] == "pass"
+    assert report["blocking_issues"] == []
+    assert report["non_blocking_warnings"] == ["nit nhỏ"]
+    assert report["recommended_next_action"] == "finalize"
+
+
+@pytest.mark.asyncio
+async def test_run_critique_fail_gate_classification():
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft body"
+    config = {"configurable": {"llm_client": _scripted_client(0.5, ["thiếu metric"], ["thêm KPI"])}}
+
+    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+
+    assert report["quality_gate_result"] == "fail"
+    assert report["blocking_issues"] == ["thiếu metric"]
+    assert report["revision_plan"] == ["thêm KPI"]
+    assert report["recommended_next_action"] == "revise"
+
+
+@pytest.mark.asyncio
+async def test_run_critique_degraded_path_fails_gate():
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft body"
+    config = {"configurable": {"llm_client": None}}
+
+    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+
+    # No-LLM: score 0.0 → gate fails by design, but findings empty so no blocking_issues listed.
+    assert report["quality_gate_result"] == "fail"
+    assert report["blocking_issues"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_critique_writes_draft_hash():
+    import hashlib
+
+    state = _state(artifact_type="goal")
+    state["draft_body"] = "## Mục tiêu\n- Tăng giữ chân 30%."
+    config = {"configurable": {"llm_client": None}}
+
+    command = await _run_critique_impl("draft", "completeness", state, config, "c1")
+
+    body = state["draft_body"]
+    assert command.update["last_critiqued_draft_hash"] == hashlib.md5(body.encode()).hexdigest()[:8]
 
 
 @pytest.mark.asyncio
