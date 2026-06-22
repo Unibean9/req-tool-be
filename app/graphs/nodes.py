@@ -37,9 +37,14 @@ TOOL_SELECTION_SCHEMA = {
     "properties": {
         "tool": {
             "type": "string",
-            "enum": ["ask_user", "respond", "write_draft", "finalize", "critique_note", "explore_note"],
+            "enum": [
+                "ask_user", "respond", "write_draft", "finalize",
+                "critique_note", "explore_note", "run_critique",
+            ],
         },
         "message": {"type": "string"},
+        "target": {"type": "string"},
+        "mode": {"type": "string"},
         "title": {"type": "string"},
         "body": {"type": "string"},
         "summary": {"type": "string"},
@@ -69,6 +74,7 @@ _TOOL_ARG_KEYS = {
     "finalize": ["summary"],
     "critique_note": ["content"],
     "explore_note": ["content"],
+    "run_critique": ["target", "mode"],
 }
 
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
@@ -323,6 +329,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
+        # Persist the DB-loaded draft body so run_critique can target it next turn.
+        "draft_body": draft_body,
         "working_draft": draft_update or state.get("working_draft"),
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.

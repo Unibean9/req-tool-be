@@ -56,6 +56,9 @@ class WorkflowState(TypedDict):
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
+    # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
+    # confirmed artifact even when no in-session working_draft exists yet.
+    draft_body: str | None
     working_draft: str | None
     # Multi-angle mode steering. A one-shot hint set by the user to switch the
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.

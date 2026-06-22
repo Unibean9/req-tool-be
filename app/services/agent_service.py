@@ -176,6 +176,7 @@ class AgentService:
                 "assumptions": [],
                 "risks": [],
                 "open_questions": [],
+                "draft_body": None,
                 "working_draft": None,
                 "mode_hint": mode_hint,
             }
@@ -519,6 +520,7 @@ class AgentService:
                     "assumptions": [],
                     "risks": [],
                     "open_questions": [],
+                    "draft_body": None,
                     "working_draft": None,
                     "mode_hint": None,
                 }
@@ -645,6 +647,7 @@ class AgentService:
             "assumptions": [],
             "risks": [],
             "open_questions": [],
+            "draft_body": None,
             "working_draft": None,
             "mode_hint": None,
         }

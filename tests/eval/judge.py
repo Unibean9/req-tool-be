@@ -7,6 +7,10 @@ Reuses the `response_format` mechanism of `app.services.llm_clients` (like
 
 from typing import Any
 
+# The in-loop critique judge lives in production (app.graphs.critique). Re-export it here so eval
+# code shares the same contract and the dependency points tests -> production, never the reverse.
+from app.graphs.critique import JUDGE_SCHEMA as CRITIQUE_JUDGE_SCHEMA  # noqa: F401
+from app.graphs.critique import _invoke_judge as invoke_critique  # noqa: F401
 from tests.eval.rubric import render_criteria_block
 
 # The 6 29148 criteria are always required; invest/smart may be null when not applicable

@@ -116,6 +116,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "draft_body": None,
         "working_draft": None,
         "mode_hint": None,
     }
@@ -144,6 +145,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "assumptions",
         "risks",
         "open_questions",
+        "draft_body",
         "working_draft",
         "mode_hint",
     }

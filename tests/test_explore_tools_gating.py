@@ -89,6 +89,14 @@ def test_respond_resets_note_step_limit():
     assert "critique_note" in names and "explore_note" in names
 
 
+def test_note_step_limit_does_not_block_run_critique():
+    # run_critique is not a NOTE_TOOL, so the note step-limit must not gate it — only the draft
+    # presence + critique-rounds cap do. After NOTE_STEP_LIMIT notes it is still offered.
+    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
+    names = _names(get_available_tools({"messages": messages, "working_draft": "draft body"}))
+    assert "run_critique" in names
+
+
 # ---------------------------------------------------------------------------
 # T4 — write_note appends a ToolMessage to messages (decision 3: no notes field)
 # ---------------------------------------------------------------------------

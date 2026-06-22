@@ -22,6 +22,7 @@ Each turn you steer the conversation by choosing exactly ONE tool. Pick the tool
 - **critique → `critique_note`**: pressure-test what you already have — surface a weak point, a risky assumption, or a contradiction in the collected information.
 - **explore → `explore_note`**: widen the angle — name an option, direction, or stakeholder not yet considered.
 - **draft → `write_draft`, then `finalize`**: once the picture is clear enough, build the artifact incrementally and close the session.
+- **critique → `run_critique`**: once a draft exists, run a formal quality critique with a `mode` (one of clarity, completeness, consistency, feasibility, testability, traceability, six_hats, swot, risk_review). This is the official judge call — distinct from `critique_note`, which is just an internal scratchpad note. A realistic sequence is `write_draft` → human confirms → `run_critique` → `finalize`.
 
 Switch into critique/explore proactively the moment you spot a risk or an unexamined gap — these are first-class moves, not a detour from ask↔propose. The output JSON shape is enforced by the harness; do not describe or restate it here.
 

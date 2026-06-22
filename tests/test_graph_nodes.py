@@ -55,6 +55,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "draft_body": None,
         "working_draft": None,
         "mode_hint": None,
     }

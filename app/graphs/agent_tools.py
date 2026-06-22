@@ -234,6 +234,48 @@ async def respond(
 
 
 # ---------------------------------------------------------------------------
+# run_critique — formal judge call over the current draft (mode-targeted, non-interrupting)
+# ---------------------------------------------------------------------------
+# Unlike critique_note (silent scratchpad), run_critique invokes the production judge in
+# critique.py, records a quality_report, and increments critique_rounds. It does not interrupt —
+# the analyst surfaces the result to the user via `respond` on a later turn.
+
+async def _run_critique_impl(
+    target: str,  # noqa: ARG001 — kept for schema parity; the judge scores the loaded draft body
+    mode: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+):
+    from app.graphs.critique import _invoke_judge
+
+    cfg = config["configurable"]
+    llm_client = cfg.get("strong_llm_client") or cfg.get("llm_client")
+    body = state.get("draft_body") or state.get("working_draft") or ""
+    report = await _invoke_judge(body, mode, llm_client)
+    summary = f"critique[{report['mode']}] score={report['score']:.2f}"
+    return Command(
+        update={
+            "quality_report": report,
+            "critique_rounds": (state.get("critique_rounds") or 0) + 1,
+            "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def run_critique(
+    target: str,
+    mode: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Run a formal quality critique over the current draft along one mode and record the report."""
+    return await _run_critique_impl(target, mode, state, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
@@ -244,6 +286,10 @@ NOTE_STEP_LIMIT = 3
 
 # The scratchpad note tools, gated together as one family against the step-limit.
 NOTE_TOOL_NAMES = ("critique_note", "explore_note")
+
+# After this many run_critique calls the formal judge is gated off the menu so the loop cannot
+# spin on critique forever (spec §5.5). write_draft / ask_user stay available regardless.
+CRITIQUE_ROUNDS_MAX = 3
 
 
 def _tool_call_names(message) -> list[str]:
@@ -273,13 +319,19 @@ def _consecutive_note_turns(messages: list) -> int:
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    - `finalize` only once `working_draft` is non-empty (the single hard-gate; absent/None/blank
-      → CLOSED, never crashes).
-    - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes, forcing ask_user/write_draft.
+    - `finalize` only once `working_draft` is non-empty (a hard-gate; absent/None/blank → CLOSED).
+    - `run_critique` only once a draft body exists (working_draft or DB-loaded draft_body) AND
+      critique_rounds < CRITIQUE_ROUNDS_MAX. It is NOT a NOTE_TOOL, so the note step-limit never
+      gates it.
+    - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
+    - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
+    has_draft = bool((state.get("working_draft") or "").strip() or (state.get("draft_body") or "").strip())
     if (state.get("working_draft") or "").strip():
         tools.append(finalize)
+    if has_draft and (state.get("critique_rounds") or 0) < CRITIQUE_ROUNDS_MAX:
+        tools.append(run_critique)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
     return tools
