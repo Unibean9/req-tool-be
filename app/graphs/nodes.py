@@ -99,6 +99,17 @@ _TOOL_ARG_KEYS = {
     "run_readiness_check": ["target"],
 }
 
+# Args that MUST be non-empty for a pick to dispatch — a subset of _TOOL_ARG_KEYS. Emitting a
+# tool_call with an empty required arg is a silent failure (write_draft body="", finalize summary=""),
+# so analyze_node degrades to a re-ask naming the field instead. Tools with their own coerced
+# fallback (ask_user/respond/notes) are deliberately absent. `run_critique.target` is NOT listed:
+# it is cosmetic (ARG001 — the judge scores the loaded draft, not target), so only `mode` is required.
+_TOOL_REQUIRED_ARGS = {
+    "write_draft": ["body"],
+    "finalize": ["summary"],
+    "run_critique": ["mode"],
+}
+
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
 # picked tool so proactive S1 coverage no longer depends on the model self-reporting it. Values are
 # already in the spec §7.1 vocabulary (explore_note -> structuring, not discovery).
@@ -382,8 +393,17 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # selection that names a tool not currently offered down to a safe ask_user (S4). Done before
     # persist so analysis_result records the tool actually dispatched.
     if isinstance(analysis_result, dict):
-        gated_tool = _gate_selected_tool(state, analysis_result.get("tool"))
-        analysis_result = {**analysis_result, "tool": gated_tool}
+        requested = analysis_result.get("tool")
+        gated_tool = _gate_selected_tool(state, requested)
+        # Fail-loud (Phase 2/3): rather than dispatch a broken or gated tool_call, degrade to a
+        # clarifying re-ask and record WHY in analysis_result (gated_tool/gated_reason) so eval and
+        # tests can observe the degrade instead of seeing a silent ask_user.
+        degrade = _degrade_reason(state, requested, gated_tool, analysis_result)
+        if degrade:
+            analysis_result = {**analysis_result, "tool": "ask_user", **degrade}
+            gated_tool = "ask_user"
+        else:
+            analysis_result = {**analysis_result, "tool": gated_tool}
         # Derive active_mode from a note tool so S1 proactive coverage is tool-driven, not
         # dependent on the model also filling active_mode (which it reliably defaults to 'qa').
         if gated_tool in _NOTE_TOOL_MODE:
@@ -466,6 +486,18 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
 _COERCED_ASK_FALLBACK = (
     "Mình cần làm rõ thêm một ý trước khi có thể viết phần này chắc hơn. "
     "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
+)
+
+# Fail-loud re-ask messages (Phase 2/3). User-facing, so Vietnamese; the machine-readable reason
+# lives in analysis_result["gated_reason"], not here.
+_MISSING_ARG_PROMPT = (
+    "Mình chưa đủ thông tin để hoàn tất bước này (thiếu '{field}'). "
+    "Bạn bổ sung giúp mình phần đó để mình tiếp tục nhé?"
+)
+
+_GATED_TOOL_PROMPT = (
+    "Bước '{tool}' chưa khả dụng ở thời điểm này — mình cần làm rõ thêm trước đã. "
+    "Bạn chia sẻ thêm thông tin quan trọng còn thiếu giúp mình nhé?"
 )
 
 
@@ -647,6 +679,43 @@ def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | Non
 
     available = {t.name for t in get_available_tools(state)}
     return selected if selected in available else "ask_user"
+
+
+def _missing_required_arg(tool: str | None, analysis_result: dict) -> str | None:
+    """First required arg of `tool` that is empty/blank in the selection, else None.
+
+    Mirrors _TOOL_REQUIRED_ARGS — tools with their own coerced fallback have no required args here.
+    """
+    for arg in _TOOL_REQUIRED_ARGS.get(tool or "", ()):
+        if not str(analysis_result.get(arg) or "").strip():
+            return arg
+    return None
+
+
+def _degrade_reason(
+    state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
+) -> dict | None:
+    """Why this pick can't dispatch as-is (fail-loud), or None when it's fine to emit.
+
+    Returns the analysis_result overlay for the degrade: a `gated_tool`/`gated_reason` pair (observable
+    for eval/tests) plus the user-facing re-ask `message`. Two cases:
+    - out-of-menu (Phase 3): the model named a tool `_gate_selected_tool` clamped away.
+    - missing required arg (Phase 2): the picked tool's required arg is empty.
+    """
+    if requested and requested != "ask_user" and gated_tool == "ask_user":
+        return {
+            "gated_tool": requested,
+            "gated_reason": f"gated: {requested} not available this turn",
+            "message": _GATED_TOOL_PROMPT.format(tool=requested),
+        }
+    missing = _missing_required_arg(gated_tool, analysis_result)
+    if missing:
+        return {
+            "gated_tool": gated_tool,
+            "gated_reason": f"gated: {gated_tool} missing required arg '{missing}'",
+            "message": _MISSING_ARG_PROMPT.format(field=missing),
+        }
+    return None
 
 
 def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], draft_body: str | None = None) -> str:

@@ -38,6 +38,37 @@ from app.models.agent import (
 )
 
 # ---------------------------------------------------------------------------
+# Artifact lifecycle — single source for the draft body and a derived stage
+# ---------------------------------------------------------------------------
+
+def current_draft_body(state: WorkflowState) -> str:
+    """Canonical draft body for the whole tool-loop: draft_body (DB-persisted) over working_draft.
+
+    Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
+    through here. Divergence between any two sites (one using only working_draft) permanently locks
+    DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
+    """
+    return state.get("draft_body") or state.get("working_draft") or ""
+
+
+def artifact_stage(state: WorkflowState) -> str:
+    """Derived lifecycle stage, read-only, computed from existing state — no new persisted field.
+
+    "empty" -> no draft yet; "drafting" -> a draft exists but no critique has scored it;
+    "critiqued" -> at least one critique round but the gate has not passed; "gate_passed" -> the
+    latest quality report passed. One shared vocabulary for the menu and validation to reason over.
+    """
+    if not current_draft_body(state).strip():
+        return "empty"
+    report = state.get("quality_report")
+    if report and report.get("quality_gate_result") == "pass":
+        return "gate_passed"
+    if (state.get("critique_rounds") or 0) > 0:
+        return "critiqued"
+    return "drafting"
+
+
+# ---------------------------------------------------------------------------
 # ask_user — parity for the `ask` enum branch
 # ---------------------------------------------------------------------------
 
@@ -275,9 +306,9 @@ async def _run_critique_impl(
 
     cfg = config["configurable"]
     llm_client = cfg.get("strong_llm_client") or cfg.get("llm_client")
-    # Source of truth for both the critique target and the hash: draft_body wins (DB-draft
-    # sessions), else the in-session working_draft. The finalize gate reads the same expression.
-    body = state.get("draft_body") or state.get("working_draft") or ""
+    # Source of truth for both the critique target and the hash: see current_draft_body. The
+    # finalize gate reads the same helper, so the scored body and the gate body can never diverge.
+    body = current_draft_body(state)
     judged = await _invoke_judge(body, mode, llm_client)
 
     threshold = settings.critique_score_threshold
@@ -543,19 +574,17 @@ def _tool_call_names(message) -> list[str]:
 def _finalize_gate_open(state: WorkflowState) -> bool:
     """Quality side of the finalize gate: gate passed AND the scored draft is still current.
 
-    The current draft body uses the SAME expression as `_run_critique_impl` writes the hash from
-    (`draft_body or working_draft or ""`) — diverging here would permanently lock out DB-draft
-    sessions. Escape hatch: at the rounds cap a passing gate finalizes regardless of hash, so an
-    edit after the final critique cannot wedge the loop (run_critique is capped, finalize would
-    otherwise be stuck on a stale hash).
+    The current draft body comes from `current_draft_body` — the SAME helper `_run_critique_impl`
+    writes the hash from — so the gate body can never diverge from the scored body. Escape hatch: at
+    the rounds cap a passing gate finalizes regardless of hash, so an edit after the final critique
+    cannot wedge the loop (run_critique is capped, finalize would otherwise be stuck on a stale hash).
     """
     report = state.get("quality_report")
     if not report or report.get("quality_gate_result") != "pass":
         return False
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
         return True
-    body = state.get("draft_body") or state.get("working_draft") or ""
-    current_hash = hashlib.md5(body.encode()).hexdigest()[:8]
+    current_hash = hashlib.md5(current_draft_body(state).encode()).hexdigest()[:8]
     return current_hash == state.get("last_critiqued_draft_hash")
 
 
@@ -591,7 +620,7 @@ def get_available_tools(state: WorkflowState) -> list:
     - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
-    has_draft = bool((state.get("working_draft") or "").strip() or (state.get("draft_body") or "").strip())
+    has_draft = bool(current_draft_body(state).strip())
     critique_rounds = state.get("critique_rounds") or 0
     if (state.get("working_draft") or "").strip() and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
