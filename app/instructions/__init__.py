@@ -16,17 +16,36 @@ from pathlib import Path
 
 from app.graphs.section_schema import SECTION_DESCRIPTIONS
 
-# artifact_type → role key
+# Default role when nothing else resolves — guarantees get_instruction never returns None, so the
+# system prompt always carries the policy contract regardless of artifact_type / workflow_area.
+_DEFAULT_ROLE = "business_analyst"
+
+# artifact_type → role key. Every ArtifactType maps explicitly: discovery/analysis artifacts to the
+# Business Analyst, delivery/requirement artifacts to the Product Manager.
 ARTIFACT_ROLE_MAP: dict[str, str] = {
-    # Phase 1 — Business Analyst
-    "intent":       "business_analyst",
-    "problem":      "business_analyst",
-    "stakeholder":  "business_analyst",
-    # Phase 2 — Product Manager
-    "goal":         "product_manager",
-    "feature":      "product_manager",
-    "user_story":   "product_manager",
-    "requirement":  "product_manager",
+    # Business Analyst — discovery and problem framing
+    "research_output": "business_analyst",
+    "intent":          "business_analyst",
+    "problem":         "business_analyst",
+    "stakeholder":     "business_analyst",
+    "domain_entity":   "business_analyst",
+    "business_rule":   "business_analyst",
+    "constraint":      "business_analyst",
+    "assumption":      "business_analyst",
+    "risk":            "business_analyst",
+    "open_question":   "business_analyst",
+    # Product Manager — prioritized, testable requirements and delivery breakdown
+    "goal":                       "product_manager",
+    "capability":                 "product_manager",
+    "feature":                    "product_manager",
+    "user_story":                 "product_manager",
+    "requirement":                "product_manager",
+    "functional_requirement":     "product_manager",
+    "non_functional_requirement": "product_manager",
+    "use_case":                   "product_manager",
+    "epic":                       "product_manager",
+    "story":                      "product_manager",
+    "acceptance_criteria":        "product_manager",
 }
 
 # workflow_area fallback
@@ -105,19 +124,22 @@ def get_instruction(
     workflow_area: str,
     agent_role: str | None,
 ) -> str | None:
-    """Return the assembled instruction for the resolved role, or None if not found.
+    """Return the assembled instruction for the resolved role.
 
-    Priority: explicit agent_role > artifact_type map > workflow_area fallback (unchanged).
+    Priority: explicit agent_role > artifact_type map > workflow_area fallback > default role. Never
+    returns None for a known role: the analyst always receives the policy contract, even for an
+    artifact_type or workflow_area that is not explicitly mapped.
     """
     role = (
         agent_role
         or ARTIFACT_ROLE_MAP.get(artifact_type)
         or _WORKFLOW_AREA_MAP.get(workflow_area)
+        or _DEFAULT_ROLE
     )
-    if not role:
-        return None
     if role not in _assembled_cache:
-        assembled = _assemble(role)
+        # An explicit agent_role with no overlay file falls back to the default role rather than
+        # leaving the analyst with no contract.
+        assembled = _assemble(role) or _assemble(_DEFAULT_ROLE)
         if assembled is None:
             return None
         _assembled_cache[role] = assembled

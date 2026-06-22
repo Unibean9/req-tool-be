@@ -409,20 +409,18 @@ def test_build_prompt_falls_back_to_5_messages_when_empty():
     assert "Tin nhắn 1" in prompt
 
 
-def test_build_prompt_includes_synthesis_directive():
-    """The propose path must instruct the LLM to mine the full context into a rich body,
-    not emit a thin one-paragraph artifact. Without this directive the prompt only says
-    'proposals (if propose)', which produces shallow artifacts even after full elicitation.
-    """
+def test_build_prompt_excludes_static_policy():
+    """Static policy (tool semantics, synthesis depth) lives in the instruction layers now, so the
+    per-turn payload must NOT restate it."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     prompt = _build_tool_selection_prompt(_state(), [])
 
-    assert "ĐỘ SÂU NỘI DUNG" in prompt
-    # Must steer toward exploiting all gathered information, not summarizing thinly.
-    assert "toàn bộ" in prompt.lower() or "khai thác" in prompt
-    # Must forbid fabricating detail beyond what was gathered.
-    assert "không bịa" in prompt.lower()
+    # The old inline synthesis directive and per-tool description block are gone from the payload.
+    assert "ĐỘ SÂU NỘI DUNG" not in prompt
+    assert "ghi chú phản biện" not in prompt
+    # It still names the tools available this turn so the model knows the current menu.
+    assert "Công cụ khả dụng" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
@@ -441,8 +439,9 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
     assert "Độ phủ section" in prompt
     # Gap-inventory marker — lists weak sections, not a single pinned question.
     assert "các khía cạnh còn thiếu" in prompt
-    assert "trả lời cụt chỉ bằng câu hỏi" in prompt
-    assert "một câu hỏi chính" in prompt
+    # Harness voice: advance the artifact, not "ask one main question".
+    assert "advance" in prompt
+    assert "một câu hỏi chính" not in prompt
 
 
 def test_no_coverage_hint_when_complete():
@@ -983,23 +982,24 @@ def test_mode_hint_injects_directive_into_prompt():
     assert "critique" in prompt
 
 
-def test_no_mode_hint_injects_proactive_rule():
-    """T4b: with no hint, the prompt must carry the proactive mode-switch rule."""
+def test_proactive_rule_lives_in_instruction_layer_not_payload():
+    """T4b: the proactive mode-switch policy is static — it lives in the decision-policy layer (the
+    system prompt), not in the per-turn payload. With no mode_hint the payload carries no mode steer."""
     from app.graphs.nodes import _build_tool_selection_prompt
+    from app.instructions import get_instruction, load_instructions
+
+    load_instructions()
+    contract = get_instruction(artifact_type="goal", workflow_area="analysis", agent_role=None)
+    assert "proactive" in contract.lower()
 
     state = _state(artifact_type="goal")
     state["mode_hint"] = None
-
     prompt = _build_tool_selection_prompt(state, [])
-
-    # The proactive rule now steers the agent to voice critique/explore via `respond` instead of
-    # wrapping it in a question — guard that intent, not the old enum-era wording.
-    assert "chủ động" in prompt
-    assert "respond" in prompt
+    assert "YÊU CẦU MODE" not in prompt
 
 
-def test_mode_directive_precedes_language_lock():
-    """The mode directive must sit before the language lock (lock stays last by contract)."""
+def test_mode_hint_precedes_language_lock():
+    """A mode_hint directive must sit before the language lock (lock stays last by contract)."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="goal")

@@ -14,7 +14,6 @@ from app.graphs.section_schema import (
     COVERAGE_STALL_LIMIT,
     SECTION_DESCRIPTIONS,
     SECTION_SPECS,
-    SECTION_TRACKED_ARTIFACT_TYPES,
     compute_section_coverage,
     status_score,
 )
@@ -531,11 +530,13 @@ def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | Non
 
 
 def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], draft_body: str | None = None) -> str:
-    """Tool-loop variant of the analyst prompt: the model picks the next tool instead of next_action.
+    """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
-    Reuses every analytic directive of the enum prompt (synthesis/slot/coverage/draft/mode/locale);
-    only the action instruction differs — it lists the currently available tools and asks for a
-    selection. analyze_node converts the returned dict into an AIMessage(tool_calls).
+    This is dynamic payload only — artifact context, the conversation window, the tools available
+    this turn, and state-dependent hints (coverage gaps, the running/persisted draft, a one-shot
+    mode_hint, the locale lock). All static policy — tool semantics, the section grading rubric, the
+    proactive-mode and content-depth rules — lives in the instruction layers (the system prompt), so
+    it is never restated here. analyze_node converts the returned dict into an AIMessage(tool_calls).
     """
     from app.graphs.agent_tools import get_available_tools
 
@@ -569,97 +570,32 @@ def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], dr
     working_draft_block = _build_working_draft_block(state)
 
     return (
-        f"Bạn là BA/PM analyst. Phân tích và đề xuất artifact cho loại: {state['artifact_type']}.\n\n"
+        f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
         f"Context hiện tại:\n{artifact_context}\n\n"
         f"Hội thoại gần đây:\n{messages_summary}\n\n"
-        "Bạn điều phối hội thoại bằng cách CHỌN MỘT công cụ cho lượt này. Trả về JSON với field 'tool' "
-        f"là một trong: {tool_menu}.\n"
-        "- ask_user: hỏi người dùng một câu làm rõ — kèm field 'message'.\n"
-        "- respond: NÓI với người dùng một nhận định (phản biện hoặc khám phá), KHÔNG phải câu hỏi — "
-        "kèm 'message' và đặt active_mode='critique' hoặc 'explore'.\n"
-        "- write_draft: đề xuất bản nháp artifact để duyệt — kèm 'title' và 'body'.\n"
-        "- critique_note: ghi chú phản biện (soi điểm yếu/giả định rủi ro) vào scratchpad — kèm 'content'.\n"
-        "- explore_note: ghi chú khám phá (mở rộng góc nhìn/phương án) vào scratchpad — kèm 'content'.\n"
-        "- finalize: chốt phiên — kèm 'summary' (chỉ khả dụng khi đã có draft).\n"
-        "Luôn kèm 'active_mode' (discovery/structuring/critique/revision/finalization) và 'confidence' (0-1). "
-        "Khi đã rõ đủ, cập nhật "
-        "draft qua field 'draft_update' (bồi đắp tăng dần, không bịa nội dung chưa có). Không lặp lại câu "
-        "hỏi đã hỏi."
-        f"{_build_synthesis_directive('dùng write_draft')}"
-        f"{_build_section_directive(state)}"
+        f"Công cụ khả dụng lượt này: {tool_menu}.\n"
+        "Chọn đúng MỘT công cụ và điền các field của nó theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
         f"{draft_block}"
         f"{working_draft_block}"
-        f"{_build_mode_directive(state)}"
+        f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
     )
 
 
-def _build_mode_directive(state: WorkflowState) -> str:
-    """Steer the analyst's operating angle (multi-angle S1/S2).
+def _build_mode_hint_directive(state: WorkflowState) -> str:
+    """Inject a user-supplied `mode_hint` — an explicit "cướp lái" to switch operating angle now.
 
-    A user-supplied `mode_hint` is an explicit "cướp lái" — switch to that mode now. With no
-    hint, nudge the agent to proactively leave plain Q&A once enough is clarified, so it chains
-    into critique/explore instead of only ever asking. The chosen angle is reported back via the
-    optional `active_mode` field, which the eval layer counts as proactive coverage.
+    Dynamic per-turn payload only. The proactive-mode policy (when to leave plain Q&A, prefer
+    respond over burying an assessment in a question) is static and lives in the decision-policy
+    instruction layer, not here.
     """
     mode_hint = (state.get("mode_hint") or "").strip()
-    if mode_hint:
-        return (
-            f"\n\nYÊU CẦU MODE: người dùng muốn chuyển sang chế độ '{mode_hint}'. Hãy chuyển ngay "
-            f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
-        )
-    return (
-        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): sau khoảng 2 lượt đã nắm bối cảnh cơ bản — hoặc NGAY khi người "
-        "dùng hỏi nhận định/giả định/rủi ro/hướng đi của bạn — đừng gói nhận định vào một câu hỏi. "
-        "Khi muốn phản biện hay khám phá, hãy NÓI thẳng với người dùng bằng tool 'respond' "
-        "(active_mode='critique' hoặc 'explore'); dùng critique_note/explore_note để ghi phân tích "
-        "nội bộ trước khi respond nếu cần. Chỉ dùng ask_user khi thực sự cần một thông tin còn thiếu — "
-        "không dùng ask_user để né việc đưa ra nhận định."
-    )
-
-
-def _build_synthesis_directive(trigger: str = "dùng write_draft") -> str:
-    """Instruct the LLM to synthesize a rich artifact body when drafting.
-
-    Without this the model emits a thin, one-paragraph body even after thorough elicitation. This
-    block tells it to mine the whole conversation/context into detailed, structured content — while
-    forbidding fabrication. `trigger` names the action that fires it (write_draft in the tool-loop).
-    """
-    return (
-        f"\n\nĐỘ SÂU NỘI DUNG (khi {trigger}): body của mỗi proposal phải KHAI THÁC "
-        "toàn bộ thông tin user đã cung cấp trong hội thoại và context, viết chi tiết và có cấu "
-        "trúc rõ ràng phù hợp với loại artifact (các phần/mục liên quan, dữ kiện cụ thể, ràng buộc, "
-        "tiêu chí, ví dụ user đã nêu). KHÔNG tóm tắt sơ sài thành một đoạn ngắn, KHÔNG lặp lại câu "
-        "hỏi. Mỗi ý user đã trả lời phải được triển khai thành nội dung thực chất. Tuyệt đối KHÔNG "
-        "bịa thông tin chưa được cung cấp — chỉ đào sâu từ những gì đã thu thập; phần thật sự thiếu "
-        "thì để ngỏ, không bù bằng nội dung bịa."
-    )
-
-
-def _build_section_directive(state: WorkflowState) -> str:
-    """For section-tracked artifact types, instruct the LLM to always report section_assessment.
-
-    Without this the gate is a no-op in production: section_assessment is optional in the
-    schema, so an LLM that omits it never gets coverage computed (None -> fail-open).
-    """
-    artifact_type = state.get("artifact_type") or ""
-    if artifact_type not in SECTION_TRACKED_ARTIFACT_TYPES:
+    if not mode_hint:
         return ""
-    section_lines = "\n".join(
-        f"- {section}: {SECTION_DESCRIPTIONS.get(section, section)}"
-        for section in SECTION_SPECS
-    )
     return (
-        "\n\nĐÁNH GIÁ ĐỘ PHỦ: LUÔN trả field section_assessment — object chấm trạng thái TỪNG section "
-        "dưới đây dựa trên TOÀN BỘ thông tin user đã cung cấp:\n"
-        f"{section_lines}\n"
-        "Quy tắc chấm: 'filled' khi section đã được làm rõ đầy đủ; 'partial' khi mới có một phần hoặc "
-        "còn mơ hồ; 'needs_review' khi đã nắm nhưng cần kiểm chứng; 'missing' khi chưa có gì. Nếu câu "
-        "trả lời mới nhất của user đã làm rõ một section, PHẢI nâng section đó lên — tuyệt đối không giữ "
-        "nguyên 'missing'. Đây là rubric tham chiếu để bạn tự đánh giá độ đầy đủ, KHÔNG phải checklist hỏi "
-        "tuần tự: bạn tự quyết section nào nên khai thác tiếp dựa trên mạch hội thoại, và tự quyết khi nào "
-        "đã đủ để propose."
+        f"\n\nYÊU CẦU MODE: người dùng muốn chuyển sang chế độ '{mode_hint}'. Hãy chuyển ngay "
+        f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
     )
 
 
@@ -671,8 +607,8 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     # question verbatim, so steer the model to synthesize what it has and move on or propose.
     if (state.get("section_coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
         return (
-            "\n\nĐộ phủ section không tăng sau nhiều lượt hỏi. Đừng lặp lại cùng câu hỏi — hãy tổng hợp "
-            "thông tin đã có và chuyển sang propose, hoặc hỏi một góc độ hoàn toàn khác."
+            "\n\nĐộ phủ section không tăng qua nhiều lượt. Đừng lặp lại cùng hướng khai thác — hãy tổng "
+            "hợp những gì đã có và cân nhắc propose, hoặc chuyển sang một angle hoàn toàn khác."
         )
     # Gap-inventory: list every weak section (missing first, then partial/needs_review) so the LLM
     # picks the angle that fits the conversation instead of being pinned to one scripted question.
@@ -684,11 +620,11 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     ]
     inventory = "\n".join(gap_lines)
     return (
-        "\n\nĐộ phủ section — các khía cạnh còn thiếu hoặc chưa rõ (rubric tham chiếu, "
-        "không phải thứ tự bắt buộc):\n"
+        "\n\nĐộ phủ section — các khía cạnh còn thiếu hoặc chưa rõ (tham chiếu, không phải thứ tự "
+        "bắt buộc):\n"
         f"{inventory}\n"
-        "Tự chọn angle phù hợp nhất với mạch hội thoại để khai thác tiếp — không nhất thiết theo thứ tự "
-        "trên. Không được trả lời cụt chỉ bằng câu hỏi; hãy có một câu dẫn dắt ngắn, rồi đặt một câu hỏi chính."
+        "Tự chọn angle phù hợp nhất với mạch hội thoại để advance — khai thác thêm, suy luận điều hợp "
+        "lý, hoặc draft khi đã đủ."
     )
 
 

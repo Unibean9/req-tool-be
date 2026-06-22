@@ -19,45 +19,47 @@ from tests.helpers import create_org, create_project, make_auth_headers
 from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 
 # ---------------------------------------------------------------------------
-# Fix 1 — section directive carries meaning (descriptions + rubric + emit mandate)
+# Fix 1 — the taxonomy instruction layer carries the grading rubric + emit mandate
 # ---------------------------------------------------------------------------
+# The section grading policy moved from an inline prompt directive into the taxonomy layer (the
+# system prompt). These guard that the policy still exists where the harness now expects it.
 
-def test_section_directive_lists_descriptions_and_rubric():
-    from app.graphs.nodes import _build_section_directive
+def _contract(artifact_type: str = "intent") -> str:
+    from app.instructions import get_instruction, load_instructions
 
-    directive = _build_section_directive(_state(artifact_type="intent"))
+    load_instructions()
+    return get_instruction(artifact_type=artifact_type, workflow_area="analysis", agent_role=None)
 
-    # Each section must appear with its human description, not just the key.
-    assert SECTION_DESCRIPTIONS["vision_objectives"] in directive
-    assert SECTION_DESCRIPTIONS["problem_statement"] in directive
+
+def test_contract_lists_section_descriptions():
+    contract = _contract()
+
+    # Each section appears with its human description (rendered from section_schema), not just the key.
+    assert SECTION_DESCRIPTIONS["vision_objectives"] in contract
+    assert SECTION_DESCRIPTIONS["problem_statement"] in contract
+
+
+def test_contract_carries_grading_rubric_and_credit_latest():
+    contract = _contract()
+
     # Explicit grading rubric so the model stops defaulting everything to 'missing'.
-    assert "filled" in directive and "partial" in directive and "missing" in directive
+    assert "filled" in contract and "partial" in contract and "missing" in contract
     # Must credit the latest user answer instead of re-grading it 'missing'.
-    assert "mới nhất" in directive
+    assert "latest" in contract.lower()
 
 
-def test_section_directive_empty_for_non_section_artifact():
-    from app.graphs.nodes import _build_section_directive
+def test_contract_is_rubric_not_script():
+    """The taxonomy is a reference set of completeness angles, not a sequential march."""
+    contract = _contract()
 
-    assert _build_section_directive(_state(artifact_type="functional_requirement")) == ""
-
-
-def test_section_directive_is_rubric_not_script():
-    """The directive is a reference rubric, not a sequential march."""
-    from app.graphs.nodes import _build_section_directive
-
-    directive = _build_section_directive(_state(artifact_type="intent"))
-
-    assert "rubric" in directive.lower() or "tham chiếu" in directive
+    assert "NOT a checklist to interrogate in order" in contract
 
 
-def test_section_directive_emit_mandate():
+def test_contract_carries_section_assessment_mandate():
     """compute_section_coverage depends on the LLM emitting section_assessment every turn."""
-    from app.graphs.nodes import _build_section_directive
+    contract = _contract()
 
-    directive = _build_section_directive(_state(artifact_type="intent"))
-
-    assert "section_assessment" in directive
+    assert "section_assessment" in contract
 
 
 # ---------------------------------------------------------------------------

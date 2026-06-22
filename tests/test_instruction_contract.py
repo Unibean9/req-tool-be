@@ -83,3 +83,26 @@ def test_get_instruction_falls_back_to_workflow_area():
     instruction = get_instruction(artifact_type="zzz_unmapped", workflow_area="requirements", agent_role=None)
     assert instruction is not None
     assert "Product Manager" in instruction
+
+
+def test_get_instruction_never_none_for_any_artifact_type():
+    """Every ArtifactType resolves to a contract, even with the default workflow_area and no role —
+    so analyze_node always sends a system prompt and the inline payload never carries policy alone."""
+    from app.models.artifact import ArtifactType
+
+    for at in ArtifactType:
+        assert get_instruction(artifact_type=at.value, workflow_area="analysis", agent_role=None) is not None, at
+
+
+def test_get_instruction_defaults_when_everything_unmapped():
+    instruction = get_instruction(artifact_type="zzz", workflow_area="zzz", agent_role=None)
+    assert instruction is not None
+    # Default role is the Business Analyst.
+    assert "Business Analyst" in instruction
+
+
+def test_output_contract_carries_content_depth_rule():
+    """The synthesis/content-depth rule moved from an inline prompt directive into the output layer."""
+    instruction = _ba()
+    assert "Content depth" in instruction
+    assert "fabricate" in instruction

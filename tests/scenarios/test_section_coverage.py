@@ -105,11 +105,16 @@ async def test_section_coverage_does_not_gate_non_section_artifacts(client, scen
     assert _proposed_tool_calls(recorder.steps[-1]["snapshot"])
 
 
-async def test_no_slot_assessment_in_prompt():
-    """The tool-selection prompt references section_assessment, never the legacy slot_assessment."""
+async def test_section_assessment_mandate_in_contract_not_legacy_slots():
+    """The section_assessment mandate lives in the taxonomy instruction layer; the legacy
+    slot_assessment appears nowhere — neither in the per-turn payload nor the contract."""
     from app.graphs.nodes import _build_tool_selection_prompt
+    from app.instructions import get_instruction, load_instructions
+
+    load_instructions()
+    contract = get_instruction(artifact_type="problem", workflow_area="analysis", agent_role=None)
+    assert "section_assessment" in contract
 
     prompt = _build_tool_selection_prompt(_state(artifact_type="problem"), [])
-
     assert "slot_assessment" not in prompt
-    assert "section_assessment" in prompt
+    assert "slot_assessment" not in contract
