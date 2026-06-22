@@ -173,6 +173,9 @@ class AgentService:
                 "coverage_ratio": None,
                 "coverage_complete": None,
                 "section_coverage_stall_count": None,
+                "assumptions": [],
+                "risks": [],
+                "open_questions": [],
                 "working_draft": None,
                 "mode_hint": mode_hint,
             }
@@ -513,6 +516,9 @@ class AgentService:
                     "coverage_ratio": None,
                     "coverage_complete": None,
                     "section_coverage_stall_count": None,
+                    "assumptions": [],
+                    "risks": [],
+                    "open_questions": [],
                     "working_draft": None,
                     "mode_hint": None,
                 }
@@ -636,6 +642,9 @@ class AgentService:
             "coverage_ratio": None,
             "coverage_complete": None,
             "section_coverage_stall_count": None,
+            "assumptions": [],
+            "risks": [],
+            "open_questions": [],
             "working_draft": None,
             "mode_hint": None,
         }

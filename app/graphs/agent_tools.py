@@ -13,7 +13,7 @@ status update — so it needs no key.
 """
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -23,6 +23,7 @@ from langgraph.types import Command, interrupt
 from sqlalchemy import exists, select
 
 from app.graphs import nodes
+from app.graphs.note_parser import extract_structured_objects
 from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentSession,
@@ -163,28 +164,37 @@ async def finalize(
 # first-class menu choice and lets analyze_node derive `active_mode` from the tool picked, so
 # proactive S1 coverage no longer depends on the model self-reporting active_mode.
 
-async def _write_note_impl(content: str, tool_call_id: str):
-    # The note lives in the message history (decision 3): no `notes` state field, no DB row. It
-    # is pure working memory the analyst re-reads next turn, so there is no side-effect to dedup.
-    return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
+async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str):
+    # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
+    # Beyond that, tagged lines (ASSUMPTION:/RISK:/OPEN_QUESTION:) are parsed into structured state
+    # objects and appended to the accumulating lists so validators and the finalize gate can query
+    # them. Append (prior + new) since these channels have no reducer.
+    extracted = extract_structured_objects(content)
+    update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
+    for bucket in ("assumptions", "risks", "open_questions"):
+        if extracted[bucket]:
+            update[bucket] = [*(state.get(bucket) or []), *extracted[bucket]]
+    return Command(update=update)
 
 
 @tool
 async def critique_note(
     content: str,
+    state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Critique note: probe weaknesses, risky assumptions, or contradictions in the current information (no approval needed)."""  # noqa: E501
-    return await _write_note_impl(content, tool_call_id)
+    return await _write_note_impl(content, state, tool_call_id)
 
 
 @tool
 async def explore_note(
     content: str,
+    state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Exploration note: broaden the perspective, raise angles or options not yet considered (no approval needed)."""
-    return await _write_note_impl(content, tool_call_id)
+    return await _write_note_impl(content, state, tool_call_id)
 
 
 # ---------------------------------------------------------------------------

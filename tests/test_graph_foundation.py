@@ -113,6 +113,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
+        "assumptions": [],
+        "risks": [],
+        "open_questions": [],
         "working_draft": None,
         "mode_hint": None,
     }
@@ -138,6 +141,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "coverage_ratio",
         "coverage_complete",
         "section_coverage_stall_count",
+        "assumptions",
+        "risks",
+        "open_questions",
         "working_draft",
         "mode_hint",
     }

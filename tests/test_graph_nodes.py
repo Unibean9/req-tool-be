@@ -52,6 +52,9 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
+        "assumptions": [],
+        "risks": [],
+        "open_questions": [],
         "working_draft": None,
         "mode_hint": None,
     }

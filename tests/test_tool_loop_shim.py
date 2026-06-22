@@ -153,3 +153,35 @@ async def test_write_note_selection_dispatches_without_crash(client, db_session)
 
     out = await graph.ainvoke(state, config)
     assert "__interrupt__" in out  # note ran, then ask_user paused — no ToolNode dispatch crash
+
+
+@pytest.mark.asyncio
+async def test_critique_note_populates_assumptions_in_state():
+    """A note carrying an ASSUMPTION: tag appends a structured object to state via the Command update."""
+    from app.graphs.agent_tools import _write_note_impl
+
+    state = _state(artifact_type="goal")
+    command = await _write_note_impl(
+        "ASSUMPTION: users have smartphones | confidence: high | status: unconfirmed",
+        state,
+        tool_call_id="call_1",
+    )
+
+    assert command.update["assumptions"]
+    assert command.update["assumptions"][0]["statement"] == "users have smartphones"
+
+
+@pytest.mark.asyncio
+async def test_note_appends_to_existing_assumptions():
+    """The note merges with prior state assumptions rather than replacing them."""
+    from app.graphs.agent_tools import _write_note_impl
+
+    state = _state(artifact_type="goal")
+    state["assumptions"] = [{"statement": "prior", "source": "", "confidence": "",
+                             "impact": "", "owner": "", "status": ""}]
+    command = await _write_note_impl(
+        "ASSUMPTION: new one | confidence: low", state, tool_call_id="call_2"
+    )
+
+    statements = [a["statement"] for a in command.update["assumptions"]]
+    assert statements == ["prior", "new one"]
