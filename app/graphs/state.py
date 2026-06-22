@@ -72,7 +72,7 @@ class QualityReport(TypedDict):
     non_blocking_warnings: list[str]
     revision_plan: list[str]
     quality_gate_result: str  # "pass" | "fail" — derived from score, not from blocking_issues
-    recommended_next_action: str  # "finalize" | "revise"
+    recommended_next_action: str  # "finalize" | "revise" | "escalate" (cap reached, gate still fails)
 
 
 # Defaults for a fresh session — a small idea starts on the quick track at brainstorm.

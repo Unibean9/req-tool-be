@@ -119,6 +119,19 @@ async def test_run_critique_fail_gate_classification():
 
 
 @pytest.mark.asyncio
+async def test_run_critique_escalates_at_rounds_cap_when_failing():
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft body"
+    state["critique_rounds"] = CRITIQUE_ROUNDS_MAX - 1  # this critique reaches the cap
+    config = {"configurable": {"llm_client": _scripted_client(0.5, ["thiếu metric"], ["thêm KPI"])}}
+
+    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+
+    assert report["quality_gate_result"] == "fail"
+    assert report["recommended_next_action"] == "escalate"
+
+
+@pytest.mark.asyncio
 async def test_run_critique_degraded_path_fails_gate():
     state = _state(artifact_type="goal")
     state["working_draft"] = "draft body"

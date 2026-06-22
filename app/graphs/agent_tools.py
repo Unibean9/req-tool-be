@@ -293,10 +293,16 @@ async def _run_critique_impl(
     revision_plan = suggestions if quality_gate_result == "fail" else []
 
     rounds_after = (state.get("critique_rounds") or 0) + 1
-    # A passing gate steers to finalize; a failing one steers to revise. "re_critique" is never
-    # recommended — on exhausted rounds run_critique is gated off the menu, so it would be a dead
-    # signal.
-    recommended_next_action = "finalize" if quality_gate_result == "pass" else "revise"
+    # A passing gate steers to finalize. A failing gate steers to revise while rounds remain; once
+    # the rounds cap is reached and the gate still fails the loop has no auto-recovery (run_critique
+    # is gated off, finalize is blocked), so it must escalate — hand the decision to the user rather
+    # than revise silently forever. "re_critique" is never recommended (it would be a dead signal).
+    if quality_gate_result == "pass":
+        recommended_next_action = "finalize"
+    elif rounds_after >= CRITIQUE_ROUNDS_MAX:
+        recommended_next_action = "escalate"
+    else:
+        recommended_next_action = "revise"
 
     report: QualityReport = {
         "mode": judged["mode"],
