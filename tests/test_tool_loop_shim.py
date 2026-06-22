@@ -55,8 +55,9 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
     assert ai.tool_calls[0]["args"]["message"] == "Bạn muốn xây gì?"
     # tool_call.id == AgentRun.id so the tool idempotency keys line up on resume.
     assert ai.tool_calls[0]["id"] == out["last_agent_run_id"]
-    # analytic fields still persist so eval (active_mode) and coverage do not regress.
-    assert out["analysis_result"]["active_mode"] == "qa"
+    # analytic fields still persist so eval (active_mode) and coverage do not regress; the legacy
+    # 'qa' is normalized to the spec §7.1 'discovery' baseline (phase-06).
+    assert out["analysis_result"]["active_mode"] == "discovery"
 
 
 @pytest.mark.asyncio

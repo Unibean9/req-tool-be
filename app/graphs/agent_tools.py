@@ -193,7 +193,10 @@ async def explore_note(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Exploration note: broaden the perspective, raise angles or options not yet considered (no approval needed)."""
+    """Exploration note: broaden the perspective, raise angles or options not yet considered (no approval needed).
+
+    Its active_mode maps to 'structuring' after the spec §7.1 migration (see phase-06).
+    """
     return await _write_note_impl(content, state, tool_call_id)
 
 

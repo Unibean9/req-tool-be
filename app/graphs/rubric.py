@@ -50,6 +50,22 @@ RUBRIC_CRITERIA: dict[str, dict[str, str]] = {
         "description": "Specific, Measurable, Achievable, Relevant, Time-bound.",
         "guidance": "Chỉ chấm khi artifact là goal; trả null nếu không áp dụng.",
     },
+    # --- 3 business-specific dimensions (spec §12), aligned to the 7-section taxonomy ---
+    "business_alignment": {
+        "name": "Bám mục tiêu kinh doanh (Business alignment)",
+        "description": "Artifact có hỗ trợ business vision và objectives đã nêu không.",
+        "guidance": "Điểm cao nếu liên hệ rõ tới section vision_objectives; thấp nếu lạc khỏi mục tiêu.",
+    },
+    "risk_awareness": {
+        "name": "Nhận thức rủi ro (Risk awareness)",
+        "description": "Các rủi ro và issues liên quan đã được surface chưa.",
+        "guidance": "Điểm cao nếu nêu rủi ro thuộc section risks_issues và phản ánh structured risks đã thu thập.",
+    },
+    "scope_control": {
+        "name": "Kiểm soát phạm vi (Scope control)",
+        "description": "Ranh giới in-scope/out-of-scope có rõ ràng không.",
+        "guidance": "Điểm cao nếu section scope_capabilities nêu rõ in-scope VÀ out-of-scope; thấp nếu mơ hồ.",
+    },
 }
 
 

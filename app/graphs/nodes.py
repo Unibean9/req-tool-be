@@ -60,7 +60,15 @@ TOOL_SELECTION_SCHEMA = {
                 "enum": ["missing", "partial", "filled", "needs_review"],
             },
         },
-        "active_mode": {"type": "string", "enum": ["qa", "critique", "explore", "draft"]},
+        "active_mode": {
+            "type": "string",
+            # Legacy values kept for backward compat (ScriptedLLM tests); new spec §7.1 values added.
+            # analyze_node normalizes legacy -> new via _normalize_active_mode before persisting.
+            "enum": [
+                "qa", "critique", "explore", "draft",
+                "discovery", "structuring", "revision", "finalization",
+            ],
+        },
         "draft_update": {"type": "string"},
     },
     "required": ["tool"],
@@ -78,8 +86,20 @@ _TOOL_ARG_KEYS = {
 }
 
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
-# picked tool so proactive S1 coverage no longer depends on the model self-reporting it.
-_NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "explore"}
+# picked tool so proactive S1 coverage no longer depends on the model self-reporting it. Values are
+# already in the spec §7.1 vocabulary (explore_note -> structuring, not discovery).
+_NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "structuring"}
+
+# Legacy active_mode -> spec §7.1 vocabulary. explore maps to structuring (NOT discovery) so a
+# [qa, explore] sequence normalizes to [discovery, structuring] and keeps mode variety >= 2.
+_ACTIVE_MODE_MAP = {"qa": "discovery", "draft": "structuring", "explore": "structuring", "critique": "critique"}
+
+
+def _normalize_active_mode(mode: str | None) -> str | None:
+    """Map a legacy active_mode to the spec §7.1 vocabulary; pass through new values and None."""
+    if mode is None:
+        return None
+    return _ACTIVE_MODE_MAP.get(mode, mode)
 
 # respond is a user-facing critique/exploration; its angle is the mode the model picked (defaulting
 # to critique). active_mode is derived from it and also passed as the tool's `mode` arg.
@@ -307,6 +327,10 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         elif gated_tool == "respond":
             mode = analysis_result.get("active_mode")
             analysis_result["active_mode"] = mode if mode in _RESPOND_MODES else "critique"
+        # Normalize legacy active_mode to the spec §7.1 vocabulary before persist so eval reads the
+        # migrated value (qa->discovery, draft/explore->structuring, critique unchanged).
+        if analysis_result.get("active_mode") is not None:
+            analysis_result["active_mode"] = _normalize_active_mode(analysis_result["active_mode"])
 
     async with session_factory() as db:
         run = AgentRun(
@@ -595,7 +619,8 @@ def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], dr
         "- critique_note: ghi chú phản biện (soi điểm yếu/giả định rủi ro) vào scratchpad — kèm 'content'.\n"
         "- explore_note: ghi chú khám phá (mở rộng góc nhìn/phương án) vào scratchpad — kèm 'content'.\n"
         "- finalize: chốt phiên — kèm 'summary' (chỉ khả dụng khi đã có draft).\n"
-        "Luôn kèm 'active_mode' (qa/critique/explore/draft) và 'confidence' (0-1). Khi đã rõ đủ, cập nhật "
+        "Luôn kèm 'active_mode' (discovery/structuring/critique/revision/finalization) và 'confidence' (0-1). "
+        "Khi đã rõ đủ, cập nhật "
         "draft qua field 'draft_update' (bồi đắp tăng dần, không bịa nội dung chưa có). Không lặp lại câu "
         "hỏi đã hỏi."
         f"{_build_synthesis_directive('dùng write_draft')}"

@@ -48,11 +48,16 @@ class CheckpointResult:
 def count_proactive_modes(analysis_results: Sequence[dict[str, Any]]) -> int:
     """Count agent turns that proactively left plain Q&A.
 
-    A turn is proactive when it reports an `active_mode` other than the default 'qa'. Turns that
+    A turn is proactive when it reports an `active_mode` other than the Q&A baseline. After the
+    spec §7.1 migration that baseline is 'discovery' (legacy 'qa' kept for back-compat); turns that
     omit the field or report null are not proactive. This is the measurement behind the R_mode
     regression guard — a candidate that never switches mode scores 0 and fails the floor.
     """
-    return sum(1 for row in analysis_results if isinstance(row, dict) and (row.get("active_mode") or "qa") != "qa")
+    baseline = {"qa", "discovery"}
+    return sum(
+        1 for row in analysis_results
+        if isinstance(row, dict) and (row.get("active_mode") or "qa") not in baseline
+    )
 
 
 def token_total(usage: dict[str, Any]) -> int:

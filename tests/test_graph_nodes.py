@@ -1037,6 +1037,37 @@ def test_active_mode_field_in_analysis_schema():
     assert "active_mode" not in TOOL_SELECTION_SCHEMA.get("required", [])
 
 
+def test_active_mode_schema_accepts_new_vocabulary():
+    """Phase 6: the enum carries the spec §7.1 values alongside the legacy ones."""
+    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
+
+    enum = TOOL_SELECTION_SCHEMA["properties"]["active_mode"]["enum"]
+    for value in ("discovery", "structuring", "revision", "finalization"):
+        assert value in enum
+
+
+def test_normalize_active_mode_legacy_qa_to_discovery():
+    from app.graphs.nodes import _normalize_active_mode
+
+    assert _normalize_active_mode("qa") == "discovery"
+
+
+def test_normalize_active_mode_legacy_explore_to_structuring():
+    """explore -> structuring (NOT discovery) so [qa, explore] keeps variety >= 2."""
+    from app.graphs.nodes import _normalize_active_mode
+
+    assert _normalize_active_mode("explore") == "structuring"
+    assert _normalize_active_mode("draft") == "structuring"
+    assert _normalize_active_mode("critique") == "critique"
+
+
+def test_variety_preserved_after_normalization():
+    from app.graphs.nodes import _normalize_active_mode
+
+    normalized = {_normalize_active_mode(m) for m in ("qa", "explore")}
+    assert len(normalized) >= 2
+
+
 @pytest.mark.asyncio
 async def test_active_mode_passes_through_analyze_node(client, db_session):
     """T2: an `active_mode` the LLM emits survives into the persisted analysis_result.
