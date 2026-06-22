@@ -42,6 +42,23 @@ def test_finalize_not_available_without_working_draft():
     assert "finalize" not in _names(state)
 
 
+def test_finalize_available_for_db_draft_without_working_draft():
+    # DB-draft-only session (draft_body set, no in-session working_draft) finalizes via the same
+    # current_draft_body source — the menu gate no longer requires an in-session working_draft.
+    draft = "Bản nháp tải từ DB"
+    state = {
+        "messages": [],
+        "working_draft": None,
+        "draft_body": draft,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash(draft),
+    }
+    names = _names(state)
+    assert "finalize" in names
+    assert "run_readiness_check" in names
+
+
 def test_finalize_not_available_when_gate_fails():
     state = _passing_state()
     state["quality_report"] = {"quality_gate_result": "fail", "blocking_issues": ["thiếu metric"]}

@@ -609,20 +609,22 @@ def _consecutive_note_turns(messages: list) -> int:
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    - `finalize` only once `working_draft` is non-empty AND critique_rounds > 0 AND the quality
-      gate passed AND the scored draft is still current (hash matches) OR the rounds cap is reached
-      (escape hatch). Human confirmation in _finalize_impl is the approval step (spec §15.1).
+    - `finalize` only once a draft body exists (working_draft or DB-loaded draft_body) AND
+      critique_rounds > 0 AND the quality gate passed AND the scored draft is still current (hash
+      matches) OR the rounds cap is reached (escape hatch). Human confirmation in _finalize_impl is
+      the approval step (spec §15.1).
     - `run_critique` only once a draft body exists (working_draft or DB-loaded draft_body) AND
       critique_rounds < CRITIQUE_ROUNDS_MAX. It is NOT a NOTE_TOOL, so the note step-limit never
       gates it.
-    - `run_readiness_check` needs an artifact AND at least one critique round to assess.
+    - `run_readiness_check` needs an artifact (working_draft or DB-loaded draft_body) AND at least
+      one critique round to assess.
     - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
     - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
     has_draft = bool(current_draft_body(state).strip())
     critique_rounds = state.get("critique_rounds") or 0
-    if (state.get("working_draft") or "").strip() and critique_rounds > 0 and _finalize_gate_open(state):
+    if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
     if has_draft and critique_rounds < CRITIQUE_ROUNDS_MAX:
         tools.append(run_critique)
@@ -633,8 +635,9 @@ def get_available_tools(state: WorkflowState) -> list:
     if has_draft or sections_with_signal >= 2:
         tools.append(recommend_next_workflow)
     # run_readiness_check needs an artifact AND a prior critique round — readiness is meaningless
-    # before any quality signal exists.
-    if (state.get("working_draft") or "").strip() and critique_rounds > 0:
+    # before any quality signal exists. Routes through current_draft_body (has_draft) so a DB-loaded
+    # draft qualifies, same as finalize.
+    if has_draft and critique_rounds > 0:
         tools.append(run_readiness_check)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
