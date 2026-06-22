@@ -16,6 +16,7 @@ from app.graphs.section_schema import (
     SECTION_SPECS,
     SECTION_TRACKED_ARTIFACT_TYPES,
     compute_section_coverage,
+    status_score,
 )
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -39,7 +40,7 @@ TOOL_SELECTION_SCHEMA = {
             "type": "string",
             "enum": [
                 "ask_user", "respond", "write_draft", "finalize",
-                "critique_note", "explore_note", "run_critique",
+                "critique_note", "explore_note", "run_critique", "recommend_next_workflow",
             ],
         },
         "message": {"type": "string"},
@@ -97,6 +98,7 @@ _TOOL_ARG_KEYS = {
     "critique_note": ["content"],
     "explore_note": ["content"],
     "run_critique": ["target", "mode"],
+    "recommend_next_workflow": ["current_artifact_type", "planning_track"],
 }
 
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
@@ -126,6 +128,44 @@ def _normalize_workflow_mode(mode: Any) -> str:
 def _normalize_planning_track(track: Any) -> str:
     raw = str(track or "").strip().lower()
     return raw if raw in _PLANNING_TRACKS else "quick"
+
+
+def _derive_artifact_chain(section_coverage: dict[str, str] | None) -> dict[str, str]:
+    """BMAD artifact-chain status (missing/partial/complete) derived from 7-section coverage.
+
+    Sole source is section_coverage (Phase 1–2 engine) mapped to 0.0–1.0 scores — no 9-slot data.
+    brief tracks the first four sections; prd tracks all seven.
+    """
+    cov = section_coverage or {}
+    scores = {section: status_score(cov.get(section)) for section in SECTION_SPECS}
+    nonzero = [v for v in scores.values() if v > 0]
+    strong = [v for v in scores.values() if v >= 0.5]
+
+    if not nonzero:
+        brainstorming = "missing"
+    elif len(strong) >= 5:
+        brainstorming = "complete"
+    else:
+        brainstorming = "partial"
+
+    brief_sections = ["vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities"]
+    brief_scores = [scores[s] for s in brief_sections]
+    if all(v >= 0.6 for v in brief_scores):
+        product_brief = "complete"
+    elif any(v > 0 for v in brief_scores):
+        product_brief = "partial"
+    else:
+        product_brief = "missing"
+
+    all_scores = list(scores.values())
+    if all(v >= 0.7 for v in all_scores):
+        prd = "complete"
+    elif any(v > 0 for v in all_scores):
+        prd = "partial"
+    else:
+        prd = "missing"
+
+    return {"brainstorming": brainstorming, "product_brief": product_brief, "prd": prd}
 
 
 def _infer_workflow_mode(state: WorkflowState) -> str:
@@ -410,6 +450,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "draft_body": draft_body,
         "working_draft": draft_update or state.get("working_draft"),
         "method_profile": method_profile,
+        # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
+        "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,

@@ -12,6 +12,7 @@ migration). finalize has no insert to dedup — its only DB write is an idempote
 status update — so it needs no key.
 """
 
+import logging
 import uuid
 from typing import Annotated, Any
 
@@ -24,6 +25,7 @@ from sqlalchemy import exists, select
 
 from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
+from app.graphs.section_schema import SECTION_SPECS, status_score
 from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentSession,
@@ -279,6 +281,115 @@ async def run_critique(
 
 
 # ---------------------------------------------------------------------------
+# recommend_next_workflow — read-only analysis tool (no interrupt; audits to AgentToolCall)
+# ---------------------------------------------------------------------------
+
+logger = logging.getLogger(__name__)
+
+# First four sections define a product brief; all seven define a PRD (addendum §6).
+_BRIEF_SECTIONS = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
+
+
+def _compute_recommendation(section_coverage: dict[str, str] | None, planning_track: str) -> dict[str, Any]:
+    """Pure workflow-selection rule over 7-section coverage. No DB, no state mutation.
+
+    Derives the artifact chain inline from the latest section_coverage (never the possibly-stale
+    state["artifact_chain"]). On the quick track, never escalates past readiness_check.
+    """
+    cov = section_coverage or {}
+    scores = {section: status_score(cov.get(section)) for section in SECTION_SPECS}
+    brief_score = sum(scores[s] for s in _BRIEF_SECTIONS) / len(_BRIEF_SECTIONS)
+    prd_score = sum(scores.values()) / len(scores)
+    missing = [section for section, score in scores.items() if score == 0.0]
+
+    if prd_score >= 0.7:
+        recommended, reason = "readiness_check", "PRD coverage is near-complete; assess readiness next."
+    elif brief_score >= 0.6:
+        recommended, reason = "prd", "Product-brief sections are solid; expand into a PRD."
+    else:
+        recommended, reason = "brief", "Early signal captured; consolidate into a product brief."
+
+    # Quick track guards against over-planning a small idea.
+    if planning_track == "quick" and recommended == "architecture_readiness":
+        recommended = "readiness_check"
+
+    missing_count = len(missing)
+    confidence = "low" if missing_count >= 4 else ("medium" if missing_count >= 1 else "high")
+
+    return {
+        "recommended_next_workflow": recommended,
+        "reason": reason,
+        "required_inputs": list(missing),
+        "blocking_gaps": list(missing),
+        "confidence": confidence,
+    }
+
+
+async def _recommend_next_workflow_impl(
+    current_artifact_type: str,  # noqa: ARG001 — kept for schema parity; recommendation is coverage-driven
+    planning_track: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+):
+    result = _compute_recommendation(state.get("section_coverage"), planning_track or "quick")
+
+    # Audit: reuse AgentToolCall.input_snapshot for the result blob (no output_snapshot column).
+    # Best-effort — a DB failure must not deny the recommendation to the user.
+    if not state.get("last_agent_run_id"):
+        raise RuntimeError(
+            "recommend_next_workflow requires last_agent_run_id in state — analyze_node must run first"
+        )
+    run_id = uuid.UUID(state["last_agent_run_id"])
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    try:
+        async with session_factory() as db:
+            already = (
+                await db.execute(
+                    select(exists().where(
+                        AgentToolCall.run_id == run_id,
+                        AgentToolCall.tool_name == "recommend_next_workflow",
+                    ))
+                )
+            ).scalar()
+            if not already:
+                db.add(
+                    AgentToolCall(
+                        run_id=run_id,
+                        tool_name="recommend_next_workflow",
+                        input_snapshot=result,
+                        status=AgentToolCallStatus.PROPOSED,
+                    )
+                )
+                await db.commit()
+    except Exception as exc:  # noqa: BLE001 — audit is best-effort; never block the recommendation
+        logger.warning("recommend_next_workflow audit persist failed: %s", exc)
+
+    method_profile = dict(state.get("method_profile") or {})
+    method_profile["recommended_next_workflow"] = result["recommended_next_workflow"]
+    summary = f"recommend_next_workflow -> {result['recommended_next_workflow']} ({result['confidence']})"
+    return Command(
+        update={
+            "method_profile": method_profile,
+            "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def recommend_next_workflow(
+    current_artifact_type: str,
+    planning_track: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Recommend the next planning workflow from current coverage; records an audit entry."""
+    return await _recommend_next_workflow_impl(current_artifact_type, planning_track, state, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
@@ -337,6 +448,12 @@ def get_available_tools(state: WorkflowState) -> list:
         tools.append(finalize)
     if has_draft and (state.get("critique_rounds") or 0) < CRITIQUE_ROUNDS_MAX:
         tools.append(run_critique)
+    # recommend_next_workflow: available once there is a draft, or once >= 2 sections have any
+    # coverage (lets the quick track recommend early, before a draft exists).
+    coverage = state.get("section_coverage") or {}
+    sections_with_signal = sum(1 for v in coverage.values() if status_score(v) > 0.0)
+    if has_draft or sections_with_signal >= 2:
+        tools.append(recommend_next_workflow)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
     return tools

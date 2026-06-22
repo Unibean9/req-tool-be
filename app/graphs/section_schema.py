@@ -167,6 +167,11 @@ def _status_from_sub_dimensions(section: str, assessment: dict[str, Any]) -> str
     return "missing"
 
 
+def status_score(status: Any) -> float:
+    """Public 0.0–1.0 score for a section/sub-dimension status (filled=1, partial/needs_review=0.5)."""
+    return _status_score(status)
+
+
 def _section_score(status: str) -> float:
     return _status_score(status)
 

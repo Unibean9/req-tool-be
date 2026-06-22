@@ -7,6 +7,7 @@ from app.graphs.agent_tools import (
     critique_note,
     explore_note,
     finalize,
+    recommend_next_workflow,
     respond,
     run_critique,
     write_draft,
@@ -35,7 +36,10 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # conversation summary is checked on the way back (route_before_analyze).
     builder.add_node(
         "tools",
-        ToolNode([ask_user, write_draft, finalize, critique_note, explore_note, respond, run_critique]),
+        ToolNode([
+            ask_user, write_draft, finalize, critique_note, explore_note,
+            respond, run_critique, recommend_next_workflow,
+        ]),
     )
 
     # Entry: classify intent first. greeting/smalltalk → greeting (chitchat), else → analyze.
