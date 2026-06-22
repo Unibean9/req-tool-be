@@ -32,8 +32,8 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
     project_id = uuid.UUID(project["id"])
 
     llm = ScriptedLLM(tool_brain=[
-        tool_select("ask_user", message="Đối tượng người dùng chính là ai?", active_mode="qa"),
-        tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY, active_mode="draft"),
+        tool_select("ask_user", message="Đối tượng người dùng chính là ai?", active_mode="discovery"),
+        tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
         name="tool-loop-ask-draft-approve",
@@ -66,7 +66,7 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     project_id = uuid.UUID(project["id"])
 
     llm = ScriptedLLM(tool_brain=[
-        tool_select("write_draft", title="Mục tiêu (bản nháp)", body=_GOAL_BODY, active_mode="draft"),
+        tool_select("write_draft", title="Mục tiêu (bản nháp)", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
         name="tool-loop-reject-draft",

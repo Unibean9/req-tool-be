@@ -67,9 +67,8 @@ def test_settings_agent_turn_timeout_default():
     assert settings.agent_turn_timeout_seconds == 90.0
 
 
-def test_workflow_state_accepts_locale_and_intent():
+def test_workflow_state_accepts_locale():
     assert "locale" in WorkflowState.__annotations__
-    assert "intent" in WorkflowState.__annotations__
 
 
 def test_agent_message_response_payload_nullable():

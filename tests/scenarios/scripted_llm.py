@@ -1,11 +1,10 @@
 """Deterministic scripted LLM client for behavior scenarios.
 
-The whole graph (intent_router, analyze, summarize) calls a single `llm_client.generate(...)`. This
-client routes each call to a scripted/auto response by inspecting `response_format`, so a scenario
-only needs to script the analyst tool-selection turns — everything else gets a sensible default.
+The whole graph (analyze, summarize) calls a single `llm_client.generate(...)`. This client routes
+each call to a scripted/auto response by inspecting `response_format`, so a scenario only needs to
+script the analyst tool-selection turns — everything else gets a sensible default.
 
 Routing keys (matching app/graphs):
-- INTENT_SCHEMA          -> has property "intent"  -> intent response
 - SUMMARY_SCHEMA         -> property set == {"summary"} -> summary response
 - ON_TOPIC_SCHEMA        -> has property "on_topic" -> judge response (M2 harness only)
 - TOOL_CALL_SCHEMA       -> has property "__tool_call__" -> native AIMessage(tool_calls)
@@ -51,8 +50,6 @@ class ScriptedLLM:
         Ordered tool-SELECTION turns (TOOL_SELECTION_SCHEMA shape), consumed one per `analyze_node`
         run. analyze_node converts each into an AIMessage(tool_calls). When exhausted, an empty
         selection ({}) is returned: the shim emits a plain AIMessage and the loop ends.
-    intent:
-        Response for `intent_router_node` (default: task / vi).
     summary:
         Response for `summarize_node`.
     judge:
@@ -64,7 +61,6 @@ class ScriptedLLM:
     def __init__(
         self,
         *,
-        intent: dict[str, Any] | None = None,
         summary: dict[str, Any] | None = None,
         judge: dict[str, Any] | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
@@ -77,7 +73,6 @@ class ScriptedLLM:
         # TOOL_SELECTION_SCHEMA generate. analyze_node converts it to an AIMessage.
         self._tool_brain = list(tool_brain or [])
         self._tool_brain_idx = 0
-        self._intent = intent or {"intent": "task", "locale": "vi"}
         self._summary = summary or {"summary": ""}
         # Default judge passes (on_topic=True): infra wiring, not a real M2 measurement (which needs
         # a real LLM judge outside CI).
@@ -118,8 +113,6 @@ class ScriptedLLM:
         # Judge guard before the others: the on-topic harness schema.
         if "on_topic" in props:
             return "judge"
-        if "intent" in props:
-            return "intent"
         if set(props.keys()) == {"summary"}:
             return "summary"
         # Unknown call shape — return an empty dict (harmless).
@@ -142,8 +135,6 @@ class ScriptedLLM:
             return {}
         if route == "judge":
             return dict(self._judge)
-        if route == "intent":
-            return dict(self._intent)
         if route == "summary":
             return dict(self._summary)
         return {}

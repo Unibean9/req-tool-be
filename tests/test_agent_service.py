@@ -721,7 +721,6 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
 
     passed_state = graph.ainvoke.call_args.args[0]
     assert "locale" in passed_state and passed_state["locale"] is None
-    assert "intent" in passed_state and passed_state["intent"] is None
     assert passed_state["section_coverage"] is None
     assert passed_state["coverage_ratio"] is None
     assert passed_state["coverage_complete"] is None

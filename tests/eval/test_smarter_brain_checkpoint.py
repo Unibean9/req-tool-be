@@ -141,13 +141,13 @@ def test_checkpoint_counts_all_llm_calls_reported_for_a_session():
 # Multi-angle: mode_proactive_count hard gate (R_mode)
 # ---------------------------------------------------------------------------
 
-def test_count_proactive_modes_counts_non_qa_turns():
-    """A proactive turn is one whose active_mode is set and not the default 'qa'."""
+def test_count_proactive_modes_counts_non_discovery_turns():
+    """A proactive turn is one whose active_mode is set and not the 'discovery' baseline."""
     rows = [
-        {"active_mode": "qa"},
+        {"active_mode": "discovery"},
         {"active_mode": "critique"},
         {},  # no active_mode reported — not proactive
-        {"active_mode": "explore"},
+        {"active_mode": "structuring"},
         {"active_mode": None},  # explicit null — not proactive
     ]
 

@@ -64,13 +64,10 @@ TOOL_SELECTION_SCHEMA = {
         },
         "active_mode": {
             "type": "string",
-            # Legacy values kept for backward compat (ScriptedLLM tests); new spec §7.1 values added.
-            # analyze_node normalizes legacy -> new via _normalize_active_mode before persisting.
-            "enum": [
-                "qa", "critique", "explore", "draft",
-                "discovery", "structuring", "revision", "finalization",
-            ],
+            "enum": ["discovery", "structuring", "critique", "revision", "finalization"],
         },
+        # Detected on first contact and kept sticky by analyze_node; drives the output language lock.
+        "locale": {"type": "string", "enum": ["vi", "en"]},
         "draft_update": {"type": "string"},
         # BMAD method layer (addendum §11) — separate from active_mode. workflow_mode = planning
         # stage of the project; planning_track = artifact-chain depth.
@@ -107,17 +104,6 @@ _TOOL_ARG_KEYS = {
 # picked tool so proactive S1 coverage no longer depends on the model self-reporting it. Values are
 # already in the spec §7.1 vocabulary (explore_note -> structuring, not discovery).
 _NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "structuring"}
-
-# Legacy active_mode -> spec §7.1 vocabulary. explore maps to structuring (NOT discovery) so a
-# [qa, explore] sequence normalizes to [discovery, structuring] and keeps mode variety >= 2.
-_ACTIVE_MODE_MAP = {"qa": "discovery", "draft": "structuring", "explore": "structuring", "critique": "critique"}
-
-
-def _normalize_active_mode(mode: str | None) -> str | None:
-    """Map a legacy active_mode to the spec §7.1 vocabulary; pass through new values and None."""
-    if mode is None:
-        return None
-    return _ACTIVE_MODE_MAP.get(mode, mode)
 
 
 def _normalize_workflow_mode(mode: Any) -> str:
@@ -185,7 +171,7 @@ def _infer_workflow_mode(state: WorkflowState) -> str:
 
 # respond is a user-facing critique/exploration; its angle is the mode the model picked (defaulting
 # to critique). active_mode is derived from it and also passed as the tool's `mode` arg.
-_RESPOND_MODES = ("critique", "explore")
+_RESPOND_MODES = ("critique", "structuring")
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -195,131 +181,10 @@ SUMMARY_SCHEMA = {
     "required": ["summary"],
 }
 
-INTENT_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "intent": {"type": "string", "enum": ["greeting", "smalltalk", "task", "unclear"]},
-        "locale": {"type": "string", "enum": ["vi", "en"]},
-    },
-    "required": ["intent", "locale"],
-}
-
-INTENT_SYSTEM = (
-    "Bạn là bộ phân loại ý định cho một trợ lý phân tích yêu cầu sản phẩm. "
-    "Chỉ phân loại, không trả lời người dùng."
-)
-
-# Hard-coded greeting templates per locale — stable for the live demo, no LLM call.
-_GREETING_TEMPLATES = {
-    "vi": (
-        "Xin chào! Tôi là trợ lý phân tích yêu cầu. Tôi có thể giúp bạn làm rõ ý tưởng và "
-        "xây dựng các artifact như mục tiêu, vấn đề, user story... Bạn muốn bắt đầu từ đâu?"
-    ),
-    "en": (
-        "Hello! I'm your requirements analysis assistant. I can help you clarify ideas and "
-        "build artifacts such as goals, problems, and user stories. Where would you like to start?"
-    ),
-}
-
-
 SUMMARY_SYSTEM = (
     "Bạn là trợ lý tóm tắt hội thoại yêu cầu sản phẩm. "
     "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
 )
-
-async def intent_router_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
-    """Classify the user's intent (greeting/smalltalk/task/unclear) and lock the locale.
-
-    Entry point of the graph. Runs only on the first invocation — on resume LangGraph re-enters
-    the interrupted node directly, so this never re-runs mid-conversation.
-    """
-    cfg = config["configurable"]
-    llm_client = cfg["llm_client"]
-    if llm_client is None:
-        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
-
-    last_user = ""
-    for m in reversed(state.get("messages") or []):
-        role, content = _msg_role_content(m)
-        if role == "user":
-            last_user = content
-            break
-
-    prompt = (
-        "Phân loại tin nhắn của người dùng và phát hiện ngôn ngữ.\n\n"
-        f"Tin nhắn: {last_user!r}\n\n"
-        "intent: 'greeting' nếu chỉ là chào hỏi; 'smalltalk' nếu tán gẫu không liên quan công việc; "
-        "'task' nếu là yêu cầu phân tích/tạo artifact; 'unclear' nếu không rõ.\n"
-        "locale: 'vi' nếu tiếng Việt, 'en' nếu tiếng Anh."
-    )
-    result, _usage = await llm_client.generate(
-        messages=[{"role": "user", "content": prompt}],
-        system=INTENT_SYSTEM,
-        max_tokens=200,
-        response_format=INTENT_SCHEMA,
-    )
-    if isinstance(result, dict):
-        intent = result.get("intent") or "task"
-        locale = result.get("locale") or "vi"
-    else:
-        intent, locale = "task", "vi"
-    return {"intent": intent, "locale": locale}
-
-
-def route_after_intent(state: WorkflowState) -> str:
-    if state.get("intent") in ("greeting", "smalltalk"):
-        return "greeting"
-    return "analyze"
-
-
-async def greeting_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
-    """Greet the user with a locale-templated message and pause for their reply.
-
-    Saves an agent message with payload.kind='greeting', sets WAITING_FOR_HUMAN/ASK_HUMAN, and
-    interrupts — exactly like ask_human, so the turn never silently completes. No LLM call, no AgentRun.
-    """
-    cfg = config["configurable"]
-    session_factory = cfg["session_factory"]
-    session_id = uuid.UUID(cfg["thread_id"])
-
-    locale = state.get("locale") or "vi"
-    message = _GREETING_TEMPLATES.get(locale, _GREETING_TEMPLATES["vi"])
-
-    async with session_factory() as db:
-        already_saved = (
-            await db.execute(
-                select(exists().where(
-                    AgentMessage.session_id == session_id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                    AgentMessage.content == message,
-                ))
-            )
-        ).scalar()
-        if not already_saved:
-            db.add(
-                AgentMessage(
-                    session_id=session_id,
-                    role=AgentMessageRole.AGENT,
-                    content=message,
-                    payload={"kind": "greeting", "locale": locale},
-                )
-            )
-        session_row = (
-            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
-        ).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
-        await db.commit()
-
-    user_response = interrupt({"type": "ask_human", "message": message})
-    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
-    return {
-        "messages": [
-            {"role": "assistant", "content": message},
-            {"role": "user", "content": user_content},
-        ]
-    }
-
 
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
@@ -405,14 +270,10 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         if gated_tool in _NOTE_TOOL_MODE:
             analysis_result["active_mode"] = _NOTE_TOOL_MODE[gated_tool]
         # respond carries its own angle: clamp to a valid proactive mode (default critique) so a
-        # user-facing assessment never lands back on 'qa'.
+        # user-facing assessment is always a proactive mode, never the discovery baseline.
         elif gated_tool == "respond":
             mode = analysis_result.get("active_mode")
             analysis_result["active_mode"] = mode if mode in _RESPOND_MODES else "critique"
-        # Normalize legacy active_mode to the spec §7.1 vocabulary before persist so eval reads the
-        # migrated value (qa->discovery, draft/explore->structuring, critique unchanged).
-        if analysis_result.get("active_mode") is not None:
-            analysis_result["active_mode"] = _normalize_active_mode(analysis_result["active_mode"])
 
     async with session_factory() as db:
         run = AgentRun(
@@ -448,6 +309,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
+        # Locale is detected on first contact and then sticky: once set it overrides later turns so the
+        # output language lock stays stable even if the model omits the field mid-conversation.
+        "locale": state.get("locale") or reported.get("locale"),
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
         "working_draft": draft_update or state.get("working_draft"),

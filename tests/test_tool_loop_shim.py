@@ -42,7 +42,7 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    llm = ScriptedLLM(tool_brain=[tool_select("ask_user", message="Bạn muốn xây gì?", active_mode="qa")])
+    llm = ScriptedLLM(tool_brain=[tool_select("ask_user", message="Bạn muốn xây gì?", active_mode="discovery")])
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), llm_client=llm)
     config["configurable"]["session_factory"] = _session_factory()
@@ -55,8 +55,8 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
     assert ai.tool_calls[0]["args"]["message"] == "Bạn muốn xây gì?"
     # tool_call.id == AgentRun.id so the tool idempotency keys line up on resume.
     assert ai.tool_calls[0]["id"] == out["last_agent_run_id"]
-    # analytic fields still persist so eval (active_mode) and coverage do not regress; the legacy
-    # 'qa' is normalized to the spec §7.1 'discovery' baseline (phase-06).
+    # analytic fields still persist so eval (active_mode) and coverage do not regress; the model
+    # reports the spec §7.1 'discovery' baseline directly.
     assert out["analysis_result"]["active_mode"] == "discovery"
 
 
@@ -148,7 +148,6 @@ async def test_write_note_selection_dispatches_without_crash(client, db_session)
     ])
     graph = build_graph(checkpointer=MemorySaver())
     state = _state(artifact_type="goal")
-    state["intent"] = "task"
     config = _config(str(agent_session.id), str(project_id), llm_client=llm)
     config["configurable"]["session_factory"] = _session_factory()
 

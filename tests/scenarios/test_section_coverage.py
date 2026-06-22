@@ -40,7 +40,7 @@ async def test_section_proposes_after_coverage_met(client, scenario_env, scenari
             tool_brain=[
                 tool_select("write_draft", title="Vấn đề hoàn chỉnh",
                             body="Nội dung đầy đủ cho vấn đề đăng ký lớp.",
-                            active_mode="draft", section_assessment=_FULL_SECTIONS),
+                            active_mode="structuring", section_assessment=_FULL_SECTIONS),
             ]
         ),
         actions=[{"type": "send", "content": "Đây là thông tin đầy đủ cho vấn đề."}],
@@ -65,7 +65,7 @@ async def test_business_rules_section_tracked(client, scenario_env, scenario_pro
             tool_brain=[
                 tool_select("write_draft", title="Vấn đề với quy tắc nghiệp vụ",
                             body="Có quy tắc nghiệp vụ rõ ràng.",
-                            active_mode="draft", section_assessment=_FULL_SECTIONS),
+                            active_mode="structuring", section_assessment=_FULL_SECTIONS),
             ]
         ),
         actions=[{"type": "send", "content": "Quy tắc: nếu trùng lịch thì chặn đăng ký."}],
@@ -89,7 +89,7 @@ async def test_section_coverage_does_not_gate_non_section_artifacts(client, scen
             tool_brain=[
                 tool_select("write_draft", title="FR-1: Đăng ký lớp",
                             body="Hệ thống phải cho phép sinh viên đăng ký lớp.",
-                            active_mode="draft"),
+                            active_mode="structuring"),
             ]
         ),
         actions=[{"type": "send", "content": "Tôi cần một yêu cầu chức năng cho đăng ký lớp."}],

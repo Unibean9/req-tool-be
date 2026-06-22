@@ -95,7 +95,6 @@ class WorkflowState(TypedDict):
     critique_rounds: int
     quality_report: dict[str, Any] | None
     locale: str | None
-    intent: str | None
     section_coverage: dict[str, str] | None
     coverage_ratio: float | None
     coverage_complete: bool | None

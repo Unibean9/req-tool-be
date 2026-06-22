@@ -48,15 +48,15 @@ class CheckpointResult:
 def count_proactive_modes(analysis_results: Sequence[dict[str, Any]]) -> int:
     """Count agent turns that proactively left plain Q&A.
 
-    A turn is proactive when it reports an `active_mode` other than the Q&A baseline. After the
-    spec §7.1 migration that baseline is 'discovery' (legacy 'qa' kept for back-compat); turns that
-    omit the field or report null are not proactive. This is the measurement behind the R_mode
-    regression guard — a candidate that never switches mode scores 0 and fails the floor.
+    A turn is proactive when it reports an `active_mode` other than the discovery baseline (the spec
+    §7.1 successor to plain Q&A); turns that omit the field or report null are not proactive. This is
+    the measurement behind the R_mode regression guard — a candidate that never switches mode scores
+    0 and fails the floor.
     """
-    baseline = {"qa", "discovery"}
+    baseline = {"discovery"}
     return sum(
         1 for row in analysis_results
-        if isinstance(row, dict) and (row.get("active_mode") or "qa") not in baseline
+        if isinstance(row, dict) and (row.get("active_mode") or "discovery") not in baseline
     )
 
 

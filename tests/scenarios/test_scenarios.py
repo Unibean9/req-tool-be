@@ -17,8 +17,8 @@ from tests.scenarios.library import ALL_SCENARIOS
 pytestmark = pytest.mark.asyncio
 
 # Tool-loop surfaces proposals as proposed tool calls, not chat messages; the only agent chat
-# messages are greetings and ask_user questions.
-_AGENT_PAYLOAD_KINDS = {"greeting", "question"}
+# messages are ask_user questions and respond assessments (greetings are now plain ask_user turns).
+_AGENT_PAYLOAD_KINDS = {"question", "assessment"}
 
 
 @pytest.mark.parametrize("factory", ALL_SCENARIOS, ids=lambda f: f().name)

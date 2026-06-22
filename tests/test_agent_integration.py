@@ -107,9 +107,9 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
         async with TestSessionFactory() as s:
             yield s
 
-    # Tool-loop: analyze picks the ask_user tool, which interrupts for the human. The mock returns
-    # this dict for every generate; intent_router ignores the extra keys (falls back to task/vi).
-    llm = _mock_llm({"tool": "ask_user", "message": "Bạn muốn gì?", "confidence": 0.9, "active_mode": "qa"})
+    # Tool-loop: analyze (the entry node) picks the ask_user tool, which interrupts for the human.
+    # The mock returns this selection dict for every generate.
+    llm = _mock_llm({"tool": "ask_user", "message": "Bạn muốn gì?", "confidence": 0.9, "active_mode": "discovery"})
 
     # No checkpointer — avoids checkpointer + node concurrent session writes in test
     graph = build_graph(checkpointer=None)

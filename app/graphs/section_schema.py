@@ -5,8 +5,7 @@ with a 7-section assessment taxonomy (spec §3). Sections are scored by status
 (``missing`` | ``partial`` | ``filled`` | ``needs_review``) instead of a flat
 checklist of sub-slots — reflecting the "progress over interrogation" philosophy.
 
-Coexists with ``slot_schema.py`` during the Phase 1–2 migration window; the slot
-model is removed at Checkpoint A.
+This is the sole coverage engine: the legacy 9-slot BRD model has been removed.
 """
 
 from typing import Any

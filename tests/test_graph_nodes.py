@@ -1,6 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
@@ -13,12 +13,8 @@ from app.graphs.state import (
     WorkflowState,
 )
 from app.models.agent import (
-    AgentMessage,
-    AgentMessageRole,
     AgentRun,
     AgentSession,
-    AgentSessionInterruptType,
-    AgentSessionStatus,
 )
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
@@ -52,7 +48,6 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "critique_rounds": 0,
         "quality_report": None,
         "locale": None,
-        "intent": None,
         "section_coverage": None,
         "coverage_ratio": None,
         "coverage_complete": None,
@@ -594,112 +589,8 @@ async def test_governed_unknown_write_tool_raises_governance_denied():
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 — intent_router + greeting + language-lock (S4, S5)
+# Language lock (S5) — locale drives the analyst's output-language directive
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_intent_router_classifies_greeting():
-    from app.graphs.nodes import intent_router_node
-
-    llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=({"intent": "greeting", "locale": "vi"}, None))
-    state = _state()
-    state["messages"] = [{"role": "user", "content": "hello"}]
-
-    result = await intent_router_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
-
-    assert result["intent"] == "greeting"
-    assert result["locale"] == "vi"
-
-
-@pytest.mark.asyncio
-async def test_intent_router_classifies_task():
-    from app.graphs.nodes import intent_router_node
-
-    llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=({"intent": "task", "locale": "en"}, None))
-    state = _state()
-    state["messages"] = [{"role": "user", "content": "I need a user story"}]
-
-    result = await intent_router_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
-
-    assert result["intent"] == "task"
-    assert result["locale"] == "en"
-
-
-@pytest.mark.asyncio
-async def test_intent_router_raises_when_llm_client_none():
-    from app.graphs.nodes import intent_router_node
-
-    config = _config(str(uuid.uuid4()), str(uuid.uuid4()), llm_client=None)
-    config["configurable"]["llm_client"] = None
-    state = _state()
-    state["messages"] = [{"role": "user", "content": "hello"}]
-
-    with pytest.raises(ValueError):
-        await intent_router_node(state, config)
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_greeting_node_saves_message_and_no_agent_run(mock_interrupt, client, db_session):
-    from app.graphs.nodes import greeting_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state()
-    state["locale"] = "vi"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await greeting_node(state, config)
-
-    mock_interrupt.assert_called_once()
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert msg.role == AgentMessageRole.AGENT
-        assert msg.content
-        assert msg.payload["kind"] == "greeting"
-
-        runs = (await db.execute(select(AgentRun).where(AgentRun.session_id == agent_session.id))).scalars().all()
-        assert runs == []
-
-        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
-        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-        assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
-
-
-@pytest.mark.asyncio
-@patch("app.graphs.nodes.interrupt")
-async def test_greeting_node_english_locale(mock_interrupt, client, db_session):
-    from app.graphs.nodes import greeting_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    state = _state()
-    state["locale"] = "en"
-    config = _config(str(agent_session.id), str(project_id))
-    config["configurable"]["session_factory"] = _session_factory()
-
-    await greeting_node(state, config)
-
-    async with TestSessionFactory() as db:
-        msg = (
-            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
-        ).scalar_one()
-        assert "Hello" in msg.content
-        assert msg.payload["locale"] == "en"
-
 
 def test_analyst_prompt_includes_language_lock_directive():
     from app.graphs.nodes import _build_tool_selection_prompt
@@ -716,36 +607,29 @@ def test_analyst_prompt_includes_language_lock_directive():
     assert "'vi'" not in prompt_en
 
 
-def test_graph_routes_task_to_analyze():
-    from app.graphs.nodes import route_after_intent
-
-    assert route_after_intent({"intent": "task"}) == "analyze"
-    assert route_after_intent({"intent": "unclear"}) == "analyze"
-    assert route_after_intent({"intent": "greeting"}) == "greeting"
-    assert route_after_intent({"intent": "smalltalk"}) == "greeting"
-
-
 def _smart_llm():
-    """LLM mock that branches on response_format to drive intent_router then analyze→ask_user."""
-    from app.graphs.nodes import INTENT_SCHEMA, TOOL_SELECTION_SCHEMA
+    """LLM mock driving analyze→ask_user each turn. Counts analyze (tool-selection) calls so a test
+    can prove the loop advances across a resume."""
+    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 
-    intent_calls = []
+    analyze_calls = []
     llm = AsyncMock()
 
     async def _generate(*, messages, system, max_tokens, response_format=None):
-        if response_format is INTENT_SCHEMA:
-            intent_calls.append(1)
-            return {"intent": "task", "locale": "vi"}, None
         if response_format is TOOL_SELECTION_SCHEMA:
-            return {"tool": "ask_user", "message": "Bạn cần gì thêm?", "confidence": 0.3, "active_mode": "qa"}, None
+            analyze_calls.append(1)
+            return {"tool": "ask_user", "message": "Bạn cần gì thêm?", "confidence": 0.3,
+                    "active_mode": "discovery", "locale": "vi"}, None
         return {}, None
 
     llm.generate = _generate
-    return llm, intent_calls
+    return llm, analyze_calls
 
 
 @pytest.mark.asyncio
-async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_session):
+async def test_resume_from_ask_human_interrupt_continues_loop(client, db_session):
+    """analyze is the entry point: a first invoke interrupts at ask_user; resuming re-enters the
+    interrupted tool and loops back to analyze, so the analyze count advances past the resume."""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.types import Command
 
@@ -757,7 +641,7 @@ async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_s
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    llm, intent_calls = _smart_llm()
+    llm, analyze_calls = _smart_llm()
     saver = MemorySaver()
     graph = build_graph(checkpointer=saver)
     config = _config(str(agent_session.id), str(project_id), llm)
@@ -766,11 +650,11 @@ async def test_resume_from_ask_human_interrupt_with_new_entry_point(client, db_s
     state = _state()
     state["messages"] = [{"role": "user", "content": "tôi cần tạo intent"}]
     await graph.ainvoke(state, config)
-    assert len(intent_calls) == 1
+    assert len(analyze_calls) == 1
 
-    # Resume the ask_human interrupt — must NOT re-enter intent_router.
+    # Resume the ask_human interrupt: the loop continues and analyze runs again.
     await graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
-    assert len(intent_calls) == 1
+    assert len(analyze_calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1045,35 +929,13 @@ def test_active_mode_field_in_analysis_schema():
     assert "active_mode" not in TOOL_SELECTION_SCHEMA.get("required", [])
 
 
-def test_active_mode_schema_accepts_new_vocabulary():
-    """Phase 6: the enum carries the spec §7.1 values alongside the legacy ones."""
+def test_active_mode_schema_is_spec_vocabulary_only():
+    """The enum is the spec §7.1 vocabulary only — the legacy qa/explore/draft values are gone."""
     from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 
-    enum = TOOL_SELECTION_SCHEMA["properties"]["active_mode"]["enum"]
-    for value in ("discovery", "structuring", "revision", "finalization"):
-        assert value in enum
-
-
-def test_normalize_active_mode_legacy_qa_to_discovery():
-    from app.graphs.nodes import _normalize_active_mode
-
-    assert _normalize_active_mode("qa") == "discovery"
-
-
-def test_normalize_active_mode_legacy_explore_to_structuring():
-    """explore -> structuring (NOT discovery) so [qa, explore] keeps variety >= 2."""
-    from app.graphs.nodes import _normalize_active_mode
-
-    assert _normalize_active_mode("explore") == "structuring"
-    assert _normalize_active_mode("draft") == "structuring"
-    assert _normalize_active_mode("critique") == "critique"
-
-
-def test_variety_preserved_after_normalization():
-    from app.graphs.nodes import _normalize_active_mode
-
-    normalized = {_normalize_active_mode(m) for m in ("qa", "explore")}
-    assert len(normalized) >= 2
+    enum = set(TOOL_SELECTION_SCHEMA["properties"]["active_mode"]["enum"])
+    assert enum == {"discovery", "structuring", "critique", "revision", "finalization"}
+    assert {"qa", "explore", "draft"}.isdisjoint(enum)
 
 
 @pytest.mark.asyncio

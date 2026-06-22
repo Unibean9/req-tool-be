@@ -95,7 +95,7 @@ def _draft_approve(
     Used to give every artifact type one self-contained behavior scenario whose
     produced artifact the judge can score.
     """
-    llm = ScriptedLLM(tool_brain=[tool_select("write_draft", title=title, body=body, active_mode="draft")])
+    llm = ScriptedLLM(tool_brain=[tool_select("write_draft", title=title, body=body, active_mode="structuring")])
     return _scenario(
         name,
         artifact_type,
@@ -123,11 +123,11 @@ def multi_turn_qna() -> Scenario:
     """Multi-turn Q&A (one-question rhythm) before drafting."""
     llm = ScriptedLLM(
         tool_brain=[
-            tool_select("ask_user", message="Đối tượng người dùng chính của công cụ là ai?", active_mode="qa"),
+            tool_select("ask_user", message="Đối tượng người dùng chính của công cụ là ai?", active_mode="discovery"),
             tool_select("ask_user", message="Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
-                        active_mode="qa", acknowledgment="Rõ rồi, là sinh viên."),
+                        active_mode="discovery", acknowledgment="Rõ rồi, là sinh viên."),
             tool_select("write_draft", title="Intent: Điều phối lịch học nhóm cho sinh viên",
-                        body=_INTENT_BODY, active_mode="draft"),
+                        body=_INTENT_BODY, active_mode="structuring"),
         ]
     )
     return _scenario(
@@ -148,11 +148,11 @@ def reject_then_explore() -> Scenario:
     """User rejects the first proposed draft (explore more), agent asks, then drafts again."""
     llm = ScriptedLLM(
         tool_brain=[
-            tool_select("write_draft", title="Intent (bản nháp)", body=_INTENT_BODY, active_mode="draft"),
-            tool_select("ask_user", active_mode="explore",
+            tool_select("write_draft", title="Intent (bản nháp)", body=_INTENT_BODY, active_mode="structuring"),
+            tool_select("ask_user", active_mode="structuring",
                         message="Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?"),
             tool_select("write_draft", title="Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
-                        body=_INTENT_BODY, active_mode="draft"),
+                        body=_INTENT_BODY, active_mode="structuring"),
         ]
     )
     return _scenario(
@@ -172,7 +172,7 @@ def reject_then_explore() -> Scenario:
 def reject_proposal() -> Scenario:
     """User rejects the proposed draft at the approval gate — no artifacts created."""
     llm = ScriptedLLM(
-        tool_brain=[tool_select("write_draft", title="Intent: bản đề xuất", body=_INTENT_BODY, active_mode="draft")]
+        tool_brain=[tool_select("write_draft", title="Intent: bản đề xuất", body=_INTENT_BODY, active_mode="structuring")]
     )
     return _scenario(
         "reject-proposal",
@@ -194,7 +194,7 @@ def problem_propose_approve() -> Scenario:
                 "write_draft",
                 title="Vấn đề: Điều phối lịch học nhóm thủ công",
                 body=_PROBLEM_BODY,
-                active_mode="draft",
+                active_mode="structuring",
                 section_assessment=_PROBLEM_FULL_SECTION_ASSESSMENT,
             )
         ]

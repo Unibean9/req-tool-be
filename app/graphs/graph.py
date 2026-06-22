@@ -15,9 +15,6 @@ from app.graphs.agent_tools import (
 )
 from app.graphs.nodes import (
     analyze_node,
-    greeting_node,
-    intent_router_node,
-    route_after_intent,
     route_before_analyze,
     route_node,
     summarize_node,
@@ -28,8 +25,6 @@ from app.graphs.state import WorkflowState
 def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     builder = StateGraph(WorkflowState)
 
-    builder.add_node("intent_router", intent_router_node)
-    builder.add_node("greeting", greeting_node)
     builder.add_node("analyze", analyze_node)
     builder.add_node("summarize", summarize_node)
     # Tool-loop: analyze emits an AIMessage(tool_calls) via the shim, route_node dispatches to this
@@ -43,14 +38,9 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         ]),
     )
 
-    # Entry: classify intent first. greeting/smalltalk → greeting (chitchat), else → analyze.
-    # On resume LangGraph re-enters the interrupted node directly, so intent_router does not re-run.
-    builder.set_entry_point("intent_router")
-    builder.add_conditional_edges("intent_router", route_after_intent, {
-        "greeting": "greeting",
-        "analyze": "analyze",
-    })
-    builder.add_edge("greeting", "analyze")
+    # Entry: the analyst directly. It reads the conversation and current state, detects locale, and
+    # handles greetings/smalltalk in-loop via respond/ask_user — no separate intent pre-router.
+    builder.set_entry_point("analyze")
     builder.add_conditional_edges("analyze", route_node, {
         "tools": "tools",
         END: END,

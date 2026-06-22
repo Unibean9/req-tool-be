@@ -87,11 +87,11 @@ async def test_agent_self_initiates_two_modes(client, scenario_env, scenario_pro
         if isinstance(analysis, dict):
             analysis_turns.append(analysis)
 
-    modes = [(t.get("active_mode") or "qa") for t in analysis_turns]
+    modes = [(t.get("active_mode") or "discovery") for t in analysis_turns]
     proactive_count = count_proactive_modes(analysis_turns)
-    # Post spec §7.1 migration the Q&A baseline is 'discovery' (legacy 'qa' kept); variety counts
-    # distinct proactive modes (anything off the baseline).
-    _baseline = {"qa", "discovery"}
+    # Post spec §7.1 migration the Q&A baseline is 'discovery'; variety counts distinct proactive
+    # modes (anything off the baseline).
+    _baseline = {"discovery"}
     variety = len({m for m in modes if m not in _baseline})
     print(f"\n=== S1 MODE EVAL === modes={modes} proactive={proactive_count} variety={variety}")
 
