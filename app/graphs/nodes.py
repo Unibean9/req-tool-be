@@ -185,6 +185,126 @@ SUMMARY_SYSTEM = (
     "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
 )
 
+# Triage schema: classify a fresh turn and, for a conversational one, draft the reply in one cheap
+# call. `reply` is only meaningful when turn_type == "converse".
+TRIAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "turn_type": {"type": "string", "enum": ["converse", "work"]},
+        "locale": {"type": "string", "enum": ["vi", "en"]},
+        "reply": {"type": "string"},
+    },
+    "required": ["turn_type"],
+}
+
+TRIAGE_SYSTEM = (
+    "Bạn là bộ phân loại lượt mở đầu cho một trợ lý phân tích yêu cầu sản phẩm. "
+    "Quyết định lượt này là trò chuyện xã giao hay là công việc phân tích yêu cầu."
+)
+
+# Locale-templated fallback when the classifier returns no reply text for a converse turn.
+_FALLBACK_GREETING = {
+    "vi": "Xin chào! Tôi là trợ lý phân tích yêu cầu. Bạn muốn bắt đầu từ đâu?",
+    "en": "Hello! I'm your requirements analysis assistant. Where would you like to start?",
+}
+
+
+async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    """Entry node: classify a fresh turn so a greeting/smalltalk skips the full analyst pass.
+
+    One cheap LLM call (the standard client, not the strong one) decides ``converse`` vs ``work``,
+    detects the locale, and — for a conversational turn — drafts the reply in the same call.
+    ``work`` falls straight through to analyze_node. The classifier runs once per fresh invocation;
+    on resume LangGraph re-enters the interrupted node (converse/tools), so it never re-runs.
+    """
+    cfg = config["configurable"]
+    llm_client = cfg["llm_client"]
+    if llm_client is None:
+        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+
+    last_user = ""
+    for m in reversed(state.get("messages") or []):
+        role, content = _msg_role_content(m)
+        if role == "user":
+            last_user = content
+            break
+
+    prompt = (
+        "Phân loại tin nhắn của người dùng.\n\n"
+        f"Tin nhắn: {last_user!r}\n\n"
+        "turn_type: 'converse' nếu chỉ là chào hỏi, cảm ơn, tán gẫu hoặc lạc đề; "
+        "'work' nếu là yêu cầu phân tích/làm rõ/tạo artifact.\n"
+        "locale: 'vi' nếu tiếng Việt, 'en' nếu tiếng Anh.\n"
+        "Nếu turn_type='converse', đặt 'reply' là một câu đáp ngắn, thân thiện ĐÚNG ngôn ngữ "
+        "người dùng — chào lại, nói ngắn gọn bạn giúp được gì, và mời họ chia sẻ điều muốn xây."
+    )
+    result, _usage = await llm_client.generate(
+        messages=[{"role": "user", "content": prompt}],
+        system=TRIAGE_SYSTEM,
+        max_tokens=300,
+        response_format=TRIAGE_SCHEMA,
+    )
+    reported = result if isinstance(result, dict) else {}
+    turn_type = reported.get("turn_type") or "work"
+    locale = state.get("locale") or reported.get("locale")
+    reply = reported.get("reply") if turn_type == "converse" else None
+    return {"turn_type": turn_type, "locale": locale, "triage_reply": reply}
+
+
+def route_after_triage(state: WorkflowState) -> str:
+    """Conversational turns peel off to converse_node; everything else goes to the analyst."""
+    return "converse" if state.get("turn_type") == "converse" else "analyze"
+
+
+async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
+    """Reply to a conversational turn and pause for the human — no analyst pass, no LLM call here.
+
+    Uses the reply triage already drafted (``triage_reply``), so on resume this node re-runs without
+    any new model call: the idempotent save (keyed on content) skips, and ``interrupt`` returns the
+    human reply, which flows on to analyze_node for the real work.
+    """
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    session_id = uuid.UUID(cfg["thread_id"])
+    locale = state.get("locale") or "vi"
+    message = (state.get("triage_reply") or "").strip() or _FALLBACK_GREETING.get(locale, _FALLBACK_GREETING["vi"])
+
+    async with session_factory() as db:
+        already_saved = (
+            await db.execute(
+                select(exists().where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.AGENT,
+                    AgentMessage.content == message,
+                ))
+            )
+        ).scalar()
+        if not already_saved:
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=message,
+                    payload={"kind": "greeting", "locale": locale},
+                )
+            )
+        session_row = (
+            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+        ).scalar_one()
+        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        await db.commit()
+
+    user_response = interrupt({"type": "ask_human", "message": message})
+    user_content = user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
+    return {
+        "messages": [
+            {"role": "assistant", "content": message},
+            {"role": "user", "content": user_content},
+        ]
+    }
+
+
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]

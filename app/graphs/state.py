@@ -95,6 +95,10 @@ class WorkflowState(TypedDict):
     critique_rounds: int
     quality_report: dict[str, Any] | None
     locale: str | None
+    # Triage channels: the entry node classifies each fresh turn as "converse" (greeting/smalltalk)
+    # or "work" (requirements analysis) and, for converse, stages the reply for converse_node.
+    turn_type: str | None
+    triage_reply: str | None
     section_coverage: dict[str, str] | None
     coverage_ratio: float | None
     coverage_complete: bool | None

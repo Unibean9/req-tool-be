@@ -23,21 +23,31 @@ def test_graph_compiles():
 
 def test_graph_has_tool_loop_nodes():
     names = _node_names()
-    assert {"analyze", "summarize", "tools"} <= names
+    assert {"triage", "converse", "analyze", "summarize", "tools"} <= names
 
 
 def test_removed_nodes_absent():
     names = _node_names()
-    # The intent pre-router and greeting node were removed: the analyst now handles greetings in-loop.
+    # The legacy intent pre-router / greeting node are gone; triage + converse replace them.
     assert {"ask_human", "confirm", "quality_gate", "propose_artifacts",
             "intent_router", "greeting"}.isdisjoint(names)
 
 
 # --- Group 2: Topology / edges ---
 
-def test_entry_point_is_analyze():
+def test_entry_point_is_triage():
     g = build_graph(checkpointer=None).get_graph()
-    assert ("__start__", "analyze") in {(e.source, e.target) for e in g.edges}
+    assert ("__start__", "triage") in {(e.source, e.target) for e in g.edges}
+
+
+def test_triage_branches_to_converse_and_analyze():
+    pairs = _edge_pairs()
+    assert ("triage", "converse") in pairs
+    assert ("triage", "analyze") in pairs
+
+
+def test_converse_flows_to_analyze():
+    assert ("converse", "analyze") in _edge_pairs()
 
 
 def test_analyze_branches_to_tools_and_end():

@@ -1,6 +1,6 @@
 import uuid
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from sqlalchemy import select
@@ -13,6 +13,7 @@ from app.graphs.state import (
     WorkflowState,
 )
 from app.models.agent import (
+    AgentMessage,
     AgentRun,
     AgentSession,
 )
@@ -48,6 +49,8 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "critique_rounds": 0,
         "quality_report": None,
         "locale": None,
+        "turn_type": None,
+        "triage_reply": None,
         "section_coverage": None,
         "coverage_ratio": None,
         "coverage_complete": None,
@@ -92,6 +95,13 @@ async def _make_agent_run(db_session, agent_session: AgentSession) -> AgentRun:
     db_session.add(run)
     await db_session.commit()
     return run
+
+
+async def _project(client) -> uuid.UUID:
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    return uuid.UUID(project["id"])
 
 
 # ---------------------------------------------------------------------------
@@ -627,7 +637,7 @@ def _smart_llm():
 
 @pytest.mark.asyncio
 async def test_resume_from_ask_human_interrupt_continues_loop(client, db_session):
-    """analyze is the entry point: a first invoke interrupts at ask_user; resuming re-enters the
+    """A work turn triages straight to analyze and interrupts at ask_user; resuming re-enters the
     interrupted tool and loops back to analyze, so the analyze count advances past the resume."""
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.types import Command
@@ -654,6 +664,134 @@ async def test_resume_from_ask_human_interrupt_continues_loop(client, db_session
     # Resume the ask_human interrupt: the loop continues and analyze runs again.
     await graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
     assert len(analyze_calls) == 2
+
+
+# ---------------------------------------------------------------------------
+# Triage + converse (entry routing)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_triage_classifies_converse_and_drafts_reply():
+    from app.graphs.nodes import triage_node
+
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=(
+        {"turn_type": "converse", "locale": "vi", "reply": "Xin chào, bạn muốn xây gì?"}, None
+    ))
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "chào bạn"}]
+
+    result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["turn_type"] == "converse"
+    assert result["locale"] == "vi"
+    assert result["triage_reply"] == "Xin chào, bạn muốn xây gì?"
+
+
+@pytest.mark.asyncio
+async def test_triage_classifies_work_drops_reply():
+    from app.graphs.nodes import triage_node
+
+    llm = AsyncMock()
+    llm.generate = AsyncMock(return_value=(
+        {"turn_type": "work", "locale": "en", "reply": "ignored"}, None
+    ))
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "I need a user story"}]
+
+    result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["turn_type"] == "work"
+    # reply is only carried for a conversational turn.
+    assert result["triage_reply"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_raises_when_llm_client_none():
+    from app.graphs.nodes import triage_node
+
+    config = _config(str(uuid.uuid4()), str(uuid.uuid4()), llm_client=None)
+    config["configurable"]["llm_client"] = None
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "chào"}]
+
+    with pytest.raises(ValueError):
+        await triage_node(state, config)
+
+
+def test_route_after_triage_splits_converse_from_work():
+    from app.graphs.nodes import route_after_triage
+
+    assert route_after_triage({"turn_type": "converse"}) == "converse"
+    assert route_after_triage({"turn_type": "work"}) == "analyze"
+    # Missing/unknown defaults to the analyst, never silently skips work.
+    assert route_after_triage({}) == "analyze"
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.nodes.interrupt")
+async def test_converse_node_replies_and_interrupts_without_agent_run(mock_interrupt, client, db_session):
+    """A conversational turn replies and pauses for the human — no AgentRun (the full analyst pass
+    never ran), and no LLM call inside converse itself (it reuses the triage-drafted reply)."""
+    from app.graphs.nodes import converse_node
+
+    mock_interrupt.return_value = {"content": "tôi muốn xây app abc"}
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "vi"
+    state["triage_reply"] = "Xin chào! Bạn muốn bắt đầu từ đâu?"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await converse_node(state, config)
+
+    mock_interrupt.assert_called_once()
+    async with TestSessionFactory() as db:
+        msg = (
+            await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
+        ).scalar_one()
+        assert msg.payload["kind"] == "greeting"
+        assert msg.content == "Xin chào! Bạn muốn bắt đầu từ đâu?"
+        runs = (await db.execute(select(AgentRun).where(AgentRun.session_id == agent_session.id))).scalars().all()
+        assert runs == []
+    # The human's reply is folded in for analyze to pick up next.
+    assert result["messages"][-1]["content"] == "tôi muốn xây app abc"
+
+
+@pytest.mark.asyncio
+async def test_greeting_turn_skips_full_analysis(client, db_session):
+    """End to end: a greeting triages to converse and interrupts WITHOUT running analyze — proven by
+    zero AgentRun rows (analyze is the only node that records one)."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from app.graphs.graph import build_graph
+    from app.graphs.nodes import TRIAGE_SCHEMA
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm = AsyncMock()
+
+    async def _generate(*, messages, system, max_tokens, response_format=None):
+        if response_format is TRIAGE_SCHEMA:
+            return {"turn_type": "converse", "locale": "vi", "reply": "Xin chào!"}, None
+        return {}, None
+
+    llm.generate = _generate
+    graph = build_graph(checkpointer=MemorySaver())
+    config = _config(str(agent_session.id), str(project_id), llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "chào bạn"}]
+    out = await graph.ainvoke(state, config)
+
+    assert "__interrupt__" in out
+    async with TestSessionFactory() as db:
+        runs = (await db.execute(select(AgentRun).where(AgentRun.session_id == agent_session.id))).scalars().all()
+        assert runs == [], "greeting must not trigger the analyst pass"
 
 
 # ---------------------------------------------------------------------------

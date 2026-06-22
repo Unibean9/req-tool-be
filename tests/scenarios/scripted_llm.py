@@ -113,6 +113,10 @@ class ScriptedLLM:
         # Judge guard before the others: the on-topic harness schema.
         if "on_topic" in props:
             return "judge"
+        # Triage classifier: scenarios are all requirements work, so default to "work" and skip the
+        # conversational branch.
+        if "turn_type" in props:
+            return "triage"
         if set(props.keys()) == {"summary"}:
             return "summary"
         # Unknown call shape — return an empty dict (harmless).
@@ -133,6 +137,8 @@ class ScriptedLLM:
             # Exhausted -> empty selection (no tool). The shim emits a plain AIMessage and route_node
             # ends the turn: the tool-loop terminal.
             return {}
+        if route == "triage":
+            return {"turn_type": "work", "locale": "vi"}
         if route == "judge":
             return dict(self._judge)
         if route == "summary":
