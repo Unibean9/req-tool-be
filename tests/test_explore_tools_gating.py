@@ -68,6 +68,28 @@ def test_write_note_available_below_step_limit():
 
 
 # ---------------------------------------------------------------------------
+# T5 — respond is always offered and breaks the note streak (a user-facing pause)
+# ---------------------------------------------------------------------------
+
+def _respond_turn(call_id: str):
+    return AIMessage(
+        content="", tool_calls=[{"id": call_id, "name": "respond", "args": {"message": "x", "mode": "critique"}}]
+    )
+
+
+def test_respond_always_available():
+    assert "respond" in _names(get_available_tools({"messages": []}))
+
+
+def test_respond_resets_note_step_limit():
+    # NOTE_STEP_LIMIT notes would normally drop the note tools; a respond turn after them is a
+    # user-facing pause that resets the streak, so the note tools are offered again.
+    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)] + [_respond_turn("r1")]
+    names = _names(get_available_tools({"messages": messages}))
+    assert "critique_note" in names and "explore_note" in names
+
+
+# ---------------------------------------------------------------------------
 # T4 — write_note appends a ToolMessage to messages (decision 3: no notes field)
 # ---------------------------------------------------------------------------
 

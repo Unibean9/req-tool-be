@@ -48,11 +48,10 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "quality_report": None,
         "locale": None,
         "intent": None,
-        "slot_coverage": None,
+        "section_coverage": None,
         "coverage_ratio": None,
         "coverage_complete": None,
-        "coverage_stall_count": None,
-        "last_asked_slot": None,
+        "section_coverage_stall_count": None,
         "working_draft": None,
         "mode_hint": None,
     }
@@ -423,20 +422,17 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
-    state["slot_coverage"] = {
-        "who": "filled",
-        "obstacle": "filled",
-        "root_cause": "empty",
-        "frequency": "empty",
-        "impact": "empty",
+    state["section_coverage"] = {
+        "vision_objectives": "filled",
+        "problem_statement": "missing",
+        "stakeholder_register": "partial",
     }
     state["coverage_complete"] = False
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Coverage" in prompt
-    assert "root_cause" in prompt
-    # Gap-inventory marker — distinguishes the coverage hint from the slot directive.
+    assert "Độ phủ section" in prompt
+    # Gap-inventory marker — lists weak sections, not a single pinned question.
     assert "các khía cạnh còn thiếu" in prompt
     assert "trả lời cụt chỉ bằng câu hỏi" in prompt
     assert "một câu hỏi chính" in prompt
@@ -446,12 +442,12 @@ def test_no_coverage_hint_when_complete():
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
-    state["slot_coverage"] = {"root_cause": "filled"}
+    state["section_coverage"] = {"problem_statement": "filled"}
     state["coverage_complete"] = True
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Coverage" not in prompt
+    assert "Độ phủ section" not in prompt
 
 
 @pytest.mark.asyncio
@@ -1091,7 +1087,10 @@ def test_no_mode_hint_injects_proactive_rule():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "chủ động chuyển" in prompt
+    # The proactive rule now steers the agent to voice critique/explore via `respond` instead of
+    # wrapping it in a question — guard that intent, not the old enum-era wording.
+    assert "chủ động" in prompt
+    assert "respond" in prompt
 
 
 def test_mode_directive_precedes_language_lock():

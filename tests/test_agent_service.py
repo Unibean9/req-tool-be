@@ -74,12 +74,14 @@ async def test_analyze_node_persists_coverage_fields():
                 "ask_user",
                 message="Tần suất xảy ra như thế nào?",
                 confidence=0.4,
-                slot_assessment={
-                    "who": "filled",
-                    "obstacle": "filled",
-                    "root_cause": "partial",
-                    "frequency": "empty",
-                    "impact": "empty",
+                section_assessment={
+                    "vision_objectives": "filled",
+                    "problem_statement": "filled",
+                    "stakeholder_register": "partial",
+                    "scope_capabilities": "missing",
+                    "business_rules": "missing",
+                    "constraints_assumptions": "missing",
+                    "risks_issues": "missing",
                 },
             )
         ]
@@ -100,7 +102,7 @@ async def test_analyze_node_persists_coverage_fields():
         "quality_report": None,
         "locale": "vi",
         "intent": "task",
-        "slot_coverage": None,
+        "section_coverage": None,
         "coverage_ratio": None,
         "coverage_complete": None,
     }
@@ -120,10 +122,10 @@ async def test_analyze_node_persists_coverage_fields():
             },
         )
 
-    assert result["slot_coverage"]["root_cause"] == "partial"
-    assert result["coverage_ratio"] == 0.5
+    assert result["section_coverage"]["stakeholder_register"] == "partial"
+    assert result["coverage_ratio"] == pytest.approx(2.5 / 7)
     assert result["coverage_complete"] is False
-    assert fake_db.added_runs[0].analysis_result["coverage_ratio"] == 0.5
+    assert fake_db.added_runs[0].analysis_result["coverage_ratio"] == pytest.approx(2.5 / 7)
     assert fake_db.added_runs[0].analysis_result["coverage_complete"] is False
 
 
@@ -720,10 +722,10 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
     passed_state = graph.ainvoke.call_args.args[0]
     assert "locale" in passed_state and passed_state["locale"] is None
     assert "intent" in passed_state and passed_state["intent"] is None
-    assert passed_state["slot_coverage"] is None
+    assert passed_state["section_coverage"] is None
     assert passed_state["coverage_ratio"] is None
     assert passed_state["coverage_complete"] is None
-    assert passed_state["last_asked_slot"] is None
+    assert passed_state["section_coverage_stall_count"] is None
 
 
 @pytest.mark.asyncio

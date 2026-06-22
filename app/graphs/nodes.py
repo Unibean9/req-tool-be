@@ -10,11 +10,12 @@ from sqlalchemy import exists, select
 
 from app.config import settings
 from app.graphs.policy import ancestor_types
-from app.graphs.slot_schema import (
-    BRD_SLOTS,
+from app.graphs.section_schema import (
     COVERAGE_STALL_LIMIT,
-    SLOT_DESCRIPTIONS,
-    compute_coverage,
+    SECTION_DESCRIPTIONS,
+    SECTION_SPECS,
+    SECTION_TRACKED_ARTIFACT_TYPES,
+    compute_section_coverage,
 )
 from app.graphs.state import WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -29,12 +30,15 @@ from app.models.agent import (
 )
 
 # Tool-loop selection schema (Phase 5 shim). The analyst names the tool to run this turn plus its
-# args. The analytic fields (confidence, gaps, slot_assessment, active_mode, draft_update, ...) feed
-# eval (active_mode), incremental draft (draft_update) and the coverage gate (slot_assessment).
+# args. The analytic fields (confidence, gaps, section_assessment, active_mode, draft_update, ...) feed
+# eval (active_mode), incremental draft (draft_update) and the coverage gate (section_assessment).
 TOOL_SELECTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "tool": {"type": "string", "enum": ["ask_user", "write_draft", "finalize", "critique_note", "explore_note"]},
+        "tool": {
+            "type": "string",
+            "enum": ["ask_user", "respond", "write_draft", "finalize", "critique_note", "explore_note"],
+        },
         "message": {"type": "string"},
         "title": {"type": "string"},
         "body": {"type": "string"},
@@ -44,9 +48,12 @@ TOOL_SELECTION_SCHEMA = {
         "gaps": {"type": "array", "items": {"type": "string"}},
         "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
         "acknowledgment": {"type": "string"},
-        "slot_assessment": {
+        "section_assessment": {
             "type": "object",
-            "additionalProperties": {"type": "string", "enum": ["filled", "partial", "empty"]},
+            "additionalProperties": {
+                "type": "string",
+                "enum": ["missing", "partial", "filled", "needs_review"],
+            },
         },
         "active_mode": {"type": "string", "enum": ["qa", "critique", "explore", "draft"]},
         "draft_update": {"type": "string"},
@@ -57,6 +64,7 @@ TOOL_SELECTION_SCHEMA = {
 # Per-tool arg names the shim copies from the selection dict into the tool_call args.
 _TOOL_ARG_KEYS = {
     "ask_user": ["message"],
+    "respond": ["message"],
     "write_draft": ["title", "body"],
     "finalize": ["summary"],
     "critique_note": ["content"],
@@ -66,6 +74,10 @@ _TOOL_ARG_KEYS = {
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
 # picked tool so proactive S1 coverage no longer depends on the model self-reporting it.
 _NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "explore"}
+
+# respond is a user-facing critique/exploration; its angle is the mode the model picked (defaulting
+# to critique). active_mode is derived from it and also passed as the tool's `mode` arg.
+_RESPOND_MODES = ("critique", "explore")
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -251,29 +263,22 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         response_format=response_format,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
-    slot_assessment = analysis_result.get("slot_assessment") if isinstance(analysis_result, dict) else None
-    # Optimistic credit: last turn the hint pinned `last_asked_slot` and the user has now
-    # answered that exact question. A fresh 'empty' grade for it is the model under-reporting
-    # its own prior question — the root cause of the verbatim-repeated ask. Credit it 'partial'
-    # so coverage advances and the hint rotates to the next slot instead of repeating.
-    last_asked = state.get("last_asked_slot")
-    if slot_assessment is not None and last_asked and slot_assessment.get(last_asked) == "empty":
-        slot_assessment = {**slot_assessment, last_asked: "partial"}
-    # slot-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
-    # separate from "reported empty {}" (evaluated as missing -> gate), so non-slot-aware
-    # turns such as non-BRD artifacts or confident proposals continue normally.
-    if slot_assessment is None:
-        coverage = {"slot_coverage": None, "coverage_ratio": None, "coverage_complete": None}
+    section_assessment = analysis_result.get("section_assessment") if isinstance(analysis_result, dict) else None
+    # section-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
+    # separate from "reported empty {}" (evaluated as missing -> gate), so non-section-aware
+    # turns such as derived artifacts or confident proposals continue normally.
+    if section_assessment is None:
+        coverage = {"section_coverage": None, "coverage_ratio": None, "coverage_complete": None}
     else:
-        coverage = compute_coverage(artifact_type, slot_assessment)
+        coverage = compute_section_coverage(section_assessment)
     # Stall counter: increment when a gated turn fails to raise coverage, reset otherwise.
     # route_node and the coverage hint read it to escape a non-advancing elicitation loop.
     prev_ratio = state.get("coverage_ratio")
     new_ratio = coverage["coverage_ratio"]
     if new_ratio is None or coverage["coverage_complete"] or prev_ratio is None or new_ratio > prev_ratio:
-        coverage["coverage_stall_count"] = 0
+        coverage["section_coverage_stall_count"] = 0
     else:
-        coverage["coverage_stall_count"] = (state.get("coverage_stall_count") or 0) + 1
+        coverage["section_coverage_stall_count"] = (state.get("section_coverage_stall_count") or 0) + 1
     if isinstance(analysis_result, dict):
         analysis_result = {
             **analysis_result,
@@ -291,6 +296,11 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # dependent on the model also filling active_mode (which it reliably defaults to 'qa').
         if gated_tool in _NOTE_TOOL_MODE:
             analysis_result["active_mode"] = _NOTE_TOOL_MODE[gated_tool]
+        # respond carries its own angle: clamp to a valid proactive mode (default critique) so a
+        # user-facing assessment never lands back on 'qa'.
+        elif gated_tool == "respond":
+            mode = analysis_result.get("active_mode")
+            analysis_result["active_mode"] = mode if mode in _RESPOND_MODES else "critique"
 
     async with session_factory() as db:
         run = AgentRun(
@@ -313,9 +323,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "analysis_result": analysis_result,
         "turn_count": state["turn_count"] + 1,
         "last_agent_run_id": run_id,
-        # Record the slot this turn's hint pinned (the slot just asked) so the next turn's
-        # hint can rotate off it — the deterministic guard against re-asking the same slot.
-        "last_asked_slot": _coverage_hint_target(state),
         "working_draft": draft_update or state.get("working_draft"),
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
@@ -333,6 +340,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             # question; fall back to the same prompt the coverage-gate uses.
             if tool == "ask_user" and not str(args.get("message") or "").strip():
                 args["message"] = _COERCED_ASK_FALLBACK
+            # respond needs its angle as a tool arg; take the active_mode just clamped above.
+            if tool == "respond":
+                args["mode"] = analysis_result.get("active_mode") or "critique"
             result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
         else:
             done_message = str(analysis_result.get("summary") or analysis_result.get("message") or "")
@@ -383,21 +393,35 @@ def route_node(state: WorkflowState) -> str:
         return END
     # analyze_node emitted an AIMessage; dispatch on its tool_calls. No tool_calls means the loop
     # has nothing to run this turn -> finish. The finalize hard-gate and the coverage signal live in
-    # get_available_tools / _build_coverage_hint, not here.
+    # get_available_tools / _build_section_coverage_hint, not here.
     return "tools" if _last_message_has_tool_calls(state) else END
 
 
-async def _save_and_interrupt_ask(state: WorkflowState, config: RunnableConfig, content: str, *, run_id) -> str:
-    """Persist one agent question (idempotently), mark the session waiting, then interrupt.
+async def _save_and_interrupt_ask(
+    state: WorkflowState,
+    config: RunnableConfig,
+    content: str,
+    *,
+    run_id,
+    kind: str = "question",
+    mode: str | None = None,
+) -> str:
+    """Persist one agent turn (idempotently), mark the session waiting, then interrupt.
 
-    Used by the ask_user tool (run_id = ToolCall.id). Keying the idempotency guard on run_id is what
-    makes an HTTP-resume — which re-executes the tool body from the top — skip the duplicate insert
-    (R1). Returns the resumed user content so the caller can fold it back into the conversation.
+    Shared by ask_user (kind="question") and respond (kind="assessment", mode set). Both use the
+    ASK_HUMAN interrupt_type so the resume accepts a free-text reply; only the persisted message kind
+    and the carried mode differ. Keying the idempotency guard on run_id is what makes an HTTP-resume —
+    which re-executes the tool body from the top — skip the duplicate insert (R1). Returns the resumed
+    user content so the caller can fold it back into the conversation.
     """
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
     locale = state.get("locale") or "vi"
+
+    payload: dict[str, Any] = {"kind": kind, "locale": locale, "options": [], "blocks": [], "run_id": run_id}
+    if mode:
+        payload["mode"] = mode
 
     async with session_factory() as db:
         already_saved = await _agent_message_already_saved(db, session_id, run_id, content)
@@ -407,13 +431,7 @@ async def _save_and_interrupt_ask(state: WorkflowState, config: RunnableConfig, 
                     session_id=session_id,
                     role=AgentMessageRole.AGENT,
                     content=content,
-                    payload={
-                        "kind": "question",
-                        "locale": locale,
-                        "options": [],
-                        "blocks": [],
-                        "run_id": run_id,
-                    },
+                    payload=payload,
                 )
             )
         session_row = (
@@ -423,7 +441,10 @@ async def _save_and_interrupt_ask(state: WorkflowState, config: RunnableConfig, 
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
 
-    user_response = interrupt({"type": "ask_human", "message": content})
+    interrupt_payload = {"type": "respond" if kind == "assessment" else "ask_human", "message": content}
+    if mode:
+        interrupt_payload["mode"] = mode
+    user_response = interrupt(interrupt_payload)
     return user_response.get("content", "") if isinstance(user_response, dict) else str(user_response or "")
 
 
@@ -560,6 +581,8 @@ def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], dr
         "Bạn điều phối hội thoại bằng cách CHỌN MỘT công cụ cho lượt này. Trả về JSON với field 'tool' "
         f"là một trong: {tool_menu}.\n"
         "- ask_user: hỏi người dùng một câu làm rõ — kèm field 'message'.\n"
+        "- respond: NÓI với người dùng một nhận định (phản biện hoặc khám phá), KHÔNG phải câu hỏi — "
+        "kèm 'message' và đặt active_mode='critique' hoặc 'explore'.\n"
         "- write_draft: đề xuất bản nháp artifact để duyệt — kèm 'title' và 'body'.\n"
         "- critique_note: ghi chú phản biện (soi điểm yếu/giả định rủi ro) vào scratchpad — kèm 'content'.\n"
         "- explore_note: ghi chú khám phá (mở rộng góc nhìn/phương án) vào scratchpad — kèm 'content'.\n"
@@ -568,8 +591,8 @@ def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], dr
         "draft qua field 'draft_update' (bồi đắp tăng dần, không bịa nội dung chưa có). Không lặp lại câu "
         "hỏi đã hỏi."
         f"{_build_synthesis_directive('dùng write_draft')}"
-        f"{_build_slot_directive(state)}"
-        f"{_build_coverage_hint(state)}"
+        f"{_build_section_directive(state)}"
+        f"{_build_section_coverage_hint(state)}"
         f"{draft_block}"
         f"{working_draft_block}"
         f"{_build_mode_directive(state)}"
@@ -592,12 +615,12 @@ def _build_mode_directive(state: WorkflowState) -> str:
             f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
         )
     return (
-        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): active_mode mô tả GÓC tiếp cận của lượt này, kể cả khi bạn vẫn "
-        "dùng ask_user. Sau khoảng 2 lượt đã nắm bối cảnh cơ bản — hoặc NGAY khi người dùng hỏi nhận "
-        "định/giả định/rủi ro/hướng đi của bạn — hãy chủ động chuyển active_mode sang 'critique' (soi "
-        "điểm yếu/giả định) hoặc 'explore' (mở rộng góc nhìn) thay vì để 'qa'. Có thể chọn "
-        "critique_note/explore_note để ghi lại phân tích trước khi phản hồi. Đừng mặc định 'qa' khi "
-        "bạn đang phản biện hay khám phá."
+        "\n\nGỢI Ý CHẾ ĐỘ (chủ động): sau khoảng 2 lượt đã nắm bối cảnh cơ bản — hoặc NGAY khi người "
+        "dùng hỏi nhận định/giả định/rủi ro/hướng đi của bạn — đừng gói nhận định vào một câu hỏi. "
+        "Khi muốn phản biện hay khám phá, hãy NÓI thẳng với người dùng bằng tool 'respond' "
+        "(active_mode='critique' hoặc 'explore'); dùng critique_note/explore_note để ghi phân tích "
+        "nội bộ trước khi respond nếu cần. Chỉ dùng ask_user khi thực sự cần một thông tin còn thiếu — "
+        "không dùng ask_user để né việc đưa ra nhận định."
     )
 
 
@@ -619,92 +642,54 @@ def _build_synthesis_directive(trigger: str = "dùng write_draft") -> str:
     )
 
 
-def _build_slot_directive(state: WorkflowState) -> str:
-    """For BRD artifact types, instruct the LLM to always report slot_assessment.
+def _build_section_directive(state: WorkflowState) -> str:
+    """For section-tracked artifact types, instruct the LLM to always report section_assessment.
 
-    Without this the gate is a no-op in production: slot_assessment is optional in the
+    Without this the gate is a no-op in production: section_assessment is optional in the
     schema, so an LLM that omits it never gets coverage computed (None -> fail-open).
     """
     artifact_type = state.get("artifact_type") or ""
-    slot_spec = BRD_SLOTS.get(artifact_type)
-    if not slot_spec:
+    if artifact_type not in SECTION_TRACKED_ARTIFACT_TYPES:
         return ""
-    slot_lines = "\n".join(
-        f"- {slot}: {SLOT_DESCRIPTIONS.get(slot, slot)}"
-        for slot in slot_spec["required"]
+    section_lines = "\n".join(
+        f"- {section}: {SECTION_DESCRIPTIONS.get(section, section)}"
+        for section in SECTION_SPECS
     )
     return (
-        f"\n\nĐÁNH GIÁ ĐỘ PHỦ: với loại '{artifact_type}', LUÔN trả field slot_assessment — object chấm "
-        "trạng thái TỪNG slot bắt buộc dưới đây dựa trên TOÀN BỘ thông tin user đã cung cấp:\n"
-        f"{slot_lines}\n"
-        "Quy tắc chấm: 'filled' khi user đã cung cấp thông tin rõ ràng cho slot đó; 'partial' khi mới có "
-        "một phần hoặc còn mơ hồ; 'empty' khi chưa có gì. Nếu câu trả lời mới nhất của user đã đáp ứng "
-        "một slot, PHẢI nâng slot đó lên 'filled' hoặc 'partial' — tuyệt đối không giữ nguyên 'empty'. "
-        "Đây là rubric tham chiếu để bạn tự đánh giá độ đầy đủ, KHÔNG phải checklist hỏi tuần tự: bạn tự "
-        "quyết slot nào nên khai thác tiếp theo dựa trên mạch hội thoại, và tự quyết khi nào đã đủ để propose."
+        "\n\nĐÁNH GIÁ ĐỘ PHỦ: LUÔN trả field section_assessment — object chấm trạng thái TỪNG section "
+        "dưới đây dựa trên TOÀN BỘ thông tin user đã cung cấp:\n"
+        f"{section_lines}\n"
+        "Quy tắc chấm: 'filled' khi section đã được làm rõ đầy đủ; 'partial' khi mới có một phần hoặc "
+        "còn mơ hồ; 'needs_review' khi đã nắm nhưng cần kiểm chứng; 'missing' khi chưa có gì. Nếu câu "
+        "trả lời mới nhất của user đã làm rõ một section, PHẢI nâng section đó lên — tuyệt đối không giữ "
+        "nguyên 'missing'. Đây là rubric tham chiếu để bạn tự đánh giá độ đầy đủ, KHÔNG phải checklist hỏi "
+        "tuần tự: bạn tự quyết section nào nên khai thác tiếp dựa trên mạch hội thoại, và tự quyết khi nào "
+        "đã đủ để propose."
     )
 
 
-def _pick_weak_slot(slot_coverage: dict[str, str], required_slots: list[str], exclude: str | None = None) -> str | None:
-    """First 'empty' (then 'partial') required slot, skipping `exclude`.
-
-    `exclude` is the slot the previous turn already asked about; skipping it stops the
-    hint re-pinning the same slot two turns running when the model under-grades.
-    """
-    for status in ("empty", "partial"):
-        for slot in required_slots:
-            if slot != exclude and slot_coverage.get(slot) == status:
-                return slot
-    return None
-
-
-def _coverage_hint_target(state: WorkflowState) -> str | None:
-    """Required slot to exclude from this turn's gap inventory, or None when none applies.
-
-    analyze_node persists this as last_asked_slot; _build_coverage_hint drops it from the gap
-    list so the same slot is not re-offered two turns running (best-effort anti-repeat — the
-    LLM may still pick a different listed slot). None means coverage is OK/untracked, the loop
-    has stalled, or the only weak slot left is the one asked last turn, in which case the hint
-    steers the model to move on instead of repeating.
-    """
-    if state.get("coverage_complete") is not False:
-        return None
-    if (state.get("coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
-        return None
-    artifact_type = state.get("artifact_type") or ""
-    slot_coverage = state.get("slot_coverage") or {}
-    required_slots = (BRD_SLOTS.get(artifact_type) or {}).get("required") or []
-    return _pick_weak_slot(slot_coverage, required_slots, exclude=state.get("last_asked_slot"))
-
-
-def _build_coverage_hint(state: WorkflowState) -> str:
+def _build_section_coverage_hint(state: WorkflowState) -> str:
     if state.get("coverage_complete") is not False:
         return ""
-    artifact_type = state.get("artifact_type")
-    weak_slot = _coverage_hint_target(state)
-    # weak_slot is None when the loop stalled OR the only slot still weak is the one we just
-    # asked — either way re-pinning would reproduce the previous question verbatim, so steer
-    # the model to synthesize what it has and move on or propose.
-    if weak_slot is None:
+    section_coverage = state.get("section_coverage") or {}
+    # Stall: coverage stopped advancing — re-pinning the same gaps would reproduce the previous
+    # question verbatim, so steer the model to synthesize what it has and move on or propose.
+    if (state.get("section_coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
         return (
-            f"\n\nCoverage '{artifact_type}': độ phủ không tăng sau nhiều lượt hỏi. Đừng lặp lại cùng câu "
-            "hỏi — hãy tổng hợp thông tin đã có và chuyển sang propose, hoặc hỏi một góc độ hoàn toàn khác."
+            "\n\nĐộ phủ section không tăng sau nhiều lượt hỏi. Đừng lặp lại cùng câu hỏi — hãy tổng hợp "
+            "thông tin đã có và chuyển sang propose, hoặc hỏi một góc độ hoàn toàn khác."
         )
-    # Gap-inventory: list every weak slot (empty first, then partial) so the LLM picks the angle
-    # that fits the conversation instead of being pinned to one scripted question. last_asked_slot
-    # is excluded for best-effort anti-repeat — see _coverage_hint_target.
-    slot_coverage = state.get("slot_coverage") or {}
-    required_slots = (BRD_SLOTS.get(artifact_type) or {}).get("required") or []
-    last_asked = state.get("last_asked_slot")
+    # Gap-inventory: list every weak section (missing first, then partial/needs_review) so the LLM
+    # picks the angle that fits the conversation instead of being pinned to one scripted question.
     gap_lines = [
-        f"- {SLOT_DESCRIPTIONS.get(slot, slot)} ({status})"
-        for status in ("empty", "partial")
-        for slot in required_slots
-        if slot != last_asked and slot_coverage.get(slot) == status
+        f"- {SECTION_DESCRIPTIONS.get(section, section)} ({section_coverage.get(section)})"
+        for status in ("missing", "partial", "needs_review")
+        for section in SECTION_SPECS
+        if section_coverage.get(section) == status
     ]
     inventory = "\n".join(gap_lines)
     return (
-        f"\n\nCoverage '{artifact_type}': các khía cạnh còn thiếu hoặc chưa rõ (rubric tham chiếu, "
+        "\n\nĐộ phủ section — các khía cạnh còn thiếu hoặc chưa rõ (rubric tham chiếu, "
         "không phải thứ tự bắt buộc):\n"
         f"{inventory}\n"
         "Tự chọn angle phù hợp nhất với mạch hội thoại để khai thác tiếp — không nhất thiết theo thứ tự "

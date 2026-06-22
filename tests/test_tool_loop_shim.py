@@ -60,6 +60,31 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_respond_selection_derives_mode_and_dispatches_arg(client, db_session):
+    """respond is the user-facing critique/explore surface: the shim clamps active_mode to a
+    proactive mode and passes it as the tool's `mode` arg, so a critique cannot silently fall back
+    to Q&A (the note-default-'qa' regression)."""
+    from app.graphs.nodes import analyze_node
+    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm = ScriptedLLM(tool_brain=[
+        tool_select("respond", message="Giả định 'mỗi tuần' có vẻ rủi ro nhất.", active_mode="critique")
+    ])
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), llm_client=llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    out = await analyze_node(state, config)
+    call = out["messages"][-1].tool_calls[0]
+    assert call["name"] == "respond"
+    assert call["args"]["mode"] == "critique"
+    assert out["analysis_result"]["active_mode"] == "critique"
+
+
+@pytest.mark.asyncio
 async def test_tool_selection_unavailable_tool_coerced_to_ask(client, db_session):
     """finalize hard-gate: with an empty working_draft finalize is not offered, so a model that
     picks it anyway is coerced to ask_user rather than dispatching an ungated finalize (S4)."""

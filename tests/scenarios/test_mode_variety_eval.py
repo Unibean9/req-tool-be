@@ -44,12 +44,11 @@ async def _create_session(client, headers, project_id: str) -> uuid.UUID:
 
 @pytest.mark.xfail(
     reason=(
-        "Measurement-bound under the tool-loop: this eval reads active_mode from the LAST analyze turn "
-        "of each drain, but a drain only pauses on an interrupting tool (ask_user/write_draft). The note "
-        "tools (critique_note/explore_note) don't interrupt, so a note turn is never the captured turn — "
-        "the captured turn is always ask_user, which the model tags 'qa'. The split still feeds the "
-        "production CLI gate (smarter_brain_checkpoint counts every AgentRun row, including note turns). "
-        "Closing S1-on-this-eval needs a visible 'respond with critique' surface (deferred)."
+        "The visible critique/explore surface now exists: `respond` is an interrupting, mode-bearing "
+        "tool, so a drain CAN pause on a critique/explore turn and this eval can capture active_mode != "
+        "'qa'. What remains live-dependent is whether the real analyst actually picks `respond` over "
+        "ask_user on this transcript — kept xfail(strict=False) so the suite stays green offline; a real "
+        "run with JUDGE_API_KEY should xpass and is how we confirm the fix end-to-end."
     ),
     strict=False,
 )

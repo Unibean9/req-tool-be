@@ -188,6 +188,42 @@ async def explore_note(
 
 
 # ---------------------------------------------------------------------------
+# respond — user-facing critique/exploration (mode-bearing, interrupting)
+# ---------------------------------------------------------------------------
+# The note tools are silent scratchpad; respond is the outward voice for a non-question turn. It
+# lets the analyst deliver a critique or an exploration TO the user and pause for their reaction,
+# so the agent is not forced to phrase every proactive turn as an ask_user (the Q&A-bias fix).
+
+async def _respond_impl(message: str, mode: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+    # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id, ASK_HUMAN
+    # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
+    # mode differ, so the user sees an assessment rather than a question.
+    user_content = await nodes._save_and_interrupt_ask(
+        state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
+    )
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(content=message, tool_call_id=tool_call_id),
+                {"role": "user", "content": user_content},
+            ]
+        }
+    )
+
+
+@tool
+async def respond(
+    message: str,
+    mode: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Share an assessment with the user — a critique or exploration, not a question — and pause for their reaction."""  # noqa: E501
+    return await _respond_impl(message, mode, state, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
@@ -217,7 +253,7 @@ def _consecutive_note_turns(messages: list) -> int:
         names = _tool_call_names(message)
         if not names:
             continue
-        if any(name in ("ask_user", "write_draft") for name in names):
+        if any(name in ("ask_user", "write_draft", "respond") for name in names):
             break
         if any(name in NOTE_TOOL_NAMES for name in names):
             count += 1
@@ -231,7 +267,7 @@ def get_available_tools(state: WorkflowState) -> list:
       → CLOSED, never crashes).
     - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes, forcing ask_user/write_draft.
     """
-    tools = [ask_user, write_draft, critique_note, explore_note]
+    tools = [ask_user, respond, write_draft, critique_note, explore_note]
     if (state.get("working_draft") or "").strip():
         tools.append(finalize)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:

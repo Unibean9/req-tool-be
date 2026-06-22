@@ -1,7 +1,7 @@
 from app.graphs.state import WorkflowState
 
 
-def test_workflow_state_accepts_slot_fields():
+def test_workflow_state_accepts_section_fields():
     state: WorkflowState = {
         "artifact_type": "problem",
         "workflow_area": "analysis",
@@ -18,14 +18,22 @@ def test_workflow_state_accepts_slot_fields():
         "quality_report": None,
         "locale": None,
         "intent": None,
-        "slot_coverage": None,
+        "section_coverage": None,
         "coverage_ratio": None,
         "coverage_complete": None,
     }
 
-    assert state["slot_coverage"] is None
+    assert state["section_coverage"] is None
     assert state["coverage_ratio"] is None
     assert state["coverage_complete"] is None
-    assert "slot_coverage" in WorkflowState.__annotations__
-    assert "coverage_ratio" in WorkflowState.__annotations__
-    assert "coverage_complete" in WorkflowState.__annotations__
+
+
+def test_state_has_section_coverage_field():
+    assert "section_coverage" in WorkflowState.__annotations__
+    assert "section_coverage_stall_count" in WorkflowState.__annotations__
+
+
+def test_state_no_longer_has_slot_coverage_field():
+    assert "slot_coverage" not in WorkflowState.__annotations__
+    assert "last_asked_slot" not in WorkflowState.__annotations__
+    assert "coverage_stall_count" not in WorkflowState.__annotations__
