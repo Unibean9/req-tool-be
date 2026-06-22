@@ -351,7 +351,7 @@ def _extract_bedrock_text(data: dict[str, Any]) -> str | None:
 
 
 def _normalize_usage(input_tokens: Any, output_tokens: Any, total_tokens: Any = None) -> dict[str, int] | None:
-    """Chuẩn hoá token usage về {"input", "output", "total"}; trả None nếu provider không cung cấp."""
+    """Normalize token usage into {"input", "output", "total"}; return None if the provider omits it."""
     if input_tokens is None and output_tokens is None and total_tokens is None:
         return None
     inp = int(input_tokens or 0)

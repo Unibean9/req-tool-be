@@ -9,7 +9,7 @@ from app.services.llm_clients import (
     OpenAILLMClient,
 )
 
-# Payload kèm usage cho từng provider — đều chuẩn hoá về {"input": 11, "output": 22, "total": 33}
+# Payload with usage for each provider — all normalize to {"input": 11, "output": 22, "total": 33}
 _PAYLOAD_WITH_USAGE = {
     OpenAILLMClient: {
         "output_text": "raw answer",
@@ -17,7 +17,7 @@ _PAYLOAD_WITH_USAGE = {
     },
     AnthropicLLMClient: {
         "content": [{"type": "text", "text": "raw answer"}],
-        "usage": {"input_tokens": 11, "output_tokens": 22},  # không có total → tự tính
+        "usage": {"input_tokens": 11, "output_tokens": 22},  # no total → computed
     },
     GoogleLLMClient: {
         "candidates": [{"content": {"parts": [{"text": "raw answer"}]}}],
@@ -29,7 +29,7 @@ _PAYLOAD_WITH_USAGE = {
     },
 }
 
-# Payload không có usage cho từng provider
+# Payload without usage for each provider
 _PAYLOAD_NO_USAGE = {
     OpenAILLMClient: {"output_text": "raw answer"},
     AnthropicLLMClient: {"content": [{"type": "text", "text": "raw answer"}]},

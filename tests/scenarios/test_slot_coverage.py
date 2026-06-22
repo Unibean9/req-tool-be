@@ -32,7 +32,7 @@ _FULL_PROBLEM = {
 
 
 def _proposed_tool_calls(snapshot: dict) -> list[dict]:
-    """write_draft proposals waiting at the approval gate trong snapshot này."""
+    """write_draft proposals waiting at the approval gate in this snapshot."""
     return [tc for tc in snapshot["tool_calls"] if tc["status"] == "proposed"]
 
 
@@ -41,10 +41,10 @@ def _agent_messages(snapshot: dict) -> list[dict]:
 
 
 async def test_problem_proposes_after_coverage_met(client, scenario_env, scenario_project):
-    """Hỏi làm rõ qua ask_user tới khi đủ độ phủ, rồi write_draft đề xuất tới cổng duyệt.
+    """Ask clarifying questions via ask_user until coverage is met, then write_draft proposes to the approval gate.
 
-    Độ phủ vẫn được tính và lưu vào checkpoint; write_draft mang slot_assessment đầy đủ nên
-    coverage_ratio đạt ngưỡng problem khi tới đề xuất.
+    Coverage is still computed and saved to the checkpoint; write_draft carries a full slot_assessment so
+    coverage_ratio meets the problem threshold by the time it proposes.
     """
     headers, project = scenario_project
     scenario = Scenario(
@@ -82,7 +82,7 @@ async def test_problem_proposes_after_coverage_met(client, scenario_env, scenari
 
 
 async def test_one_question_per_turn_preserved(client, scenario_env, scenario_project):
-    """ask_user vẫn giữ nhịp một câu hỏi mỗi lượt."""
+    """ask_user still keeps the pace of one question per turn."""
     headers, project = scenario_project
     scenario = Scenario(
         name="problem-one-question-per-turn-preserved",
@@ -132,7 +132,7 @@ _OTHER_BRD_KEYS = [
 
 @pytest.mark.parametrize("key", _OTHER_BRD_KEYS)
 async def test_brd_key_coverage_then_propose(client, scenario_env, scenario_project, key):
-    """Mỗi BRD key: write_draft với slot đầy đủ -> độ phủ đạt ngưỡng -> đề xuất tới cổng duyệt."""
+    """Each BRD key: write_draft with full slots -> coverage meets threshold -> proposes to the approval gate."""
     headers, project = scenario_project
     required = BRD_SLOTS[key]["required"]
 
@@ -154,14 +154,14 @@ async def test_brd_key_coverage_then_propose(client, scenario_env, scenario_proj
 
     recorder = await driver.run()
 
-    # min_coverage được driver.run khẳng định bên trong; ở đây xác nhận đã tới cổng đề xuất.
+    # min_coverage is asserted inside driver.run; here we confirm it reached the proposal gate.
     assert recorder.summary["final_status"] == "waiting_for_human"
     assert recorder.summary["final_interrupt"] == "propose_artifacts"
     assert _proposed_tool_calls(recorder.steps[-1]["snapshot"])
 
 
 async def test_slot_coverage_does_not_gate_non_brd(client, scenario_env, scenario_project):
-    """Artifact ngoài BRD: write_draft không kèm slot_assessment -> coverage fail-open (None)."""
+    """Non-BRD artifact: write_draft without slot_assessment -> coverage fail-open (None)."""
     headers, project = scenario_project
     scenario = Scenario(
         name="non-brd-fail-open",
@@ -184,7 +184,7 @@ async def test_slot_coverage_does_not_gate_non_brd(client, scenario_env, scenari
     recorder = await driver.run()
     coverage_ratio = await scenario_env.get_checkpoint_field(driver.session_id, "coverage_ratio")
 
-    # Không report slot_assessment -> coverage fail-open (None), đề xuất vẫn đi thẳng tới cổng duyệt.
+    # No slot_assessment reported -> coverage fail-open (None); the proposal still goes straight to the approval gate.
     assert coverage_ratio is None
     assert recorder.summary["final_status"] == "waiting_for_human"
     assert recorder.summary["final_interrupt"] == "propose_artifacts"
@@ -192,14 +192,14 @@ async def test_slot_coverage_does_not_gate_non_brd(client, scenario_env, scenari
 
 
 # ---------------------------------------------------------------------------
-# M2 — on-topic judge infrastructure (test-harness only schema).
+# On-topic judge infrastructure (test-harness only schema).
 # ---------------------------------------------------------------------------
 
 async def test_m2_question_maps_to_slot():
-    """M2 — chỉ kiểm tra hạ tầng judge.
+    """Only exercises the judge infrastructure.
 
-    Scripted judge mặc định on_topic=True bất kể câu hỏi, nên test này chỉ xác nhận route 'judge'
-    được nối đúng, KHÔNG phải câu hỏi thật sự on-topic. M2 thật cần một LLM judge sống ngoài CI.
+    The scripted judge defaults to on_topic=True regardless of the question, so this test only confirms the 'judge'
+    route is wired correctly, NOT that the question is truly on-topic. A real check needs a live LLM judge outside CI.
     """
     from tests.scenarios.scripted_llm import ON_TOPIC_SCHEMA, ScriptedLLM
 
@@ -214,11 +214,11 @@ async def test_m2_question_maps_to_slot():
 
 
 # ---------------------------------------------------------------------------
-# M3 — đề xuất khi độ phủ đủ.
+# Proposes when coverage is sufficient.
 # ---------------------------------------------------------------------------
 
 async def test_m3_proposes_when_coverage_sufficient(client, scenario_env, scenario_project):
-    """M3 — khi độ phủ đạt ngưỡng, agent write_draft tới cổng đề xuất (propose đúng lúc)."""
+    """When coverage meets the threshold, the agent write_drafts to the proposal gate (proposes at the right time)."""
     headers, project = scenario_project
     required = BRD_SLOTS["intent"]["required"]
     scenario = Scenario(
@@ -242,15 +242,15 @@ async def test_m3_proposes_when_coverage_sufficient(client, scenario_env, scenar
 
 
 # ---------------------------------------------------------------------------
-# M1 — last_asked_slot không lặp lại hai lượt liên tiếp.
+# last_asked_slot does not repeat on two consecutive turns.
 # ---------------------------------------------------------------------------
 
 async def test_m1_last_asked_slot_no_consecutive_repeat(client, scenario_env, scenario_project):
-    """M1 — chạy hội thoại HTTP nhiều lượt dưới tình trạng under-grading kinh niên và khẳng định
-    last_asked_slot được lưu không lặp lại hai lượt liên tiếp.
+    """Run a multi-turn HTTP conversation under chronic under-grading and assert the stored
+    last_asked_slot does not repeat on two consecutive turns.
 
-    Anti-repeat là best-effort (hint lái LLM chứ không ràng buộc); ở đây brain không cộng tín
-    dụng slot nào, cô lập riêng vòng xoay xác định của mục tiêu loại trừ.
+    Anti-repeat is best-effort (a hint that steers the LLM, not a hard constraint); here the brain credits
+    no slot, isolating the deterministic rotation of the exclusion target.
     """
     headers, project = scenario_project
     scenario = Scenario(
@@ -282,7 +282,7 @@ async def test_m1_last_asked_slot_no_consecutive_repeat(client, scenario_env, sc
 
 
 async def test_get_checkpoint_field_reads_coverage_ratio(client, scenario_env, scenario_project):
-    """Test trực tiếp helper harness dùng để khẳng định min_coverage."""
+    """Directly test the harness helper used to assert min_coverage."""
     headers, project = scenario_project
     scenario = Scenario(
         name="helper-reads-coverage",

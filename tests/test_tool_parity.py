@@ -1,4 +1,4 @@
-"""Phase 3 — Enum-to-Tool Parity Wrap.
+"""Enum-to-Tool Parity Wrap.
 
 Wraps the three enum branches as parallel tools (ask→ask_user, propose→write_draft,
 done→finalize) without removing the enum branches. Guards the R1 (duplicate-message on

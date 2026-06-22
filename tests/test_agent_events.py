@@ -89,7 +89,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 — ui_status phái sinh trong snapshot (S1)
+# ui_status derived in the snapshot (S1)
 # ---------------------------------------------------------------------------
 
 def test_ui_status_function_unit():

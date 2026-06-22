@@ -9,7 +9,7 @@ from typing import Any
 
 from tests.eval.rubric import render_criteria_block
 
-# 6 tiêu chí 29148 luôn bắt buộc; invest/smart có thể null khi không áp dụng
+# The 6 29148 criteria are always required; invest/smart may be null when not applicable
 _REQUIRED_SCORE_KEYS = ("unambiguous", "verifiable", "complete", "consistent", "traceable", "feasible")
 _OPTIONAL_SCORE_KEYS = ("invest", "smart")
 

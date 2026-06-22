@@ -57,7 +57,7 @@ async def ask_user(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Hỏi người dùng một câu hỏi làm rõ và tạm dừng để chờ trả lời."""
+    """Ask the user a clarifying question and pause to wait for their reply."""
     return await _ask_user_impl(message, state, config, tool_call_id)
 
 
@@ -119,7 +119,7 @@ async def write_draft(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Đề xuất một bản nháp artifact và tạm dừng để người dùng duyệt."""
+    """Propose an artifact draft and pause for the user to review it."""
     return await _write_draft_impl(title, body, state, config, tool_call_id)
 
 
@@ -151,7 +151,7 @@ async def finalize(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Chốt phiên làm việc và tạm dừng để người dùng xác nhận kết thúc."""
+    """Finalize the working session and pause for the user to confirm completion."""
     return await _finalize_impl(summary, state, config, tool_call_id)
 
 
@@ -174,7 +174,7 @@ async def critique_note(
     content: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Ghi chú phản biện: soi điểm yếu, giả định rủi ro hay mâu thuẫn trong thông tin hiện có (không cần duyệt)."""
+    """Critique note: probe weaknesses, risky assumptions, or contradictions in the current information (no approval needed)."""  # noqa: E501
     return await _write_note_impl(content, tool_call_id)
 
 
@@ -183,7 +183,7 @@ async def explore_note(
     content: str,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Ghi chú khám phá: mở rộng góc nhìn, nêu hướng hoặc phương án chưa được xét tới (không cần duyệt)."""
+    """Exploration note: broaden the perspective, raise angles or options not yet considered (no approval needed)."""
     return await _write_note_impl(content, tool_call_id)
 
 

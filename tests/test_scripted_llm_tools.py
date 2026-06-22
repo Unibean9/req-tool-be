@@ -1,4 +1,4 @@
-"""Phase 2 — ScriptedLLM tool-call harness extension.
+"""ScriptedLLM tool-call harness extension.
 
 These guard R2: before this extension ScriptedLLM silently ignored the `tools=`
 kwarg and any tool-call scenario fell through to the `_DONE_TURN` fallback,

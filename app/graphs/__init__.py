@@ -1,2 +1,2 @@
-"""Nền tảng LangGraph cho agent workflow."""
+"""LangGraph foundation for the agent workflow."""
 

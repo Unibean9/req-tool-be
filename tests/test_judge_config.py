@@ -16,7 +16,7 @@ def test_judge_settings_has_strong_defaults(monkeypatch):
 
     from tests.eval.config import JudgeSettings
 
-    # Judge dùng model mạnh cố định, tách khỏi provider của session agent
+    # The judge uses a fixed strong model, decoupled from the session agent's provider
     settings = JudgeSettings(_env_file=None)
 
     assert settings.judge_provider
@@ -26,6 +26,6 @@ def test_judge_settings_has_strong_defaults(monkeypatch):
 def test_judge_config_not_in_application_settings():
     from app.config import Settings
 
-    # Cấu hình judge phải nằm ở .env.test, KHÔNG thuộc Settings ứng dụng (.env)
+    # Judge config must live in .env.test, NOT in the application Settings (.env)
     assert not hasattr(Settings(), "judge_provider")
     assert not hasattr(Settings(), "judge_model")

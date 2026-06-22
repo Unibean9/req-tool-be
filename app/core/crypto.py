@@ -9,7 +9,7 @@ from app.config import settings
 
 @lru_cache(maxsize=1)
 def _get_fernet() -> Fernet | MultiFernet:
-    """Trả về Fernet hiện tại; gọi cache_clear() khi thay đổi key trong runtime/test."""
+    """Return the current Fernet; call cache_clear() when rotating the key at runtime/in tests."""
     key = settings.encryption_key
     if not key:
         # Dev fallback: derive from JWT secret so no extra config is needed locally.

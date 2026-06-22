@@ -1,7 +1,7 @@
-"""Regression test cho delete project: xóa được dự án có đầy đủ dữ liệu con.
+"""Regression test for delete project: a project with full child data can be deleted.
 
-Bật enforcement foreign key trên SQLite (mặc định tắt) để mô phỏng PostgreSQL — nhờ vậy bài test
-bắt được lỗi thứ tự xóa gây FK violation, không chỉ lỗi sót bảng.
+Enable foreign key enforcement on SQLite (off by default) to mimic PostgreSQL — this lets the test
+catch delete-ordering bugs that cause FK violations, not just missing-table bugs.
 """
 
 import uuid
@@ -133,6 +133,6 @@ async def test_delete_project_cascades_full_subtree(fk_session):
     assert await count(SourceDocument, SourceDocument.project_id) == 0
     assert await count(AgentSession, AgentSession.project_id) == 0
 
-    # Dự án anh em không bị ảnh hưởng.
+    # The sibling project is unaffected.
     assert (await fk_session.execute(select(func.count()).select_from(Project).where(Project.id == sibling_id))).scalar() == 1
     assert (await fk_session.execute(select(func.count()).select_from(Artifact).where(Artifact.project_id == sibling_id))).scalar() == 2

@@ -1,8 +1,8 @@
-"""Phase 1 — Foundation DB & Config.
+"""Foundation DB & Config.
 
-Kiểm tra nền tảng schema cho tính năng agent UX: cột payload JSONB trên agent_messages,
-config agent_turn_timeout_seconds, các trường locale/intent trên WorkflowState, và payload
-trên AgentMessageResponse. Không có logic nghiệp vụ ở đây — chỉ schema.
+Verify the schema foundation for the agent UX feature: the JSONB payload column on agent_messages,
+the agent_turn_timeout_seconds config, the locale/intent fields on WorkflowState, and the payload
+on AgentMessageResponse. No business logic here — schema only.
 """
 import uuid
 
@@ -90,7 +90,7 @@ def test_agent_message_response_payload_nullable():
 
 
 def test_agent_message_response_payload_defaults_to_none():
-    """Client cũ không gửi payload → field mặc định None, không raise."""
+    """Old clients send no payload → field defaults to None, does not raise."""
     resp = AgentMessageResponse.model_validate(
         {
             "id": uuid.uuid4(),

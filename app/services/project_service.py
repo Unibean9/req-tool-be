@@ -84,7 +84,7 @@ class ProjectService:
             AgentRun.session_id.in_(select(AgentSession.id).where(AgentSession.project_id == project_id))
         )
 
-        # 1. Gỡ các FK chéo tạo chu trình trước khi xóa hàng được tham chiếu.
+        # 1. Break the cyclic cross-FKs before deleting the rows they reference.
         await self.db.execute(
             update(Artifact).where(Artifact.project_id == project_id).values(current_version_id=None)
         )
@@ -99,7 +99,7 @@ class ProjectService:
             .values(created_artifact_id=None, created_version_id=None)
         )
 
-        # 2. Xóa con từ lá lên gốc.
+        # 2. Delete children from leaves up to the root.
         await self.db.execute(delete(ArtifactEvidence).where(ArtifactEvidence.artifact_id.in_(artifact_ids)))
         await self.db.execute(delete(ArtifactReview).where(ArtifactReview.artifact_id.in_(artifact_ids)))
         await self.db.execute(delete(ArtifactLink).where(ArtifactLink.project_id == project_id))

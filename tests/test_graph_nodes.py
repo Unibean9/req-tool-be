@@ -406,7 +406,7 @@ def test_build_prompt_falls_back_to_5_messages_when_empty():
 def test_build_prompt_includes_synthesis_directive():
     """The propose path must instruct the LLM to mine the full context into a rich body,
     not emit a thin one-paragraph artifact. Without this directive the prompt only says
-    'proposals (nếu propose)', which produces shallow artifacts even after full elicitation.
+    'proposals (if propose)', which produces shallow artifacts even after full elicitation.
     """
     from app.graphs.nodes import _build_tool_selection_prompt
 
@@ -1026,7 +1026,7 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 (multi-angle): active_mode + mode_hint + proactive directive
+# Multi-angle: active_mode + mode_hint + proactive directive
 # ---------------------------------------------------------------------------
 
 def test_active_mode_field_in_analysis_schema():

@@ -138,7 +138,7 @@ def test_checkpoint_counts_all_llm_calls_reported_for_a_session():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 (multi-angle): mode_proactive_count hard gate (R_mode)
+# Multi-angle: mode_proactive_count hard gate (R_mode)
 # ---------------------------------------------------------------------------
 
 def test_count_proactive_modes_counts_non_qa_turns():

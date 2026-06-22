@@ -69,7 +69,7 @@ async def test_judge_multiple_runs_n_times():
 
 
 # ---------------------------------------------------------------------------
-# Phase 1 (multi-angle): conversation judge (independent of the artifact judge)
+# Multi-angle: conversation judge (independent of the artifact judge)
 # ---------------------------------------------------------------------------
 
 def _valid_conversation_result(proactive_count: int = 2) -> dict:

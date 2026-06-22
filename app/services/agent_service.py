@@ -390,8 +390,8 @@ class AgentService:
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
-        # Đã qua bước human approve proposed tool call, nên artifact vào trạng thái ACCEPTED
-        # để xuất hiện trong export (BRD/SRS/PRD) thay vì kẹt ở DRAFT.
+        # The proposed tool call is already human-approved, so the artifact lands in ACCEPTED
+        # to surface in exports (BRD/SRS/PRD) instead of being stuck in DRAFT.
         artifact = Artifact(
             project_id=project_id,
             type=artifact_type,

@@ -134,7 +134,7 @@ class ArtifactService:
         next_body = body.body if body.body is not None else current.body
         next_metadata = body.metadata if body.metadata is not None else artifact.extra_metadata
 
-        # Giới hạn đã biết: cập nhật đồng thời cần SELECT FOR UPDATE trên PostgreSQL để tránh trùng version_number.
+        # Known limitation: concurrent updates need SELECT FOR UPDATE on PostgreSQL to avoid duplicate version_number.
         version = ArtifactVersion(
             artifact_id=artifact.id,
             version_number=current.version_number + 1,

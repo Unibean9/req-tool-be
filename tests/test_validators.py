@@ -51,7 +51,7 @@ def test_multiple_weasel_words():
         {"title": "Mục tiêu", "body": "nhanh nhanh nhanh và mạnh mẽ, đạt 50% trong vòng 1 tháng"},
     )
     weasel = [w for w in r.warnings if "weasel" in w]
-    # 'nhanh' lặp 3 lần → chỉ 1 cảnh báo; 'mạnh mẽ' → 1 cảnh báo
+    # 'nhanh' repeated 3 times → only 1 warning; 'mạnh mẽ' → 1 warning
     assert len(weasel) == 2
 
 
