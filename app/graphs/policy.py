@@ -28,6 +28,9 @@ POLICY = {
     "create_artifact_link": "require_approval",
     "delete_artifact_link": "require_approval",
     "create_artifact_review": "require_approval",
+    # finalize requires at least one run_critique round before it is offered (spec §15.1). This is
+    # a documentation signal; the actual gate lives in agent_tools.get_available_tools.
+    "finalize": "require_critique",
 }
 
 

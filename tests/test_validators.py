@@ -142,3 +142,47 @@ def test_validator_precision_recall_on_labeled_samples():
     ]
     for artifact_type, proposal, expected in samples:
         assert _categories(validate_proposal(artifact_type, proposal)) == expected
+
+
+# --- Group: business rule / open question / assumption checks (spec §9.4) ---
+
+def test_business_rule_missing_condition_raises_violation():
+    r = validate_proposal("business_rule", {"title": "T", "body": "Hệ thống gửi email cho người dùng."})
+    assert not r.passed
+    assert any("condition" in v for v in r.violations)
+
+
+def test_business_rule_with_condition_and_outcome_passes():
+    r = validate_proposal(
+        "business_rule",
+        {"title": "T", "body": "Nếu đơn quá hạn thanh toán thì hệ thống sẽ khóa tài khoản."},
+    )
+    assert not any("condition" in v or "outcome" in v for v in r.violations)
+
+
+def test_open_question_missing_status_raises_warning():
+    r = validate_proposal("open_question", {"title": "T", "body": "Ai approve ngân sách?"})
+    assert any("status" in w for w in r.warnings)
+
+
+def test_open_question_with_status_no_warning():
+    r = validate_proposal("open_question", {"title": "T", "body": "Ai approve?", "status": "unresolved"})
+    assert not any("status" in w for w in r.warnings)
+
+
+def test_assumption_missing_confidence_raises_warning():
+    proposal = {
+        "title": "T", "body": "Nội dung",
+        "assumptions": [{"statement": "users have phones", "confidence": "", "owner": "PM"}],
+    }
+    r = validate_proposal("assumption", proposal)
+    assert any("confidence" in w for w in r.warnings)
+
+
+def test_assumption_missing_owner_raises_warning():
+    proposal = {
+        "title": "T", "body": "Nội dung",
+        "assumptions": [{"statement": "users have phones", "confidence": "high", "owner": ""}],
+    }
+    r = validate_proposal("assumption", proposal)
+    assert any("owner" in w for w in r.warnings)

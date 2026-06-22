@@ -40,11 +40,12 @@ def test_finalize_not_available_without_draft_body():
 
 
 # ---------------------------------------------------------------------------
-# T2 — finalize available once working_draft is non-empty
+# T2 — finalize available once working_draft is non-empty AND a critique has run
 # ---------------------------------------------------------------------------
 
 def test_finalize_available_after_write_draft():
-    tools = get_available_tools({"messages": [], "working_draft": "Một nội dung draft"})
+    # Phase 5: finalize now also requires critique_rounds > 0 (spec §15.1).
+    tools = get_available_tools({"messages": [], "working_draft": "Một nội dung draft", "critique_rounds": 1})
     assert "finalize" in _names(tools)
 
 

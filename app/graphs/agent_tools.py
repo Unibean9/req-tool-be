@@ -319,7 +319,9 @@ def _consecutive_note_turns(messages: list) -> int:
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    - `finalize` only once `working_draft` is non-empty (a hard-gate; absent/None/blank → CLOSED).
+    - `finalize` only once `working_draft` is non-empty AND critique_rounds > 0 (spec §15.1:
+      a finalize requires at least one run_critique; human confirmation in _finalize_impl is the
+      approval step, so no separate approval_status field).
     - `run_critique` only once a draft body exists (working_draft or DB-loaded draft_body) AND
       critique_rounds < CRITIQUE_ROUNDS_MAX. It is NOT a NOTE_TOOL, so the note step-limit never
       gates it.
@@ -328,7 +330,7 @@ def get_available_tools(state: WorkflowState) -> list:
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
     has_draft = bool((state.get("working_draft") or "").strip() or (state.get("draft_body") or "").strip())
-    if (state.get("working_draft") or "").strip():
+    if (state.get("working_draft") or "").strip() and (state.get("critique_rounds") or 0) > 0:
         tools.append(finalize)
     if has_draft and (state.get("critique_rounds") or 0) < CRITIQUE_ROUNDS_MAX:
         tools.append(run_critique)
