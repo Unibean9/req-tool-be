@@ -390,6 +390,74 @@ async def recommend_next_workflow(
 
 
 # ---------------------------------------------------------------------------
+# run_readiness_check — 10-dimension readiness assessment (no interrupt; audits to AgentToolCall)
+# ---------------------------------------------------------------------------
+
+async def _run_readiness_check_impl(
+    target: str,  # noqa: ARG001 — kept for schema parity; the check is coverage-driven
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+):
+    from app.graphs.readiness import compute_readiness_score
+
+    report = compute_readiness_score(state.get("section_coverage"), state)
+
+    if not state.get("last_agent_run_id"):
+        raise RuntimeError(
+            "run_readiness_check requires last_agent_run_id in state — analyze_node must run first"
+        )
+    run_id = uuid.UUID(state["last_agent_run_id"])
+    cfg = config["configurable"]
+    session_factory = cfg["session_factory"]
+    try:
+        async with session_factory() as db:
+            already = (
+                await db.execute(
+                    select(exists().where(
+                        AgentToolCall.run_id == run_id,
+                        AgentToolCall.tool_name == "run_readiness_check",
+                    ))
+                )
+            ).scalar()
+            if not already:
+                db.add(
+                    AgentToolCall(
+                        run_id=run_id,
+                        tool_name="run_readiness_check",
+                        input_snapshot=report,
+                        status=AgentToolCallStatus.PROPOSED,
+                    )
+                )
+                await db.commit()
+    except Exception as exc:  # noqa: BLE001 — audit is best-effort; never block the check
+        logger.warning("run_readiness_check audit persist failed: %s", exc)
+
+    readiness = dict(state.get("readiness") or {})
+    readiness["requirements_ready"] = report["ready"]
+    readiness["blocking_gaps"] = report["blocking_gaps"]
+    readiness["recommended_next_step"] = report["recommended_next_step"]
+    summary = f"run_readiness_check -> ready={report['ready']} score={report['readiness_score']:.2f}"
+    return Command(
+        update={
+            "readiness": readiness,
+            "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def run_readiness_check(
+    target: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Assess readiness to advance the planning lifecycle across 10 dimensions; records an audit entry."""
+    return await _run_readiness_check_impl(target, state, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
@@ -454,6 +522,9 @@ def get_available_tools(state: WorkflowState) -> list:
     sections_with_signal = sum(1 for v in coverage.values() if status_score(v) > 0.0)
     if has_draft or sections_with_signal >= 2:
         tools.append(recommend_next_workflow)
+    # run_readiness_check needs an artifact to assess.
+    if (state.get("working_draft") or "").strip():
+        tools.append(run_readiness_check)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
     return tools

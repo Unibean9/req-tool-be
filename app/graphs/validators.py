@@ -46,6 +46,11 @@ _SMART_TIMEBOUND = ("trong vòng", "trước ngày", "deadline", "by ")
 _RULE_CONDITION = ("nếu", "khi", "trong trường hợp", "điều kiện", "trigger", "if", "when")
 _RULE_OUTCOME = ("thì", "sẽ", "kết quả", "phải", "then", "will", "must")
 
+# BMAD workflow enums (addendum §17). Kept local to avoid importing the graph layer into validators.
+_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness", "epic_story_readiness"}
+_PLANNING_TRACKS = {"quick", "standard", "enterprise"}
+_IMPLEMENTATION_STAGES = {"architecture_readiness", "epic_story_readiness"}
+
 
 @dataclass
 class ValidationResult:
@@ -109,6 +114,19 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
             warnings.append("Assumption thiếu confidence")
         if not (assumption.get("owner") or "").strip():
             warnings.append("Assumption thiếu owner")
+
+    # 8. BMAD workflow validators (addendum §17) — block invalid transitions.
+    if artifact_type == "workflow_state":
+        if proposal.get("workflow_mode") not in _WORKFLOW_MODES:
+            violations.append("workflow_mode không hợp lệ")
+        if proposal.get("planning_track") not in _PLANNING_TRACKS:
+            violations.append("planning_track không hợp lệ")
+    if artifact_type == "workflow_recommendation":
+        recommended = proposal.get("recommended_next_workflow")
+        if recommended == "epic_story_readiness" and (proposal.get("prd_coverage") or 0.0) < 0.6:
+            violations.append("prd_coverage quá thấp — too_weak_for_epics")
+        if recommended in _IMPLEMENTATION_STAGES and (proposal.get("unresolved_critical_risks") or []):
+            violations.append("unresolved_critical_risks chặn chuyển sang giai đoạn triển khai")
 
     return ValidationResult(passed=len(violations) == 0, violations=violations, warnings=warnings)
 

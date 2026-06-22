@@ -10,6 +10,7 @@ from app.graphs.agent_tools import (
     recommend_next_workflow,
     respond,
     run_critique,
+    run_readiness_check,
     write_draft,
 )
 from app.graphs.nodes import (
@@ -38,7 +39,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         "tools",
         ToolNode([
             ask_user, write_draft, finalize, critique_note, explore_note,
-            respond, run_critique, recommend_next_workflow,
+            respond, run_critique, recommend_next_workflow, run_readiness_check,
         ]),
     )
 

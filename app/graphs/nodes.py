@@ -40,7 +40,8 @@ TOOL_SELECTION_SCHEMA = {
             "type": "string",
             "enum": [
                 "ask_user", "respond", "write_draft", "finalize",
-                "critique_note", "explore_note", "run_critique", "recommend_next_workflow",
+                "critique_note", "explore_note", "run_critique",
+                "recommend_next_workflow", "run_readiness_check",
             ],
         },
         "message": {"type": "string"},
@@ -99,6 +100,7 @@ _TOOL_ARG_KEYS = {
     "explore_note": ["content"],
     "run_critique": ["target", "mode"],
     "recommend_next_workflow": ["current_artifact_type", "planning_track"],
+    "run_readiness_check": ["target"],
 }
 
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
