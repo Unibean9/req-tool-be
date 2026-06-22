@@ -53,6 +53,7 @@ class AgentService:
         agent_role: str | None = None,
         provider_config_id: uuid.UUID | None = None,
         created_by_id: uuid.UUID | None = None,
+        focus_section: str | None = None,
     ) -> dict[str, Any]:
         missing = await self._check_predecessors(project_id, artifact_type)
 
@@ -66,6 +67,7 @@ class AgentService:
                 status=AgentSessionStatus.WAITING_FOR_HUMAN,
                 graph_checkpoint={},
                 missing_context=missing or None,
+                focus_section=focus_section,
                 provider_config_id=provider_config_id,
                 created_by_id=created_by_id,
             )
@@ -182,6 +184,8 @@ class AgentService:
                 "assumptions": [],
                 "risks": [],
                 "open_questions": [],
+                "sections_body": {},
+                "focus_section": session.focus_section,
                 "draft_body": None,
                 "method_profile": dict(DEFAULT_METHOD_PROFILE),
                 "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -204,6 +208,7 @@ class AgentService:
                 step_key=session.step_key,
                 workflow_area=session.workflow_area,
                 agent_role=session.agent_role,
+                focus_section=session.focus_section,
                 missing_context=session.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -477,6 +482,7 @@ class AgentService:
                 step_key=session_row.step_key,
                 workflow_area=session_row.workflow_area,
                 agent_role=session_row.agent_role,
+                focus_section=session_row.focus_section,
                 missing_context=session_row.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -497,11 +503,17 @@ class AgentService:
         missing_context: list[str],
         llm_client: Any,
         strong_llm_client: Any = None,
+        focus_section: str | None = None,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
     ) -> None:
         config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
         timeout = settings.agent_turn_timeout_seconds
+        if focus_section is None:
+            async with self.session_factory() as db:
+                focus_section = (
+                    await db.execute(select(AgentSession.focus_section).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
         try:
             if resume_command is not None:
                 # wait_for MUST wrap ainvoke INSIDE this coroutine. Wrapping from outside would raise
@@ -530,6 +542,8 @@ class AgentService:
                     "assumptions": [],
                     "risks": [],
                     "open_questions": [],
+                    "sections_body": {},
+                    "focus_section": focus_section,
                     "draft_body": None,
                     "method_profile": dict(DEFAULT_METHOD_PROFILE),
                     "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -661,6 +675,8 @@ class AgentService:
             "assumptions": [],
             "risks": [],
             "open_questions": [],
+            "sections_body": {},
+            "focus_section": session_row.focus_section,
             "draft_body": None,
             "method_profile": dict(DEFAULT_METHOD_PROFILE),
             "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -677,6 +693,7 @@ class AgentService:
                 step_key=step_key,
                 workflow_area=workflow_area,
                 agent_role=agent_role,
+                focus_section=session_row.focus_section,
                 missing_context=missing_context,
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,

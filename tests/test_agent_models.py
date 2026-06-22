@@ -35,6 +35,7 @@ async def test_agent_session_can_be_saved_and_loaded(client, db_session):
         interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
         missing_context=["intent", "problem"],
         graph_checkpoint={"checkpoint": "value"},
+        focus_section="vision_objectives",
     )
     db_session.add(session)
     await db_session.flush()
@@ -48,6 +49,7 @@ async def test_agent_session_can_be_saved_and_loaded(client, db_session):
     assert loaded.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
     assert loaded.missing_context == ["intent", "problem"]
     assert loaded.graph_checkpoint == {"checkpoint": "value"}
+    assert loaded.focus_section == "vision_objectives"
 
 
 @pytest.mark.asyncio

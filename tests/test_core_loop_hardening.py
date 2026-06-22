@@ -19,6 +19,27 @@ def test_current_draft_body_prefers_draft_body_over_working_draft():
     assert current_draft_body(state) == "DB draft"
 
 
+def test_current_draft_body_prefers_focused_section_when_available():
+    state = _state()
+    state["sections_body"] = {
+        "vision_objectives": "Section draft",
+        "problem_statement": "Other draft",
+    }
+    state["focus_section"] = "vision_objectives"
+    state["draft_body"] = "DB draft"
+
+    assert current_draft_body(state) == "Section draft"
+
+
+def test_current_draft_body_falls_back_when_focused_section_missing():
+    state = _state()
+    state["sections_body"] = {"problem_statement": "Other draft"}
+    state["focus_section"] = "vision_objectives"
+    state["draft_body"] = "DB draft"
+
+    assert current_draft_body(state) == "DB draft"
+
+
 def test_current_draft_body_falls_back_to_working_draft():
     state = _state()
     state["working_draft"] = "session draft"

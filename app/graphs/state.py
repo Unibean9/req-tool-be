@@ -115,7 +115,7 @@ class WorkflowState(TypedDict):
     quality_report: QualityReport | None
     # MD5(8) of the draft body the last run_critique scored — lets the finalize gate detect a draft
     # edited after critique (stale report) and force a re-critique. Source body is always
-    # `draft_body or working_draft or ""` (Phase 3).
+    # `current_draft_body(state)`.
     last_critiqued_draft_hash: str | None
     locale: str | None
     # Triage channels: the entry node classifies each fresh turn as "converse" (greeting/smalltalk)
@@ -131,6 +131,10 @@ class WorkflowState(TypedDict):
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
+    # Section-focused artifact body. A focused session reads and writes only the selected section;
+    # legacy flat draft fields remain as fallback until the export/approve path is migrated.
+    sections_body: dict[str, str]
+    focus_section: str | None
     # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
     # confirmed artifact even when no in-session working_draft exists yet.
     draft_body: str | None

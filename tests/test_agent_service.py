@@ -708,7 +708,7 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
 
     session = AgentSession(
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
-        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE, focus_section="vision_objectives",
     )
     db_session.add(session)
     await db_session.flush()
@@ -725,6 +725,8 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
     assert passed_state["coverage_ratio"] is None
     assert passed_state["coverage_complete"] is None
     assert passed_state["section_coverage_stall_count"] is None
+    assert passed_state["sections_body"] == {}
+    assert passed_state["focus_section"] == "vision_objectives"
 
 
 @pytest.mark.asyncio

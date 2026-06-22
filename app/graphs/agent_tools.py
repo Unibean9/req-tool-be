@@ -42,12 +42,16 @@ from app.models.agent import (
 # ---------------------------------------------------------------------------
 
 def current_draft_body(state: WorkflowState) -> str:
-    """Canonical draft body for the whole tool-loop: draft_body (DB-persisted) over working_draft.
+    """Canonical draft body for the whole tool-loop.
 
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
     through here. Divergence between any two sites (one using only working_draft) permanently locks
     DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
     """
+    focus_section = state.get("focus_section")
+    sections_body = state.get("sections_body") or {}
+    if focus_section and focus_section in sections_body:
+        return sections_body[focus_section] or ""
     return state.get("draft_body") or state.get("working_draft") or ""
 
 
