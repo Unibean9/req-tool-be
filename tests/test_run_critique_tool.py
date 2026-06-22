@@ -22,6 +22,13 @@ def test_run_critique_is_available_when_draft_body_loaded():
     assert "run_critique" in _tool_names(state)
 
 
+def test_run_critique_is_available_when_focused_section_has_body():
+    state = _state(artifact_type="goal")
+    state["focus_section"] = "vision_objectives"
+    state["sections_body"] = {"vision_objectives": "## Mục tiêu\n- Tăng giữ chân 30%."}
+    assert "run_critique" in _tool_names(state)
+
+
 def test_run_critique_not_available_without_draft():
     state = _state(artifact_type="goal")
     assert "run_critique" not in _tool_names(state)

@@ -141,6 +141,47 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
 
 @pytest.mark.asyncio
+async def test_analyze_node_resets_critique_state_when_db_focus_section_changes(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    agent_session.focus_section = "problem_statement"
+    await db_session.commit()
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "tool": "finalize",
+        "summary": "Hoàn tất",
+        "section_assessment": {},
+    }, None))
+
+    state = _state(artifact_type="goal")
+    state["focus_section"] = "vision_objectives"
+    state["sections_body"] = {
+        "vision_objectives": "Draft A",
+        "problem_statement": "Draft B",
+    }
+    state["critique_rounds"] = 1
+    state["last_critiqued_draft_hash"] = "stalehash"
+    state["quality_report"] = {"quality_gate_result": "pass"}
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["focus_section"] == "problem_statement"
+    assert result["critique_rounds"] == 0
+    assert result["last_critiqued_draft_hash"] is None
+    assert result["analysis_result"]["tool"] == "ask_user"
+    assert result["analysis_result"]["gated_tool"] == "finalize"
+
+
+@pytest.mark.asyncio
 async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_session):
     """A `problem` session must see its `intent` predecessor as analyst context.
 

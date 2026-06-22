@@ -44,6 +44,13 @@ class _FakeAnalyzeSession:
             if run.id is None:
                 run.id = uuid.uuid4()
 
+    async def execute(self, *args, **kwargs):
+        class _Result:
+            def scalar_one_or_none(self_inner):
+                return None
+
+        return _Result()
+
 
 def _mock_graph():
     g = MagicMock()

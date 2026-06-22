@@ -114,6 +114,8 @@ async def _write_draft_impl(
     if not state.get("last_agent_run_id"):
         raise RuntimeError("write_draft requires last_agent_run_id in state — analyze_node must run first")
     run_id = uuid.UUID(state["last_agent_run_id"])
+    focus_section = state.get("focus_section")
+    tool_key = f"write_draft:{focus_section}" if focus_section else "write_draft"
 
     async with session_factory() as db:
         # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
@@ -123,20 +125,23 @@ async def _write_draft_impl(
             await db.execute(
                 select(exists().where(
                     AgentToolCall.run_id == run_id,
-                    AgentToolCall.tool_name == "write_draft",
+                    AgentToolCall.tool_name == tool_key,
                 ))
             )
         ).scalar()
         if not already:
+            input_snapshot = {
+                "artifact_type": state["artifact_type"],
+                "title": title,
+                "body": body,
+            }
+            if focus_section:
+                input_snapshot["focus_section"] = focus_section
             db.add(
                 AgentToolCall(
                     run_id=run_id,
-                    tool_name="write_draft",
-                    input_snapshot={
-                        "artifact_type": state["artifact_type"],
-                        "title": title,
-                        "body": body,
-                    },
+                    tool_name=tool_key,
+                    input_snapshot=input_snapshot,
                     status=AgentToolCallStatus.PROPOSED,
                 )
             )
@@ -148,7 +153,12 @@ async def _write_draft_impl(
         await db.commit()
 
     interrupt({"type": "propose_artifacts", "tool_name": "write_draft"})
-    return Command(update={"messages": [ToolMessage(content=title, tool_call_id=tool_call_id)]})
+    update: dict[str, Any] = {"messages": [ToolMessage(content=title, tool_call_id=tool_call_id)]}
+    if focus_section:
+        sections_body = dict(state.get("sections_body") or {})
+        sections_body[focus_section] = body
+        update["sections_body"] = sections_body
+    return Command(update=update)
 
 
 @tool
@@ -171,9 +181,14 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     # Hard-block: even if the menu gate is bypassed, never finalize over a failing quality gate.
     # A missing report counts as "fail" — finalize requires a passing critique to exist.
     report = state.get("quality_report")
-    if not report or report.get("quality_gate_result") != "pass":
+    if (
+        not current_draft_body(state).strip()
+        or not report
+        or report.get("quality_gate_result") != "pass"
+        or not _finalize_gate_open(state)
+    ):
         blocking = (report or {}).get("blocking_issues") or []
-        detail = "; ".join(blocking) if blocking else "chưa có critique đạt ngưỡng chất lượng"
+        detail = "; ".join(blocking) if blocking else "chưa có critique hợp lệ cho bản nháp hiện tại"
         return Command(
             update={
                 "messages": [

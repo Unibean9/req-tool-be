@@ -325,6 +325,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     if llm_client is None:
         raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
 
+    effective_state: WorkflowState = state
+    focus_reset_update: dict[str, Any] = {}
+
     # Context for the analyst = artifacts of the current type (avoid duplicates)
     # plus its full transitive ancestry — the upstream sources it must derive
     # from (e.g. a `story` traces back through `epic` ... up to `intent`). Using
@@ -334,6 +337,17 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     artifact_type = state["artifact_type"]
     context_types = [artifact_type, *ancestor_types(artifact_type)]
     async with session_factory() as db:
+        db_focus_section = (
+            await db.execute(select(AgentSession.focus_section).where(AgentSession.id == session_id))
+        ).scalar_one_or_none()
+        if db_focus_section != state.get("focus_section"):
+            focus_reset_update = {
+                "focus_section": db_focus_section,
+                "critique_rounds": 0,
+                "last_critiqued_draft_hash": None,
+            }
+            effective_state = {**state, **focus_reset_update}
+
         artifacts: list[dict[str, Any]] = []
         for context_type in context_types:
             artifacts.extend(
@@ -341,7 +355,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                     db=db,
                     project_id=project_id,
                     artifact_type=context_type,
-                    context={"workflow_area": state["workflow_area"]},
+                    context={"workflow_area": effective_state["workflow_area"]},
                 )
             )
         # Load the current draft body for this artifact_type so the analyst can mine
@@ -351,11 +365,11 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         )
     draft_body = draft["body"] if draft else None
 
-    prompt = _build_tool_selection_prompt(state, artifacts, draft_body)
+    prompt = _build_tool_selection_prompt(effective_state, artifacts, draft_body)
     response_format = TOOL_SELECTION_SCHEMA
     system_prompt = get_instruction(
-        artifact_type=state["artifact_type"],
-        workflow_area=state["workflow_area"],
+        artifact_type=effective_state["artifact_type"],
+        workflow_area=effective_state["workflow_area"],
         agent_role=cfg.get("agent_role"),
     )
     started_at = time.monotonic()
@@ -376,12 +390,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         coverage = compute_section_coverage(section_assessment)
     # Stall counter: increment when a gated turn fails to raise coverage, reset otherwise.
     # route_node and the coverage hint read it to escape a non-advancing elicitation loop.
-    prev_ratio = state.get("coverage_ratio")
+    prev_ratio = effective_state.get("coverage_ratio")
     new_ratio = coverage["coverage_ratio"]
     if new_ratio is None or coverage["coverage_complete"] or prev_ratio is None or new_ratio > prev_ratio:
         coverage["section_coverage_stall_count"] = 0
     else:
-        coverage["section_coverage_stall_count"] = (state.get("section_coverage_stall_count") or 0) + 1
+        coverage["section_coverage_stall_count"] = (effective_state.get("section_coverage_stall_count") or 0) + 1
     if isinstance(analysis_result, dict):
         analysis_result = {
             **analysis_result,
@@ -394,11 +408,11 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # persist so analysis_result records the tool actually dispatched.
     if isinstance(analysis_result, dict):
         requested = analysis_result.get("tool")
-        gated_tool = _gate_selected_tool(state, requested)
+        gated_tool = _gate_selected_tool(effective_state, requested)
         # Fail-loud (Phase 2/3): rather than dispatch a broken or gated tool_call, degrade to a
         # clarifying re-ask and record WHY in analysis_result (gated_tool/gated_reason) so eval and
         # tests can observe the degrade instead of seeing a silent ask_user.
-        degrade = _degrade_reason(state, requested, gated_tool, analysis_result)
+        degrade = _degrade_reason(effective_state, requested, gated_tool, analysis_result)
         if degrade:
             analysis_result = {**analysis_result, "tool": "ask_user", **degrade}
             gated_tool = "ask_user"
@@ -435,31 +449,32 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # from coverage when omitted; planning_track normalized to quick on miss. Merge so other profile
     # fields persist. Independent of active_mode.
     reported = analysis_result if isinstance(analysis_result, dict) else {}
-    method_profile = dict(state.get("method_profile") or DEFAULT_METHOD_PROFILE)
+    method_profile = dict(effective_state.get("method_profile") or DEFAULT_METHOD_PROFILE)
     if reported.get("workflow_mode"):
         method_profile["current_workflow"] = _normalize_workflow_mode(reported.get("workflow_mode"))
     else:
-        method_profile["current_workflow"] = _infer_workflow_mode(state)
+        method_profile["current_workflow"] = _infer_workflow_mode(effective_state)
     method_profile["planning_track"] = _normalize_planning_track(
         reported.get("planning_track") or method_profile.get("planning_track")
     )
 
     result = {
         "analysis_result": analysis_result,
-        "turn_count": state["turn_count"] + 1,
+        "turn_count": effective_state["turn_count"] + 1,
         "last_agent_run_id": run_id,
         # Locale is detected on first contact and then sticky: once set it overrides later turns so the
         # output language lock stays stable even if the model omits the field mid-conversation.
-        "locale": state.get("locale") or reported.get("locale"),
+        "locale": effective_state.get("locale") or reported.get("locale"),
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
-        "working_draft": draft_update or state.get("working_draft"),
+        "working_draft": draft_update or effective_state.get("working_draft"),
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
+        **focus_reset_update,
         **coverage,
     }
     # Tool-loop shim: emit the selected tool as an AIMessage(tool_calls) so route_node dispatches it

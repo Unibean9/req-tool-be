@@ -10,6 +10,7 @@ cannot emit native tool_calls until Phase 4's bind_tools, so the HTTP driver pat
 reach the tools yet — a seeded AIMessage is the Phase-2 precedent for tool-path coverage).
 """
 
+import hashlib
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -122,6 +123,44 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
         assert rows[0].tool_name == "write_draft"
 
 
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_scopes_body_and_idempotency_to_focus_section(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(analysis_result={"next_action": "propose"})
+    state["last_agent_run_id"] = str(run.id)
+    state["focus_section"] = "vision_objectives"
+    state["sections_body"] = {"problem_statement": "Không bị đụng"}
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    command = await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
+    await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
+    state["focus_section"] = "problem_statement"
+    await _write_draft_impl("Tiêu đề 2", "Thân bài section 2", state, config, "call_2")
+
+    assert command.update["sections_body"] == {
+        "problem_statement": "Không bị đụng",
+        "vision_objectives": "Thân bài section",
+    }
+    async with TestSessionFactory() as db:
+        rows = (
+            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+        ).scalars().all()
+        assert {row.tool_name for row in rows} == {
+            "write_draft:vision_objectives",
+            "write_draft:problem_statement",
+        }
+        snapshots = {row.tool_name: row.input_snapshot for row in rows}
+        assert snapshots["write_draft:vision_objectives"]["focus_section"] == "vision_objectives"
+        assert snapshots["write_draft:problem_statement"]["focus_section"] == "problem_statement"
+
+
 # ---------------------------------------------------------------------------
 # T4 — finalize interrupt gate
 # ---------------------------------------------------------------------------
@@ -135,6 +174,9 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     state = _state()
+    state["working_draft"] = "draft"
+    state["critique_rounds"] = 1
+    state["last_critiqued_draft_hash"] = hashlib.md5("draft".encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -272,6 +314,9 @@ async def test_finalize_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
+    state["working_draft"] = "draft"
+    state["critique_rounds"] = 1
+    state["last_critiqued_draft_hash"] = hashlib.md5("draft".encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]
     config = _config(str(agent_session.id), str(project_id))

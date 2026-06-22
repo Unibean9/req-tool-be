@@ -112,7 +112,12 @@ async def test_finalize_interrupt_triggers_when_available():
         return _Ctx()
 
     config = {"configurable": {"session_factory": _factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
-    state = {"working_draft": "draft", "critique_rounds": 1, "quality_report": {"quality_gate_result": "pass"}}
+    state = {
+        "working_draft": "draft",
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass"},
+        "last_critiqued_draft_hash": _hash("draft"),
+    }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
         await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
@@ -138,3 +143,39 @@ async def test_finalize_hard_blocks_when_gate_fails():
     msg = command.update["messages"][0]
     assert "Không thể finalize" in msg.content
     assert "thiếu tiêu chí đo lường" in msg.content
+
+
+@pytest.mark.asyncio
+async def test_finalize_hard_blocks_without_current_draft_body():
+    config = {"configurable": {"session_factory": None, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    state = {
+        "critique_rounds": 2,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash("draft"),
+    }
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+
+    mock_interrupt.assert_not_called()
+    assert "Không thể finalize" in command.update["messages"][0].content
+
+
+@pytest.mark.asyncio
+async def test_finalize_hard_blocks_when_focused_section_was_not_critiqued():
+    config = {"configurable": {"session_factory": None, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    state = {
+        "focus_section": "problem_statement",
+        "sections_body": {"problem_statement": "Draft section B"},
+        "critique_rounds": 0,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash("Draft section A"),
+    }
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+
+    mock_interrupt.assert_not_called()
+    msg = command.update["messages"][0]
+    assert "Không thể finalize" in msg.content
+    assert "bản nháp hiện tại" in msg.content
