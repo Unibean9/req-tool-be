@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from tests.conftest import BASE
@@ -66,7 +64,7 @@ async def test_prd_export_empty_project_does_not_crash(client):
     assert resp.status_code == 200, resp.text
     text = resp.text
     assert "# Product Requirements Document" in text
-    assert "## Requirements Summary" in text
+    assert "## Functional Requirement" in text
     assert "_Không có nội dung._" in text
 
 
@@ -98,17 +96,27 @@ async def _project_context(client):
 
 
 async def _requirements_artifact(client, headers, project_id, body):
-    payload = {
-        "type": "requirements",
-        "title": "Requirements",
-        "body": json.dumps(body, ensure_ascii=False),
-        "status": "accepted",
-        "priority": "must",
-        "metadata": {},
-    }
-    resp = await client.post(f"{BASE}/projects/{project_id}/artifacts", json=payload, headers=headers)
-    assert resp.status_code == 201, resp.text
-    return resp.json()["data"]
+    create = await client.post(
+        f"{BASE}/projects/{project_id}/documents/brd",
+        headers=headers,
+    )
+    assert create.status_code == 201, create.text
+    items = []
+    for item_type, content in body.items():
+        resp = await client.post(
+            f"{BASE}/projects/{project_id}/documents/brd/{item_type}",
+            json={
+                "title": item_type.replace("_", " ").title(),
+                "body": content,
+                "status": "accepted",
+                "priority": "must",
+                "metadata": {},
+            },
+            headers=headers,
+        )
+        assert resp.status_code == 201, resp.text
+        items.append(resp.json()["data"])
+    return items
 
 
 async def _source_document(client, headers, project_id, title, content):

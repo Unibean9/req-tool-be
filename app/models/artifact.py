@@ -28,11 +28,24 @@ class ArtifactPriority(enum.StrEnum):
 
 
 class ArtifactType(enum.StrEnum):
-    REQUIREMENTS = "requirements"
+    BRD = "brd"
+    PRD = "prd"
+    SAD = "sad"
+    VISION_OBJECTIVES = "vision_objectives"
+    PROBLEM_STATEMENT = "problem_statement"
+    STAKEHOLDER_REGISTER = "stakeholder_register"
+    SCOPE_CAPABILITIES = "scope_capabilities"
+    BUSINESS_RULES = "business_rules"
+    CONSTRAINTS_ASSUMPTIONS = "constraints_assumptions"
+    RISKS_ISSUES = "risks_issues"
     DOMAIN_ENTITY = "domain_entity"
     FUNCTIONAL_REQUIREMENT = "functional_requirement"
     NON_FUNCTIONAL_REQUIREMENT = "non_functional_requirement"
     USE_CASE = "use_case"
+    COMPONENT = "component"
+    INTERFACE = "interface"
+    TECH_DECISION = "tech_decision"
+    # Legacy delivery values retained because PostgreSQL enum members cannot be dropped in place.
     EPIC = "epic"
     STORY = "story"
     ACCEPTANCE_CRITERIA = "acceptance_criteria"
@@ -181,16 +194,36 @@ class Artifact(AuditMixin, Base):
     __tablename__ = "artifacts"
     __table_args__ = (
         Index(
-            "uq_artifacts_project_requirements",
+            "uq_artifacts_project_brd",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'requirements'"),
-            sqlite_where=text("type = 'requirements'"),
+            postgresql_where=text("type = 'brd'"),
+            sqlite_where=text("type = 'brd'"),
+        ),
+        Index(
+            "uq_artifacts_project_prd",
+            "project_id",
+            unique=True,
+            postgresql_where=text("type = 'prd'"),
+            sqlite_where=text("type = 'prd'"),
+        ),
+        Index(
+            "uq_artifacts_project_sad",
+            "project_id",
+            unique=True,
+            postgresql_where=text("type = 'sad'"),
+            sqlite_where=text("type = 'sad'"),
         ),
     )
 
     project_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True
+    )
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("artifacts.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
     )
     run_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("workflow_runs.id"), nullable=True, index=True
@@ -224,6 +257,18 @@ class Artifact(AuditMixin, Base):
         back_populates="artifact",
         foreign_keys="ArtifactVersion.artifact_id",
         cascade="all, delete-orphan",
+    )
+    parent: Mapped["Artifact | None"] = relationship(
+        back_populates="children",
+        remote_side="Artifact.id",
+        foreign_keys=[parent_id],
+    )
+    children: Mapped[list["Artifact"]] = relationship(
+        back_populates="parent",
+        foreign_keys=[parent_id],
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        lazy="raise",
     )
 
 

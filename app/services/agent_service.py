@@ -1,5 +1,4 @@
 import asyncio
-import json
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -11,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.documents.registry import container_for
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import (
@@ -31,13 +31,12 @@ from app.models.agent import (
 from app.models.artifact import (
     Artifact,
     ArtifactStatus,
-    ArtifactType,
     ArtifactVersion,
     ChangeSource,
     VersionStatus,
 )
 from app.schemas.agent import AgentSessionResponse
-from app.services.workspace_container import build_workspace_container
+from app.services.document_service import DocumentService
 
 
 class AgentService:
@@ -56,9 +55,20 @@ class AgentService:
         agent_role: str | None = None,
         provider_config_id: uuid.UUID | None = None,
         created_by_id: uuid.UUID | None = None,
-        focus_section: str | None = None,
+        focused_artifact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         missing = await self._check_predecessors(project_id, artifact_type)
+        if focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, focused_artifact_id)
+            if focused is None or focused.project_id != project_id:
+                raise HTTPException(422, detail="focused_artifact_id không thuộc dự án")
+            if focused.parent_id is None:
+                raise HTTPException(422, detail="Agent phải focus vào document item, không phải container")
+            if focused.type.value != artifact_type:
+                raise HTTPException(
+                    422,
+                    detail="artifact_type phải khớp với document item được focus",
+                )
 
         try:
             session = AgentSession(
@@ -70,7 +80,7 @@ class AgentService:
                 status=AgentSessionStatus.WAITING_FOR_HUMAN,
                 graph_checkpoint={},
                 missing_context=missing or None,
-                focus_section=focus_section,
+                focused_artifact_id=focused_artifact_id,
                 provider_config_id=provider_config_id,
                 created_by_id=created_by_id,
             )
@@ -98,20 +108,13 @@ class AgentService:
         return await self.create_session_response(session, missing)
 
     async def create_session_response(self, session: AgentSession, missing: list[str]) -> dict[str, Any]:
-        container = await build_workspace_container(
-            db=self.db,
-            project_id=session.project_id,
-            artifact_type=session.artifact_type,
-            active_item_key=session.focus_section,
-            state_values=None,
-        )
+        document_type = await self._document_type_for_session(session)
         return {
             "session_id": str(session.id),
             "missing_context": missing,
             "artifact_type": session.artifact_type,
-            "focus_section": session.focus_section,
-            "container_key": container.key if container else None,
-            "active_item_key": session.focus_section,
+            "focused_artifact_id": session.focused_artifact_id,
+            "document_type": document_type,
         }
 
     async def get_session_response(
@@ -122,20 +125,36 @@ class AgentService:
         user_id: uuid.UUID | None = None,
     ) -> AgentSessionResponse:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
-        state_values = await self._load_graph_state_values(session_id)
-        workspace_container = await build_workspace_container(
-            db=self.db,
-            project_id=project_id,
-            artifact_type=session.artifact_type,
-            active_item_key=session.focus_section,
-            state_values=state_values,
+        await self._load_graph_state_values(session_id)
+        document_type = await self._document_type_for_session(session)
+        document = (
+            await DocumentService(self.db).get_document(
+                project_id=project_id,
+                document_type=document_type,
+            )
+            if document_type
+            else None
         )
         return AgentSessionResponse.model_validate(session).model_copy(
             update={
                 "ui_status": _session_ui_status(session.status, session.interrupt_type),
-                "workspace_container": workspace_container,
+                "document": document,
             }
         )
+
+    async def _document_type_for_session(self, session: AgentSession) -> str | None:
+        if session.focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, session.focused_artifact_id)
+            if focused is not None:
+                if focused.parent_id is not None:
+                    parent = await self.db.get(Artifact, focused.parent_id)
+                    if parent is not None:
+                        return parent.type.value
+                if focused.type.value in {"brd", "prd", "sad"}:
+                    return focused.type.value
+        if session.artifact_type in {"brd", "prd", "sad"}:
+            return session.artifact_type
+        return container_for(session.artifact_type)
 
     async def get_session(
         self,
@@ -231,15 +250,16 @@ class AgentService:
                 "turn_type": None,
                 "triage_reply": None,
                 "section_coverage": None,
-                "section_assessment": None,
-                "coverage_ratio": None,
                 "coverage_complete": None,
                 "section_coverage_stall_count": None,
                 "assumptions": [],
                 "risks": [],
                 "open_questions": [],
-                "sections_body": {},
-                "focus_section": session.focus_section,
+                "focused_artifact_id": (
+                    str(session.focused_artifact_id)
+                    if session.focused_artifact_id is not None
+                    else None
+                ),
                 "draft_body": None,
                 "method_profile": dict(DEFAULT_METHOD_PROFILE),
                 "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -262,7 +282,7 @@ class AgentService:
                 step_key=session.step_key,
                 workflow_area=session.workflow_area,
                 agent_role=session.agent_role,
-                focus_section=session.focus_section,
+                focused_artifact_id=session.focused_artifact_id,
                 missing_context=session.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -449,76 +469,53 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
     ) -> tuple[Artifact, ArtifactVersion]:
-        focus_section = snapshot.get("focus_section")
-        if not focus_section:
-            raise HTTPException(422, detail="Tool call thiếu focus_section; vui lòng đề xuất lại section hiện tại")
+        focused_artifact_id = snapshot.get("focused_artifact_id")
+        if not focused_artifact_id:
+            raise HTTPException(
+                422,
+                detail="Tool call thiếu focused_artifact_id; vui lòng chọn document item hiện tại",
+            )
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
         artifact = (
             await self.db.execute(
                 select(Artifact)
-                .where(Artifact.project_id == project_id, Artifact.type == ArtifactType.REQUIREMENTS)
+                .where(
+                    Artifact.id == uuid.UUID(str(focused_artifact_id)),
+                    Artifact.project_id == project_id,
+                    Artifact.parent_id.is_not(None),
+                )
                 .with_for_update()
             )
         ).scalar_one_or_none()
         if artifact is None:
-            artifact = Artifact(
-                project_id=project_id,
-                type=ArtifactType.REQUIREMENTS,
-                status=ArtifactStatus.ACCEPTED,
-                title="Requirements",
-                extra_metadata={},
-                created_by_id=created_by_id,
-            )
-            self.db.add(artifact)
-            try:
-                await self.db.flush()
-            except IntegrityError:
-                await self.db.rollback()
-                artifact = (
-                    await self.db.execute(
-                        select(Artifact).where(
-                            Artifact.project_id == project_id,
-                            Artifact.type == ArtifactType.REQUIREMENTS,
-                        ).with_for_update()
-                    )
-                ).scalar_one()
+            raise HTTPException(404, detail="Document item được focus không tồn tại")
 
-        current_body: dict[str, Any] = {}
         current_version = None
         if artifact.current_version_id is not None:
             current_version = await self.db.get(ArtifactVersion, artifact.current_version_id)
-            if current_version is not None:
-                try:
-                    parsed = json.loads(current_version.body or "{}")
-                except json.JSONDecodeError as exc:
-                    # Merging into a corrupt body would silently erase every sibling section already
-                    # approved. Fail loud instead — the body needs manual repair, not an overwrite.
-                    raise HTTPException(500, detail="Requirements artifact body bị hỏng; cần sửa thủ công") from exc
-                if not isinstance(parsed, dict):
-                    raise HTTPException(500, detail="Requirements artifact body sai định dạng; cần sửa thủ công")
-                current_body = dict(parsed)
-        current_body[focus_section] = body
         next_version_number = (current_version.version_number + 1) if current_version is not None else 1
 
         version = ArtifactVersion(
             artifact_id=artifact.id,
             version_number=next_version_number,
-            title="Requirements",
-            body=json.dumps(current_body, ensure_ascii=False),
+            title=title or artifact.title,
+            body=body,
             status=VersionStatus.DRAFT,
             change_source=ChangeSource.AI_GENERATION,
             parent_version_id=current_version.id if current_version is not None else None,
             agent_run_id=run_id,
             tool_call_id=tool_call_id,
             created_by_id=created_by_id,
-            extra_metadata={"focus_section": focus_section, "section_title": title},
+            extra_metadata={"focused_artifact_id": str(artifact.id)},
         )
         self.db.add(version)
         await self.db.flush()
 
         artifact.current_version_id = version.id
+        artifact.title = title or artifact.title
+        artifact.status = ArtifactStatus.ACCEPTED
         await self.db.flush()
 
         return artifact, version
@@ -565,7 +562,7 @@ class AgentService:
                 step_key=session_row.step_key,
                 workflow_area=session_row.workflow_area,
                 agent_role=session_row.agent_role,
-                focus_section=session_row.focus_section,
+                focused_artifact_id=session_row.focused_artifact_id,
                 missing_context=session_row.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -586,16 +583,18 @@ class AgentService:
         missing_context: list[str],
         llm_client: Any,
         strong_llm_client: Any = None,
-        focus_section: str | None = None,
+        focused_artifact_id: uuid.UUID | None = None,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
     ) -> None:
         config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
         timeout = settings.agent_turn_timeout_seconds
-        if focus_section is None:
+        if focused_artifact_id is None:
             async with self.session_factory() as db:
-                focus_section = (
-                    await db.execute(select(AgentSession.focus_section).where(AgentSession.id == session_id))
+                focused_artifact_id = (
+                    await db.execute(
+                        select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id)
+                    )
                 ).scalar_one_or_none()
         try:
             if resume_command is not None:
@@ -619,15 +618,16 @@ class AgentService:
                     "turn_type": None,
                     "triage_reply": None,
                     "section_coverage": None,
-                    "section_assessment": None,
-                    "coverage_ratio": None,
                     "coverage_complete": None,
                     "section_coverage_stall_count": None,
                     "assumptions": [],
                     "risks": [],
                     "open_questions": [],
-                    "sections_body": {},
-                    "focus_section": focus_section,
+                    "focused_artifact_id": (
+                        str(focused_artifact_id)
+                        if focused_artifact_id is not None
+                        else None
+                    ),
                     "draft_body": None,
                     "method_profile": dict(DEFAULT_METHOD_PROFILE),
                     "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -753,15 +753,16 @@ class AgentService:
             "turn_type": None,
             "triage_reply": None,
             "section_coverage": None,
-            "section_assessment": None,
-            "coverage_ratio": None,
             "coverage_complete": None,
             "section_coverage_stall_count": None,
             "assumptions": [],
             "risks": [],
             "open_questions": [],
-            "sections_body": {},
-            "focus_section": session_row.focus_section,
+            "focused_artifact_id": (
+                str(session_row.focused_artifact_id)
+                if session_row.focused_artifact_id is not None
+                else None
+            ),
             "draft_body": None,
             "method_profile": dict(DEFAULT_METHOD_PROFILE),
             "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -778,7 +779,7 @@ class AgentService:
                 step_key=step_key,
                 workflow_area=workflow_area,
                 agent_role=agent_role,
-                focus_section=session_row.focus_section,
+                focused_artifact_id=session_row.focused_artifact_id,
                 missing_context=missing_context,
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,

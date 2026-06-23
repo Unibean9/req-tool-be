@@ -1,8 +1,7 @@
 """BMAD readiness rubric (addendum §15) — 10 dimensions over the 7-section coverage.
 
 Distinct from rubric.py (artifact *quality*): this assesses readiness to advance the planning
-lifecycle. Imports only section_schema (the 7-section engine) — never slot_schema (the legacy
-9-slot model is gone) and never rubric.py.
+lifecycle from document-registry item coverage.
 
 Scope Stability reads the `out_of_scope` sub-dimension of scope_capabilities (added in Phase 1):
 when section_coverage carries a granular dict for that section and out_of_scope is absent, the
@@ -11,7 +10,7 @@ dimension scores 0 and "scope_stability" is flagged.
 
 from typing import Any
 
-from app.graphs.section_schema import status_score
+from app.documents.registry import children_of, status_score
 
 # dimension key -> (description, source sections). Implementation Readiness is special (min of all).
 READINESS_DIMENSIONS: dict[str, dict[str, Any]] = {
@@ -30,10 +29,7 @@ READINESS_DIMENSIONS: dict[str, dict[str, Any]] = {
     "implementation_readiness": {"description": "Sẵn sàng triển khai.", "sections": ["__all__"]},
 }
 
-_ALL_SECTIONS = [
-    "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
-    "business_rules", "constraints_assumptions", "risks_issues",
-]
+_ALL_SECTIONS = list(children_of("brd"))
 
 _READY_THRESHOLD = 0.7
 _DIMENSION_PASS = 0.5

@@ -9,12 +9,12 @@ the call site in ``analyze_node`` is unchanged:
 
     [01 system] + [layer 2 = role overlay] + [03 taxonomy .. 10 output]
 
-Layer 3 (taxonomy) is rendered from ``section_schema`` so the section list never drifts from the
+Layer 3 (taxonomy) is rendered from the document registry so the item list never drifts from the
 engine. Files live inside the app so they ship and version with the code, loaded once at startup.
 """
 from pathlib import Path
 
-from app.graphs.section_schema import SECTION_DESCRIPTIONS
+from app.documents.registry import all_item_types, get_config
 
 # Default role when nothing else resolves — guarantees get_instruction never returns None, so the
 # system prompt always carries the policy contract regardless of artifact_type / workflow_area.
@@ -24,21 +24,34 @@ _DEFAULT_ROLE = "business_analyst"
 # Business Analyst, delivery/requirement artifacts to the Product Manager.
 ARTIFACT_ROLE_MAP: dict[str, str] = {
     # Business Analyst — discovery and problem framing
-    "requirements":  "business_analyst",
-    "domain_entity": "business_analyst",
+    "brd": "business_analyst",
+    "vision_objectives": "business_analyst",
+    "problem_statement": "business_analyst",
+    "stakeholder_register": "business_analyst",
+    "scope_capabilities": "business_analyst",
+    "business_rules": "business_analyst",
+    "constraints_assumptions": "business_analyst",
+    "risks_issues": "business_analyst",
     # Product Manager — prioritized, testable requirements and delivery breakdown
+    "prd":                        "product_manager",
     "functional_requirement":     "product_manager",
     "non_functional_requirement": "product_manager",
     "use_case":                   "product_manager",
-    "epic":                       "product_manager",
-    "story":                      "product_manager",
     "acceptance_criteria":        "product_manager",
+    # Architecture items currently reuse the product-manager overlay until a dedicated role lands.
+    "sad":            "product_manager",
+    "domain_entity":  "product_manager",
+    "component":      "product_manager",
+    "interface":      "product_manager",
+    "tech_decision":  "product_manager",
+    "epic":           "product_manager",
+    "story":          "product_manager",
 }
 
 # workflow_area fallback
 _WORKFLOW_AREA_MAP: dict[str, str] = {
     "product_analysis": "business_analyst",
-    "requirements":     "product_manager",
+    "prd":              "product_manager",
 }
 
 # role key → overlay filename inside roles/
@@ -67,8 +80,11 @@ _assembled_cache: dict[str, str] = {}
 
 
 def _render_taxonomy_sections() -> str:
-    """The 7-section list, sourced from section_schema so it never drifts from the engine."""
-    return "\n".join(f"- {section}: {desc}" for section, desc in SECTION_DESCRIPTIONS.items())
+    """Document item list, sourced from the registry so it never drifts from the engine."""
+    return "\n".join(
+        f"- {item_type}: {get_config(item_type).description}"
+        for item_type in all_item_types()
+    )
 
 
 def load_instructions(base_path: Path | None = None) -> None:
@@ -82,7 +98,7 @@ def load_instructions(base_path: Path | None = None) -> None:
         path = base / "layers" / filename
         if path.exists():
             text = path.read_text(encoding="utf-8").strip()
-            # Layer 3 carries the section list rendered from section_schema (single source of truth).
+            # Layer 3 carries the item list rendered from the document registry.
             if filename == "03-taxonomy-contract.md":
                 text = f"{text}\n{_render_taxonomy_sections()}"
             _layer_cache[filename] = text

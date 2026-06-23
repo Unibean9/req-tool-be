@@ -41,14 +41,26 @@ POLICY = {
 
 
 ARTIFACT_PREDECESSORS = {
-    "requirements": [],
-    "domain_entity": ["requirements"],
-    "functional_requirement": ["requirements"],
-    "non_functional_requirement": ["requirements"],
+    "brd": [],
+    "vision_objectives": [],
+    "problem_statement": ["vision_objectives"],
+    "stakeholder_register": ["problem_statement"],
+    "scope_capabilities": ["problem_statement"],
+    "business_rules": ["scope_capabilities"],
+    "constraints_assumptions": ["scope_capabilities"],
+    "risks_issues": ["constraints_assumptions"],
+    "prd": ["brd"],
+    "domain_entity": ["brd"],
+    "functional_requirement": ["brd"],
+    "non_functional_requirement": ["brd"],
     "use_case": ["functional_requirement"],
+    "acceptance_criteria": ["functional_requirement"],
+    "sad": ["prd"],
+    "component": ["domain_entity"],
+    "interface": ["component"],
+    "tech_decision": ["component"],
     "epic": ["functional_requirement"],
     "story": ["epic"],
-    "acceptance_criteria": ["story"],
 }
 
 

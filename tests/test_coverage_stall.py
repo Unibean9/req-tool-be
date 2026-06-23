@@ -1,180 +1,84 @@
-"""Tests for the section-coverage directive, hint, and stall counter (tool-loop world).
-
-The section taxonomy replaced the BRD slot model: analyze_node reads `section_assessment`,
-computes coverage over 7 sections, and maintains a stall counter so the deterministic hint
-stops re-asking once coverage stops advancing. The directive carries section descriptions plus
-a grading rubric, and the hint lists every weak section as a gap inventory rather than pinning
-one scripted question.
-
-The agent is a PURE LangGraph tool-loop: analyze_node always emits a tool selection
-(TOOL_SELECTION_SCHEMA) and route_node no longer vetoes on coverage.
-"""
+"""Coverage is derived from accepted document children, not LLM self-assessment."""
 
 import uuid
 
 import pytest
 
-from app.graphs.section_schema import COVERAGE_STALL_LIMIT, SECTION_DESCRIPTIONS
-from tests.helpers import create_org, create_project, make_auth_headers
-from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
-
-# ---------------------------------------------------------------------------
-# Fix 1 — the taxonomy instruction layer carries the grading rubric + emit mandate
-# ---------------------------------------------------------------------------
-# The section grading policy moved from an inline prompt directive into the taxonomy layer (the
-# system prompt). These guard that the policy still exists where the harness now expects it.
-
-def _contract(artifact_type: str = "intent") -> str:
-    from app.instructions import get_instruction, load_instructions
-
-    load_instructions()
-    return get_instruction(artifact_type=artifact_type, workflow_area="analysis", agent_role=None)
+from app.documents.registry import children_of, get_config
+from app.graphs.nodes import _build_section_coverage_hint, _document_coverage
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 
 
-def test_contract_lists_section_descriptions():
-    contract = _contract()
-
-    # Each section appears with its human description (rendered from section_schema), not just the key.
-    assert SECTION_DESCRIPTIONS["vision_objectives"] in contract
-    assert SECTION_DESCRIPTIONS["problem_statement"] in contract
-
-
-def test_contract_carries_grading_rubric_and_credit_latest():
-    contract = _contract()
-
-    # Explicit grading rubric so the model stops defaulting everything to 'missing'.
-    assert "filled" in contract and "partial" in contract and "missing" in contract
-    # Must credit the latest user answer instead of re-grading it 'missing'.
-    assert "latest" in contract.lower()
-
-
-def test_contract_is_rubric_not_script():
-    """The taxonomy is a reference set of completeness angles, not a sequential march."""
-    contract = _contract()
-
-    assert "NOT a checklist to interrogate in order" in contract
-
-
-def test_contract_carries_section_assessment_mandate():
-    """compute_section_coverage depends on the LLM emitting section_assessment every turn."""
-    contract = _contract()
-
-    assert "section_assessment" in contract
-
-
-# ---------------------------------------------------------------------------
-# Fix 2 — stall detection rewrites the coverage hint
-# ---------------------------------------------------------------------------
-
-def test_section_hint_breaks_loop_on_stall():
-    from app.graphs.nodes import _build_section_coverage_hint
-
-    state = _state(artifact_type="intent")
-    state["coverage_complete"] = False
-    state["section_coverage"] = {"vision_objectives": "missing", "problem_statement": "missing"}
-    state["section_coverage_stall_count"] = COVERAGE_STALL_LIMIT
-
-    hint = _build_section_coverage_hint(state)
-
-    assert "không tăng" in hint
-    assert "propose" in hint
-
-
-def test_section_hint_lists_all_weak_sections():
-    """Below the stall limit the hint is a gap inventory listing every weak section."""
-    from app.graphs.nodes import _build_section_coverage_hint
-
-    state = _state(artifact_type="intent")
-    state["coverage_complete"] = False
-    state["section_coverage_stall_count"] = 0
-    state["section_coverage"] = {
-        "vision_objectives": "missing",
-        "problem_statement": "partial",
-        "stakeholder_register": "needs_review",
-    }
-
-    hint = _build_section_coverage_hint(state)
-
-    assert "không tăng" not in hint
-    assert SECTION_DESCRIPTIONS["vision_objectives"] in hint
-    assert SECTION_DESCRIPTIONS["problem_statement"] in hint
-    assert SECTION_DESCRIPTIONS["stakeholder_register"] in hint
-    # LLM is invited to choose the angle, not marched through a checklist.
-    assert "angle" in hint or "góc độ" in hint
-
-
-# ---------------------------------------------------------------------------
-# Fix 2 — analyze_node maintains the stall counter
-# ---------------------------------------------------------------------------
-
-async def _run_analyze(client, db_session, section_assessment, prev_ratio, prev_stall):
-    from app.graphs.nodes import analyze_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    mock_llm = _AsyncLLM(section_assessment)
-    state = _state(artifact_type="intent")
-    state["coverage_ratio"] = prev_ratio
-    state["section_coverage_stall_count"] = prev_stall
-    config = _config(str(agent_session.id), str(project_id), mock_llm)
-    config["configurable"]["session_factory"] = _session_factory()
-
-    result = await analyze_node(state, config)
-    return result, agent_session
-
-
-class _AsyncLLM:
-    """Tool-loop analyst stub: scripts an ask_user selection that reports section_assessment.
-
-    analyze_node reads section_assessment off the returned dict to compute coverage and maintain
-    the stall counter; the named tool only drives the emitted AIMessage (irrelevant here).
-    """
-
-    def __init__(self, section_assessment):
-        self._section_assessment = section_assessment
-
-    async def generate(self, **kwargs):
-        return (
-            {
-                "tool": "ask_user",
-                "message": "Câu hỏi tiếp theo?",
-                "confidence": 0.3,
-                "gaps": [],
-                "section_assessment": self._section_assessment,
-            },
-            None,
+@pytest.mark.asyncio
+async def test_document_coverage_three_of_seven_is_not_complete(db_session):
+    project_id = uuid.uuid4()
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    for item_type in children_of("brd")[:3]:
+        db_session.add(
+            Artifact(
+                project_id=project_id,
+                parent_id=container.id,
+                type=ArtifactType(item_type),
+                status=ArtifactStatus.ACCEPTED,
+                title=get_config(item_type).label,
+                extra_metadata={},
+            )
         )
+    await db_session.flush()
+
+    coverage = await _document_coverage(
+        db=db_session,
+        project_id=project_id,
+        artifact_type="vision_objectives",
+        focused_artifact_id=None,
+    )
+
+    assert sum(value == "filled" for value in coverage["section_coverage"].values()) == 3
+    assert coverage["coverage_complete"] is False
 
 
 @pytest.mark.asyncio
-async def test_analyze_increments_stall_when_coverage_flat(client, db_session):
-    all_missing = {section: "missing" for section in SECTION_DESCRIPTIONS}
+async def test_document_coverage_zero_children_is_not_ready(db_session):
+    project_id = uuid.uuid4()
+    db_session.add(
+        Artifact(
+            project_id=project_id,
+            type=ArtifactType.BRD,
+            status=ArtifactStatus.DRAFT,
+            title="BRD",
+            extra_metadata={},
+        )
+    )
+    await db_session.flush()
 
-    result, _ = await _run_analyze(client, db_session, all_missing, prev_ratio=0.0, prev_stall=0)
+    coverage = await _document_coverage(
+        db=db_session,
+        project_id=project_id,
+        artifact_type="vision_objectives",
+        focused_artifact_id=None,
+    )
 
-    assert result["coverage_ratio"] == 0.0
-    assert result["section_coverage_stall_count"] == 1
-
-
-@pytest.mark.asyncio
-async def test_analyze_resets_stall_when_coverage_improves(client, db_session):
-    one_filled = {section: "missing" for section in SECTION_DESCRIPTIONS}
-    one_filled["vision_objectives"] = "filled"
-
-    result, _ = await _run_analyze(client, db_session, one_filled, prev_ratio=0.0, prev_stall=2)
-
-    assert result["coverage_ratio"] > 0.0
-    assert result["section_coverage_stall_count"] == 0
+    assert all(value == "missing" for value in coverage["section_coverage"].values())
+    assert coverage["coverage_complete"] is False
 
 
-@pytest.mark.asyncio
-async def test_analyze_stall_zero_when_no_section_assessment(client, db_session):
-    """No section_assessment -> fail-open coverage -> stall counter resets to 0."""
-    result, _ = await _run_analyze(client, db_session, None, prev_ratio=0.0, prev_stall=2)
-
-    assert result["coverage_complete"] is None
-    assert result["section_coverage_stall_count"] == 0
+def test_coverage_hint_uses_registry_descriptions():
+    state = {
+        "coverage_complete": False,
+        "section_coverage": {
+            item_type: "missing"
+            for item_type in children_of("brd")
+        },
+        "section_coverage_stall_count": 0,
+    }
+    hint = _build_section_coverage_hint(state)
+    assert get_config("vision_objectives").description in hint
+    assert get_config("problem_statement").description in hint

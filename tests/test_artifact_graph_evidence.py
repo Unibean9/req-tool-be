@@ -10,7 +10,7 @@ from tests.helpers import create_org, create_project, make_auth_headers
 @pytest.mark.asyncio
 async def test_graph_endpoint_returns_nodes_links_and_version_references(client):
     headers, project = await _project_context(client)
-    req = await _create_artifact(client, headers, project["id"], artifact_type="requirements", title="Requirements")
+    req = await _create_artifact(client, headers, project["id"], artifact_type="brd", title="BRD")
     fr = await _create_artifact(
         client,
         headers,

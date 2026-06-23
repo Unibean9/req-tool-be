@@ -70,6 +70,7 @@ async def test_artifact_repository_required_columns_match_contract(db_session):
         )
 
     assert {
+        "parent_id",
         "run_id",
         "step_id",
         "code",
@@ -102,11 +103,23 @@ def test_artifact_enum_values_are_constrained():
         ArtifactStatus: {"draft", "needs_clarification", "accepted", "rejected", "archived"},
         ArtifactPriority: {"must", "should", "could", "wont"},
         ArtifactType: {
-            "requirements",
+            "brd",
+            "prd",
+            "sad",
+            "vision_objectives",
+            "problem_statement",
+            "stakeholder_register",
+            "scope_capabilities",
+            "business_rules",
+            "constraints_assumptions",
+            "risks_issues",
             "domain_entity",
             "functional_requirement",
             "non_functional_requirement",
             "use_case",
+            "component",
+            "interface",
+            "tech_decision",
             "epic",
             "story",
             "acceptance_criteria",

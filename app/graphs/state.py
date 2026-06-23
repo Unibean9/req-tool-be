@@ -123,8 +123,6 @@ class WorkflowState(TypedDict):
     turn_type: str | None
     triage_reply: str | None
     section_coverage: dict[str, str] | None
-    section_assessment: dict[str, Any] | None
-    coverage_ratio: float | None
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
@@ -132,10 +130,8 @@ class WorkflowState(TypedDict):
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
-    # Section-focused artifact body. A focused session reads and writes only the selected section;
-    # legacy flat draft fields remain as fallback until the export/approve path is migrated.
-    sections_body: dict[str, str]
-    focus_section: str | None
+    # Exact document item this session reads and writes.
+    focused_artifact_id: str | None
     # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
     # confirmed artifact even when no in-session working_draft exists yet.
     draft_body: str | None

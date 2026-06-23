@@ -22,10 +22,10 @@ def test_run_critique_is_available_when_draft_body_loaded():
     assert "run_critique" in _tool_names(state)
 
 
-def test_run_critique_is_available_when_focused_section_has_body():
+def test_run_critique_is_available_when_focused_artifact_body_is_loaded():
     state = _state(artifact_type="goal")
-    state["focus_section"] = "vision_objectives"
-    state["sections_body"] = {"vision_objectives": "## Mục tiêu\n- Tăng giữ chân 30%."}
+    state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
+    state["draft_body"] = "## Mục tiêu\n- Tăng giữ chân 30%."
     assert "run_critique" in _tool_names(state)
 
 

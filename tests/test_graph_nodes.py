@@ -53,12 +53,12 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "turn_type": None,
         "triage_reply": None,
         "section_coverage": None,
-        "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -141,8 +141,9 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_resets_critique_state_when_db_focus_section_changes(client, db_session):
+async def test_analyze_node_resets_critique_state_when_db_focused_artifact_changes(client, db_session):
     from app.graphs.nodes import analyze_node
+    from app.models.artifact import Artifact
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -150,22 +151,44 @@ async def test_analyze_node_resets_critique_state_when_db_focus_section_changes(
     project_id = uuid.UUID(project["id"])
 
     agent_session = await _make_agent_session(client, db_session, project_id)
-    agent_session.focus_section = "problem_statement"
+    parent = Artifact(
+        project_id=project_id,
+        type="brd",
+        title="BRD",
+        extra_metadata={},
+        status="draft",
+    )
+    db_session.add(parent)
+    await db_session.flush()
+    child_a = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type="vision_objectives",
+        title="Vision",
+        extra_metadata={},
+        status="draft",
+    )
+    child_b = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type="problem_statement",
+        title="Problem",
+        extra_metadata={},
+        status="draft",
+    )
+    db_session.add_all([child_a, child_b])
+    await db_session.flush()
+    agent_session.focused_artifact_id = child_b.id
     await db_session.commit()
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=({
         "tool": "finalize",
         "summary": "Hoàn tất",
-        "section_assessment": {},
     }, None))
 
-    state = _state(artifact_type="goal")
-    state["focus_section"] = "vision_objectives"
-    state["sections_body"] = {
-        "vision_objectives": "Draft A",
-        "problem_statement": "Draft B",
-    }
+    state = _state(artifact_type="problem_statement")
+    state["focused_artifact_id"] = str(child_a.id)
     state["critique_rounds"] = 1
     state["last_critiqued_draft_hash"] = "stalehash"
     state["quality_report"] = {"quality_gate_result": "pass"}
@@ -174,7 +197,7 @@ async def test_analyze_node_resets_critique_state_when_db_focus_section_changes(
 
     result = await analyze_node(state, config)
 
-    assert result["focus_section"] == "problem_statement"
+    assert result["focused_artifact_id"] == str(child_b.id)
     assert result["critique_rounds"] == 0
     assert result["last_critiqued_draft_hash"] is None
     assert result["analysis_result"]["tool"] == "ask_user"
@@ -183,7 +206,7 @@ async def test_analyze_node_resets_critique_state_when_db_focus_section_changes(
 
 @pytest.mark.asyncio
 async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_session):
-    """A derived session must see its `requirements` predecessor as analyst context.
+    """A derived session must see its `brd` predecessor as analyst context.
 
     Regression: analyze_node previously read only same-type artifacts, so a
     derived type never saw the upstream source it derives from — leaving the
@@ -197,10 +220,9 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    # An existing requirements artifact in the project — the predecessor of functional requirements.
-    requirements_title = "Requirements: Điều phối lịch học nhóm cho sinh viên"
+    brd_title = "BRD: Điều phối lịch học nhóm cho sinh viên"
     db_session.add(
-        Artifact(project_id=project_id, type="requirements", title=requirements_title, extra_metadata={}, status="draft")
+        Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft")
     )
     await db_session.commit()
 
@@ -222,7 +244,7 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     await analyze_node(state, config)
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
-    assert requirements_title in prompt, "Predecessor requirements title must appear in the analyst prompt context"
+    assert brd_title in prompt, "Predecessor BRD title must appear in the analyst prompt context"
 
 
 @pytest.mark.asyncio
@@ -230,7 +252,7 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     """A deep type (`story`) must see its full ancestry, not just the direct parent.
 
     `story`'s direct predecessor is `epic`, but provenance runs through functional
-    requirements to `requirements`. The context loader uses the transitive closure,
+    requirements to `brd`. The context loader uses the transitive closure,
     so both the direct parent and a distant ancestor must reach the prompt.
     """
     from app.graphs.nodes import analyze_node
@@ -241,10 +263,10 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    requirements_title = "Requirements: Điều phối lịch học nhóm"
+    brd_title = "BRD: Điều phối lịch học nhóm"
     fr_title = "Yêu cầu chức năng: Tính khung giờ rảnh chung"
     epic_title = "Epic: Đồng bộ và đối chiếu lịch nhóm"
-    db_session.add(Artifact(project_id=project_id, type="requirements", title=requirements_title, extra_metadata={}, status="draft"))
+    db_session.add(Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="functional_requirement", title=fr_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="epic", title=epic_title, extra_metadata={}, status="draft"))
     await db_session.commit()
@@ -268,7 +290,7 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert epic_title in prompt, "Direct parent (epic) must appear in the prompt"
-    assert requirements_title in prompt, "Distant ancestor (requirements) must appear via transitive closure"
+    assert brd_title in prompt, "Distant ancestor (brd) must appear via transitive closure"
 
 
 @pytest.mark.asyncio
@@ -860,7 +882,12 @@ def test_analysis_schema_accepts_answer_assessment_and_acknowledgment():
 # ---------------------------------------------------------------------------
 
 async def _add_artifact_with_version(
-    db_session, project_id: uuid.UUID, artifact_type: str, title: str, body: str
+    db_session,
+    project_id: uuid.UUID,
+    artifact_type: str,
+    title: str,
+    body: str,
+    parent_id: uuid.UUID | None = None,
 ):
     """Create an artifact with a current version pointing at `body`.
 
@@ -870,7 +897,12 @@ async def _add_artifact_with_version(
     from app.models.artifact import Artifact, ArtifactVersion, ChangeSource, VersionStatus
 
     artifact = Artifact(
-        project_id=project_id, type=artifact_type, title=title, extra_metadata={}, status="draft"
+        project_id=project_id,
+        parent_id=parent_id,
+        type=artifact_type,
+        title=title,
+        extra_metadata={},
+        status="draft",
     )
     db_session.add(artifact)
     await db_session.flush()
@@ -965,7 +997,7 @@ async def test_read_current_body_returns_none_without_current_version(client, db
 
 @pytest.mark.asyncio
 async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_session):
-    """M7/M8: a new `requirements` session must see the existing draft body in its prompt."""
+    """A focused document item must expose its current draft in the prompt."""
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -974,10 +1006,28 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
     project_id = uuid.UUID(project["id"])
 
     draft_body = "Đối tượng: sinh viên năm 2. Trở ngại: lịch học nhóm hay bị trùng giờ làm thêm."
-    await _add_artifact_with_version(db_session, project_id, "requirements", "Requirements", draft_body)
+    parent = await _add_artifact_with_version(
+        db_session,
+        project_id,
+        "brd",
+        "BRD",
+        "Container",
+    )
+    child = await _add_artifact_with_version(
+        db_session,
+        project_id,
+        "problem_statement",
+        "Problem Statement",
+        draft_body,
+        parent_id=parent.id,
+    )
 
     session = AgentSession(
-        project_id=project_id, artifact_type="requirements", workflow_area="analysis", graph_checkpoint={}
+        project_id=project_id,
+        artifact_type="problem_statement",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=child.id,
     )
     db_session.add(session)
     await db_session.commit()
@@ -987,7 +1037,8 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
         return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
     )
 
-    state = _state(artifact_type="requirements")
+    state = _state(artifact_type="problem_statement")
+    state["focused_artifact_id"] = str(child.id)
     config = _config(str(session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 

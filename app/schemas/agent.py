@@ -2,16 +2,15 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
-from app.graphs.section_schema import SECTION_SPECS
 from app.models.agent import (
     AgentMessageRole,
     AgentSessionInterruptType,
     AgentSessionStatus,
     AgentToolCallStatus,
 )
-from app.schemas.workspace import WorkspaceContainerResponse
+from app.schemas.document import DocumentView
 
 
 class AgentSessionCreate(BaseModel):
@@ -20,14 +19,7 @@ class AgentSessionCreate(BaseModel):
     workflow_area: str = Field(default="analysis", max_length=50)
     agent_role: str | None = Field(default=None, max_length=100)
     provider_config_id: uuid.UUID | None = None
-    focus_section: str | None = Field(default=None, max_length=100)
-
-    @field_validator("focus_section")
-    @classmethod
-    def validate_focus_section(cls, value: str | None) -> str | None:
-        if value is not None and value not in SECTION_SPECS:
-            raise ValueError("focus_section không hợp lệ")
-        return value
+    focused_artifact_id: uuid.UUID | None = None
 
 
 class AgentSessionResponse(BaseModel):
@@ -40,8 +32,8 @@ class AgentSessionResponse(BaseModel):
     ui_status: str | None = None
     interrupt_type: AgentSessionInterruptType | None
     missing_context: Any | None
-    focus_section: str | None = None
-    workspace_container: WorkspaceContainerResponse | None = None
+    focused_artifact_id: uuid.UUID | None = None
+    document: DocumentView | None = None
     agent_role: str | None
     provider_config_id: uuid.UUID | None
     created_by_id: uuid.UUID | None
@@ -55,9 +47,8 @@ class AgentSessionCreateResponse(BaseModel):
     session_id: str
     missing_context: list[str]
     artifact_type: str | None = None
-    focus_section: str | None = None
-    container_key: str | None = None
-    active_item_key: str | None = None
+    focused_artifact_id: uuid.UUID | None = None
+    document_type: str | None = None
 
 
 class AgentMessageCreate(BaseModel):

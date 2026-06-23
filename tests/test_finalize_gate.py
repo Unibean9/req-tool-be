@@ -1,11 +1,21 @@
 """Finalize gate: working_draft non-empty AND critique_rounds > 0 AND quality gate passed (spec §15.1)."""
 
 import hashlib
+import uuid
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 import pytest
 
 from app.graphs.agent_tools import _finalize_impl, current_draft_body, get_available_tools
+from app.models.artifact import (
+    Artifact,
+    ArtifactStatus,
+    ArtifactType,
+    ArtifactVersion,
+    ChangeSource,
+    VersionStatus,
+)
 
 
 def _names(state):
@@ -161,49 +171,60 @@ async def test_finalize_hard_blocks_without_current_draft_body():
     assert "Không thể finalize" in command.update["messages"][0].content
 
 
-def _multi_section_blob() -> str:
-    import json
-
-    return json.dumps(
-        {"vision_objectives": "Tầm nhìn đã chốt", "problem_statement": "Vấn đề đã mô tả"},
-        ensure_ascii=False,
+@pytest.mark.asyncio
+async def test_current_draft_body_loads_exact_focused_artifact(db_session):
+    project_id = uuid.uuid4()
+    parent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
     )
+    db_session.add(parent)
+    await db_session.flush()
+    child = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type=ArtifactType.VISION_OBJECTIVES,
+        status=ArtifactStatus.DRAFT,
+        title="Vision",
+        extra_metadata={},
+    )
+    db_session.add(child)
+    await db_session.flush()
+    version = ArtifactVersion(
+        artifact_id=child.id,
+        version_number=1,
+        title="Vision",
+        body="Tầm nhìn đã chốt",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(version)
+    await db_session.flush()
+    child.current_version_id = version.id
+    await db_session.flush()
 
+    @asynccontextmanager
+    async def session_factory():
+        yield db_session
 
-def test_current_draft_body_returns_only_focus_slice_from_persisted_blob():
-    # Switching focus to a section already persisted: return only that section's slice, never the blob.
-    state = {"focus_section": "vision_objectives", "sections_body": {}, "draft_body": _multi_section_blob()}
-    assert current_draft_body(state) == "Tầm nhìn đã chốt"
-
-
-def test_current_draft_body_empty_for_undrafted_focus_section():
-    # The focus section has no content in the persisted blob → empty, NOT a sibling section's text.
-    state = {"focus_section": "scope_capabilities", "sections_body": {}, "draft_body": _multi_section_blob()}
-    assert current_draft_body(state) == ""
-
-
-def test_finalize_not_offered_for_undrafted_section_with_persisted_blob():
-    # Cross-section contamination guard: a sibling-populated blob must not make an undrafted focus
-    # section look finalizable (has_draft / finalize gate route through current_draft_body).
     state = {
-        "messages": [],
-        "focus_section": "scope_capabilities",
-        "sections_body": {},
-        "draft_body": _multi_section_blob(),
-        "working_draft": None,
-        "critique_rounds": 1,
-        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
-        "last_critiqued_draft_hash": _hash(_multi_section_blob()),
+        "focused_artifact_id": str(child.id),
+        "draft_body": "stale",
     }
-    assert "finalize" not in _names(state)
+    config = {"configurable": {"session_factory": session_factory}}
+    assert await current_draft_body(state, config) == "Tầm nhìn đã chốt"
 
 
 @pytest.mark.asyncio
-async def test_finalize_hard_blocks_when_focused_section_was_not_critiqued():
+async def test_finalize_hard_blocks_when_focused_artifact_was_not_critiqued():
     config = {"configurable": {"session_factory": None, "thread_id": "00000000-0000-0000-0000-000000000001"}}
     state = {
-        "focus_section": "problem_statement",
-        "sections_body": {"problem_statement": "Draft section B"},
+        "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
+        "draft_body": "Draft item B",
         "critique_rounds": 0,
         "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
         "last_critiqued_draft_hash": _hash("Draft section A"),

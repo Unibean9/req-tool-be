@@ -93,9 +93,9 @@ async def test_create_artifact_denies_type_outside_allowed_context():
     assert exc_info.value.tool_name == "create_artifact"
 
 
-def test_artifact_predecessors_design_types_trace_to_requirements():
-    assert ARTIFACT_PREDECESSORS["requirements"] == []
-    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["requirements"]
+def test_artifact_predecessors_design_types_trace_to_brd():
+    assert ARTIFACT_PREDECESSORS["brd"] == []
+    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["brd"]
 
 
 def test_workflow_state_structure_and_add_messages_reducer():
@@ -118,15 +118,12 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "turn_type": None,
         "triage_reply": None,
         "section_coverage": None,
-        "section_assessment": None,
-        "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
         "assumptions": [],
         "risks": [],
         "open_questions": [],
-        "sections_body": {},
-        "focus_section": None,
+        "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
@@ -155,15 +152,12 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "turn_type",
         "triage_reply",
         "section_coverage",
-        "section_assessment",
-        "coverage_ratio",
         "coverage_complete",
         "section_coverage_stall_count",
         "assumptions",
         "risks",
         "open_questions",
-        "sections_body",
-        "focus_section",
+        "focused_artifact_id",
         "draft_body",
         "method_profile",
         "artifact_chain",

@@ -9,14 +9,8 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
+from app.documents.registry import children_of, container_for, get_config, status_score
 from app.graphs.policy import ancestor_types
-from app.graphs.section_schema import (
-    COVERAGE_STALL_LIMIT,
-    SECTION_DESCRIPTIONS,
-    SECTION_SPECS,
-    compute_section_coverage,
-    status_score,
-)
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
 from app.instructions import get_instruction
@@ -28,10 +22,10 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
 )
+from app.models.artifact import Artifact, ArtifactStatus
 
 # Tool-loop selection schema (Phase 5 shim). The analyst names the tool to run this turn plus its
-# args. The analytic fields (confidence, gaps, section_assessment, active_mode, draft_update, ...) feed
-# eval (active_mode), incremental draft (draft_update) and the coverage gate (section_assessment).
+# args. The analytic fields feed eval (active_mode) and incremental draft (draft_update).
 TOOL_SELECTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -54,13 +48,6 @@ TOOL_SELECTION_SCHEMA = {
         "gaps": {"type": "array", "items": {"type": "string"}},
         "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
         "acknowledgment": {"type": "string"},
-        "section_assessment": {
-            "type": "object",
-            "additionalProperties": {
-                "type": "string",
-                "enum": ["missing", "partial", "filled", "needs_review"],
-            },
-        },
         "active_mode": {
             "type": "string",
             "enum": ["discovery", "structuring", "critique", "revision", "finalization"],
@@ -135,7 +122,8 @@ def _derive_artifact_chain(section_coverage: dict[str, str] | None) -> dict[str,
     brief tracks the first four sections; prd tracks all seven.
     """
     cov = section_coverage or {}
-    scores = {section: status_score(cov.get(section)) for section in SECTION_SPECS}
+    brd_items = children_of("brd")
+    scores = {section: status_score(cov.get(section)) for section in brd_items}
     nonzero = [v for v in scores.values() if v > 0]
     strong = [v for v in scores.values() if v >= 0.5]
 
@@ -218,6 +206,82 @@ _FALLBACK_GREETING = {
     "vi": "Xin chào! Tôi là trợ lý phân tích yêu cầu. Bạn muốn bắt đầu từ đâu?",
     "en": "Hello! I'm your requirements analysis assistant. Where would you like to start?",
 }
+
+
+async def _document_coverage(
+    *,
+    db,
+    project_id: uuid.UUID,
+    artifact_type: str,
+    focused_artifact_id: uuid.UUID | None,
+) -> dict[str, Any]:
+    container_type = container_for(artifact_type)
+    container_id: uuid.UUID | None = None
+
+    if focused_artifact_id is not None:
+        focused = await db.get(Artifact, focused_artifact_id)
+        if focused is not None and focused.project_id == project_id:
+            if focused.parent_id is not None:
+                parent = await db.get(Artifact, focused.parent_id)
+                if parent is not None:
+                    container_type = parent.type.value
+                    container_id = parent.id
+            elif focused.type.value in {"brd", "prd", "sad"}:
+                container_type = focused.type.value
+                container_id = focused.id
+    elif artifact_type in {"brd", "prd", "sad"}:
+        container_type = artifact_type
+
+    if container_type is None:
+        return {
+            "section_coverage": None,
+            "coverage_complete": None,
+            "section_coverage_stall_count": 0,
+        }
+
+    registry_items = children_of(container_type)
+    if not registry_items:
+        return {
+            "section_coverage": {},
+            "coverage_complete": False,
+            "section_coverage_stall_count": 0,
+        }
+
+    if container_id is None:
+        container_id = (
+            await db.execute(
+                select(Artifact.id).where(
+                    Artifact.project_id == project_id,
+                    Artifact.type == container_type,
+                    Artifact.parent_id.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+    accepted_types: set[str] = set()
+    if container_id is not None:
+        accepted_rows = (
+            await db.execute(
+                select(Artifact.type).where(
+                    Artifact.project_id == project_id,
+                    Artifact.parent_id == container_id,
+                    Artifact.type.in_(registry_items),
+                    Artifact.status == ArtifactStatus.ACCEPTED,
+                )
+            )
+        ).scalars()
+        accepted_types = {value.value for value in accepted_rows}
+
+    coverage = {
+        item_type: ("filled" if item_type in accepted_types else "missing")
+        for item_type in registry_items
+    }
+    accepted_count = len(accepted_types)
+    return {
+        "section_coverage": coverage,
+        "coverage_complete": accepted_count == len(registry_items),
+        "section_coverage_stall_count": 0,
+    }
 
 
 async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
@@ -337,12 +401,23 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     artifact_type = state["artifact_type"]
     context_types = [artifact_type, *ancestor_types(artifact_type)]
     async with session_factory() as db:
-        db_focus_section = (
-            await db.execute(select(AgentSession.focus_section).where(AgentSession.id == session_id))
+        db_focused_artifact_id = (
+            await db.execute(
+                select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id)
+            )
         ).scalar_one_or_none()
-        if db_focus_section != state.get("focus_section"):
+        state_focused_artifact_id = (
+            uuid.UUID(str(state["focused_artifact_id"]))
+            if state.get("focused_artifact_id")
+            else None
+        )
+        if db_focused_artifact_id != state_focused_artifact_id:
             focus_reset_update = {
-                "focus_section": db_focus_section,
+                "focused_artifact_id": (
+                    str(db_focused_artifact_id)
+                    if db_focused_artifact_id is not None
+                    else None
+                ),
                 "critique_rounds": 0,
                 "last_critiqued_draft_hash": None,
             }
@@ -361,8 +436,36 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # Load the current draft body for this artifact_type so the analyst can mine
         # the delta instead of re-asking what the draft already records (M7/M8).
         draft = await read_current_body(
-            db=db, project_id=project_id, artifact_type=artifact_type
+            db=db,
+            project_id=project_id,
+            artifact_type=artifact_type,
+            artifact_id=db_focused_artifact_id,
         )
+        coverage = await _document_coverage(
+            db=db,
+            project_id=project_id,
+            artifact_type=artifact_type,
+            focused_artifact_id=db_focused_artifact_id,
+        )
+        previous_accepted = sum(
+            1 for value in (effective_state.get("section_coverage") or {}).values()
+            if value == "filled"
+        )
+        current_accepted = sum(
+            1 for value in (coverage.get("section_coverage") or {}).values()
+            if value == "filled"
+        )
+        if (
+            coverage["coverage_complete"]
+            or current_accepted > previous_accepted
+            or effective_state.get("section_coverage") is None
+        ):
+            coverage["section_coverage_stall_count"] = 0
+        else:
+            coverage["section_coverage_stall_count"] = (
+                effective_state.get("section_coverage_stall_count") or 0
+            ) + 1
+        effective_state = {**effective_state, **coverage}
     draft_body = draft["body"] if draft else None
 
     prompt = _build_tool_selection_prompt(effective_state, artifacts, draft_body)
@@ -380,30 +483,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         response_format=response_format,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
-    section_assessment = analysis_result.get("section_assessment") if isinstance(analysis_result, dict) else None
-    # section-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
-    # separate from "reported empty {}" (evaluated as missing -> gate), so non-section-aware
-    # turns such as derived artifacts or confident proposals continue normally.
-    merged_section_assessment = effective_state.get("section_assessment")
-    if isinstance(section_assessment, dict):
-        merged_section_assessment = {**(merged_section_assessment or {}), **section_assessment}
-
-    if merged_section_assessment is None:
-        coverage = {"section_coverage": None, "coverage_ratio": None, "coverage_complete": None}
-    else:
-        coverage = compute_section_coverage(merged_section_assessment)
-    # Stall counter: increment when a gated turn fails to raise coverage, reset otherwise.
-    # route_node and the coverage hint read it to escape a non-advancing elicitation loop.
-    prev_ratio = effective_state.get("coverage_ratio")
-    new_ratio = coverage["coverage_ratio"]
-    if new_ratio is None or coverage["coverage_complete"] or prev_ratio is None or new_ratio > prev_ratio:
-        coverage["section_coverage_stall_count"] = 0
-    else:
-        coverage["section_coverage_stall_count"] = (effective_state.get("section_coverage_stall_count") or 0) + 1
     if isinstance(analysis_result, dict):
         analysis_result = {
             **analysis_result,
-            "coverage_ratio": coverage["coverage_ratio"],
             "coverage_complete": coverage["coverage_complete"],
         }
 
@@ -475,7 +557,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
-        "section_assessment": merged_section_assessment,
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
@@ -738,7 +819,11 @@ def _degrade_reason(
     return None
 
 
-def _build_tool_selection_prompt(state: WorkflowState, artifacts: list[dict], draft_body: str | None = None) -> str:
+def _build_tool_selection_prompt(
+    state: WorkflowState,
+    artifacts: list[dict],
+    draft_body: str | None = None,
+) -> str:
     """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
     This is dynamic payload only — artifact context, the conversation window, the tools available
@@ -814,7 +899,7 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     section_coverage = state.get("section_coverage") or {}
     # Stall: coverage stopped advancing — re-pinning the same gaps would reproduce the previous
     # question verbatim, so steer the model to synthesize what it has and move on or propose.
-    if (state.get("section_coverage_stall_count") or 0) >= COVERAGE_STALL_LIMIT:
+    if (state.get("section_coverage_stall_count") or 0) >= 2:
         return (
             "\n\nĐộ phủ section không tăng qua nhiều lượt. Đừng lặp lại cùng hướng khai thác — hãy tổng "
             "hợp những gì đã có và cân nhắc propose, hoặc chuyển sang một angle hoàn toàn khác."
@@ -822,9 +907,9 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     # Gap-inventory: list every weak section (missing first, then partial/needs_review) so the LLM
     # picks the angle that fits the conversation instead of being pinned to one scripted question.
     gap_lines = [
-        f"- {SECTION_DESCRIPTIONS.get(section, section)} ({section_coverage.get(section)})"
+        f"- {get_config(section).description} ({section_coverage.get(section)})"
         for status in ("missing", "partial", "needs_review")
-        for section in SECTION_SPECS
+        for section in section_coverage
         if section_coverage.get(section) == status
     ]
     inventory = "\n".join(gap_lines)

@@ -23,6 +23,7 @@ from app.models.artifact import (
 
 class ArtifactCreateRequest(BaseModel):
     type: ArtifactType
+    parent_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1)
     status: ArtifactStatus = ArtifactStatus.DRAFT
@@ -62,12 +63,12 @@ class ArtifactVersionResponse(BaseModel):
     created_by_id: uuid.UUID | None = None
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
-    items: dict[str, str] | None = None
 
 
 class ArtifactResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    parent_id: uuid.UUID | None = None
     current_version_id: uuid.UUID | None = None
     type: ArtifactType
     status: ArtifactStatus

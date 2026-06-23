@@ -1,140 +1,70 @@
-"""Tests for the 7-section requirements taxonomy (spec §3, §7.3–7.4)."""
+"""Document registry contract tests."""
 
-from app.graphs.section_schema import (
-    SECTION_SPECS,
-    SECTION_STATUSES,
-    compute_section_coverage,
+import pytest
+
+from app.documents.registry import (
+    all_container_types,
+    all_item_types,
+    children_of,
+    container_for,
+    get_config,
 )
-from app.graphs.workspace import WORKSPACE_CONTAINERS, workspace_container_for_artifact_type
-
-EXPECTED_SECTIONS = {
-    "vision_objectives",
-    "problem_statement",
-    "stakeholder_register",
-    "scope_capabilities",
-    "business_rules",
-    "constraints_assumptions",
-    "risks_issues",
-}
 
 
-def test_section_keys_are_exactly_7():
-    assert set(SECTION_SPECS) == EXPECTED_SECTIONS
+def test_registry_has_all_document_containers():
+    assert all_container_types() == ("brd", "prd", "sad")
 
 
-def test_each_section_has_sub_dimensions():
-    for section, spec in SECTION_SPECS.items():
-        assert len(spec["sub_dimensions"]) >= 2, section
+def test_brd_registry_has_seven_items():
+    assert children_of("brd") == (
+        "vision_objectives",
+        "problem_statement",
+        "stakeholder_register",
+        "scope_capabilities",
+        "business_rules",
+        "constraints_assumptions",
+        "risks_issues",
+    )
 
 
-def test_business_rules_section_has_condition_and_outcome():
-    subs = SECTION_SPECS["business_rules"]["sub_dimensions"]
-    assert "condition" in subs
-    assert "outcome" in subs
-
-
-def test_scope_capabilities_has_out_of_scope_sub_dimension():
-    subs = SECTION_SPECS["scope_capabilities"]["sub_dimensions"]
-    assert "in_scope" in subs
-    assert "out_of_scope" in subs
-
-
-def test_compute_coverage_returns_7_section_keys():
-    result = compute_section_coverage({})
-    assert set(result["section_coverage"]) == EXPECTED_SECTIONS
-
-
-def test_compute_coverage_missing_all_returns_zero():
-    result = compute_section_coverage({})
-    assert result["coverage_ratio"] == 0.0
-    assert result["coverage_complete"] is False
-
-
-def test_compute_coverage_all_filled_returns_complete():
-    assessment = {section: "filled" for section in EXPECTED_SECTIONS}
-    result = compute_section_coverage(assessment)
-    assert result["coverage_complete"] is True
-    assert result["coverage_ratio"] == 1.0
-
-
-def test_compute_coverage_partial_ratio():
-    assessment = {
-        "vision_objectives": "filled",
-        "problem_statement": "filled",
-        "stakeholder_register": "filled",
-    }
-    result = compute_section_coverage(assessment)
-    assert result["coverage_ratio"] == 3 / 7
-    assert result["coverage_complete"] is False
-
-
-def test_section_status_enum():
-    assert set(SECTION_STATUSES) == {"missing", "partial", "filled", "needs_review"}
-
-
-def test_coverage_threshold_per_section():
-    for section, spec in SECTION_SPECS.items():
-        assert 0.0 < spec["threshold"] <= 1.0, section
-
-
-def test_vision_objectives_has_goal_sub_dimensions():
-    subs = SECTION_SPECS["vision_objectives"]["sub_dimensions"]
-    for key in ("business_goal", "user_goal", "metric", "target", "timeframe"):
-        assert key in subs, key
-
-
-def test_vision_objectives_has_intent_sub_dimensions():
-    subs = SECTION_SPECS["vision_objectives"]["sub_dimensions"]
-    assert "intent" in subs
-    assert "success_definition" in subs
-
-
-def test_compute_section_coverage_scores_sub_dimension_presence():
-    assessment = {
-        "vision_objectives": {
-            "business_goal": "filled",
-            "user_goal": "partial",
-            "metric": "missing",
-            "target": "missing",
-            "timeframe": "missing",
-            "intent": "filled",
-            "success_definition": "missing",
-        }
-    }
-    result = compute_section_coverage(assessment)
-    assert result["section_coverage"]["vision_objectives"] != "filled"
-
-
-def test_workspace_container_registry_is_generic_and_extendable():
-    containers = {container.key: container for container in WORKSPACE_CONTAINERS}
-    assert set(containers) == {"requirements", "spec", "backlog"}
-
-    requirements = containers["requirements"]
-    assert requirements.kind == "document"
-    assert requirements.phase == "brd"
-    assert requirements.primary_artifact_type == "requirements"
-    assert requirements.singleton is True
-    assert [item.key for item in requirements.item_definitions] == list(SECTION_SPECS)
-
-    spec = containers["spec"]
-    assert spec.kind == "artifact_group"
-    assert spec.phase == "prd"
-    assert set(spec.artifact_types) == {
-        "domain_entity",
+def test_prd_registry_has_four_active_items():
+    assert children_of("prd") == (
         "functional_requirement",
-        "non_functional_requirement",
         "use_case",
+        "non_functional_requirement",
+        "acceptance_criteria",
+    )
+
+
+def test_sad_registry_has_four_scaffold_items():
+    assert children_of("sad") == (
+        "domain_entity",
+        "component",
+        "interface",
+        "tech_decision",
+    )
+
+
+def test_registry_maps_items_to_containers():
+    assert container_for("vision_objectives") == "brd"
+    assert container_for("functional_requirement") == "prd"
+    assert container_for("component") == "sad"
+    assert container_for("epic") is None
+
+
+def test_registry_item_metadata_is_complete():
+    assert set(all_item_types()) == {
+        *children_of("brd"),
+        *children_of("prd"),
+        *children_of("sad"),
     }
+    for item_type in all_item_types():
+        config = get_config(item_type)
+        assert config.is_container is False
+        assert config.label
+        assert config.description
 
-    backlog = containers["backlog"]
-    assert backlog.kind == "artifact_group"
-    assert backlog.phase == "delivery"
-    assert backlog.step_key == "realization_backlog"
-    assert set(backlog.artifact_types) == {"epic", "story", "acceptance_criteria"}
 
-
-def test_workspace_container_lookup_by_artifact_type():
-    assert workspace_container_for_artifact_type("requirements").key == "requirements"
-    assert workspace_container_for_artifact_type("functional_requirement").key == "spec"
-    assert workspace_container_for_artifact_type("story").key == "backlog"
-    assert workspace_container_for_artifact_type("unknown") is None
+def test_children_of_rejects_non_container():
+    with pytest.raises(ValueError):
+        children_of("vision_objectives")

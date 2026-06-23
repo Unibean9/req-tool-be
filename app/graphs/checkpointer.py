@@ -14,6 +14,7 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentSession
@@ -193,3 +194,24 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         configurable["thread_id"] = configurable.get("thread_id") or str(self.session_id)
         configurable["checkpoint_id"] = checkpoint["id"]
         return {**config, "configurable": configurable}
+
+
+async def checkpoint_values_for_session(
+    *,
+    session_id: uuid.UUID,
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+) -> dict[str, Any] | None:
+    checkpointer = AgentSessionCheckpointer(
+        session_id=str(session_id),
+        session_factory=session_factory,
+    )
+    try:
+        checkpoint = await checkpointer.aget_tuple(
+            {"configurable": {"thread_id": str(session_id)}}
+        )
+    except NoResultFound:
+        return None
+    if checkpoint is None:
+        return None
+    values = checkpoint.checkpoint.get("channel_values") or {}
+    return values if isinstance(values, dict) else None

@@ -39,7 +39,15 @@ async def create_artifact(
     db: AsyncSession = Depends(get_db),
 ):
     await require_project_access(project_id, user, db)
-    return created(await ArtifactService(db).create(project_id=project_id, body=body, created_by_id=user.id))
+    try:
+        artifact = await ArtifactService(db).create(
+            project_id=project_id,
+            body=body,
+            created_by_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return created(artifact)
 
 
 @router.get("", response_model=ApiResponse[list[ArtifactResponse]])

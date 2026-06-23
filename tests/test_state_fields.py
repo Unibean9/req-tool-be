@@ -1,7 +1,7 @@
 from app.graphs.state import WorkflowState
 
 
-def test_workflow_state_accepts_section_fields():
+def test_workflow_state_accepts_document_focus_fields():
     state: WorkflowState = {
         "artifact_type": "problem",
         "workflow_area": "analysis",
@@ -21,15 +21,12 @@ def test_workflow_state_accepts_section_fields():
         "turn_type": None,
         "triage_reply": None,
         "section_coverage": None,
-        "section_assessment": None,
-        "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
         "assumptions": [],
         "risks": [],
         "open_questions": [],
-        "sections_body": {"vision_objectives": "Mục tiêu"},
-        "focus_section": "vision_objectives",
+        "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": None,
         "working_draft": None,
         "method_profile": {
@@ -55,19 +52,18 @@ def test_workflow_state_accepts_section_fields():
     }
 
     assert state["section_coverage"] is None
-    assert state["section_assessment"] is None
-    assert state["coverage_ratio"] is None
     assert state["coverage_complete"] is None
-    assert state["sections_body"]["vision_objectives"] == "Mục tiêu"
-    assert state["focus_section"] == "vision_objectives"
+    assert state["focused_artifact_id"] is not None
 
 
 def test_state_has_section_coverage_field():
     assert "section_coverage" in WorkflowState.__annotations__
-    assert "section_assessment" in WorkflowState.__annotations__
     assert "section_coverage_stall_count" in WorkflowState.__annotations__
-    assert "sections_body" in WorkflowState.__annotations__
-    assert "focus_section" in WorkflowState.__annotations__
+    assert "focused_artifact_id" in WorkflowState.__annotations__
+    assert "section_assessment" not in WorkflowState.__annotations__
+    assert "coverage_ratio" not in WorkflowState.__annotations__
+    assert "sections_body" not in WorkflowState.__annotations__
+    assert "focus_section" not in WorkflowState.__annotations__
 
 
 def test_state_no_longer_has_slot_coverage_field():

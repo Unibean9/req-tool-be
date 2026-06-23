@@ -1,5 +1,4 @@
 import asyncio
-import json
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,36 +20,14 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
-from app.models.artifact import Artifact, ArtifactVersion
+from app.models.artifact import (
+    Artifact,
+    ArtifactStatus,
+    ArtifactType,
+    ArtifactVersion,
+)
 from app.models.llm_provider import LLMProviderConfig, ProviderType
 from tests.helpers import create_org, create_project, make_auth_headers
-
-
-class _FakeAnalyzeSession:
-    def __init__(self) -> None:
-        self.added_runs: list[AgentRun] = []
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        return False
-
-    def add(self, obj):
-        if isinstance(obj, AgentRun):
-            self.added_runs.append(obj)
-
-    async def commit(self):
-        for run in self.added_runs:
-            if run.id is None:
-                run.id = uuid.uuid4()
-
-    async def execute(self, *args, **kwargs):
-        class _Result:
-            def scalar_one_or_none(self_inner):
-                return None
-
-        return _Result()
 
 
 def _mock_graph():
@@ -64,77 +41,6 @@ async def _setup(client):
     org = await create_org(client, headers)
     project = await create_project(client, headers, org["id"])
     return uuid.UUID(project["id"])
-
-
-@pytest.mark.asyncio
-async def test_analyze_node_persists_coverage_fields():
-    from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
-
-    fake_db = _FakeAnalyzeSession()
-
-    def session_factory():
-        return fake_db
-
-    llm = ScriptedLLM(
-        tool_brain=[
-            tool_select(
-                "ask_user",
-                message="Tần suất xảy ra như thế nào?",
-                confidence=0.4,
-                section_assessment={
-                    "vision_objectives": "filled",
-                    "problem_statement": "filled",
-                    "stakeholder_register": "partial",
-                    "scope_capabilities": "missing",
-                    "business_rules": "missing",
-                    "constraints_assumptions": "missing",
-                    "risks_issues": "missing",
-                },
-            )
-        ]
-    )
-    state = {
-        "artifact_type": "problem",
-        "workflow_area": "analysis",
-        "step_key": None,
-        "messages": [{"role": "user", "content": "Người dùng bị kẹt khi đăng ký lớp"}],
-        "conversation_summary": "",
-        "analysis_result": None,
-        "pending_tool_call_ids": [],
-        "last_agent_run_id": None,
-        "turn_count": 0,
-        "missing_context": [],
-        "user_confirmed": None,
-        "critique_rounds": 0,
-        "quality_report": None,
-        "locale": "vi",
-        "intent": "task",
-        "section_coverage": None,
-        "coverage_ratio": None,
-        "coverage_complete": None,
-    }
-
-    with patch("app.graphs.nodes.read_artifacts", AsyncMock(return_value=[])), patch(
-        "app.graphs.nodes.read_current_body", AsyncMock(return_value=None)
-    ):
-        result = await analyze_node(
-            state,
-            {
-                "configurable": {
-                    "thread_id": str(uuid.uuid4()),
-                    "project_id": str(uuid.uuid4()),
-                    "llm_client": llm,
-                    "session_factory": session_factory,
-                }
-            },
-        )
-
-    assert result["section_coverage"]["stakeholder_register"] == "partial"
-    assert result["coverage_ratio"] == pytest.approx(2.5 / 7)
-    assert result["coverage_complete"] is False
-    assert fake_db.added_runs[0].analysis_result["coverage_ratio"] == pytest.approx(2.5 / 7)
-    assert fake_db.added_runs[0].analysis_result["coverage_complete"] is False
 
 
 # Use patch to suppress background tasks in all tests — avoids concurrent session access.
@@ -712,7 +618,7 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
 
     session = AgentSession(
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
-        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE, focus_section="vision_objectives",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
     )
     db_session.add(session)
     await db_session.flush()
@@ -726,11 +632,9 @@ async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, d
     passed_state = graph.ainvoke.call_args.args[0]
     assert "locale" in passed_state and passed_state["locale"] is None
     assert passed_state["section_coverage"] is None
-    assert passed_state["coverage_ratio"] is None
     assert passed_state["coverage_complete"] is None
     assert passed_state["section_coverage_stall_count"] is None
-    assert passed_state["sections_body"] == {}
-    assert passed_state["focus_section"] == "vision_objectives"
+    assert passed_state["focused_artifact_id"] is None
 
 
 @pytest.mark.asyncio
@@ -929,11 +833,11 @@ async def test_approve_tool_call_sets_artifact_version_traceability(client, db_s
     version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.id == updated_tc.created_version_id))).scalar_one()
     assert version.agent_run_id == run.id
     assert version.tool_call_id == tc.id
-    assert json.loads(version.body)["vision_objectives"] == "Mô tả"
+    assert version.body == "Mô tả"
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_rejects_missing_focus_section(client, db_session):
+async def test_approve_tool_call_rejects_missing_focused_artifact(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
@@ -944,28 +848,32 @@ async def test_approve_tool_call_rejects_missing_focus_section(client, db_sessio
         await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
 
     assert exc.value.status_code == 422
-    artifacts = (await db_session.execute(select(Artifact).where(Artifact.project_id == project_id))).scalars().all()
-    assert artifacts == []
+    versions = (
+        await db_session.execute(
+            select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id)
+        )
+    ).scalars().all()
+    assert versions == []
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_merges_sections_into_single_requirements_artifact(
+async def test_approve_tool_call_updates_each_focused_document_item(
     client, db_session, _no_background_tasks
 ):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc1, tc2 = await _make_propose_session(db_session, project_id)
     tc1.input_snapshot = {
-        "artifact_type": "goal",
+        "artifact_type": "vision_objectives",
         "title": "Vision",
         "body": "Section A",
-        "focus_section": "vision_objectives",
+        "focused_artifact_id": tc1.input_snapshot["focused_artifact_id"],
     }
     tc2.input_snapshot = {
-        "artifact_type": "goal",
+        "artifact_type": "problem_statement",
         "title": "Problem",
         "body": "Section B",
-        "focus_section": "problem_statement",
+        "focused_artifact_id": tc2.input_snapshot["focused_artifact_id"],
     }
     await db_session.flush()
 
@@ -973,11 +881,16 @@ async def test_approve_tool_call_merges_sections_into_single_requirements_artifa
     await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=None)
 
     artifacts = (await db_session.execute(select(Artifact).where(Artifact.project_id == project_id))).scalars().all()
-    assert len(artifacts) == 1
-    artifact = artifacts[0]
-    assert artifact.type.value == "requirements"
-    version = await db_session.get(ArtifactVersion, artifact.current_version_id)
-    assert json.loads(version.body) == {
+    children = [artifact for artifact in artifacts if artifact.parent_id is not None]
+    assert {artifact.type.value for artifact in children} == {
+        "vision_objectives",
+        "problem_statement",
+    }
+    bodies = {}
+    for artifact in children:
+        version = await db_session.get(ArtifactVersion, artifact.current_version_id)
+        bodies[artifact.type.value] = version.body
+    assert bodies == {
         "vision_objectives": "Section A",
         "problem_statement": "Section B",
     }
@@ -1038,11 +951,13 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 # ---------------------------------------------------------------------------
 
 async def _make_single_propose_session(db_session, project_id, created_by_id=None):
+    _, focused, _ = await _make_brd_items(db_session, project_id)
     session = AgentSession(
-        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        project_id=project_id, artifact_type="vision_objectives", workflow_area="analysis",
         graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
         created_by_id=created_by_id,
+        focused_artifact_id=focused.id,
     )
     db_session.add(session)
     await db_session.flush()
@@ -1054,10 +969,10 @@ async def _make_single_propose_session(db_session, project_id, created_by_id=Non
     tc = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
-            "artifact_type": "goal",
+            "artifact_type": "vision_objectives",
             "title": "Mục tiêu",
             "body": "Mô tả",
-            "focus_section": "vision_objectives",
+            "focused_artifact_id": str(focused.id),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1067,11 +982,13 @@ async def _make_single_propose_session(db_session, project_id, created_by_id=Non
 
 
 async def _make_propose_session(db_session, project_id, created_by_id=None):
+    _, focused_a, focused_b = await _make_brd_items(db_session, project_id)
     session = AgentSession(
-        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        project_id=project_id, artifact_type="vision_objectives", workflow_area="analysis",
         graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
         created_by_id=created_by_id,
+        focused_artifact_id=focused_a.id,
     )
     db_session.add(session)
     await db_session.flush()
@@ -1083,20 +1000,20 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
     tc1 = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
-            "artifact_type": "goal",
+            "artifact_type": "vision_objectives",
             "title": "Mục tiêu A",
             "body": "Mô tả",
-            "focus_section": "vision_objectives",
+            "focused_artifact_id": str(focused_a.id),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
     tc2 = AgentToolCall(
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
-            "artifact_type": "goal",
+            "artifact_type": "problem_statement",
             "title": "Mục tiêu B",
             "body": "Mô tả",
-            "focus_section": "problem_statement",
+            "focused_artifact_id": str(focused_b.id),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1104,6 +1021,37 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
     db_session.add(tc2)
     await db_session.flush()
     return session, run, tc1, tc2
+
+
+async def _make_brd_items(db_session, project_id):
+    parent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
+    )
+    db_session.add(parent)
+    await db_session.flush()
+    focused_a = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type=ArtifactType.VISION_OBJECTIVES,
+        status=ArtifactStatus.DRAFT,
+        title="Vision",
+        extra_metadata={},
+    )
+    focused_b = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type=ArtifactType.PROBLEM_STATEMENT,
+        status=ArtifactStatus.DRAFT,
+        title="Problem",
+        extra_metadata={},
+    )
+    db_session.add_all([focused_a, focused_b])
+    await db_session.flush()
+    return parent, focused_a, focused_b
 
 
 # ---------------------------------------------------------------------------

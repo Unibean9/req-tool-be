@@ -80,7 +80,7 @@ def test_bmad_method_layer_present_and_bounded():
 
 
 def test_get_instruction_falls_back_to_workflow_area():
-    instruction = get_instruction(artifact_type="zzz_unmapped", workflow_area="requirements", agent_role=None)
+    instruction = get_instruction(artifact_type="zzz_unmapped", workflow_area="prd", agent_role=None)
     assert instruction is not None
     assert "Product Manager" in instruction
 

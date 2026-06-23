@@ -144,7 +144,8 @@ async def test_get_session_response_hides_graph_checkpoint(client):
     mock_session.status = AgentSessionStatus.ACTIVE
     mock_session.interrupt_type = None
     mock_session.missing_context = None
-    mock_session.focus_section = None
+    mock_session.focused_artifact_id = None
+    mock_session.document = None
     mock_session.agent_role = None
     mock_session.graph_checkpoint = {"SECRET": "data"}
     mock_session.provider_config_id = None

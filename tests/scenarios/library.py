@@ -26,16 +26,6 @@ _PROBLEM_BODY = (
     "Tác động: tỉ lệ tham gia buổi nhóm dưới 60%."
 )
 
-_PROBLEM_FULL_SECTION_ASSESSMENT = {
-    "vision_objectives": "filled",
-    "problem_statement": "filled",
-    "stakeholder_register": "filled",
-    "scope_capabilities": "filled",
-    "business_rules": "filled",
-    "constraints_assumptions": "filled",
-    "risks_issues": "filled",
-}
-
 _STAKEHOLDER_BODY = (
     "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; "
     "(2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; "
@@ -195,7 +185,6 @@ def problem_propose_approve() -> Scenario:
                 title="Vấn đề: Điều phối lịch học nhóm thủ công",
                 body=_PROBLEM_BODY,
                 active_mode="structuring",
-                section_assessment=_PROBLEM_FULL_SECTION_ASSESSMENT,
             )
         ]
     )

@@ -21,14 +21,14 @@ pytestmark = pytest.mark.asyncio
 
 # Every artifact type the aggregated document must cover (BA → PM pipeline).
 _EXPECTED_TYPES = {
-    "intent",
-    "problem",
-    "stakeholder",
-    "goal",
+    "vision_objectives",
+    "problem_statement",
+    "stakeholder_register",
+    "scope_capabilities",
     "functional_requirement",
     "non_functional_requirement",
-    "epic",
-    "story",
+    "use_case",
+    "acceptance_criteria",
 }
 
 

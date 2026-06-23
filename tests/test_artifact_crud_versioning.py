@@ -196,7 +196,7 @@ async def test_artifact_endpoints_reject_non_project_member(client):
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_type_status_and_priority(client):
     headers, project = await _project_context(client)
-    await _create_artifact(client, headers, project["id"], artifact_type="requirements", priority="must")
+    await _create_artifact(client, headers, project["id"], artifact_type="brd", priority="must")
     draft_should = await _create_artifact(
         client,
         headers,

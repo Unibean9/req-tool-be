@@ -15,6 +15,28 @@ from tests.scenarios.conftest import ScenarioEnv
 from tests.scenarios.recorder import TranscriptRecorder
 from tests.scenarios.scripted_llm import ScriptedLLM
 
+_SCENARIO_ITEM_TYPES = {
+    "intent": "vision_objectives",
+    "problem": "problem_statement",
+    "stakeholder": "stakeholder_register",
+    "goal": "scope_capabilities",
+    "functional_requirement": "functional_requirement",
+    "non_functional_requirement": "non_functional_requirement",
+    "epic": "use_case",
+    "story": "acceptance_criteria",
+}
+
+_ITEM_CONTAINERS = {
+    "vision_objectives": "brd",
+    "problem_statement": "brd",
+    "stakeholder_register": "brd",
+    "scope_capabilities": "brd",
+    "functional_requirement": "prd",
+    "non_functional_requirement": "prd",
+    "use_case": "prd",
+    "acceptance_criteria": "prd",
+}
+
 
 @dataclass
 class Scenario:
@@ -43,13 +65,48 @@ class ScenarioDriver:
         return f"{BASE}/projects/{self.project_id}/agent-sessions"
 
     async def _create_session(self) -> dict[str, Any]:
+        item_type = _SCENARIO_ITEM_TYPES.get(
+            self.scenario.artifact_type,
+            self.scenario.artifact_type,
+        )
+        focused_artifact_id = await self._ensure_document_item(item_type)
         resp = await self.client.post(
             self._sessions_url(),
-            json={"artifact_type": self.scenario.artifact_type},
+            json={
+                "artifact_type": item_type,
+                "focused_artifact_id": focused_artifact_id,
+            },
             headers=self.headers,
         )
         assert resp.status_code == 201, f"create session failed: {resp.status_code} {resp.text}"
         return resp.json()["data"]
+
+    async def _ensure_document_item(self, item_type: str) -> str:
+        document_type = _ITEM_CONTAINERS[item_type]
+        container = await self.client.post(
+            f"{BASE}/projects/{self.project_id}/documents/{document_type}",
+            headers=self.headers,
+        )
+        assert container.status_code == 201, container.text
+
+        existing = await self.client.get(
+            f"{BASE}/projects/{self.project_id}/documents/{document_type}/{item_type}",
+            headers=self.headers,
+        )
+        if existing.status_code == 200:
+            return existing.json()["data"]["artifact_id"]
+
+        created = await self.client.post(
+            f"{BASE}/projects/{self.project_id}/documents/{document_type}/{item_type}",
+            json={
+                "title": item_type.replace("_", " ").title(),
+                "body": "Chưa có nội dung.",
+                "status": "draft",
+            },
+            headers=self.headers,
+        )
+        assert created.status_code == 201, created.text
+        return created.json()["data"]["artifact_id"]
 
     async def _send_message(self, content: str) -> int:
         resp = await self.client.post(
@@ -127,14 +184,6 @@ class ScenarioDriver:
             final_interrupt=final.get("interrupt_type"),
             brain_turns_consumed=self.scenario.llm._tool_brain_idx,
         )
-
-        # Slot-coverage harness: only scenarios that opt in via expect["min_coverage"]
-        # touch this path, so the 11 existing scenarios stay byte-for-byte unaffected.
-        if "min_coverage" in self.scenario.expect:
-            min_coverage = self.scenario.expect["min_coverage"]
-            coverage_ratio = await self.env.get_checkpoint_field(self.session_id, "coverage_ratio")
-            assert coverage_ratio is not None, "expect.min_coverage set but coverage_ratio missing from checkpoint"
-            assert coverage_ratio >= min_coverage, f"coverage_ratio {coverage_ratio} < min_coverage {min_coverage}"
 
         return self.recorder
 

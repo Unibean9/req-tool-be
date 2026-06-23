@@ -56,7 +56,11 @@ async def read_artifact_graph(
 
 
 async def read_current_body(
-    *, db: AsyncSession, project_id: uuid.UUID, artifact_type: str
+    *,
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    artifact_type: str,
+    artifact_id: uuid.UUID | None = None,
 ) -> dict | None:
     """Return the current version body of an artifact of this type, or None.
 
@@ -67,16 +71,17 @@ async def read_current_body(
     """
     if not _is_known_artifact_type(artifact_type):
         return None
-    row = (
-        await db.execute(
-            select(Artifact)
-            .where(Artifact.project_id == project_id, Artifact.type == artifact_type)
-            .where(Artifact.current_version_id.is_not(None))
-            .order_by(Artifact.created_at.desc())
-            .options(selectinload(Artifact.current_version))
-            .limit(1)
-        )
-    ).scalars().first()
+    query = (
+        select(Artifact)
+        .where(Artifact.project_id == project_id)
+        .where(Artifact.current_version_id.is_not(None))
+        .options(selectinload(Artifact.current_version))
+    )
+    if artifact_id is not None:
+        query = query.where(Artifact.id == artifact_id)
+    else:
+        query = query.where(Artifact.type == artifact_type).order_by(Artifact.created_at.desc()).limit(1)
+    row = (await db.execute(query)).scalars().first()
     if row is None or row.current_version is None:
         return None
     return {"artifact_id": str(row.id), "title": row.title, "body": row.current_version.body}

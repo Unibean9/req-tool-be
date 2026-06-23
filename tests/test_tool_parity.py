@@ -24,6 +24,7 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
 )
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 from tests.test_graph_nodes import (
@@ -40,6 +41,32 @@ async def _project(client) -> uuid.UUID:
     org = await create_org(client, headers)
     project = await create_project(client, headers, org["id"])
     return uuid.UUID(project["id"])
+
+
+async def _focused_items(db_session, project_id: uuid.UUID, *item_types: ArtifactType):
+    parent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
+    )
+    db_session.add(parent)
+    await db_session.flush()
+    items = [
+        Artifact(
+            project_id=project_id,
+            parent_id=parent.id,
+            type=item_type,
+            status=ArtifactStatus.DRAFT,
+            title=item_type.value.replace("_", " ").title(),
+            extra_metadata={},
+        )
+        for item_type in item_types
+    ]
+    db_session.add_all(items)
+    await db_session.commit()
+    return items
 
 
 # ---------------------------------------------------------------------------
@@ -105,10 +132,18 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.VISION_OBJECTIVES,
+    )
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
     run = await _make_agent_run(db_session, agent_session)
 
-    state = _state(artifact_type="requirements", analysis_result={"next_action": "propose"})
+    state = _state(artifact_type="vision_objectives", analysis_result={"next_action": "propose"})
     state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -120,46 +155,50 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().all()
         assert len(rows) == 1
-        assert rows[0].tool_name == "write_draft:vision_objectives"
-        assert rows[0].input_snapshot["focus_section"] == "vision_objectives"
+        assert rows[0].tool_name == f"write_draft:{focused.id}"
+        assert rows[0].input_snapshot["focused_artifact_id"] == str(focused.id)
 
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
-async def test_write_draft_scopes_body_and_idempotency_to_focus_section(mock_interrupt, client, db_session):
+async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_interrupt, client, db_session):
     from app.graphs.agent_tools import _write_draft_impl
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
+    focused_a, focused_b = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.VISION_OBJECTIVES,
+        ArtifactType.PROBLEM_STATEMENT,
+    )
+    agent_session.focused_artifact_id = focused_a.id
+    await db_session.commit()
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(analysis_result={"next_action": "propose"})
     state["last_agent_run_id"] = str(run.id)
-    state["focus_section"] = "vision_objectives"
-    state["sections_body"] = {"problem_statement": "Không bị đụng"}
+    state["focused_artifact_id"] = str(focused_a.id)
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
     command = await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
     await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
-    state["focus_section"] = "problem_statement"
+    state["focused_artifact_id"] = str(focused_b.id)
     await _write_draft_impl("Tiêu đề 2", "Thân bài section 2", state, config, "call_2")
 
-    assert command.update["sections_body"] == {
-        "problem_statement": "Không bị đụng",
-        "vision_objectives": "Thân bài section",
-    }
+    assert command.update["draft_body"] == "Thân bài section"
     async with TestSessionFactory() as db:
         rows = (
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().all()
         assert {row.tool_name for row in rows} == {
-            "write_draft:vision_objectives",
-            "write_draft:problem_statement",
+            f"write_draft:{focused_a.id}",
+            f"write_draft:{focused_b.id}",
         }
         snapshots = {row.tool_name: row.input_snapshot for row in rows}
-        assert snapshots["write_draft:vision_objectives"]["focus_section"] == "vision_objectives"
-        assert snapshots["write_draft:problem_statement"]["focus_section"] == "problem_statement"
+        assert snapshots[f"write_draft:{focused_a.id}"]["focused_artifact_id"] == str(focused_a.id)
+        assert snapshots[f"write_draft:{focused_b.id}"]["focused_artifact_id"] == str(focused_b.id)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +213,7 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    state = _state(artifact_type="requirements")
+    state = _state(artifact_type="brd")
     state["working_draft"] = "draft"
     state["critique_rounds"] = 1
     state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
@@ -281,11 +320,19 @@ async def test_ask_user_tool_call_scenario(client, db_session):
 async def test_write_draft_tool_call_scenario(client, db_session):
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.VISION_OBJECTIVES,
+    )
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
     run = await _make_agent_run(db_session, agent_session)
 
     graph = _tool_graph()
     state = _state()
     state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
     state["messages"] = [_ai_tool_call("write_draft", {"title": "Mục tiêu", "body": "Nội dung"})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -305,8 +352,8 @@ async def test_write_draft_tool_call_scenario(client, db_session):
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
         ).scalars().all()
         assert len(rows) == 1
-        assert rows[0].tool_name == "write_draft:vision_objectives"
-        assert rows[0].input_snapshot["focus_section"] == "vision_objectives"
+        assert rows[0].tool_name == f"write_draft:{focused.id}"
+        assert rows[0].input_snapshot["focused_artifact_id"] == str(focused.id)
 
 
 @pytest.mark.asyncio

@@ -66,7 +66,7 @@ async def create_session(
         workflow_area=body.workflow_area,
         agent_role=body.agent_role,
         provider_config_id=body.provider_config_id,
-        focus_section=body.focus_section,
+        focused_artifact_id=body.focused_artifact_id,
         created_by_id=user.id,
     )
     return created(result)

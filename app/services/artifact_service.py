@@ -6,6 +6,7 @@ from hashlib import sha256
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.documents.registry import container_for
 from app.models.artifact import (
     Artifact,
     ArtifactEvidence,
@@ -35,7 +36,6 @@ from app.schemas.artifact import (
     SourceDocumentCreateRequest,
     SourceDocumentResponse,
 )
-from app.services.workspace_container import parse_workspace_items
 
 
 class ArtifactService:
@@ -50,8 +50,16 @@ class ArtifactService:
         created_by_id: uuid.UUID,
     ) -> ArtifactResponse:
         await self._require_project_member(project_id, created_by_id)
+        if body.parent_id is not None:
+            parent = await self.db.get(Artifact, body.parent_id)
+            if parent is None or parent.project_id != project_id:
+                raise ValueError("Parent artifact không thuộc dự án này")
+            expected_container = container_for(body.type.value)
+            if parent.parent_id is not None or expected_container != parent.type.value:
+                raise ValueError("Parent artifact không phù hợp với document registry")
         artifact = Artifact(
             project_id=project_id,
+            parent_id=body.parent_id,
             type=body.type,
             status=body.status,
             priority=body.priority,
@@ -192,6 +200,17 @@ class ArtifactService:
     ) -> None:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
+        child_ids = (
+            await self.db.execute(
+                select(Artifact.id).where(Artifact.parent_id == artifact.id)
+            )
+        ).scalars().all()
+        for child_id in child_ids:
+            await self.delete(
+                project_id=project_id,
+                artifact_id=child_id,
+                user_id=user_id,
+            )
         artifact.current_version_id = None
         await self.db.flush()
         await self.db.execute(
@@ -348,6 +367,7 @@ class ArtifactService:
         return ArtifactResponse(
             id=artifact.id,
             project_id=artifact.project_id,
+            parent_id=artifact.parent_id,
             current_version_id=artifact.current_version_id,
             type=artifact.type,
             status=artifact.status,
@@ -389,7 +409,6 @@ class ArtifactService:
             created_by_id=version.created_by_id,
             created_at=version.created_at,
             metadata=version.extra_metadata or {},
-            items=parse_workspace_items(artifact_type, version.body),
         )
 
     async def _get_project_artifact(self, project_id: uuid.UUID, artifact_id: uuid.UUID) -> Artifact:
@@ -574,7 +593,7 @@ class ArtifactLinkService:
         artifacts_by_id: dict[uuid.UUID, Artifact],
     ) -> bool:
         upstream_relations = {"satisfies", "derives_from"}
-        upstream_types = {"requirements"}
+        upstream_types = {"brd"}
         for link in links:
             if link.source_artifact_id != artifact.id or link.relation_type.value not in upstream_relations:
                 continue

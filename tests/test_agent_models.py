@@ -14,6 +14,7 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -27,6 +28,25 @@ async def create_project_id(client) -> uuid.UUID:
 @pytest.mark.asyncio
 async def test_agent_session_can_be_saved_and_loaded(client, db_session):
     project_id = await create_project_id(client)
+    parent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
+    )
+    db_session.add(parent)
+    await db_session.flush()
+    focused = Artifact(
+        project_id=project_id,
+        parent_id=parent.id,
+        type=ArtifactType.VISION_OBJECTIVES,
+        status=ArtifactStatus.DRAFT,
+        title="Vision and Objectives",
+        extra_metadata={},
+    )
+    db_session.add(focused)
+    await db_session.flush()
     session = AgentSession(
         project_id=project_id,
         artifact_type="goal",
@@ -35,7 +55,7 @@ async def test_agent_session_can_be_saved_and_loaded(client, db_session):
         interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
         missing_context=["intent", "problem"],
         graph_checkpoint={"checkpoint": "value"},
-        focus_section="vision_objectives",
+        focused_artifact_id=focused.id,
     )
     db_session.add(session)
     await db_session.flush()
@@ -49,7 +69,7 @@ async def test_agent_session_can_be_saved_and_loaded(client, db_session):
     assert loaded.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
     assert loaded.missing_context == ["intent", "problem"]
     assert loaded.graph_checkpoint == {"checkpoint": "value"}
-    assert loaded.focus_section == "vision_objectives"
+    assert loaded.focused_artifact_id == focused.id
 
 
 @pytest.mark.asyncio

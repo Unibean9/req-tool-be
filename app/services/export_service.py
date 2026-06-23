@@ -5,20 +5,10 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.graphs.section_schema import SECTION_SPECS
+from app.documents.registry import children_of, get_config
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType, ArtifactVersion, SourceDocument
 from app.models.organization import OrgMember
 from app.models.project import Project
-
-SECTION_TITLES = {
-    "vision_objectives": "Vision and Objectives",
-    "problem_statement": "Problem Statement",
-    "stakeholder_register": "Stakeholder Register",
-    "scope_capabilities": "Scope and Capabilities",
-    "business_rules": "Business Rules",
-    "constraints_assumptions": "Constraints and Assumptions",
-    "risks_issues": "Risks and Issues",
-}
 
 
 class ExportService:
@@ -49,56 +39,60 @@ class ExportService:
 
 
 async def render_product_brief(project_id: uuid.UUID, db: AsyncSession) -> str:
-    sections = await _load_requirements_sections(project_id, db)
+    sections = await _load_document_items(project_id, db, "brd")
     keys = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
-    return _document("Product Brief", [(SECTION_TITLES[key], sections.get(key)) for key in keys])
+    return _document("Product Brief", [(get_config(key).label, sections.get(key)) for key in keys])
 
 
 async def render_brd(project_id: uuid.UUID, db: AsyncSession) -> str:
-    sections = await _load_requirements_sections(project_id, db)
-    doc_sections = [(SECTION_TITLES[key], sections.get(key)) for key in SECTION_SPECS]
+    sections = await _load_document_items(project_id, db, "brd")
+    doc_sections = [
+        (get_config(key).label, sections.get(key))
+        for key in children_of("brd")
+    ]
     doc_sections.append(("Research Basis", await _load_research_basis(project_id, db)))
     return _document("Business Requirements Document", doc_sections)
 
 
-async def render_prd(project_id: uuid.UUID, db: AsyncSession) -> str:  # noqa: ARG001
-    # Stub skeleton only: the PRD draws on design-phase artifact types (FR/NFR/epic/story) that are
-    # dormant in P1, so the delivery layer stays empty until that data exists (post-design phase).
+async def render_prd(project_id: uuid.UUID, db: AsyncSession) -> str:
+    items = await _load_document_items(project_id, db, "prd")
     doc_sections = [
-        ("Executive Summary", None),
-        ("Problem and Users", None),
-        ("Scope", None),
-        ("Requirements Summary", None),
-        ("Non-Functional Requirements", None),
-        ("Backlog", None),
-        ("Traceability", None),
+        (get_config(key).label, items.get(key))
+        for key in children_of("prd")
     ]
     return _document("Product Requirements Document", doc_sections)
 
 
-async def _load_requirements_sections(project_id: uuid.UUID, db: AsyncSession) -> dict[str, Any]:
-    result = await db.execute(
+async def _load_document_items(
+    project_id: uuid.UUID,
+    db: AsyncSession,
+    document_type: str,
+) -> dict[str, Any]:
+    container_id = (
+        await db.execute(
+            select(Artifact.id).where(
+                Artifact.project_id == project_id,
+                Artifact.type == ArtifactType(document_type),
+                Artifact.parent_id.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if container_id is None:
+        return {}
+    rows = (
+        await db.execute(
         select(Artifact, ArtifactVersion)
         .join(ArtifactVersion, Artifact.current_version_id == ArtifactVersion.id)
         .where(
             Artifact.project_id == project_id,
-            Artifact.type == ArtifactType.REQUIREMENTS,
+            Artifact.parent_id == container_id,
+            Artifact.type.in_([ArtifactType(item) for item in children_of(document_type)]),
             Artifact.status.in_((ArtifactStatus.DRAFT, ArtifactStatus.ACCEPTED)),
         )
-        .order_by(Artifact.created_at.desc(), Artifact.id.desc())
-        .limit(1)
-    )
-    row = result.first()
-    if row is None:
-        return {}
-    _, version = row
-    try:
-        body = json.loads(version.body or "{}")
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(body, dict):
-        return body
-    return {}
+        .order_by(Artifact.created_at, Artifact.id)
+        )
+    ).all()
+    return {artifact.type.value: version.body for artifact, version in rows}
 
 
 async def _load_research_basis(project_id: uuid.UUID, db: AsyncSession) -> str | None:

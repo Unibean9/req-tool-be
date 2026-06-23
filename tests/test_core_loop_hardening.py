@@ -5,74 +5,71 @@ Phase 2 — per-tool required-arg validation before emit (_missing_required_arg)
 Phase 3 — fail-loud degrade reasons replacing silent coerce (_degrade_reason).
 """
 
+import pytest
+
 from app.graphs.agent_tools import artifact_stage, current_draft_body
 from app.graphs.nodes import _degrade_reason, _missing_required_arg
 from tests.test_graph_nodes import _state
 
 # --------------------------------------------------------------------------- Phase 1
 
-def test_current_draft_body_prefers_draft_body_over_working_draft():
+@pytest.mark.asyncio
+async def test_current_draft_body_prefers_draft_body_over_working_draft():
     state = _state()
     state["draft_body"] = "DB draft"
     state["working_draft"] = "session draft"
-    assert current_draft_body(state) == "DB draft"
+    assert await current_draft_body(state) == "DB draft"
 
 
-def test_current_draft_body_prefers_focused_section_when_available():
+@pytest.mark.asyncio
+async def test_current_draft_body_uses_cached_body_without_db_config():
     state = _state()
-    state["sections_body"] = {
-        "vision_objectives": "Section draft",
-        "problem_statement": "Other draft",
-    }
-    state["focus_section"] = "vision_objectives"
+    state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
     state["draft_body"] = "DB draft"
 
-    assert current_draft_body(state) == "Section draft"
+    assert await current_draft_body(state) == "DB draft"
 
 
-def test_current_draft_body_falls_back_when_focused_section_missing():
-    state = _state()
-    state["sections_body"] = {"problem_statement": "Other draft"}
-    state["focus_section"] = "vision_objectives"
-    state["draft_body"] = "DB draft"
-
-    assert current_draft_body(state) == "DB draft"
-
-
-def test_current_draft_body_falls_back_to_working_draft():
+@pytest.mark.asyncio
+async def test_current_draft_body_falls_back_to_working_draft():
     state = _state()
     state["working_draft"] = "session draft"
-    assert current_draft_body(state) == "session draft"
+    assert await current_draft_body(state) == "session draft"
 
 
-def test_current_draft_body_empty_when_neither_present():
-    assert current_draft_body(_state()) == ""
+@pytest.mark.asyncio
+async def test_current_draft_body_empty_when_neither_present():
+    assert await current_draft_body(_state()) == ""
 
 
-def test_artifact_stage_empty_without_draft():
-    assert artifact_stage(_state()) == "empty"
+@pytest.mark.asyncio
+async def test_artifact_stage_empty_without_draft():
+    assert await artifact_stage(_state()) == "empty"
 
 
-def test_artifact_stage_drafting_when_draft_uncritiqued():
+@pytest.mark.asyncio
+async def test_artifact_stage_drafting_when_draft_uncritiqued():
     state = _state()
     state["working_draft"] = "draft"
-    assert artifact_stage(state) == "drafting"
+    assert await artifact_stage(state) == "drafting"
 
 
-def test_artifact_stage_critiqued_when_rounds_but_gate_not_passed():
+@pytest.mark.asyncio
+async def test_artifact_stage_critiqued_when_rounds_but_gate_not_passed():
     state = _state()
     state["working_draft"] = "draft"
     state["critique_rounds"] = 1
     state["quality_report"] = {"quality_gate_result": "fail"}
-    assert artifact_stage(state) == "critiqued"
+    assert await artifact_stage(state) == "critiqued"
 
 
-def test_artifact_stage_gate_passed_when_report_passes():
+@pytest.mark.asyncio
+async def test_artifact_stage_gate_passed_when_report_passes():
     state = _state()
     state["working_draft"] = "draft"
     state["critique_rounds"] = 1
     state["quality_report"] = {"quality_gate_result": "pass"}
-    assert artifact_stage(state) == "gate_passed"
+    assert await artifact_stage(state) == "gate_passed"
 
 
 # --------------------------------------------------------------------------- Phase 2

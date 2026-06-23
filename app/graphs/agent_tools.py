@@ -13,7 +13,6 @@ status update — so it needs no key.
 """
 
 import hashlib
-import json
 import logging
 import uuid
 from typing import Annotated, Any
@@ -26,9 +25,9 @@ from langgraph.types import Command, interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
+from app.documents.registry import children_of, status_score
 from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
-from app.graphs.section_schema import ARTIFACT_TYPE_TO_SECTION, SECTION_SPECS, status_score
 from app.graphs.state import QualityReport, WorkflowState
 from app.models.agent import (
     AgentSession,
@@ -37,55 +36,61 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
+from app.models.artifact import Artifact, ArtifactVersion
 
 # ---------------------------------------------------------------------------
 # Artifact lifecycle — single source for the draft body and a derived stage
 # ---------------------------------------------------------------------------
 
-def current_draft_body(state: WorkflowState) -> str:
+async def current_draft_body(
+    state: WorkflowState,
+    config: RunnableConfig | None = None,
+) -> str:
     """Canonical draft body for the whole tool-loop.
 
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
     through here. Divergence between any two sites (one using only working_draft) permanently locks
     DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
     """
-    focus_section = state.get("focus_section") or ARTIFACT_TYPE_TO_SECTION.get(state.get("artifact_type", ""))
-    sections_body = state.get("sections_body") or {}
-    if focus_section:
-        if focus_section in sections_body:
-            return sections_body[focus_section] or ""
-        # Focus section not drafted in this session: draft_body holds the persisted multi-section
-        # blob. Return only this section's slice — never the whole block — so a sibling section's
-        # content cannot leak into the critique hash / finalize gate / has-draft check for an
-        # undrafted section.
-        persisted = state.get("draft_body")
-        parsed = _parse_sections_blob(persisted)
-        if parsed is not None:
-            return parsed.get(focus_section) or ""
-        # Not a multi-section blob (legacy plain-string draft): preserve prior behavior.
-        return persisted or state.get("working_draft") or ""
+    focused_artifact_id = state.get("focused_artifact_id")
+    if focused_artifact_id and config is not None:
+        session_factory = (config.get("configurable") or {}).get("session_factory")
+        if session_factory is not None:
+            async with session_factory() as db:
+                artifact = await db.get(Artifact, uuid.UUID(str(focused_artifact_id)))
+                project_id = (config.get("configurable") or {}).get("project_id")
+                project_matches = (
+                    project_id is None
+                    or artifact is not None
+                    and artifact.project_id == uuid.UUID(str(project_id))
+                )
+                if (
+                    artifact is not None
+                    and project_matches
+                    and artifact.current_version_id is not None
+                ):
+                    version = await db.get(ArtifactVersion, artifact.current_version_id)
+                    if version is not None:
+                        return version.body or ""
     return state.get("draft_body") or state.get("working_draft") or ""
 
 
-def _parse_sections_blob(persisted: str | None) -> dict | None:
-    """Parse a persisted draft body as a section→text map, or None if it is not one."""
-    if not persisted:
-        return None
-    try:
-        parsed = json.loads(persisted)
-    except (json.JSONDecodeError, TypeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+def _cached_draft_body(state: WorkflowState) -> str:
+    """Draft already loaded by analyze_node, used by synchronous menu construction."""
+    return state.get("draft_body") or state.get("working_draft") or ""
 
 
-def artifact_stage(state: WorkflowState) -> str:
+async def artifact_stage(
+    state: WorkflowState,
+    config: RunnableConfig | None = None,
+) -> str:
     """Derived lifecycle stage, read-only, computed from existing state — no new persisted field.
 
     "empty" -> no draft yet; "drafting" -> a draft exists but no critique has scored it;
     "critiqued" -> at least one critique round but the gate has not passed; "gate_passed" -> the
     latest quality report passed. One shared vocabulary for the menu and validation to reason over.
     """
-    if not current_draft_body(state).strip():
+    if not (await current_draft_body(state, config)).strip():
         return "empty"
     report = state.get("quality_report")
     if report and report.get("quality_gate_result") == "pass":
@@ -137,10 +142,15 @@ async def _write_draft_impl(
     if not state.get("last_agent_run_id"):
         raise RuntimeError("write_draft requires last_agent_run_id in state — analyze_node must run first")
     run_id = uuid.UUID(state["last_agent_run_id"])
-    focus_section = state.get("focus_section") or ARTIFACT_TYPE_TO_SECTION.get(state.get("artifact_type", ""))
-    tool_key = f"write_draft:{focus_section}" if focus_section else "write_draft"
+    focused_artifact_id = state.get("focused_artifact_id")
+    if not focused_artifact_id:
+        raise RuntimeError("write_draft requires focused_artifact_id")
+    tool_key = f"write_draft:{focused_artifact_id}"
 
     async with session_factory() as db:
+        focused = await db.get(Artifact, uuid.UUID(str(focused_artifact_id)))
+        if focused is None or focused.parent_id is None:
+            raise RuntimeError("write_draft focused artifact must be an existing document item")
         # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
         # proposed write already exists for this run. tool_name discriminates it from the enum
         # path's "create_artifact" rows — no new column, no migration (R3).
@@ -154,12 +164,11 @@ async def _write_draft_impl(
         ).scalar()
         if not already:
             input_snapshot = {
-                "artifact_type": state["artifact_type"],
+                "artifact_type": focused.type.value,
+                "focused_artifact_id": str(focused.id),
                 "title": title,
                 "body": body,
             }
-            if focus_section:
-                input_snapshot["focus_section"] = focus_section
             db.add(
                 AgentToolCall(
                     run_id=run_id,
@@ -176,12 +185,12 @@ async def _write_draft_impl(
         await db.commit()
 
     interrupt({"type": "propose_artifacts", "tool_name": "write_draft"})
-    update: dict[str, Any] = {"messages": [ToolMessage(content=title, tool_call_id=tool_call_id)]}
-    if focus_section:
-        sections_body = dict(state.get("sections_body") or {})
-        sections_body[focus_section] = body
-        update["sections_body"] = sections_body
-    return Command(update=update)
+    return Command(
+        update={
+            "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
+            "draft_body": body,
+        }
+    )
 
 
 @tool
@@ -205,7 +214,7 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     # A missing report counts as "fail" — finalize requires a passing critique to exist.
     report = state.get("quality_report")
     if (
-        not current_draft_body(state).strip()
+        not (await current_draft_body(state, config)).strip()
         or not report
         or report.get("quality_gate_result") != "pass"
         or not _finalize_gate_open(state)
@@ -350,7 +359,7 @@ async def _run_critique_impl(
     llm_client = cfg.get("strong_llm_client") or cfg.get("llm_client")
     # Source of truth for both the critique target and the hash: see current_draft_body. The
     # finalize gate reads the same helper, so the scored body and the gate body can never diverge.
-    body = current_draft_body(state)
+    body = await current_draft_body(state, config)
     judged = await _invoke_judge(body, mode, llm_client)
 
     threshold = settings.critique_score_threshold
@@ -429,7 +438,7 @@ def _compute_recommendation(section_coverage: dict[str, str] | None, planning_tr
     state["artifact_chain"]). On the quick track, never escalates past readiness_check.
     """
     cov = section_coverage or {}
-    scores = {section: status_score(cov.get(section)) for section in SECTION_SPECS}
+    scores = {section: status_score(cov.get(section)) for section in children_of("brd")}
     brief_score = sum(scores[s] for s in _BRIEF_SECTIONS) / len(_BRIEF_SECTIONS)
     prd_score = sum(scores.values()) / len(scores)
     missing = [section for section, score in scores.items() if score == 0.0]
@@ -626,7 +635,7 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
         return False
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
         return True
-    current_hash = hashlib.md5(current_draft_body(state).encode()).hexdigest()[:8]
+    current_hash = hashlib.md5(_cached_draft_body(state).encode()).hexdigest()[:8]
     return current_hash == state.get("last_critiqued_draft_hash")
 
 
@@ -664,7 +673,7 @@ def get_available_tools(state: WorkflowState) -> list:
     - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
     """
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
-    has_draft = bool(current_draft_body(state).strip())
+    has_draft = bool(_cached_draft_body(state).strip())
     critique_rounds = state.get("critique_rounds") or 0
     if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
