@@ -87,3 +87,4 @@ class AgentToolCallResponse(BaseModel):
 
 class ToolCallEditRequest(BaseModel):
     note: str = Field(min_length=1, max_length=8000)
+    base_version_id: uuid.UUID | None = None

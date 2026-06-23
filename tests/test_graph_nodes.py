@@ -1276,6 +1276,18 @@ def test_build_graph_returns_compiled_graph_without_error():
     assert graph is not None
 
 
+def test_tool_selection_prompt_includes_artifact_output_contract():
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    prompt = _build_tool_selection_prompt(_state(artifact_type="vision_objectives"), [])
+
+    assert "OUTPUT CONTRACT BẮT BUỘC" in prompt
+    assert "## Vision" in prompt
+    assert "## Objectives" in prompt
+    assert "không copy nguyên transcript" in prompt
+    assert "(agent suy diễn, cần xác nhận)" in prompt
+
+
 @pytest.mark.asyncio
 async def test_build_graph_with_checkpointer_attaches_it(client, db_session):
     from app.graphs.checkpointer import AgentSessionCheckpointer

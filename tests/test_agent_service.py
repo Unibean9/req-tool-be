@@ -879,6 +879,51 @@ async def test_approve_tool_call_sets_artifact_version_traceability(client, db_s
 
 
 @pytest.mark.asyncio
+async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(client, db_session):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
+    old_version = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=1,
+        title="Vision cũ",
+        body="Body cũ",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(old_version)
+    await db_session.flush()
+    focused.current_version_id = old_version.id
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "base_version_id": str(old_version.id),
+        "synthesis_metadata": {
+            "artifact_type": "vision_objectives",
+            "focused_artifact_id": str(focused.id),
+            "base_version_id": str(old_version.id),
+            "evidence_refs": [f"agent_run:{run.id}"],
+            "inference_level": "medium",
+            "confirmed_assumptions": ["Metric retention đã xác nhận"],
+            "pending_assumptions": ["Target cần xác nhận"],
+            "synthesis_source": "bmad_synthesis",
+        },
+    }
+    await db_session.flush()
+
+    updated_tc = await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    version = await db_session.get(ArtifactVersion, updated_tc.created_version_id)
+    assert version.parent_version_id == old_version.id
+    assert version.extra_metadata["synthesis_source"] == "bmad_synthesis"
+    assert version.extra_metadata["pending_assumptions"] == ["Target cần xác nhận"]
+    assert version.extra_metadata["focused_artifact_id"] == str(focused.id)
+
+
+@pytest.mark.asyncio
 async def test_approve_tool_call_retry_does_not_create_duplicate_version(
     client, db_session, _no_background_tasks
 ):
@@ -1031,6 +1076,47 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 
     await svc.request_edit(project_id=project_id, tool_call_id=tc1.id, note="Cần chỉnh sửa")
 
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_request_edit_rejects_stale_base_version(client, db_session, _no_background_tasks):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
+    old_version = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=1,
+        title="V1",
+        body="Body 1",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    current_version = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=2,
+        title="V2",
+        body="Body 2",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        parent_version_id=old_version.id,
+        extra_metadata={},
+    )
+    db_session.add_all([old_version, current_version])
+    await db_session.flush()
+    focused.current_version_id = current_version.id
+    tc.input_snapshot = {**tc.input_snapshot, "base_version_id": str(old_version.id)}
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sửa lại")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["current_version_id"] == str(current_version.id)
     _no_background_tasks.assert_not_called()
 
 

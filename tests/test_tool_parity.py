@@ -157,6 +157,7 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
         assert len(rows) == 1
         assert rows[0].tool_name == f"write_draft:{focused.id}"
         assert rows[0].input_snapshot["focused_artifact_id"] == str(focused.id)
+        assert rows[0].input_snapshot["synthesis_metadata"]["synthesis_source"] == "bmad_synthesis"
 
 
 @pytest.mark.asyncio
@@ -199,6 +200,50 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
         snapshots = {row.tool_name: row.input_snapshot for row in rows}
         assert snapshots[f"write_draft:{focused_a.id}"]["focused_artifact_id"] == str(focused_a.id)
         assert snapshots[f"write_draft:{focused_b.id}"]["focused_artifact_id"] == str(focused_b.id)
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+    from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    current = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=1,
+        title="Vision cũ",
+        body="Body cũ",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(current)
+    await db_session.flush()
+    focused.current_version_id = current.id
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["assumptions"] = ["Metric retention đã được user xác nhận"]
+    state["open_questions"] = ["Target cụ thể cần xác nhận"]
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await _write_draft_impl("Vision", "## Vision\n...", state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        metadata = row.input_snapshot["synthesis_metadata"]
+        assert row.input_snapshot["base_version_id"] == str(current.id)
+        assert metadata["base_version_id"] == str(current.id)
+        assert metadata["confirmed_assumptions"] == ["Metric retention đã được user xác nhận"]
+        assert metadata["pending_assumptions"] == ["Target cụ thể cần xác nhận"]
 
 
 # ---------------------------------------------------------------------------

@@ -35,6 +35,7 @@ from app.models.artifact import (
     ChangeSource,
 )
 from app.schemas.agent import AgentSessionResponse
+from app.schemas.artifact_synthesis import synthesis_metadata_dict, synthesis_metadata_from_snapshot
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
@@ -418,12 +419,14 @@ class AgentService:
         project_id: uuid.UUID,
         tool_call_id: uuid.UUID,
         note: str,
+        base_version_id: uuid.UUID | None = None,
         user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
+        await self._guard_current_base_version(tool_call.input_snapshot or {}, base_version_id)
 
         tool_call.status = AgentToolCallStatus.SUPERSEDED
         tool_call.resolved_at = datetime.now(UTC)
@@ -497,6 +500,10 @@ class AgentService:
             )
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
+        try:
+            synthesis_metadata = synthesis_metadata_dict(snapshot)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Tool call metadata synthesis không hợp lệ") from exc
 
         try:
             artifact, version = await DocumentService(self.db).create_item_version(
@@ -508,12 +515,42 @@ class AgentService:
                 change_source=ChangeSource.AI_GENERATION,
                 agent_run_id=run_id,
                 tool_call_id=tool_call_id,
+                metadata=synthesis_metadata,
                 mark_accepted=True,
             )
         except ValueError as exc:
             raise HTTPException(404, detail="Document item được focus không tồn tại") from exc
 
         return artifact, version
+
+    async def _guard_current_base_version(
+        self,
+        snapshot: dict[str, Any],
+        requested_base_version_id: uuid.UUID | None,
+    ) -> None:
+        focused_artifact_id = snapshot.get("focused_artifact_id")
+        if not focused_artifact_id:
+            raise HTTPException(422, detail="Tool call thiếu focused_artifact_id")
+        focused = await self.db.get(Artifact, uuid.UUID(str(focused_artifact_id)))
+        if focused is None:
+            raise HTTPException(404, detail="Document item được focus không tồn tại")
+
+        snapshot_base = None
+        try:
+            snapshot_base = synthesis_metadata_from_snapshot(snapshot).base_version_id
+        except ValueError:
+            raw_base = snapshot.get("base_version_id")
+            snapshot_base = uuid.UUID(str(raw_base)) if raw_base else None
+        base_version_id = requested_base_version_id if requested_base_version_id is not None else snapshot_base
+        if base_version_id != focused.current_version_id:
+            raise HTTPException(
+                409,
+                detail={
+                    "detail": "Bản nháp sửa đang dựa trên version cũ",
+                    "base_version_id": str(base_version_id) if base_version_id else None,
+                    "current_version_id": str(focused.current_version_id) if focused.current_version_id else None,
+                },
+            )
 
     async def _check_and_resume(
         self, *, project_id: uuid.UUID, session_id: uuid.UUID, llm_client: Any = None

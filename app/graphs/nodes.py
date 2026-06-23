@@ -9,7 +9,7 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
-from app.documents.registry import children_of, get_config, status_score
+from app.documents.registry import children_of, get_config, output_contract, status_score
 from app.graphs.policy import ancestor_types
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -800,6 +800,7 @@ def _build_tool_selection_prompt(
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
     draft_block = _build_draft_block(state, draft_body)
     working_draft_block = _build_working_draft_block(state)
+    contract_block = _build_output_contract_block(state)
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
@@ -808,10 +809,34 @@ def _build_tool_selection_prompt(
         f"Công cụ khả dụng lượt này: {tool_menu}.\n"
         "Chọn đúng MỘT công cụ và điền các field của nó theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
+        f"{contract_block}"
         f"{draft_block}"
         f"{working_draft_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
+    )
+
+
+def _build_output_contract_block(state: WorkflowState) -> str:
+    artifact_type = state["artifact_type"]
+    try:
+        contract = output_contract(artifact_type)
+    except ValueError:
+        return ""
+    headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
+    columns = ", ".join(contract.table_columns) if contract.table_columns else "(không bắt buộc table)"
+    return (
+        "\n\nOUTPUT CONTRACT BẮT BUỘC:\n"
+        f"- Artifact type: {artifact_type}\n"
+        "- Body phải là Markdown theo chuẩn artifact này, không phải JSON/form dump.\n"
+        "- Hội thoại/user input chỉ là evidence/context; không copy nguyên transcript vào body.\n"
+        "- Nội dung agent suy diễn hoặc cần user xác nhận phải ghi note ngay tại chỗ trong ngoặc, "
+        f"ví dụ {contract.confirmation_note}.\n"
+        f"- Guidance: {contract.guidance}\n"
+        "Required headings:\n"
+        f"{headings}\n"
+        f"Table columns khi dùng table: {columns}\n"
+        "Ưu tiên current/accepted artifact version và predecessor đã accepted hơn chat history."
     )
 
 

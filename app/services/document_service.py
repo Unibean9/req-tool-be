@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from app.documents.registry import (
     container_for,
     get_config,
     item_configs,
+    output_contract,
 )
 from app.models.artifact import (
     Artifact,
@@ -89,6 +91,7 @@ class DocumentService:
         change_source: ChangeSource,
         agent_run_id: uuid.UUID | None = None,
         tool_call_id: uuid.UUID | None = None,
+        metadata: dict[str, Any] | None = None,
         mark_accepted: bool = False,
     ) -> tuple[Artifact, ArtifactVersion]:
         artifact = await self.get_document_item_artifact(
@@ -113,7 +116,7 @@ class DocumentService:
             agent_run_id=agent_run_id,
             tool_call_id=tool_call_id,
             created_by_id=created_by_id,
-            extra_metadata={"focused_artifact_id": str(artifact.id)},
+            extra_metadata={**(metadata or {}), "focused_artifact_id": str(artifact.id)},
         )
         self.db.add(version)
         await self.db.flush()
@@ -394,10 +397,12 @@ class DocumentService:
 
     def _type_view(self, artifact_type: str) -> DocumentTypeView:
         config = get_config(artifact_type)
+        contract = None if config.is_container else output_contract(artifact_type).to_dict()
         return DocumentTypeView(
             artifact_type=config.artifact_type,
             label=config.label,
             description=config.description,
             children=list(config.children),
             is_container=config.is_container,
+            output_contract=contract,
         )

@@ -226,6 +226,10 @@ async def request_edit(
 ) -> Any:
     await require_project_member_404(project_id, user, db)
     tc = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).request_edit(
-        project_id=project_id, tool_call_id=tool_call_id, note=body.note, user_id=user.id
+        project_id=project_id,
+        tool_call_id=tool_call_id,
+        note=body.note,
+        base_version_id=body.base_version_id,
+        user_id=user.id,
     )
     return ok(AgentToolCallResponse.model_validate(tc))

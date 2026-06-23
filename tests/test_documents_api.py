@@ -21,7 +21,9 @@ async def test_document_types_require_auth_and_come_from_registry(client):
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert [item["artifact_type"] for item in data["containers"]] == ["brd", "prd", "sad"]
-    assert any(item["artifact_type"] == "functional_requirement" for item in data["items"])
+    functional = next(item for item in data["items"] if item["artifact_type"] == "functional_requirement")
+    assert functional["output_contract"]["format"] == "markdown"
+    assert "## Functional Requirement" in functional["output_contract"]["required_headings"]
 
 
 @pytest.mark.asyncio

@@ -38,6 +38,7 @@ from app.models.agent import (
     AgentToolCallStatus,
 )
 from app.models.artifact import Artifact, ArtifactStatus
+from app.schemas.artifact_synthesis import ArtifactSynthesisMetadata
 from app.services.document_service import DocumentService
 
 # ---------------------------------------------------------------------------
@@ -164,11 +165,22 @@ async def _write_draft_impl(
             )
         ).scalar()
         if not already:
+            metadata = ArtifactSynthesisMetadata(
+                artifact_type=focused.type.value,
+                focused_artifact_id=focused.id,
+                base_version_id=focused.current_version_id,
+                evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
+                inference_level="medium",
+                confirmed_assumptions=list(state.get("assumptions") or []),
+                pending_assumptions=list(state.get("open_questions") or []),
+            ).model_dump(mode="json")
             input_snapshot = {
                 "artifact_type": focused.type.value,
                 "focused_artifact_id": str(focused.id),
+                "base_version_id": str(focused.current_version_id) if focused.current_version_id else None,
                 "title": title,
                 "body": body,
+                "synthesis_metadata": metadata,
             }
             db.add(
                 AgentToolCall(

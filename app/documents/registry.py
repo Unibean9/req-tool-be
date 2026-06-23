@@ -15,6 +15,26 @@ class DocumentTypeConfig:
     threshold: float = 1.0
 
 
+@dataclass(frozen=True)
+class ArtifactOutputContract:
+    artifact_type: str
+    format: str
+    required_headings: tuple[str, ...]
+    guidance: str
+    table_columns: tuple[str, ...] = ()
+    confirmation_note: str = "(agent suy diễn, cần xác nhận)"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "artifact_type": self.artifact_type,
+            "format": self.format,
+            "required_headings": list(self.required_headings),
+            "guidance": self.guidance,
+            "table_columns": list(self.table_columns),
+            "confirmation_note": self.confirmation_note,
+        }
+
+
 def _item(
     artifact_type: str,
     label: str,
@@ -175,12 +195,155 @@ _CONTAINER_BY_ITEM = {
     for child in config.children
 }
 
+_OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
+    "vision_objectives": ArtifactOutputContract(
+        artifact_type="vision_objectives",
+        format="markdown",
+        required_headings=("## Vision", "## Objectives", "## Success Metrics"),
+        guidance="Tài liệu hóa tầm nhìn, mục tiêu và cách đo thành công.",
+        table_columns=("goal", "user/business value", "metric", "target", "timeframe"),
+    ),
+    "problem_statement": ArtifactOutputContract(
+        artifact_type="problem_statement",
+        format="markdown",
+        required_headings=(
+            "## Problem Statement",
+            "## Affected Users",
+            "## Impact",
+            "## Root Cause / Contributing Factors",
+        ),
+        guidance="Nêu ai đang gặp vấn đề gì, tần suất, nguyên nhân và tác động.",
+    ),
+    "stakeholder_register": ArtifactOutputContract(
+        artifact_type="stakeholder_register",
+        format="markdown",
+        required_headings=("## Stakeholders",),
+        guidance="Liệt kê các bên liên quan và quyền/quy trách nhiệm của họ.",
+        table_columns=("role", "responsibility", "decision authority", "needs/concerns", "involvement"),
+    ),
+    "scope_capabilities": ArtifactOutputContract(
+        artifact_type="scope_capabilities",
+        format="markdown",
+        required_headings=("## Scope", "## Capabilities", "## Out of Scope"),
+        guidance="Tách rõ phạm vi, năng lực cần có và phần loại trừ.",
+        table_columns=("capability", "priority", "rationale", "dependency"),
+    ),
+    "business_rules": ArtifactOutputContract(
+        artifact_type="business_rules",
+        format="markdown",
+        required_headings=("## Business Rules",),
+        guidance="Mỗi rule phải có điều kiện, trigger, kết quả, phạm vi và ngoại lệ.",
+        table_columns=("rule id", "condition", "trigger", "outcome", "scope", "exception"),
+    ),
+    "constraints_assumptions": ArtifactOutputContract(
+        artifact_type="constraints_assumptions",
+        format="markdown",
+        required_headings=("## Constraints", "## Assumptions", "## Validation Plan"),
+        guidance="Tách ràng buộc cứng khỏi giả định và nêu cách kiểm chứng.",
+        table_columns=("constraint/assumption", "impact", "owner/source", "validation"),
+    ),
+    "risks_issues": ArtifactOutputContract(
+        artifact_type="risks_issues",
+        format="markdown",
+        required_headings=("## Risks", "## Issues", "## Mitigation Plan"),
+        guidance="Theo dõi rủi ro/vấn đề với khả năng xảy ra, tác động và giảm thiểu.",
+        table_columns=("risk", "likelihood", "impact", "mitigation", "status"),
+    ),
+    "functional_requirement": ArtifactOutputContract(
+        artifact_type="functional_requirement",
+        format="markdown",
+        required_headings=(
+            "## Functional Requirement",
+            "## Behavior",
+            "## Inputs and Outputs",
+            "## Acceptance Signals",
+        ),
+        guidance="Viết behavior testable, dùng system shall/should khi phù hợp.",
+    ),
+    "use_case": ArtifactOutputContract(
+        artifact_type="use_case",
+        format="markdown",
+        required_headings=(
+            "## Use Case",
+            "## Actors",
+            "## Preconditions",
+            "## Main Flow",
+            "## Alternate / Exception Flows",
+            "## Postconditions",
+        ),
+        guidance="Mô tả actor-goal flow và các nhánh lỗi/ngoại lệ.",
+    ),
+    "non_functional_requirement": ArtifactOutputContract(
+        artifact_type="non_functional_requirement",
+        format="markdown",
+        required_headings=("## Quality Attribute", "## Requirement", "## Measurement", "## Scope and Tradeoffs"),
+        guidance="Nêu quality attribute với target đo được và cách verify.",
+    ),
+    "acceptance_criteria": ArtifactOutputContract(
+        artifact_type="acceptance_criteria",
+        format="markdown",
+        required_headings=("## Acceptance Criteria",),
+        guidance="Dùng Given/When/Then hoặc checklist có thể kiểm thử.",
+    ),
+    "domain_entity": ArtifactOutputContract(
+        artifact_type="domain_entity",
+        format="markdown",
+        required_headings=(
+            "## Domain Entity",
+            "## Responsibilities",
+            "## Attributes",
+            "## Relationships",
+            "## Lifecycle / States",
+        ),
+        guidance="Mô tả concept domain, thuộc tính, quan hệ và vòng đời.",
+    ),
+    "component": ArtifactOutputContract(
+        artifact_type="component",
+        format="markdown",
+        required_headings=("## Component", "## Responsibilities", "## Interfaces", "## Dependencies", "## Constraints"),
+        guidance="Mô tả component kiến trúc, trách nhiệm và phụ thuộc.",
+    ),
+    "interface": ArtifactOutputContract(
+        artifact_type="interface",
+        format="markdown",
+        required_headings=(
+            "## Interface Contract",
+            "## Provider and Consumers",
+            "## Data Exchanged",
+            "## Error Cases",
+            "## Compatibility Notes",
+        ),
+        guidance="Mô tả contract giữa provider/consumer, dữ liệu, lỗi và compatibility.",
+    ),
+    "tech_decision": ArtifactOutputContract(
+        artifact_type="tech_decision",
+        format="markdown",
+        required_headings=(
+            "## Technical Decision",
+            "## Context",
+            "## Options Considered",
+            "## Decision",
+            "## Consequences",
+        ),
+        guidance="ADR-style Markdown cho quyết định kỹ thuật, lựa chọn và hệ quả.",
+    ),
+}
+
 
 def get_config(artifact_type: str) -> DocumentTypeConfig:
     try:
         return _BY_TYPE[artifact_type]
     except KeyError as exc:
         raise ValueError(f"Document artifact type không hỗ trợ: {artifact_type}") from exc
+
+
+def output_contract(item_type: str) -> ArtifactOutputContract:
+    if item_type not in all_item_types():
+        raise ValueError(f"{item_type} không phải document item")
+    try:
+        return _OUTPUT_CONTRACTS[item_type]
+    except KeyError as exc:
+        raise ValueError(f"Document item chưa có output contract: {item_type}") from exc
 
 
 def container_for(item_type: str) -> str | None:

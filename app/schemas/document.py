@@ -57,6 +57,7 @@ class DocumentTypeView(BaseModel):
     description: str
     children: list[str] = Field(default_factory=list)
     is_container: bool
+    output_contract: dict[str, Any] | None = None
 
 
 class DocumentTypesResponse(BaseModel):

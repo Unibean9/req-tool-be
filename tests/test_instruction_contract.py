@@ -106,3 +106,6 @@ def test_output_contract_carries_content_depth_rule():
     instruction = _ba()
     assert "Content depth" in instruction
     assert "fabricate" in instruction
+    assert "evidence and context" in instruction
+    assert "Do not paste the full transcript" in instruction
+    assert "(agent suy diễn, cần xác nhận)" in instruction
