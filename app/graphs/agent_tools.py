@@ -36,7 +36,7 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
-from app.models.artifact import Artifact, ArtifactVersion
+from app.services.document_service import DocumentService
 
 # ---------------------------------------------------------------------------
 # Artifact lifecycle — single source for the draft body and a derived stage
@@ -57,21 +57,16 @@ async def current_draft_body(
         session_factory = (config.get("configurable") or {}).get("session_factory")
         if session_factory is not None:
             async with session_factory() as db:
-                artifact = await db.get(Artifact, uuid.UUID(str(focused_artifact_id)))
                 project_id = (config.get("configurable") or {}).get("project_id")
-                project_matches = (
-                    project_id is None
-                    or artifact is not None
-                    and artifact.project_id == uuid.UUID(str(project_id))
-                )
-                if (
-                    artifact is not None
-                    and project_matches
-                    and artifact.current_version_id is not None
-                ):
-                    version = await db.get(ArtifactVersion, artifact.current_version_id)
-                    if version is not None:
-                        return version.body or ""
+                try:
+                    body = await DocumentService(db).get_current_item_body(
+                        artifact_id=uuid.UUID(str(focused_artifact_id)),
+                        project_id=uuid.UUID(str(project_id)) if project_id is not None else None,
+                    )
+                    if body:
+                        return body
+                except ValueError:
+                    pass
     return state.get("draft_body") or state.get("working_draft") or ""
 
 
@@ -148,9 +143,13 @@ async def _write_draft_impl(
     tool_key = f"write_draft:{focused_artifact_id}"
 
     async with session_factory() as db:
-        focused = await db.get(Artifact, uuid.UUID(str(focused_artifact_id)))
-        if focused is None or focused.parent_id is None:
-            raise RuntimeError("write_draft focused artifact must be an existing document item")
+        try:
+            focused = await DocumentService(db).get_document_item_artifact(
+                artifact_id=uuid.UUID(str(focused_artifact_id)),
+                project_id=uuid.UUID(str(cfg["project_id"])) if cfg.get("project_id") else None,
+            )
+        except ValueError as exc:
+            raise RuntimeError("write_draft focused artifact must be an existing document item") from exc
         # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
         # proposed write already exists for this run. tool_name discriminates it from the enum
         # path's "create_artifact" rows — no new column, no migration (R3).

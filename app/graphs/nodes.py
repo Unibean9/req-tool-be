@@ -9,7 +9,7 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
-from app.documents.registry import children_of, container_for, get_config, status_score
+from app.documents.registry import children_of, get_config, status_score
 from app.graphs.policy import ancestor_types
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -22,7 +22,8 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
 )
-from app.models.artifact import Artifact, ArtifactStatus
+from app.models.artifact import Artifact
+from app.services.document_service import DocumentService
 
 # Tool-loop selection schema (Phase 5 shim). The analyst names the tool to run this turn plus its
 # args. The analytic fields feed eval (active_mode) and incremental draft (draft_update).
@@ -215,73 +216,11 @@ async def _document_coverage(
     artifact_type: str,
     focused_artifact_id: uuid.UUID | None,
 ) -> dict[str, Any]:
-    container_type = container_for(artifact_type)
-    container_id: uuid.UUID | None = None
-
-    if focused_artifact_id is not None:
-        focused = await db.get(Artifact, focused_artifact_id)
-        if focused is not None and focused.project_id == project_id:
-            if focused.parent_id is not None:
-                parent = await db.get(Artifact, focused.parent_id)
-                if parent is not None:
-                    container_type = parent.type.value
-                    container_id = parent.id
-            elif focused.type.value in {"brd", "prd", "sad"}:
-                container_type = focused.type.value
-                container_id = focused.id
-    elif artifact_type in {"brd", "prd", "sad"}:
-        container_type = artifact_type
-
-    if container_type is None:
-        return {
-            "section_coverage": None,
-            "coverage_complete": None,
-            "section_coverage_stall_count": 0,
-        }
-
-    registry_items = children_of(container_type)
-    if not registry_items:
-        return {
-            "section_coverage": {},
-            "coverage_complete": False,
-            "section_coverage_stall_count": 0,
-        }
-
-    if container_id is None:
-        container_id = (
-            await db.execute(
-                select(Artifact.id).where(
-                    Artifact.project_id == project_id,
-                    Artifact.type == container_type,
-                    Artifact.parent_id.is_(None),
-                )
-            )
-        ).scalar_one_or_none()
-
-    accepted_types: set[str] = set()
-    if container_id is not None:
-        accepted_rows = (
-            await db.execute(
-                select(Artifact.type).where(
-                    Artifact.project_id == project_id,
-                    Artifact.parent_id == container_id,
-                    Artifact.type.in_(registry_items),
-                    Artifact.status == ArtifactStatus.ACCEPTED,
-                )
-            )
-        ).scalars()
-        accepted_types = {value.value for value in accepted_rows}
-
-    coverage = {
-        item_type: ("filled" if item_type in accepted_types else "missing")
-        for item_type in registry_items
-    }
-    accepted_count = len(accepted_types)
-    return {
-        "section_coverage": coverage,
-        "coverage_complete": accepted_count == len(registry_items),
-        "section_coverage_stall_count": 0,
-    }
+    return await DocumentService(db).document_coverage(
+        project_id=project_id,
+        artifact_type=artifact_type,
+        focused_artifact_id=focused_artifact_id,
+    )
 
 
 async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:

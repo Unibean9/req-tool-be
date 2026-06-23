@@ -30,10 +30,8 @@ from app.models.agent import (
 )
 from app.models.artifact import (
     Artifact,
-    ArtifactStatus,
     ArtifactVersion,
     ChangeSource,
-    VersionStatus,
 )
 from app.schemas.agent import AgentSessionResponse
 from app.services.document_service import DocumentService
@@ -478,45 +476,20 @@ class AgentService:
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
 
-        artifact = (
-            await self.db.execute(
-                select(Artifact)
-                .where(
-                    Artifact.id == uuid.UUID(str(focused_artifact_id)),
-                    Artifact.project_id == project_id,
-                    Artifact.parent_id.is_not(None),
-                )
-                .with_for_update()
+        try:
+            artifact, version = await DocumentService(self.db).create_item_version(
+                artifact_id=uuid.UUID(str(focused_artifact_id)),
+                project_id=project_id,
+                title=title,
+                body=body,
+                created_by_id=created_by_id,
+                change_source=ChangeSource.AI_GENERATION,
+                agent_run_id=run_id,
+                tool_call_id=tool_call_id,
+                mark_accepted=True,
             )
-        ).scalar_one_or_none()
-        if artifact is None:
-            raise HTTPException(404, detail="Document item được focus không tồn tại")
-
-        current_version = None
-        if artifact.current_version_id is not None:
-            current_version = await self.db.get(ArtifactVersion, artifact.current_version_id)
-        next_version_number = (current_version.version_number + 1) if current_version is not None else 1
-
-        version = ArtifactVersion(
-            artifact_id=artifact.id,
-            version_number=next_version_number,
-            title=title or artifact.title,
-            body=body,
-            status=VersionStatus.DRAFT,
-            change_source=ChangeSource.AI_GENERATION,
-            parent_version_id=current_version.id if current_version is not None else None,
-            agent_run_id=run_id,
-            tool_call_id=tool_call_id,
-            created_by_id=created_by_id,
-            extra_metadata={"focused_artifact_id": str(artifact.id)},
-        )
-        self.db.add(version)
-        await self.db.flush()
-
-        artifact.current_version_id = version.id
-        artifact.title = title or artifact.title
-        artifact.status = ArtifactStatus.ACCEPTED
-        await self.db.flush()
+        except ValueError as exc:
+            raise HTTPException(404, detail="Document item được focus không tồn tại") from exc
 
         return artifact, version
 

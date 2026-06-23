@@ -10,6 +10,7 @@ from app.documents.registry import (
     all_container_types,
     all_item_types,
     children_of,
+    container_for,
     get_config,
     item_configs,
 )
@@ -18,6 +19,7 @@ from app.models.artifact import (
     ArtifactStatus,
     ArtifactType,
     ArtifactVersion,
+    ChangeSource,
     VersionStatus,
 )
 from app.schemas.document import (
@@ -40,6 +42,163 @@ class DocumentService:
             containers=[self._type_view(item) for item in all_container_types()],
             items=[self._type_view(item) for item in all_item_types()],
         )
+
+    async def get_current_item_body(
+        self,
+        *,
+        artifact_id: uuid.UUID,
+        project_id: uuid.UUID | None = None,
+    ) -> str:
+        artifact = await self.get_document_item_artifact(
+            artifact_id=artifact_id,
+            project_id=project_id,
+        )
+        if artifact.current_version_id is None:
+            return ""
+        version = await self.db.get(ArtifactVersion, artifact.current_version_id)
+        return version.body if version is not None else ""
+
+    async def get_document_item_artifact(
+        self,
+        *,
+        artifact_id: uuid.UUID,
+        project_id: uuid.UUID | None = None,
+        for_update: bool = False,
+    ) -> Artifact:
+        query = select(Artifact).where(
+            Artifact.id == artifact_id,
+            Artifact.parent_id.is_not(None),
+        )
+        if project_id is not None:
+            query = query.where(Artifact.project_id == project_id)
+        if for_update:
+            query = query.with_for_update()
+        artifact = (await self.db.execute(query)).scalar_one_or_none()
+        if artifact is None:
+            raise ValueError("Document item không tồn tại")
+        return artifact
+
+    async def create_item_version(
+        self,
+        *,
+        artifact_id: uuid.UUID,
+        project_id: uuid.UUID,
+        title: str,
+        body: str,
+        created_by_id: uuid.UUID | None,
+        change_source: ChangeSource,
+        agent_run_id: uuid.UUID | None = None,
+        tool_call_id: uuid.UUID | None = None,
+        mark_accepted: bool = False,
+    ) -> tuple[Artifact, ArtifactVersion]:
+        artifact = await self.get_document_item_artifact(
+            artifact_id=artifact_id,
+            project_id=project_id,
+            for_update=True,
+        )
+        current_version = await self._current_version(artifact)
+        next_version_number = (
+            current_version.version_number + 1
+            if current_version is not None
+            else 1
+        )
+        version = ArtifactVersion(
+            artifact_id=artifact.id,
+            version_number=next_version_number,
+            title=title or artifact.title,
+            body=body,
+            status=VersionStatus.DRAFT,
+            change_source=change_source,
+            parent_version_id=current_version.id if current_version is not None else None,
+            agent_run_id=agent_run_id,
+            tool_call_id=tool_call_id,
+            created_by_id=created_by_id,
+            extra_metadata={"focused_artifact_id": str(artifact.id)},
+        )
+        self.db.add(version)
+        await self.db.flush()
+
+        artifact.current_version_id = version.id
+        artifact.title = title or artifact.title
+        if mark_accepted:
+            artifact.status = ArtifactStatus.ACCEPTED
+        await self.db.flush()
+        return artifact, version
+
+    async def document_coverage(
+        self,
+        *,
+        project_id: uuid.UUID,
+        artifact_type: str,
+        focused_artifact_id: uuid.UUID | None,
+    ) -> dict[str, Any]:
+        container_type = container_for(artifact_type)
+        container_id: uuid.UUID | None = None
+
+        if focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, focused_artifact_id)
+            if focused is not None and focused.project_id == project_id:
+                if focused.parent_id is not None:
+                    parent = await self.db.get(Artifact, focused.parent_id)
+                    if parent is not None:
+                        container_type = parent.type.value
+                        container_id = parent.id
+                elif focused.type.value in all_container_types():
+                    container_type = focused.type.value
+                    container_id = focused.id
+        elif artifact_type in all_container_types():
+            container_type = artifact_type
+
+        if container_type is None:
+            return {
+                "section_coverage": None,
+                "coverage_complete": None,
+                "section_coverage_stall_count": 0,
+            }
+
+        registry_items = children_of(container_type)
+        if not registry_items:
+            return {
+                "section_coverage": {},
+                "coverage_complete": False,
+                "section_coverage_stall_count": 0,
+            }
+
+        if container_id is None:
+            container_id = (
+                await self.db.execute(
+                    select(Artifact.id).where(
+                        Artifact.project_id == project_id,
+                        Artifact.type == ArtifactType(container_type),
+                        Artifact.parent_id.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+
+        accepted_types: set[str] = set()
+        if container_id is not None:
+            accepted_rows = (
+                await self.db.execute(
+                    select(Artifact.type).where(
+                        Artifact.project_id == project_id,
+                        Artifact.parent_id == container_id,
+                        Artifact.type.in_([ArtifactType(item) for item in registry_items]),
+                        Artifact.status == ArtifactStatus.ACCEPTED,
+                    )
+                )
+            ).scalars()
+            accepted_types = {value.value for value in accepted_rows}
+
+        coverage = {
+            item_type: ("filled" if item_type in accepted_types else "missing")
+            for item_type in registry_items
+        }
+        accepted_count = len(accepted_types)
+        return {
+            "section_coverage": coverage,
+            "coverage_complete": accepted_count == len(registry_items),
+            "section_coverage_stall_count": 0,
+        }
 
     async def get_document(self, *, project_id: uuid.UUID, document_type: str) -> DocumentView:
         config = self._require_container(document_type)
