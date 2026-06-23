@@ -1,6 +1,7 @@
-name: req.bean9.net
+name: reqflow
+
 services:
-  postgres:
+  db:
     image: postgres:16-alpine
     container_name: reqflow_db
     restart: unless-stopped
@@ -22,12 +23,14 @@ services:
     image: sosedoff/pgweb
     container_name: reqflow_web
     restart: unless-stopped
-    environment:
-      PGWEB_DATABASE_URL: postgresql://postgres:password@postgres:5432/reqflow?sslmode=disable
+    command:
+      - "--bind=0.0.0.0"
+      - "--listen=8081"
+      - "--url=postgres://postgres:password@db:5432/reqflow?sslmode=disable"
     ports:
-      - "8080:8000"
+      - "8080:8081"
     depends_on:
-      postgres:
+      db:
         condition: service_healthy
 
 volumes:

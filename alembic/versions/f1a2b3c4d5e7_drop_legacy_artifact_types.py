@@ -26,6 +26,20 @@ NEW_VALUES = (
     "acceptance_criteria",
 )
 
+LEGACY_REQUIREMENTS_VALUES = (
+    "research_output",
+    "intent",
+    "problem",
+    "goal",
+    "stakeholder",
+    "capability",
+    "business_rule",
+    "constraint",
+    "assumption",
+    "risk",
+    "open_question",
+)
+
 
 def upgrade() -> None:
     op.drop_index("ix_artifacts_nfr_category", table_name="artifacts")
@@ -34,18 +48,31 @@ def upgrade() -> None:
     op.drop_column("artifacts", "stakeholder_role")
 
     values_sql = ", ".join(f"'{value}'" for value in NEW_VALUES)
-    # Any row holding a to-be-dropped legacy type would make the USING cast below fail with
-    # "invalid input value for enum". The artifacts table is greenfield in this deployment, so this
-    # is a no-op here; it runs defensively so the cast is safe on any DB (this migration is already
-    # destructive and irreversible by design).
-    op.execute(sa.text(f"DELETE FROM artifacts WHERE type::text NOT IN ({values_sql})"))
+    legacy_values_sql = ", ".join(f"'{value}'" for value in LEGACY_REQUIREMENTS_VALUES)
+    duplicate_projects = op.get_bind().execute(
+        sa.text(
+            "SELECT project_id "
+            "FROM artifacts "
+            f"WHERE type::text IN ({legacy_values_sql}) "
+            "GROUP BY project_id "
+            "HAVING COUNT(*) > 1"
+        )
+    ).fetchall()
+    if duplicate_projects:
+        project_ids = ", ".join(str(row.project_id) for row in duplicate_projects)
+        raise RuntimeError(
+            "Không thể tự động gộp nhiều artifact legacy thành một requirements artifact "
+            f"cho project: {project_ids}"
+        )
+
     op.execute(sa.text("ALTER TYPE artifacttype RENAME TO artifacttype_old"))
     op.execute(sa.text(f"CREATE TYPE artifacttype AS ENUM ({values_sql})"))
     op.execute(
         sa.text(
             "ALTER TABLE artifacts "
             "ALTER COLUMN type TYPE artifacttype "
-            "USING type::text::artifacttype"
+            f"USING (CASE WHEN type::text IN ({legacy_values_sql}) "
+            "THEN 'requirements' ELSE type::text END)::artifacttype"
         )
     )
     op.execute(sa.text("DROP TYPE artifacttype_old"))
