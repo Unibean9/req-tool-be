@@ -137,7 +137,7 @@ def test_artifact_enum_values_are_constrained():
             "requirements_spec",
             "realization_backlog",
         },
-        WorkflowStepPhase: {"brd", "srs", "delivery"},
+        WorkflowStepPhase: {"brd", "prd", "delivery"},
         WorkflowStepStatus: {
             "pending",
             "ready",

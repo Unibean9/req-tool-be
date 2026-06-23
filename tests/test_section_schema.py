@@ -5,6 +5,7 @@ from app.graphs.section_schema import (
     SECTION_STATUSES,
     compute_section_coverage,
 )
+from app.graphs.workspace import WORKSPACE_CONTAINERS, workspace_container_for_artifact_type
 
 EXPECTED_SECTIONS = {
     "vision_objectives",
@@ -102,3 +103,38 @@ def test_compute_section_coverage_scores_sub_dimension_presence():
     }
     result = compute_section_coverage(assessment)
     assert result["section_coverage"]["vision_objectives"] != "filled"
+
+
+def test_workspace_container_registry_is_generic_and_extendable():
+    containers = {container.key: container for container in WORKSPACE_CONTAINERS}
+    assert set(containers) == {"requirements", "spec", "backlog"}
+
+    requirements = containers["requirements"]
+    assert requirements.kind == "document"
+    assert requirements.phase == "brd"
+    assert requirements.primary_artifact_type == "requirements"
+    assert requirements.singleton is True
+    assert [item.key for item in requirements.item_definitions] == list(SECTION_SPECS)
+
+    spec = containers["spec"]
+    assert spec.kind == "artifact_group"
+    assert spec.phase == "prd"
+    assert set(spec.artifact_types) == {
+        "domain_entity",
+        "functional_requirement",
+        "non_functional_requirement",
+        "use_case",
+    }
+
+    backlog = containers["backlog"]
+    assert backlog.kind == "artifact_group"
+    assert backlog.phase == "delivery"
+    assert backlog.step_key == "realization_backlog"
+    assert set(backlog.artifact_types) == {"epic", "story", "acceptance_criteria"}
+
+
+def test_workspace_container_lookup_by_artifact_type():
+    assert workspace_container_for_artifact_type("requirements").key == "requirements"
+    assert workspace_container_for_artifact_type("functional_requirement").key == "spec"
+    assert workspace_container_for_artifact_type("story").key == "backlog"
+    assert workspace_container_for_artifact_type("unknown") is None

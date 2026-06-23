@@ -62,6 +62,7 @@ class ArtifactVersionResponse(BaseModel):
     created_by_id: uuid.UUID | None = None
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
+    items: dict[str, str] | None = None
 
 
 class ArtifactResponse(BaseModel):

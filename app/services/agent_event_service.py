@@ -19,11 +19,13 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
 )
+from app.services.workspace_container import build_workspace_container, checkpoint_values_for_session
 
 
 class AgentEventService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, session_factory: Any = None):
         self.db = db
+        self.session_factory = session_factory
 
     async def stream_session_events(
         self,
@@ -96,6 +98,19 @@ class AgentEventService:
                 .order_by(AgentToolCall.created_at)
             )
         ).scalars().all()
+        state_values = None
+        if self.session_factory is not None:
+            state_values = await checkpoint_values_for_session(
+                session_id=session_id,
+                session_factory=self.session_factory,
+            )
+        workspace_container = await build_workspace_container(
+            db=self.db,
+            project_id=project_id,
+            artifact_type=session.artifact_type,
+            active_item_key=session.focus_section,
+            state_values=state_values,
+        )
 
         return {
             "type": "snapshot",
@@ -105,10 +120,12 @@ class AgentEventService:
                 "created_by_id": session.created_by_id,
                 "artifact_type": session.artifact_type,
                 "workflow_area": session.workflow_area,
+                "focus_section": session.focus_section,
                 "status": session.status,
                 "ui_status": _ui_status(session.status, session.interrupt_type),
                 "interrupt_type": session.interrupt_type,
                 "missing_context": session.missing_context,
+                "workspace_container": workspace_container,
                 "updated_at": session.updated_at,
             },
             "messages": [

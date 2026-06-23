@@ -108,7 +108,7 @@ class WorkflowStepKey(enum.StrEnum):
 
 class WorkflowStepPhase(enum.StrEnum):
     BRD = "brd"
-    SRS = "srs"
+    PRD = "prd"
     DELIVERY = "delivery"
 
 

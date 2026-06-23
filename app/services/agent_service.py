@@ -36,6 +36,8 @@ from app.models.artifact import (
     ChangeSource,
     VersionStatus,
 )
+from app.schemas.agent import AgentSessionResponse
+from app.services.workspace_container import build_workspace_container
 
 
 class AgentService:
@@ -93,7 +95,47 @@ class AgentService:
                 },
             ) from None
 
-        return {"session_id": str(session.id), "missing_context": missing}
+        return await self.create_session_response(session, missing)
+
+    async def create_session_response(self, session: AgentSession, missing: list[str]) -> dict[str, Any]:
+        container = await build_workspace_container(
+            db=self.db,
+            project_id=session.project_id,
+            artifact_type=session.artifact_type,
+            active_item_key=session.focus_section,
+            state_values=None,
+        )
+        return {
+            "session_id": str(session.id),
+            "missing_context": missing,
+            "artifact_type": session.artifact_type,
+            "focus_section": session.focus_section,
+            "container_key": container.key if container else None,
+            "active_item_key": session.focus_section,
+        }
+
+    async def get_session_response(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> AgentSessionResponse:
+        session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
+        state_values = await self._load_graph_state_values(session_id)
+        workspace_container = await build_workspace_container(
+            db=self.db,
+            project_id=project_id,
+            artifact_type=session.artifact_type,
+            active_item_key=session.focus_section,
+            state_values=state_values,
+        )
+        return AgentSessionResponse.model_validate(session).model_copy(
+            update={
+                "ui_status": _session_ui_status(session.status, session.interrupt_type),
+                "workspace_container": workspace_container,
+            }
+        )
 
     async def get_session(
         self,
@@ -112,6 +154,16 @@ class AgentService:
         if not session:
             raise HTTPException(404, detail="Agent session không tồn tại")
         return session
+
+    async def _load_graph_state_values(self, session_id: uuid.UUID) -> dict[str, Any] | None:
+        if self.graph is None:
+            return None
+        try:
+            snapshot = await self.graph.aget_state({"configurable": {"thread_id": str(session_id)}})
+        except Exception as exc:
+            raise HTTPException(500, detail="Không thể đọc checkpoint workspace") from exc
+        values = getattr(snapshot, "values", None)
+        return values if isinstance(values, dict) else None
 
     async def delete_session(
         self,
@@ -179,6 +231,7 @@ class AgentService:
                 "turn_type": None,
                 "triage_reply": None,
                 "section_coverage": None,
+                "section_assessment": None,
                 "coverage_ratio": None,
                 "coverage_complete": None,
                 "section_coverage_stall_count": None,
@@ -566,6 +619,7 @@ class AgentService:
                     "turn_type": None,
                     "triage_reply": None,
                     "section_coverage": None,
+                    "section_assessment": None,
                     "coverage_ratio": None,
                     "coverage_complete": None,
                     "section_coverage_stall_count": None,
@@ -699,6 +753,7 @@ class AgentService:
             "turn_type": None,
             "triage_reply": None,
             "section_coverage": None,
+            "section_assessment": None,
             "coverage_ratio": None,
             "coverage_complete": None,
             "section_coverage_stall_count": None,
@@ -845,3 +900,17 @@ def _agent_failure_message(exc: Exception) -> str:
     if not message:
         message = exc.__class__.__name__
     return f"Agent không thể hoàn tất lượt phân tích hiện tại. Lý do kỹ thuật: {message[:500]}"
+
+
+def _session_ui_status(status: Any, interrupt_type: Any) -> str:
+    status_val = getattr(status, "value", status)
+    interrupt_val = getattr(interrupt_type, "value", interrupt_type)
+    if status_val == AgentSessionStatus.ACTIVE.value:
+        return "processing"
+    if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
+        if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
+            return "waiting_approval"
+        return "waiting_input"
+    if status_val == AgentSessionStatus.FAILED.value:
+        return "error"
+    return "idle"

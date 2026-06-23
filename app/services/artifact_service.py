@@ -35,6 +35,7 @@ from app.schemas.artifact import (
     SourceDocumentCreateRequest,
     SourceDocumentResponse,
 )
+from app.services.workspace_container import parse_workspace_items
 
 
 class ArtifactService:
@@ -343,7 +344,7 @@ class ArtifactService:
         if artifact.current_version_id is not None:
             current = await self.db.get(ArtifactVersion, artifact.current_version_id)
             if current is not None:
-                version = await self.version_to_response(current)
+                version = await self.version_to_response(current, artifact_type=artifact.type.value)
         return ArtifactResponse(
             id=artifact.id,
             project_id=artifact.project_id,
@@ -360,7 +361,14 @@ class ArtifactService:
             current_version=version,
         )
 
-    async def version_to_response(self, version: ArtifactVersion) -> ArtifactVersionResponse:
+    async def version_to_response(
+        self, version: ArtifactVersion, artifact_type: str | None = None
+    ) -> ArtifactVersionResponse:
+        if artifact_type is None:
+            artifact_type = (
+                await self.db.execute(select(Artifact.type).where(Artifact.id == version.artifact_id))
+            ).scalar_one_or_none()
+            artifact_type = artifact_type.value if artifact_type is not None else None
         review_result = await self.db.execute(
             select(ArtifactReview.review_status)
             .where(ArtifactReview.artifact_version_id == version.id)
@@ -381,6 +389,7 @@ class ArtifactService:
             created_by_id=version.created_by_id,
             created_at=version.created_at,
             metadata=version.extra_metadata or {},
+            items=parse_workspace_items(artifact_type, version.body),
         )
 
     async def _get_project_artifact(self, project_id: uuid.UUID, artifact_id: uuid.UUID) -> Artifact:

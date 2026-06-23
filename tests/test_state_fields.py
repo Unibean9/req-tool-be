@@ -21,6 +21,7 @@ def test_workflow_state_accepts_section_fields():
         "turn_type": None,
         "triage_reply": None,
         "section_coverage": None,
+        "section_assessment": None,
         "coverage_ratio": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
@@ -54,6 +55,7 @@ def test_workflow_state_accepts_section_fields():
     }
 
     assert state["section_coverage"] is None
+    assert state["section_assessment"] is None
     assert state["coverage_ratio"] is None
     assert state["coverage_complete"] is None
     assert state["sections_body"]["vision_objectives"] == "Mục tiêu"
@@ -62,6 +64,7 @@ def test_workflow_state_accepts_section_fields():
 
 def test_state_has_section_coverage_field():
     assert "section_coverage" in WorkflowState.__annotations__
+    assert "section_assessment" in WorkflowState.__annotations__
     assert "section_coverage_stall_count" in WorkflowState.__annotations__
     assert "sections_body" in WorkflowState.__annotations__
     assert "focus_section" in WorkflowState.__annotations__

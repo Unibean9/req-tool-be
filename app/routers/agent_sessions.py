@@ -81,10 +81,11 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    session = await AgentService(db=db, graph=_graph(request), session_factory=async_session_factory).get_session(
+    service = AgentService(db=db, graph=_graph(request), session_factory=async_session_factory)
+    session = await service.get_session_response(
         project_id=project_id, session_id=session_id, user_id=user.id
     )
-    return ok(AgentSessionResponse.model_validate(session))
+    return ok(session)
 
 
 @router.delete(_SESSION_PREFIX + "/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -147,7 +148,7 @@ async def stream_session_events(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     await require_project_member_404(project_id, user, db)
-    service = AgentEventService(db)
+    service = AgentEventService(db, session_factory=async_session_factory)
     await service.build_snapshot(project_id=project_id, session_id=session_id, user_id=user.id)
     return StreamingResponse(
         service.stream_session_events(

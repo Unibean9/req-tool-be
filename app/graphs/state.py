@@ -123,6 +123,7 @@ class WorkflowState(TypedDict):
     turn_type: str | None
     triage_reply: str | None
     section_coverage: dict[str, str] | None
+    section_assessment: dict[str, Any] | None
     coverage_ratio: float | None
     coverage_complete: bool | None
     section_coverage_stall_count: int | None

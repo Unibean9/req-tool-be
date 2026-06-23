@@ -11,6 +11,7 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCallStatus,
 )
+from app.schemas.workspace import WorkspaceContainerResponse
 
 
 class AgentSessionCreate(BaseModel):
@@ -36,9 +37,11 @@ class AgentSessionResponse(BaseModel):
     workflow_area: str
     step_key: str | None
     status: AgentSessionStatus
+    ui_status: str | None = None
     interrupt_type: AgentSessionInterruptType | None
     missing_context: Any | None
     focus_section: str | None = None
+    workspace_container: WorkspaceContainerResponse | None = None
     agent_role: str | None
     provider_config_id: uuid.UUID | None
     created_by_id: uuid.UUID | None
@@ -51,6 +54,10 @@ class AgentSessionResponse(BaseModel):
 class AgentSessionCreateResponse(BaseModel):
     session_id: str
     missing_context: list[str]
+    artifact_type: str | None = None
+    focus_section: str | None = None
+    container_key: str | None = None
+    active_item_key: str | None = None
 
 
 class AgentMessageCreate(BaseModel):

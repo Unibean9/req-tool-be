@@ -152,7 +152,7 @@ async def test_get_session_response_hides_graph_checkpoint(client):
     mock_session.created_at = None
     mock_session.updated_at = None
 
-    with _mock_svc(get_session=mock_session):
+    with _mock_svc(get_session_response=mock_session):
         resp = await client.get(
             f"{BASE}/projects/{project_id}/agent-sessions/{session_id}",
             headers=h,

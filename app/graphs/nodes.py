@@ -384,10 +384,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # section-coverage: deterministic, no LLM call. Keep "LLM did not report" (None -> fail-open)
     # separate from "reported empty {}" (evaluated as missing -> gate), so non-section-aware
     # turns such as derived artifacts or confident proposals continue normally.
-    if section_assessment is None:
+    merged_section_assessment = effective_state.get("section_assessment")
+    if isinstance(section_assessment, dict):
+        merged_section_assessment = {**(merged_section_assessment or {}), **section_assessment}
+
+    if merged_section_assessment is None:
         coverage = {"section_coverage": None, "coverage_ratio": None, "coverage_complete": None}
     else:
-        coverage = compute_section_coverage(section_assessment)
+        coverage = compute_section_coverage(merged_section_assessment)
     # Stall counter: increment when a gated turn fails to raise coverage, reset otherwise.
     # route_node and the coverage hint read it to escape a non-advancing elicitation loop.
     prev_ratio = effective_state.get("coverage_ratio")
@@ -471,6 +475,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
+        "section_assessment": merged_section_assessment,
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
@@ -708,7 +713,7 @@ def _missing_required_arg(tool: str | None, analysis_result: dict) -> str | None
 
 
 def _degrade_reason(
-    state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
+    _state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
 ) -> dict | None:
     """Why this pick can't dispatch as-is (fail-loud), or None when it's fine to emit.
 
