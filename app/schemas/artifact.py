@@ -23,14 +23,13 @@ from app.models.artifact import (
 
 class ArtifactCreateRequest(BaseModel):
     type: ArtifactType
+    parent_id: uuid.UUID | None = None
     title: str = Field(min_length=1, max_length=255)
     body: str = Field(min_length=1)
     status: ArtifactStatus = ArtifactStatus.DRAFT
     priority: ArtifactPriority | None = None
     code: str | None = Field(default=None, max_length=100)
     confidence: Decimal | None = Field(default=None, ge=0, le=100)
-    nfr_category: str | None = Field(default=None, max_length=100)
-    stakeholder_role: str | None = Field(default=None, max_length=100)
     metadata: dict[str, Any] = Field(default_factory=dict)
     change_source: ChangeSource = ChangeSource.MANUAL
     change_summary: str | None = None
@@ -44,8 +43,6 @@ class ArtifactUpdateRequest(BaseModel):
     priority: ArtifactPriority | None = None
     code: str | None = Field(default=None, max_length=100)
     confidence: Decimal | None = Field(default=None, ge=0, le=100)
-    nfr_category: str | None = Field(default=None, max_length=100)
-    stakeholder_role: str | None = Field(default=None, max_length=100)
     metadata: dict[str, Any] | None = None
     change_source: ChangeSource = ChangeSource.MANUAL
     change_summary: str | None = None
@@ -71,6 +68,7 @@ class ArtifactVersionResponse(BaseModel):
 class ArtifactResponse(BaseModel):
     id: uuid.UUID
     project_id: uuid.UUID
+    parent_id: uuid.UUID | None = None
     current_version_id: uuid.UUID | None = None
     type: ArtifactType
     status: ArtifactStatus
@@ -78,8 +76,6 @@ class ArtifactResponse(BaseModel):
     code: str | None = None
     title: str
     confidence: Decimal | None = None
-    nfr_category: str | None = None
-    stakeholder_role: str | None = None
     created_by_id: uuid.UUID | None = None
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -166,7 +162,7 @@ class ArtifactEvidenceResponse(BaseModel):
     created_at: datetime
 
 
-class GraphWarningType(str, enum.Enum):
+class GraphWarningType(enum.StrEnum):
     ORPHAN_ARTIFACT = "orphan_artifact"
     MISSING_UPSTREAM_TRACE = "missing_upstream_trace"
     MISSING_DOWNSTREAM_REALIZATION = "missing_downstream_realization"

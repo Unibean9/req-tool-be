@@ -2,7 +2,6 @@
 
 from app.graphs.validators import ValidationResult, validate_proposal
 
-
 # --- Group 1: Required fields (violations, hard block) ---
 
 def test_missing_title_is_violation():
@@ -52,7 +51,7 @@ def test_multiple_weasel_words():
         {"title": "Mục tiêu", "body": "nhanh nhanh nhanh và mạnh mẽ, đạt 50% trong vòng 1 tháng"},
     )
     weasel = [w for w in r.warnings if "weasel" in w]
-    # 'nhanh' lặp 3 lần → chỉ 1 cảnh báo; 'mạnh mẽ' → 1 cảnh báo
+    # 'nhanh' repeated 3 times → only 1 warning; 'mạnh mẽ' → 1 warning
     assert len(weasel) == 2
 
 
@@ -62,54 +61,12 @@ def test_clean_text_no_warnings():
     assert r.warnings == []
 
 
-# --- Group 3: INVEST for story ---
-
-def test_invest_missing_testable_for_story():
-    r = validate_proposal("story", {"title": "Story", "body": "Người dùng muốn đăng nhập vào hệ thống"})
-    assert any("INVEST" in w for w in r.warnings)
-
-
-def test_invest_ok_for_story():
-    r = validate_proposal(
-        "story",
-        {"title": "Story", "body": "Given đã đăng ký, when nhập đúng mật khẩu, then vào được hệ thống"},
-    )
-    assert not any("INVEST" in w for w in r.warnings)
-
-
-def test_invest_not_applied_to_goal():
-    r = validate_proposal("goal", {"title": "Goal", "body": "Tăng doanh thu 20% trong vòng 6 tháng"})
-    assert not any("INVEST" in w for w in r.warnings)
-
-
-# --- Group 4: SMART for goal ---
-
-def test_smart_missing_measurable_for_goal():
-    r = validate_proposal("goal", {"title": "Goal", "body": "Cải thiện trải nghiệm người dùng"})
-    assert any("SMART" in w for w in r.warnings)
-
-
-def test_smart_ok_for_goal():
-    r = validate_proposal("goal", {"title": "Goal", "body": "Tăng tỷ lệ giữ chân lên 30% trong vòng 3 tháng"})
-    assert not any("SMART" in w for w in r.warnings)
-
-
-def test_smart_not_applied_to_story():
-    r = validate_proposal(
-        "story",
-        {"title": "Story", "body": "Given đã đăng ký, when nhập đúng, then vào hệ thống"},
-    )
-    assert not any("SMART" in w for w in r.warnings)
-
-
-# --- Group 5: Precision/recall on a labeled set ---
+# --- Group 3: Precision/recall on a labeled set ---
 
 def _categories(r: ValidationResult) -> dict:
     return {
         "violation": len(r.violations) > 0,
         "weasel": any("weasel" in w for w in r.warnings),
-        "invest": any("INVEST" in w for w in r.warnings),
-        "smart": any("SMART" in w for w in r.warnings),
     }
 
 
@@ -118,28 +75,72 @@ def test_validator_precision_recall_on_labeled_samples():
         (
             "story",
             {"title": "X", "body": "Given đã đăng ký, when nhập đúng mật khẩu, then vào hệ thống"},
-            {"violation": False, "weasel": False, "invest": False, "smart": False},
+            {"violation": False, "weasel": False},
         ),
         (
             "story",
             {"title": "", "body": "Given A, when B, then C"},
-            {"violation": True, "weasel": False, "invest": False, "smart": False},
+            {"violation": True, "weasel": False},
         ),
         (
             "goal",
             {"title": "Mục tiêu", "body": "Cải thiện hiệu quả hệ thống"},
-            {"violation": False, "weasel": True, "invest": False, "smart": True},
+            {"violation": False, "weasel": True},
         ),
         (
             "goal",
             {"title": "Mục tiêu", "body": "Tăng doanh thu 20% trong vòng 6 tháng"},
-            {"violation": False, "weasel": False, "invest": False, "smart": False},
+            {"violation": False, "weasel": False},
         ),
         (
             "story",
             {"title": "Story", "body": "Người dùng muốn đăng nhập nhanh"},
-            {"violation": False, "weasel": True, "invest": True, "smart": False},
+            {"violation": False, "weasel": True},
         ),
     ]
     for artifact_type, proposal, expected in samples:
         assert _categories(validate_proposal(artifact_type, proposal)) == expected
+
+
+# --- Group: business rule / open question / assumption checks (spec §9.4) ---
+
+def test_business_rule_missing_condition_raises_violation():
+    r = validate_proposal("business_rule", {"title": "T", "body": "Hệ thống gửi email cho người dùng."})
+    assert not r.passed
+    assert any("condition" in v for v in r.violations)
+
+
+def test_business_rule_with_condition_and_outcome_passes():
+    r = validate_proposal(
+        "business_rule",
+        {"title": "T", "body": "Nếu đơn quá hạn thanh toán thì hệ thống sẽ khóa tài khoản."},
+    )
+    assert not any("condition" in v or "outcome" in v for v in r.violations)
+
+
+def test_open_question_missing_status_raises_warning():
+    r = validate_proposal("open_question", {"title": "T", "body": "Ai approve ngân sách?"})
+    assert any("status" in w for w in r.warnings)
+
+
+def test_open_question_with_status_no_warning():
+    r = validate_proposal("open_question", {"title": "T", "body": "Ai approve?", "status": "unresolved"})
+    assert not any("status" in w for w in r.warnings)
+
+
+def test_assumption_missing_confidence_raises_warning():
+    proposal = {
+        "title": "T", "body": "Nội dung",
+        "assumptions": [{"statement": "users have phones", "confidence": "", "owner": "PM"}],
+    }
+    r = validate_proposal("assumption", proposal)
+    assert any("confidence" in w for w in r.warnings)
+
+
+def test_assumption_missing_owner_raises_warning():
+    proposal = {
+        "title": "T", "body": "Nội dung",
+        "assumptions": [{"statement": "users have phones", "confidence": "high", "owner": ""}],
+    }
+    r = validate_proposal("assumption", proposal)
+    assert any("owner" in w for w in r.warnings)

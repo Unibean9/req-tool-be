@@ -1,6 +1,7 @@
+from sqlalchemy import Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Boolean
-from app.models.base import Base, AuditMixin
+
+from app.models.base import AuditMixin, Base
 
 
 class User(AuditMixin, Base):

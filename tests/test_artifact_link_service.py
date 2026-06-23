@@ -4,7 +4,7 @@ import pytest
 
 from app.models import Project, User
 from app.models.artifact import Artifact, ArtifactPriority, ArtifactStatus, ArtifactType, RelationType
-from app.models.organization import OrgMember, Organization
+from app.models.organization import Organization, OrgMember
 from app.services.artifact_service import ArtifactService
 
 
@@ -13,7 +13,7 @@ async def test_create_link_rejects_self_link(db_session):
     user, project, _other_project = await _seed_link_projects(db_session)
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
@@ -38,14 +38,14 @@ async def test_create_link_rejects_cross_project_target(db_session):
     user, project, other_project = await _seed_link_projects(db_session)
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
     )
     other_project_target = Artifact(
         project_id=other_project.id,
-        type=ArtifactType.CAPABILITY,
+        type=ArtifactType.EPIC,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.SHOULD,
         title="Dich sai project",
@@ -71,14 +71,14 @@ async def test_create_link_rejects_non_project_member(db_session):
     outsider = User(email=f"outsider-{uuid.uuid4()}@example.com", hashed_password="x", full_name="Outsider")
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
     )
     target = Artifact(
         project_id=project.id,
-        type=ArtifactType.CAPABILITY,
+        type=ArtifactType.EPIC,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.SHOULD,
         title="Dich hop le",
@@ -103,14 +103,14 @@ async def test_create_link_rejects_reverse_duplicate_relation(db_session):
     user, project, _other_project = await _seed_link_projects(db_session)
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
     )
     target = Artifact(
         project_id=project.id,
-        type=ArtifactType.CAPABILITY,
+        type=ArtifactType.EPIC,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.SHOULD,
         title="Dich hop le",
@@ -142,14 +142,14 @@ async def test_create_link_rejects_reverse_duplicate_even_with_different_relatio
     user, project, _other_project = await _seed_link_projects(db_session)
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
     )
     target = Artifact(
         project_id=project.id,
-        type=ArtifactType.CAPABILITY,
+        type=ArtifactType.EPIC,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.SHOULD,
         title="Dich hop le",
@@ -181,14 +181,14 @@ async def test_create_link_accepts_same_project_artifacts(db_session):
     user, project, _other_project = await _seed_link_projects(db_session)
     source = Artifact(
         project_id=project.id,
-        type=ArtifactType.GOAL,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.MUST,
         title="Nguon",
     )
     target = Artifact(
         project_id=project.id,
-        type=ArtifactType.CAPABILITY,
+        type=ArtifactType.EPIC,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.SHOULD,
         title="Dich hop le",

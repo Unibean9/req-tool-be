@@ -3,7 +3,12 @@ from langgraph.graph import add_messages
 
 from app.config import settings
 from app.graphs.policy import ARTIFACT_PREDECESSORS, ApprovalRequired, GovernanceDenied, governed
-from app.graphs.state import WorkflowState
+from app.graphs.state import (
+    DEFAULT_ARTIFACT_CHAIN,
+    DEFAULT_METHOD_PROFILE,
+    DEFAULT_READINESS,
+    WorkflowState,
+)
 
 
 @pytest.mark.asyncio
@@ -88,8 +93,9 @@ async def test_create_artifact_denies_type_outside_allowed_context():
     assert exc_info.value.tool_name == "create_artifact"
 
 
-def test_artifact_predecessors_goal_requires_intent_and_problem():
-    assert ARTIFACT_PREDECESSORS["goal"] == ["intent", "problem"]
+def test_artifact_predecessors_design_types_trace_to_brd():
+    assert ARTIFACT_PREDECESSORS["brd"] == []
+    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["brd"]
 
 
 def test_workflow_state_structure_and_add_messages_reducer():
@@ -107,13 +113,23 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "user_confirmed": None,
         "critique_rounds": 0,
         "quality_report": None,
+        "last_critiqued_draft_hash": None,
         "locale": None,
-        "intent": None,
-        "slot_coverage": None,
-        "coverage_ratio": None,
+        "turn_type": None,
+        "triage_reply": None,
+        "section_coverage": None,
         "coverage_complete": None,
-        "coverage_stall_count": None,
-        "last_asked_slot": None,
+        "section_coverage_stall_count": None,
+        "assumptions": [],
+        "risks": [],
+        "open_questions": [],
+        "focused_artifact_id": None,
+        "draft_body": None,
+        "method_profile": dict(DEFAULT_METHOD_PROFILE),
+        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+        "readiness": dict(DEFAULT_READINESS),
+        "working_draft": None,
+        "mode_hint": None,
     }
 
     assert state["turn_count"] == 0
@@ -131,13 +147,23 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "user_confirmed",
         "critique_rounds",
         "quality_report",
+        "last_critiqued_draft_hash",
         "locale",
-        "intent",
-        "slot_coverage",
-        "coverage_ratio",
+        "turn_type",
+        "triage_reply",
+        "section_coverage",
         "coverage_complete",
-        "coverage_stall_count",
-        "last_asked_slot",
+        "section_coverage_stall_count",
+        "assumptions",
+        "risks",
+        "open_questions",
+        "focused_artifact_id",
+        "draft_body",
+        "method_profile",
+        "artifact_chain",
+        "readiness",
+        "working_draft",
+        "mode_hint",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

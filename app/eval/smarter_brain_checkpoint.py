@@ -13,9 +13,10 @@ import argparse
 import json
 import sys
 import uuid
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +40,24 @@ class CheckpointResult:
     candidate_eval_avg: float
     eval_delta: float
     eval_passed: bool
+    mode_proactive_count: int | None
+    mode_floor_passed: bool
     passed: bool
+
+
+def count_proactive_modes(analysis_results: Sequence[dict[str, Any]]) -> int:
+    """Count agent turns that proactively left plain Q&A.
+
+    A turn is proactive when it reports an `active_mode` other than the discovery baseline (the spec
+    §7.1 successor to plain Q&A); turns that omit the field or report null are not proactive. This is
+    the measurement behind the R_mode regression guard — a candidate that never switches mode scores
+    0 and fails the floor.
+    """
+    baseline = {"discovery"}
+    return sum(
+        1 for row in analysis_results
+        if isinstance(row, dict) and (row.get("active_mode") or "discovery") not in baseline
+    )
 
 
 def token_total(usage: dict[str, Any]) -> int:
@@ -88,6 +106,7 @@ def evaluate_checkpoint(
     baseline_eval_rows: Sequence[dict[str, Any]],
     candidate_eval_rows: Sequence[dict[str, Any]],
     thresholds: CheckpointThresholds | None = None,
+    mode_proactive_count: int | None = None,
 ) -> CheckpointResult:
     thresholds = thresholds or CheckpointThresholds()
 
@@ -101,6 +120,11 @@ def evaluate_checkpoint(
     eval_delta = candidate_eval_avg - baseline_eval_avg
     eval_passed = eval_delta >= thresholds.min_eval_delta
 
+    # R_mode hard gate: when proactive-mode coverage is measured, zero switches fails the run —
+    # this is the regression guard against silently reverting to ask-only behaviour. When the
+    # dimension is not measured (None), legacy token/eval-only callers stay ungated.
+    mode_floor_passed = True if mode_proactive_count is None else mode_proactive_count >= 1
+
     return CheckpointResult(
         baseline_token_avg=baseline_token_avg,
         candidate_token_avg=candidate_token_avg,
@@ -110,7 +134,9 @@ def evaluate_checkpoint(
         candidate_eval_avg=candidate_eval_avg,
         eval_delta=eval_delta,
         eval_passed=eval_passed,
-        passed=token_passed and eval_passed,
+        mode_proactive_count=mode_proactive_count,
+        mode_floor_passed=mode_floor_passed,
+        passed=token_passed and eval_passed and mode_floor_passed,
     )
 
 
@@ -146,12 +172,14 @@ def _thresholds_from_report(report: dict[str, Any]) -> CheckpointThresholds:
 def evaluate_report(report: dict[str, Any]) -> CheckpointResult:
     baseline = report.get("baseline") or {}
     candidate = report.get("candidate") or {}
+    mode_count = candidate.get("mode_proactive_count")
     return evaluate_checkpoint(
         baseline_sessions=_sessions_from_report_side(baseline),
         candidate_sessions=_sessions_from_report_side(candidate),
         baseline_eval_rows=baseline.get("eval") or [],
         candidate_eval_rows=candidate.get("eval") or [],
         thresholds=_thresholds_from_report(report),
+        mode_proactive_count=int(mode_count) if mode_count is not None else None,
     )
 
 

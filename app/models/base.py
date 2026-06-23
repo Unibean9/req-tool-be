@@ -1,8 +1,17 @@
 import uuid
 from datetime import datetime
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
 from sqlalchemy import DateTime, func
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+
+@compiles(UUID, "sqlite")
+def _compile_postgresql_uuid_for_sqlite(_type, _compiler, **_kwargs) -> str:
+    # SQLite gives an unknown "UUID" declaration NUMERIC affinity. A rare UUID
+    # containing digits only is then coerced to float and cannot round-trip.
+    return "CHAR(32)"
 
 
 class Base(DeclarativeBase):

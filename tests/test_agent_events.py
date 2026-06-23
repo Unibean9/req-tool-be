@@ -88,8 +88,51 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
     assert snapshot["tool_calls"][0]["tool_name"] == "create_artifact"
 
 
+@pytest.mark.asyncio
+async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_session):
+    project_id = await _project_id(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    run = AgentRun(session_id=session.id, analysis_result={})
+    db_session.add(run)
+    await db_session.flush()
+    db_session.add_all(
+        [
+            AgentToolCall(
+                run_id=run.id,
+                tool_name="write_draft:section-1",
+                input_snapshot={"title": "Bản nháp", "body": "Nội dung"},
+                status=AgentToolCallStatus.PROPOSED,
+            ),
+            AgentToolCall(
+                run_id=run.id,
+                tool_name="recommend_next_workflow",
+                input_snapshot={"recommended_next_workflow": "prd"},
+                status=AgentToolCallStatus.PROPOSED,
+            ),
+        ]
+    )
+    await db_session.flush()
+
+    snapshot = await AgentEventService(db_session).build_snapshot(
+        project_id=project_id, session_id=session.id, user_id=owner_id
+    )
+
+    assert [tc["tool_name"] for tc in snapshot["tool_calls"]] == ["write_draft:section-1"]
+
+
 # ---------------------------------------------------------------------------
-# Phase 2 — ui_status phái sinh trong snapshot (S1)
+# ui_status derived in the snapshot (S1)
 # ---------------------------------------------------------------------------
 
 def test_ui_status_function_unit():

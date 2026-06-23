@@ -10,7 +10,7 @@ from tests.helpers import create_org, create_project, make_auth_headers
 @pytest.mark.asyncio
 async def test_graph_endpoint_returns_nodes_links_and_version_references(client):
     headers, project = await _project_context(client)
-    goal = await _create_artifact(client, headers, project["id"], artifact_type="goal", title="Mục tiêu")
+    req = await _create_artifact(client, headers, project["id"], artifact_type="brd", title="BRD")
     fr = await _create_artifact(
         client,
         headers,
@@ -18,13 +18,13 @@ async def test_graph_endpoint_returns_nodes_links_and_version_references(client)
         artifact_type="functional_requirement",
         title="Yêu cầu chức năng",
     )
-    link = await _create_link(client, headers, project["id"], fr["id"], goal["id"], "satisfies")
+    link = await _create_link(client, headers, project["id"], fr["id"], req["id"], "satisfies")
 
     resp = await client.get(f"{BASE}/projects/{project['id']}/artifact-graph", headers=headers)
 
     assert resp.status_code == 200, resp.text
     graph = resp.json()["data"]
-    assert {node["id"] for node in graph["nodes"]} == {goal["id"], fr["id"]}
+    assert {node["id"] for node in graph["nodes"]} == {req["id"], fr["id"]}
     assert graph["links"][0]["id"] == link["id"]
     assert graph["links"][0]["relation_type"] == "satisfies"
     fr_node = next(node for node in graph["nodes"] if node["id"] == fr["id"])
@@ -34,7 +34,7 @@ async def test_graph_endpoint_returns_nodes_links_and_version_references(client)
 @pytest.mark.asyncio
 async def test_graph_endpoint_reports_orphan_warning(client):
     headers, project = await _project_context(client)
-    artifact = await _create_artifact(client, headers, project["id"], artifact_type="goal")
+    artifact = await _create_artifact(client, headers, project["id"], artifact_type="epic")
 
     resp = await client.get(f"{BASE}/projects/{project['id']}/artifact-graph", headers=headers)
 
@@ -56,8 +56,8 @@ async def test_graph_endpoint_reports_missing_upstream_trace_warning(client):
 @pytest.mark.asyncio
 async def test_graph_endpoint_reports_conflicting_artifacts_warning(client):
     headers, project = await _project_context(client)
-    first = await _create_artifact(client, headers, project["id"], artifact_type="goal", title="A")
-    second = await _create_artifact(client, headers, project["id"], artifact_type="goal", title="B")
+    first = await _create_artifact(client, headers, project["id"], artifact_type="functional_requirement", title="A")
+    second = await _create_artifact(client, headers, project["id"], artifact_type="epic", title="B")
     await _create_link(client, headers, project["id"], first["id"], second["id"], "conflicts_with")
 
     resp = await client.get(f"{BASE}/projects/{project['id']}/artifact-graph", headers=headers)
@@ -157,7 +157,7 @@ async def _project_context(client):
     return headers, project
 
 
-async def _create_artifact(client, headers, project_id, *, artifact_type="goal", title="Artifact"):
+async def _create_artifact(client, headers, project_id, *, artifact_type="functional_requirement", title="Artifact"):
     resp = await client.post(
         f"{BASE}/projects/{project_id}/artifacts",
         json={"type": artifact_type, "title": title, "body": f"Nội dung {title}", "priority": "must"},

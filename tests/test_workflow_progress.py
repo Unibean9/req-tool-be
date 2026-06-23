@@ -43,8 +43,8 @@ async def test_workflow_step_seed_has_correct_keys_and_phase_mapping(client):
     assert steps == {
         "intent_vision": "brd",
         "capability_map": "brd",
-        "domain_model": "srs",
-        "requirements_spec": "srs",
+        "domain_model": "prd",
+        "requirements_spec": "prd",
         "realization_backlog": "delivery",
     }
 

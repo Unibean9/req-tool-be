@@ -92,7 +92,7 @@ window.close();
 # --- Endpoints ---
 
 @router.get("")
-async def github_authorize(response: Response):
+async def github_authorize():
     nonce = os.urandom(16).hex()
     state = _make_login_state(nonce)
     params = {
@@ -133,7 +133,9 @@ async def github_callback(
         return HTMLResponse(_error_html(target_origin, "missing_code", "GitHub không trả về authorization code"))
 
     if not oauth_nonce or not _verify_login_state(state, oauth_nonce):
-        return HTMLResponse(_error_html(target_origin, "invalid_state", "OAuth state không hợp lệ — có thể là tấn công CSRF"))
+        return HTMLResponse(
+            _error_html(target_origin, "invalid_state", "OAuth state không hợp lệ — có thể là tấn công CSRF")
+        )
     response.delete_cookie(_LOGIN_COOKIE, httponly=True, samesite="lax", secure=_secure)
 
     try:
@@ -165,7 +167,11 @@ class DevLoginRequest(BaseModel):
     email: EmailStr
 
 
-@router.post("/dev-login", response_model=ApiResponse[TokenResponse], include_in_schema=settings.app_env == "development")
+@router.post(
+    "/dev-login",
+    response_model=ApiResponse[TokenResponse],
+    include_in_schema=settings.app_env == "development",
+)
 async def dev_login(
     body: DevLoginRequest,
     service: AuthService = Depends(get_auth_service),

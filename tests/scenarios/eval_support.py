@@ -4,8 +4,8 @@ Default mode uses a mock judge (deterministic, no API key). The integration
 variant reuses the real LLM judge from tests/eval when JUDGE_API_KEY is set.
 """
 
-from unittest.mock import AsyncMock
 from typing import Any
+from unittest.mock import AsyncMock
 
 from tests.eval import rubric
 from tests.eval.judge import judge_artifact

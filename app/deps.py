@@ -1,10 +1,12 @@
 import uuid
+
 from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
-from app.database import get_db
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.security import decode_token
+from app.database import get_db
 from app.models.user import User
 from app.services.auth_service import AuthService
 from app.services.organization_service import OrgService
@@ -26,11 +28,14 @@ async def current_user(
     try:
         uid = uuid.UUID(user_id)
     except (TypeError, ValueError):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Subject của token không hợp lệ")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Subject của token không hợp lệ") from None
     result = await db.execute(select(User).where(User.id == uid))
     user = result.scalar_one_or_none()
     if not user or not user.is_active:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Không tìm thấy người dùng hoặc tài khoản đã bị vô hiệu hóa")
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Không tìm thấy người dùng hoặc tài khoản đã bị vô hiệu hóa",
+        )
     return user
 
 

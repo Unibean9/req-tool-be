@@ -3,7 +3,14 @@ import uuid
 import pytest
 from sqlalchemy import func, select
 
-from app.models.artifact import Artifact, ArtifactEvidence, ArtifactReview, ArtifactVersion, EvidenceSourceType, RelationType
+from app.models.artifact import (
+    Artifact,
+    ArtifactEvidence,
+    ArtifactReview,
+    ArtifactVersion,
+    EvidenceSourceType,
+    RelationType,
+)
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 
@@ -58,6 +65,42 @@ async def test_update_artifact_creates_immutable_version_and_preserves_old_conte
     old_version = await db_session.get(ArtifactVersion, uuid.UUID(old_version_id))
     assert old_version.title == "Phiên bản 1"
     assert old_version.body == "Nội dung cũ"
+
+
+@pytest.mark.asyncio
+async def test_update_artifact_rejects_invalid_status_transition(client):
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"])
+
+    resp = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "accepted"},
+        headers=headers,
+    )
+
+    assert resp.status_code == 400
+    assert "draft sang accepted" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_artifact_allows_review_transition_path(client):
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"])
+
+    first = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "needs_clarification"},
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+
+    second = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "accepted"},
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["data"]["status"] == "accepted"
 
 
 @pytest.mark.asyncio
@@ -139,20 +182,22 @@ async def test_source_document_upload_does_not_create_artifact(client, db_sessio
 
 
 @pytest.mark.asyncio
-async def test_research_output_accepts_optional_research_type(client):
+async def test_source_document_accepts_research_metadata(client):
     headers, project = await _project_context(client)
 
-    with_type = await _create_artifact(
-        client,
-        headers,
-        project["id"],
-        artifact_type="research_output",
-        metadata={"research_type": "interview"},
+    resp = await client.post(
+        f"{BASE}/projects/{project['id']}/source-documents",
+        json={
+            "title": "Phỏng vấn",
+            "source_type": "text_paste",
+            "content_text": "Người dùng cần dashboard",
+            "metadata": {"research_type": "interview"},
+        },
+        headers=headers,
     )
-    without_type = await _create_artifact(client, headers, project["id"], artifact_type="research_output")
 
-    assert with_type["type"] == "research_output"
-    assert without_type["type"] == "research_output"
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["data"]["metadata"]["research_type"] == "interview"
 
 
 @pytest.mark.asyncio
@@ -163,7 +208,7 @@ async def test_artifact_endpoints_reject_non_project_member(client):
 
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/artifacts",
-        json={"type": "goal", "title": "Không hợp lệ", "body": "Không có quyền"},
+        json={"type": "functional_requirement", "title": "Không hợp lệ", "body": "Không có quyền"},
         headers=outsider_headers,
     )
     list_resp = await client.get(f"{BASE}/projects/{project['id']}/artifacts", headers=outsider_headers)
@@ -187,7 +232,7 @@ async def test_artifact_endpoints_reject_non_project_member(client):
 @pytest.mark.asyncio
 async def test_list_artifacts_filters_by_type_status_and_priority(client):
     headers, project = await _project_context(client)
-    await _create_artifact(client, headers, project["id"], artifact_type="goal", priority="must")
+    await _create_artifact(client, headers, project["id"], artifact_type="brd", priority="must")
     draft_should = await _create_artifact(
         client,
         headers,

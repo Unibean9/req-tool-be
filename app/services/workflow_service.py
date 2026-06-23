@@ -21,8 +21,8 @@ from app.schemas.workflow import (
 STEP_PHASES: tuple[tuple[WorkflowStepKey, WorkflowStepPhase], ...] = (
     (WorkflowStepKey.INTENT_VISION, WorkflowStepPhase.BRD),
     (WorkflowStepKey.CAPABILITY_MAP, WorkflowStepPhase.BRD),
-    (WorkflowStepKey.DOMAIN_MODEL, WorkflowStepPhase.SRS),
-    (WorkflowStepKey.REQUIREMENTS_SPEC, WorkflowStepPhase.SRS),
+    (WorkflowStepKey.DOMAIN_MODEL, WorkflowStepPhase.PRD),
+    (WorkflowStepKey.REQUIREMENTS_SPEC, WorkflowStepPhase.PRD),
     (WorkflowStepKey.REALIZATION_BACKLOG, WorkflowStepPhase.DELIVERY),
 )
 

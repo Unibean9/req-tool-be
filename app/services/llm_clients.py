@@ -6,7 +6,6 @@ from urllib.parse import quote
 
 from app.models.llm_provider import ProviderType
 
-
 DEFAULT_MODEL_BY_PROVIDER = {
     ProviderType.BEDROCK: "amazon.nova-lite-v1:0",
     ProviderType.OPENAI: "gpt-4o-mini",
@@ -352,7 +351,7 @@ def _extract_bedrock_text(data: dict[str, Any]) -> str | None:
 
 
 def _normalize_usage(input_tokens: Any, output_tokens: Any, total_tokens: Any = None) -> dict[str, int] | None:
-    """Chuẩn hoá token usage về {"input", "output", "total"}; trả None nếu provider không cung cấp."""
+    """Normalize token usage into {"input", "output", "total"}; return None if the provider omits it."""
     if input_tokens is None and output_tokens is None and total_tokens is None:
         return None
     inp = int(input_tokens or 0)
@@ -474,7 +473,10 @@ def _extract_openai_text(data: dict[str, Any]) -> str | None:
 
 
 def _anthropic_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [{"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]} for item in messages]
+    return [
+        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]}
+        for item in messages
+    ]
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str | None:

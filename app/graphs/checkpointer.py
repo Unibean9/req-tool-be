@@ -2,7 +2,8 @@ import asyncio
 import base64
 import uuid
 from collections.abc import AsyncIterator, Callable, Sequence
-from typing import Any, AsyncContextManager
+from contextlib import AbstractAsyncContextManager
+from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
@@ -13,6 +14,7 @@ from langgraph.checkpoint.base import (
     CheckpointTuple,
 )
 from sqlalchemy import select
+from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentSession
@@ -36,7 +38,7 @@ def _lock_for(session_id: str) -> asyncio.Lock:
 class DelegatingCheckpointer(BaseCheckpointSaver):
     """Delegates to per-session AgentSessionCheckpointer based on thread_id in config."""
 
-    def __init__(self, session_factory: Callable[[], AsyncContextManager[AsyncSession]]):
+    def __init__(self, session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]]):
         super().__init__()
         self.session_factory = session_factory
 
@@ -63,7 +65,7 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         self,
         *,
         session_id: str,
-        session_factory: Callable[[], AsyncContextManager[AsyncSession]],
+        session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
     ):
         super().__init__()
         self.session_id = uuid.UUID(session_id)
@@ -129,7 +131,7 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         config: RunnableConfig,
         writes: Sequence[tuple[str, Any]],
         task_id: str,
-        task_path: str = "",
+        task_path: str = "",  # noqa: ARG002 — required by BaseCheckpointSaver override signature
     ) -> None:
         checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
         async with _lock_for(str(self.session_id)):
@@ -148,9 +150,11 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         self,
         config: RunnableConfig | None,
         *,
-        filter: dict[str, Any] | None = None,
-        before: RunnableConfig | None = None,
-        limit: int | None = None,
+        # Required by the BaseCheckpointSaver.alist signature; this single-checkpoint
+        # store ignores the query filters and returns the one tuple it holds.
+        filter: dict[str, Any] | None = None,  # noqa: ARG002
+        before: RunnableConfig | None = None,  # noqa: ARG002
+        limit: int | None = None,  # noqa: ARG002
     ) -> AsyncIterator[CheckpointTuple]:
         item = await self.aget_tuple(config or {"configurable": {"thread_id": str(self.session_id)}})
         if item is not None:
@@ -190,3 +194,24 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         configurable["thread_id"] = configurable.get("thread_id") or str(self.session_id)
         configurable["checkpoint_id"] = checkpoint["id"]
         return {**config, "configurable": configurable}
+
+
+async def checkpoint_values_for_session(
+    *,
+    session_id: uuid.UUID,
+    session_factory: Callable[[], AbstractAsyncContextManager[AsyncSession]],
+) -> dict[str, Any] | None:
+    checkpointer = AgentSessionCheckpointer(
+        session_id=str(session_id),
+        session_factory=session_factory,
+    )
+    try:
+        checkpoint = await checkpointer.aget_tuple(
+            {"configurable": {"thread_id": str(session_id)}}
+        )
+    except NoResultFound:
+        return None
+    if checkpoint is None:
+        return None
+    values = checkpoint.checkpoint.get("channel_values") or {}
+    return values if isinstance(values, dict) else None

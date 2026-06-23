@@ -28,28 +28,34 @@ POLICY = {
     "create_artifact_link": "require_approval",
     "delete_artifact_link": "require_approval",
     "create_artifact_review": "require_approval",
+    # finalize requires at least one run_critique round before it is offered (spec §15.1). This is
+    # a documentation signal; the actual gate lives in agent_tools.get_available_tools.
+    "finalize": "require_critique",
+    # BMAD governance gates (addendum §18): phase completion and scope lock need human approval.
+    "finalize_prd": "require_human_approval",
+    "lock_scope": "require_human_approval",
 }
 
 
 ARTIFACT_PREDECESSORS = {
-    "research_output": [],
-    "intent": [],
-    "problem": ["intent"],
-    "goal": ["intent", "problem"],
-    "stakeholder": ["intent", "problem"],
-    "capability": ["intent", "problem", "goal"],
-    "domain_entity": ["capability"],
-    "business_rule": ["capability"],
-    "constraint": ["intent", "problem"],
-    "assumption": ["intent", "problem"],
-    "risk": ["intent", "problem"],
-    "open_question": ["intent", "problem"],
-    "functional_requirement": ["capability"],
-    "non_functional_requirement": ["capability"],
+    "brd": [],
+    "vision_objectives": [],
+    "problem_statement": ["vision_objectives"],
+    "stakeholder_register": ["problem_statement"],
+    "scope_capabilities": ["problem_statement"],
+    "business_rules": ["scope_capabilities"],
+    "constraints_assumptions": ["scope_capabilities"],
+    "risks_issues": ["constraints_assumptions"],
+    "prd": ["brd"],
+    "domain_entity": ["brd"],
+    "functional_requirement": ["brd"],
+    "non_functional_requirement": ["brd"],
     "use_case": ["functional_requirement"],
-    "epic": ["functional_requirement"],
-    "story": ["epic"],
-    "acceptance_criteria": ["story"],
+    "acceptance_criteria": ["functional_requirement"],
+    "sad": ["prd"],
+    "component": ["domain_entity"],
+    "interface": ["component"],
+    "tech_decision": ["component"],
 }
 
 
@@ -77,7 +83,7 @@ def ancestor_types(artifact_type: str) -> list[str]:
 T = TypeVar("T")
 
 
-def governed(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
     @wraps(fn)
     async def wrapper(*args: Any, context: dict[str, Any] | None = None, **kwargs: Any) -> T:
         tool_name = fn.__name__
@@ -86,7 +92,7 @@ def governed(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
             raise GovernanceDenied(tool_name)
 
         context = context or {}
-        if rule == "require_approval":
+        if rule in ("require_approval", "require_human_approval"):
             if tool_name == "init_workflow_run" and context.get("workflow_area") != "orchestrator":
                 raise GovernanceDenied(tool_name)
             if tool_name == "create_artifact":
@@ -98,3 +104,16 @@ def governed(fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         return await fn(*args, **kwargs)
 
     return wrapper
+
+
+# BMAD governance gates (addendum §18). These are checkpoints, not loop tools: calling one runs the
+# @governed wrapper, which raises ApprovalRequired per the POLICY rule above.
+
+@governed
+async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001
+    return None
+
+
+@governed
+async def lock_scope(**kwargs: Any) -> None:  # noqa: ARG001
+    return None

@@ -46,7 +46,8 @@ async def test_artifact_tables_and_promoted_columns_exist(db_session):
         "workflow_runs",
         "workflow_steps",
     }.issubset(table_names)
-    assert {"nfr_category", "stakeholder_role"}.issubset(columns)
+    assert "nfr_category" not in columns
+    assert "stakeholder_role" not in columns
 
 
 @pytest.mark.asyncio
@@ -69,6 +70,7 @@ async def test_artifact_repository_required_columns_match_contract(db_session):
         )
 
     assert {
+        "parent_id",
         "run_id",
         "step_id",
         "code",
@@ -101,21 +103,23 @@ def test_artifact_enum_values_are_constrained():
         ArtifactStatus: {"draft", "needs_clarification", "accepted", "rejected", "archived"},
         ArtifactPriority: {"must", "should", "could", "wont"},
         ArtifactType: {
-            "research_output",
-            "intent",
-            "problem",
-            "goal",
-            "stakeholder",
-            "capability",
+            "brd",
+            "prd",
+            "sad",
+            "vision_objectives",
+            "problem_statement",
+            "stakeholder_register",
+            "scope_capabilities",
+            "business_rules",
+            "constraints_assumptions",
+            "risks_issues",
             "domain_entity",
-            "business_rule",
-            "constraint",
-            "assumption",
-            "risk",
-            "open_question",
             "functional_requirement",
             "non_functional_requirement",
             "use_case",
+            "component",
+            "interface",
+            "tech_decision",
             "epic",
             "story",
             "acceptance_criteria",
@@ -146,7 +150,7 @@ def test_artifact_enum_values_are_constrained():
             "requirements_spec",
             "realization_backlog",
         },
-        WorkflowStepPhase: {"brd", "srs", "delivery"},
+        WorkflowStepPhase: {"brd", "prd", "delivery"},
         WorkflowStepStatus: {
             "pending",
             "ready",

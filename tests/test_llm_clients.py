@@ -1,20 +1,19 @@
 import json
 
-import pytest
 import httpx
+import pytest
 
 from app.models.llm_provider import ProviderType
 from app.services.llm_clients import (
+    DEFAULT_MODEL_BY_PROVIDER,
     AnthropicLLMClient,
     BedrockLLMClient,
-    DEFAULT_MODEL_BY_PROVIDER,
     GoogleLLMClient,
     LLMClientConfig,
     LLMClientFactory,
     OpenAILLMClient,
     _extract_bedrock_text,
 )
-
 
 ANALYSIS_RESULT_SCHEMA = {
     "type": "object",

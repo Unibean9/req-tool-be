@@ -14,7 +14,6 @@ from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessi
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -72,15 +71,15 @@ def test_startup_wiring_compiles_successfully():
 @pytest.mark.asyncio
 async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
     """
-    Graph executes analyze → ask_human → session becomes WAITING_FOR_HUMAN.
+    Graph executes analyze → ask_user tool → session becomes WAITING_FOR_HUMAN.
     Uses checkpointer=None to avoid concurrent session access in test context.
     Verification of DelegatingCheckpointer + real graph is separate (round-trip test).
     """
     from contextlib import asynccontextmanager as acm
-    from tests.conftest import TestSessionFactory
+    from unittest.mock import MagicMock
 
     from app.main import app as _app
-    from unittest.mock import MagicMock
+    from tests.conftest import TestSessionFactory
 
     h, project_id = await _project(client)
 
@@ -108,7 +107,9 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
         async with TestSessionFactory() as s:
             yield s
 
-    llm = _mock_llm({"next_action": "ask", "confidence": 0.9, "message": "Bạn muốn gì?", "gaps": [], "proposals": []})
+    # Tool-loop: analyze (the entry node) picks the ask_user tool, which interrupts for the human.
+    # The mock returns this selection dict for every generate.
+    llm = _mock_llm({"tool": "ask_user", "message": "Bạn muốn gì?", "confidence": 0.9, "active_mode": "discovery"})
 
     # No checkpointer — avoids checkpointer + node concurrent session writes in test
     graph = build_graph(checkpointer=None)

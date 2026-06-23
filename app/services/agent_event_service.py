@@ -1,8 +1,9 @@
 import asyncio
 import json
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime
-from typing import Any, AsyncIterator
+from typing import Any
 
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
+from app.documents.registry import container_for
 from app.models.agent import (
     AgentMessage,
     AgentRun,
@@ -18,11 +20,15 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
 )
+from app.models.artifact import Artifact
+from app.services.agent_tool_visibility import public_tool_call_filter
+from app.services.document_service import DocumentService
 
 
 class AgentEventService:
-    def __init__(self, db: AsyncSession):
+    def __init__(self, db: AsyncSession, session_factory: Any = None):
         self.db = db
+        self.session_factory = session_factory
 
     async def stream_session_events(
         self,
@@ -92,9 +98,11 @@ class AgentEventService:
                 select(AgentToolCall)
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
+                .where(public_tool_call_filter())
                 .order_by(AgentToolCall.created_at)
             )
         ).scalars().all()
+        document = await self._document_for_session(session, project_id)
 
         return {
             "type": "snapshot",
@@ -104,10 +112,12 @@ class AgentEventService:
                 "created_by_id": session.created_by_id,
                 "artifact_type": session.artifact_type,
                 "workflow_area": session.workflow_area,
+                "focused_artifact_id": session.focused_artifact_id,
                 "status": session.status,
                 "ui_status": _ui_status(session.status, session.interrupt_type),
                 "interrupt_type": session.interrupt_type,
                 "missing_context": session.missing_context,
+                "document": document,
                 "updated_at": session.updated_at,
             },
             "messages": [
@@ -138,6 +148,29 @@ class AgentEventService:
                 for tool_call in tool_calls
             ],
         }
+
+    async def _document_for_session(
+        self,
+        session: AgentSession,
+        project_id: uuid.UUID,
+    ):
+        document_type = container_for(session.artifact_type)
+        if session.focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, session.focused_artifact_id)
+            if focused is not None and focused.project_id == project_id:
+                if focused.parent_id is not None:
+                    parent = await self.db.get(Artifact, focused.parent_id)
+                    document_type = parent.type.value if parent is not None else document_type
+                elif focused.type.value in {"brd", "prd", "sad"}:
+                    document_type = focused.type.value
+        if document_type is None and session.artifact_type in {"brd", "prd", "sad"}:
+            document_type = session.artifact_type
+        if document_type is None:
+            return None
+        return await DocumentService(self.db).get_document(
+            project_id=project_id,
+            document_type=document_type,
+        )
 
 
 def _ui_status(status: Any, interrupt_type: Any) -> str:

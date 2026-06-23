@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from tests.eval import rubric
-from tests.eval.judge import judge_artifact, judge_multiple
+from tests.eval.judge import judge_artifact, judge_conversation, judge_multiple
 
 
 def _valid_result(overall: float = 0.8) -> dict:
@@ -66,3 +66,36 @@ async def test_judge_multiple_runs_n_times():
     assert len(results) == 3
     for item in results:
         assert "overall" in item
+
+
+# ---------------------------------------------------------------------------
+# Multi-angle: conversation judge (independent of the artifact judge)
+# ---------------------------------------------------------------------------
+
+def _valid_conversation_result(proactive_count: int = 2) -> dict:
+    return {
+        "mode_variety": 0.66,
+        "proactive_count": proactive_count,
+        "rationale": "Agent chủ động chuyển sang critique rồi explore.",
+    }
+
+
+@pytest.mark.asyncio
+async def test_judge_conversation_returns_structured_shape():
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=(_valid_conversation_result(), {"total": 12}))
+
+    result = await judge_conversation("user: ...\nagent: ...", client)
+
+    assert isinstance(result["proactive_count"], int)
+    assert 0.0 <= result["mode_variety"] <= 1.0
+    assert isinstance(result["rationale"], str)
+
+
+@pytest.mark.asyncio
+async def test_judge_conversation_rejects_invalid_shape():
+    client = AsyncMock()
+    client.generate = AsyncMock(return_value=({"foo": "bar"}, None))
+
+    with pytest.raises(ValueError):
+        await judge_conversation("bất kỳ", client)

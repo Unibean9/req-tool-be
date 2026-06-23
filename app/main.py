@@ -1,22 +1,24 @@
 import os
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter
-from fastapi.middleware.cors import CORSMiddleware
+
+from fastapi import APIRouter, FastAPI
 from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
 from app.config import settings
+from app.core.errors import http_exception_handler, unhandled_exception_handler, validation_exception_handler
 from app.database import engine
-from app.core.errors import http_exception_handler, validation_exception_handler, unhandled_exception_handler
 from app.routers import (
     admin,
     agent_sessions,
     artifact_links,
     artifacts,
     auth,
+    documents,
     exports,
     github_auth,
     llm_providers,
@@ -30,6 +32,7 @@ from app.routers import (
 
 def _run_migrations() -> None:
     from alembic.config import Config
+
     from alembic import command
 
     ini_path = os.path.join(os.path.dirname(__file__), "..", "alembic.ini")
@@ -55,21 +58,13 @@ async def lifespan(app: FastAPI):
         from scripts.seed_dev_users import seed
         await seed()
 
-    from pathlib import Path
-    from app.graphs.personas import load_personas, loaded_roles
+    from app.instructions import load_instructions, loaded_roles
 
-    _bmad_candidates = [
-        Path(__file__).parent.parent / "prompts",
-    ]
-    for _candidate in _bmad_candidates:
-        if _candidate.exists():
-            load_personas(_candidate)
-            break
-
+    load_instructions()
     if loaded_roles():
-        print(f"[personas] loaded: {loaded_roles()}")
+        print(f"[instructions] loaded: {loaded_roles()}")
     else:
-        print("[personas] no BMAD skills found — system=None for all sessions")
+        print("[instructions] no instruction files found — system=None for all sessions")
 
     from app.database import async_session_factory
     from app.graphs.checkpointer import DelegatingCheckpointer
@@ -110,6 +105,7 @@ api_v1.include_router(organizations.router)
 api_v1.include_router(organizations.alias_router)
 api_v1.include_router(projects.router)
 api_v1.include_router(artifacts.router)
+api_v1.include_router(documents.router)
 api_v1.include_router(artifact_links.router)
 api_v1.include_router(source_documents.router)
 api_v1.include_router(workflow.router)
@@ -128,6 +124,7 @@ async def root():
 @app.get("/health", tags=["System Health"])
 async def health():
     from sqlalchemy import text
+
     from app.database import async_session_factory
     async with async_session_factory() as session:
         await session.execute(text("SELECT 1"))

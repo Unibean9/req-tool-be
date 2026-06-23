@@ -7,7 +7,14 @@ from app.core.guards import require_project_access
 from app.core.responses import created, ok
 from app.database import get_db
 from app.deps import current_user
-from app.models.artifact import ArtifactPriority, ArtifactStatus, ArtifactType, VersionStatus, WorkflowStepKey, WorkflowStepPhase
+from app.models.artifact import (
+    ArtifactPriority,
+    ArtifactStatus,
+    ArtifactType,
+    VersionStatus,
+    WorkflowStepKey,
+    WorkflowStepPhase,
+)
 from app.models.user import User
 from app.schemas.artifact import (
     ArtifactCreateRequest,
@@ -19,12 +26,21 @@ from app.schemas.artifact import (
     ArtifactUpdateRequest,
 )
 from app.schemas.response import ApiResponse
-from app.services.artifact_service import ArtifactService, ArtifactVersionService
+from app.services.artifact_service import (
+    ArtifactService,
+    ArtifactVersionService,
+    InvalidArtifactStatusTransition,
+)
 
 router = APIRouter(prefix="/projects/{project_id}/artifacts", tags=["Artifacts"])
 
 
-@router.post("", response_model=ApiResponse[ArtifactResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "",
+    response_model=ApiResponse[ArtifactResponse],
+    status_code=status.HTTP_201_CREATED,
+    deprecated=True,
+)
 async def create_artifact(
     project_id: uuid.UUID,
     body: ArtifactCreateRequest,
@@ -32,10 +48,18 @@ async def create_artifact(
     db: AsyncSession = Depends(get_db),
 ):
     await require_project_access(project_id, user, db)
-    return created(await ArtifactService(db).create(project_id=project_id, body=body, created_by_id=user.id))
+    try:
+        artifact = await ArtifactService(db).create(
+            project_id=project_id,
+            body=body,
+            created_by_id=user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    return created(artifact)
 
 
-@router.get("", response_model=ApiResponse[list[ArtifactResponse]])
+@router.get("", response_model=ApiResponse[list[ArtifactResponse]], deprecated=True)
 async def list_artifacts(
     project_id: uuid.UUID,
     artifact_type: ArtifactType | None = Query(default=None, alias="type"),
@@ -62,7 +86,7 @@ async def list_artifacts(
     )
 
 
-@router.patch("/{artifact_id}", response_model=ApiResponse[ArtifactResponse])
+@router.patch("/{artifact_id}", response_model=ApiResponse[ArtifactResponse], deprecated=True)
 async def update_artifact(
     project_id: uuid.UUID,
     artifact_id: uuid.UUID,
@@ -78,12 +102,14 @@ async def update_artifact(
             body=body,
             updated_by_id=user.id,
         )
+    except InvalidArtifactStatusTransition as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ok(artifact)
 
 
-@router.delete("/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{artifact_id}", status_code=status.HTTP_204_NO_CONTENT, deprecated=True)
 async def delete_artifact(
     project_id: uuid.UUID,
     artifact_id: uuid.UUID,
@@ -97,7 +123,11 @@ async def delete_artifact(
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
-@router.post("/{artifact_id}/evidence", response_model=ApiResponse[ArtifactEvidenceResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{artifact_id}/evidence",
+    response_model=ApiResponse[ArtifactEvidenceResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 async def add_artifact_evidence(
     project_id: uuid.UUID,
     artifact_id: uuid.UUID,
@@ -129,7 +159,9 @@ async def list_artifact_evidence(
 ):
     await require_project_access(project_id, user, db)
     try:
-        evidence = await ArtifactService(db).list_evidence(project_id=project_id, artifact_id=artifact_id, user_id=user.id)
+        evidence = await ArtifactService(db).list_evidence(
+            project_id=project_id, artifact_id=artifact_id, user_id=user.id
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ok(evidence)
