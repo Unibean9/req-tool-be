@@ -31,12 +31,9 @@ POLICY = {
     # finalize requires at least one run_critique round before it is offered (spec §15.1). This is
     # a documentation signal; the actual gate lives in agent_tools.get_available_tools.
     "finalize": "require_critique",
-    # BMAD governance gates (addendum §18): three transitions need human approval; forcing the full
-    # lifecycle is denied outright.
+    # BMAD governance gates (addendum §18): phase completion and scope lock need human approval.
     "finalize_prd": "require_human_approval",
     "lock_scope": "require_human_approval",
-    "accept_implementation_readiness": "require_human_approval",
-    "force_full_bmad_lifecycle": "deny",
 }
 
 
@@ -59,8 +56,6 @@ ARTIFACT_PREDECESSORS = {
     "component": ["domain_entity"],
     "interface": ["component"],
     "tech_decision": ["component"],
-    "epic": ["functional_requirement"],
-    "story": ["epic"],
 }
 
 
@@ -112,8 +107,7 @@ def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
 
 
 # BMAD governance gates (addendum §18). These are checkpoints, not loop tools: calling one runs the
-# @governed wrapper, which raises ApprovalRequired (human-approval gates) or GovernanceDenied (force
-# full lifecycle) per the POLICY rule above — the body is only reached if a rule ever allows it.
+# @governed wrapper, which raises ApprovalRequired per the POLICY rule above.
 
 @governed
 async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001
@@ -122,14 +116,4 @@ async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001
 
 @governed
 async def lock_scope(**kwargs: Any) -> None:  # noqa: ARG001
-    return None
-
-
-@governed
-async def accept_implementation_readiness(**kwargs: Any) -> None:  # noqa: ARG001
-    return None
-
-
-@governed
-async def force_full_bmad_lifecycle(**kwargs: Any) -> None:  # noqa: ARG001
     return None

@@ -22,7 +22,6 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
 )
-from app.models.artifact import Artifact
 from app.services.document_service import DocumentService
 
 # Tool-loop selection schema (Phase 5 shim). The analyst names the tool to run this turn plus its
@@ -61,7 +60,7 @@ TOOL_SELECTION_SCHEMA = {
         "workflow_mode": {
             "type": "string",
             "enum": ["brainstorm", "brief", "prd", "readiness_check",
-                     "architecture_readiness", "epic_story_readiness"],
+                     "architecture_readiness"],
         },
         "planning_track": {"type": "string", "enum": ["quick", "standard", "enterprise"]},
     },
@@ -70,7 +69,7 @@ TOOL_SELECTION_SCHEMA = {
 
 # Valid BMAD workflow modes and planning tracks, plus aliases the LLM may report. analyze_node
 # normalizes (alias -> lowercase/strip -> enum) and falls back to brainstorm / quick on miss.
-_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness", "epic_story_readiness"}
+_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness"}
 _WORKFLOW_MODE_ALIASES = {"product_brief": "brief"}
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 

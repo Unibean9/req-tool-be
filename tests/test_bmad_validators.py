@@ -21,12 +21,12 @@ def test_valid_workflow_state_passes():
     assert not any("workflow_mode" in v or "planning_track" in v for v in r.violations)
 
 
-def test_cannot_recommend_epics_when_prd_weak():
+def test_epic_story_readiness_is_out_of_scope():
     r = validate_proposal("workflow_recommendation", {
         "title": "T", "body": "B",
         "recommended_next_workflow": "epic_story_readiness", "prd_coverage": 0.3,
     })
-    assert any("prd_coverage" in v or "too_weak_for_epics" in v for v in r.violations)
+    assert any("ngoài phạm vi" in v for v in r.violations)
 
 
 def test_cannot_recommend_implementation_with_critical_risks():

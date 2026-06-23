@@ -69,7 +69,7 @@ def test_tool_selection_schema_contains_workflow_mode_and_planning_track():
     props = TOOL_SELECTION_SCHEMA["properties"]
     assert set(props["workflow_mode"]["enum"]) == {
         "brainstorm", "brief", "prd", "readiness_check",
-        "architecture_readiness", "epic_story_readiness",
+        "architecture_readiness",
     }
     assert set(props["planning_track"]["enum"]) == {"quick", "standard", "enterprise"}
     # active_mode (Phase 6) still present alongside.

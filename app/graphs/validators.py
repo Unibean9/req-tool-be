@@ -3,7 +3,7 @@
 NO LLM calls, NO DB access. Detects:
 - Missing required fields (`title`, `body`) -> violation (hard block).
 - Weasel words (Vietnamese + English) -> warning (non-blocking).
-- INVEST for story/epic, SMART for goal -> simple heuristic warnings.
+- Open question and assumption quality signals.
 
 Limitation: heuristics only match whole words (word boundary) to reduce
 false positives; deeper analysis is added later by the LLM critic.
@@ -35,21 +35,14 @@ WEASEL_WORDS = (
     "seamless",
 )
 
-# "Testable" signals for INVEST (story/epic)
-_INVEST_TESTABLE = ("given", "when", "then", "khi", "thì", "acceptance", "tiêu chí")
-
-# "Time-bound" signals for SMART (goal); the measurable part uses digits/`%` separately
-_SMART_TIMEBOUND = ("trong vòng", "trước ngày", "deadline", "by ")
-
 # Condition / outcome signals for a business rule (spec §9.4). Vietnamese has no rigid if/then
 # syntax, so the keyword lists are broad; false negatives are acceptable, false positives are not.
 _RULE_CONDITION = ("nếu", "khi", "trong trường hợp", "điều kiện", "trigger", "if", "when")
 _RULE_OUTCOME = ("thì", "sẽ", "kết quả", "phải", "then", "will", "must")
 
 # BMAD workflow enums (addendum §17). Kept local to avoid importing the graph layer into validators.
-_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness", "epic_story_readiness"}
+_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness"}
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
-_IMPLEMENTATION_STAGES = {"architecture_readiness", "epic_story_readiness"}
 
 
 @dataclass
@@ -84,19 +77,7 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
 
     lowered = text.lower()
 
-    # 3. INVEST — applies to story/epic only
-    if artifact_type in ("story", "epic"):
-        if not any(token in lowered for token in _INVEST_TESTABLE):
-            warnings.append("Story thiếu tiêu chí kiểm thử (INVEST: acceptance criteria / given-when-then)")
-
-    # 4. SMART — applies to goal only
-    if artifact_type == "goal":
-        has_metric = bool(re.search(r"\d", text)) or "%" in text
-        has_timebound = any(token in lowered for token in _SMART_TIMEBOUND)
-        if not (has_metric and has_timebound):
-            warnings.append("Goal thiếu yếu tố đo lường/thời hạn (SMART)")
-
-    # 5. Business rule must carry a condition AND an outcome — a rule missing either is
+    # 3. Business rule must carry a condition AND an outcome — a rule missing either is
     # structurally meaningless, so this is a hard violation (spec §9.4).
     if artifact_type == "business_rule":
         if not any(token in lowered for token in _RULE_CONDITION):
@@ -104,18 +85,18 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
         if not any(token in lowered for token in _RULE_OUTCOME):
             violations.append("Business rule thiếu outcome (kết quả khi điều kiện thỏa)")
 
-    # 6. Open question must declare a tracking status — quality signal, not a hard block.
+    # 4. Open question must declare a tracking status — quality signal, not a hard block.
     if artifact_type == "open_question" and not _has_status(proposal, lowered):
         warnings.append("Open question thiếu status (unresolved/answered/deferred)")
 
-    # 7. Each captured assumption should name a confidence and an owner — quality signals.
+    # 5. Each captured assumption should name a confidence and an owner — quality signals.
     for assumption in proposal.get("assumptions") or []:
         if not (assumption.get("confidence") or "").strip():
             warnings.append("Assumption thiếu confidence")
         if not (assumption.get("owner") or "").strip():
             warnings.append("Assumption thiếu owner")
 
-    # 8. BMAD workflow validators (addendum §17) — block invalid transitions.
+    # 6. BMAD workflow validators (addendum §17) — block invalid transitions.
     if artifact_type == "workflow_state":
         if proposal.get("workflow_mode") not in _WORKFLOW_MODES:
             violations.append("workflow_mode không hợp lệ")
@@ -123,9 +104,9 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
             violations.append("planning_track không hợp lệ")
     if artifact_type == "workflow_recommendation":
         recommended = proposal.get("recommended_next_workflow")
-        if recommended == "epic_story_readiness" and (proposal.get("prd_coverage") or 0.0) < 0.6:
-            violations.append("prd_coverage quá thấp — too_weak_for_epics")
-        if recommended in _IMPLEMENTATION_STAGES and (proposal.get("unresolved_critical_risks") or []):
+        if recommended == "epic_story_readiness":
+            violations.append("epic_story_readiness nằm ngoài phạm vi BMAD MVP")
+        if recommended == "architecture_readiness" and (proposal.get("unresolved_critical_risks") or []):
             violations.append("unresolved_critical_risks chặn chuyển sang giai đoạn triển khai")
 
     return ValidationResult(passed=len(violations) == 0, violations=violations, warnings=warnings)

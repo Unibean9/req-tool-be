@@ -249,12 +249,7 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
 
 @pytest.mark.asyncio
 async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_session):
-    """A deep type (`story`) must see its full ancestry, not just the direct parent.
-
-    `story`'s direct predecessor is `epic`, but provenance runs through functional
-    requirements to `brd`. The context loader uses the transitive closure,
-    so both the direct parent and a distant ancestor must reach the prompt.
-    """
+    """Một type sâu phải thấy tiền nhiệm trực tiếp và tổ tiên xa trong prompt."""
     from app.graphs.nodes import analyze_node
     from app.models.artifact import Artifact
 
@@ -264,15 +259,15 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     project_id = uuid.UUID(project["id"])
 
     brd_title = "BRD: Điều phối lịch học nhóm"
-    fr_title = "Yêu cầu chức năng: Tính khung giờ rảnh chung"
-    epic_title = "Epic: Đồng bộ và đối chiếu lịch nhóm"
+    domain_title = "Domain entity: Lịch nhóm"
+    component_title = "Component: Bộ điều phối lịch"
     db_session.add(Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft"))
-    db_session.add(Artifact(project_id=project_id, type="functional_requirement", title=fr_title, extra_metadata={}, status="draft"))
-    db_session.add(Artifact(project_id=project_id, type="epic", title=epic_title, extra_metadata={}, status="draft"))
+    db_session.add(Artifact(project_id=project_id, type="domain_entity", title=domain_title, extra_metadata={}, status="draft"))
+    db_session.add(Artifact(project_id=project_id, type="component", title=component_title, extra_metadata={}, status="draft"))
     await db_session.commit()
 
     session = AgentSession(
-        project_id=project_id, artifact_type="story", workflow_area="analysis", graph_checkpoint={}
+        project_id=project_id, artifact_type="interface", workflow_area="analysis", graph_checkpoint={}
     )
     db_session.add(session)
     await db_session.commit()
@@ -282,15 +277,16 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
         return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
     )
 
-    state = _state(artifact_type="story")
+    state = _state(artifact_type="interface")
     config = _config(str(session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 
     await analyze_node(state, config)
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
-    assert epic_title in prompt, "Direct parent (epic) must appear in the prompt"
-    assert brd_title in prompt, "Distant ancestor (brd) must appear via transitive closure"
+    assert component_title in prompt, "Tiền nhiệm trực tiếp (component) phải có trong prompt"
+    assert domain_title in prompt, "Tiền nhiệm bắc cầu (domain_entity) phải có trong prompt"
+    assert brd_title in prompt, "Tổ tiên xa (brd) phải có qua transitive closure"
 
 
 @pytest.mark.asyncio

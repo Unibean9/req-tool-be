@@ -21,6 +21,7 @@ from app.models.agent import (
     AgentToolCall,
 )
 from app.models.artifact import Artifact
+from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
 
@@ -97,6 +98,7 @@ class AgentEventService:
                 select(AgentToolCall)
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
+                .where(public_tool_call_filter())
                 .order_by(AgentToolCall.created_at)
             )
         ).scalars().all()

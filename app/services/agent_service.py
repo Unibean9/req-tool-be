@@ -30,10 +30,12 @@ from app.models.agent import (
 )
 from app.models.artifact import (
     Artifact,
+    ArtifactStatus,
     ArtifactVersion,
     ChangeSource,
 )
 from app.schemas.agent import AgentSessionResponse
+from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
 
@@ -56,6 +58,14 @@ class AgentService:
         focused_artifact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         missing = await self._check_predecessors(project_id, artifact_type)
+        if missing:
+            raise HTTPException(
+                409,
+                detail={
+                    "detail": "Predecessor artifact chưa được accepted",
+                    "missing_context": missing,
+                },
+            )
         if focused_artifact_id is not None:
             focused = await self.db.get(Artifact, focused_artifact_id)
             if focused is None or focused.project_id != project_id:
@@ -337,6 +347,7 @@ class AgentService:
                 select(AgentToolCall)
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
+                .where(public_tool_call_filter())
                 .order_by(AgentToolCall.created_at)
             )
         ).scalars().all()
@@ -349,9 +360,13 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
         user_id: uuid.UUID | None = None,
-        llm_client: Any = None,
+        _llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
+        if tool_call.status == AgentToolCallStatus.EXECUTED:
+            return tool_call
+        if tool_call.status == AgentToolCallStatus.REJECTED:
+            raise HTTPException(400, detail="Tool call đã bị reject")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -369,7 +384,7 @@ class AgentService:
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
-        await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self._complete_when_all_artifact_proposals_approved(session_id=session_id)
         await self.db.refresh(tool_call)
         return tool_call
 
@@ -382,6 +397,10 @@ class AgentService:
         llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
+        if tool_call.status == AgentToolCallStatus.REJECTED:
+            return tool_call
+        if tool_call.status == AgentToolCallStatus.EXECUTED:
+            raise HTTPException(400, detail="Tool call đã được approve")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -430,6 +449,7 @@ class AgentService:
                     select(func.count(Artifact.id)).where(
                         Artifact.project_id == project_id,
                         Artifact.type == pred,
+                        Artifact.status == ArtifactStatus.ACCEPTED,
                     )
                 )
             ).scalar() or 0
@@ -449,6 +469,8 @@ class AgentService:
             .join(AgentSession, AgentRun.session_id == AgentSession.id)
             .where(AgentToolCall.id == tool_call_id)
             .where(AgentSession.project_id == project_id)
+            .where(public_tool_call_filter())
+            .with_for_update()
         )
         if user_id is not None:
             query = query.where(AgentSession.created_by_id == user_id)
@@ -512,6 +534,7 @@ class AgentService:
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
                 .where(AgentToolCall.status == AgentToolCallStatus.PROPOSED)
+                .where(public_tool_call_filter())
             )
         ).scalar() or 0
 
@@ -543,6 +566,29 @@ class AgentService:
                 resume_command=resume_command,
             )
         )
+
+    async def _complete_when_all_artifact_proposals_approved(self, *, session_id: uuid.UUID) -> None:
+        session_row = (
+            await self.db.execute(
+                select(AgentSession).where(AgentSession.id == session_id).with_for_update()
+            )
+        ).scalar_one()
+        if session_row.status != AgentSessionStatus.WAITING_FOR_HUMAN:
+            return
+        pending_count = (
+            await self.db.execute(
+                select(func.count(AgentToolCall.id))
+                .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
+                .where(AgentRun.session_id == session_id)
+                .where(AgentToolCall.status == AgentToolCallStatus.PROPOSED)
+                .where(public_tool_call_filter())
+            )
+        ).scalar() or 0
+        if pending_count > 0:
+            return
+        session_row.status = AgentSessionStatus.COMPLETED
+        session_row.interrupt_type = None
+        await self.db.commit()
 
     async def _run_graph(
         self,

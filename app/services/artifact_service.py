@@ -12,6 +12,7 @@ from app.models.artifact import (
     ArtifactEvidence,
     ArtifactLink,
     ArtifactReview,
+    ArtifactStatus,
     ArtifactVersion,
     RelationType,
     SourceDocument,
@@ -36,6 +37,18 @@ from app.schemas.artifact import (
     SourceDocumentCreateRequest,
     SourceDocumentResponse,
 )
+
+ALLOWED_STATUS_TRANSITIONS: dict[ArtifactStatus, set[ArtifactStatus]] = {
+    ArtifactStatus.DRAFT: {ArtifactStatus.NEEDS_CLARIFICATION},
+    ArtifactStatus.NEEDS_CLARIFICATION: {ArtifactStatus.DRAFT, ArtifactStatus.ACCEPTED},
+    ArtifactStatus.ACCEPTED: set(),
+    ArtifactStatus.REJECTED: {ArtifactStatus.DRAFT},
+    ArtifactStatus.ARCHIVED: set(),
+}
+
+
+class InvalidArtifactStatusTransition(ValueError):
+    pass
 
 
 class ArtifactService:
@@ -140,6 +153,8 @@ class ArtifactService:
         next_title = body.title if body.title is not None else current.title
         next_body = body.body if body.body is not None else current.body
         next_metadata = body.metadata if body.metadata is not None else artifact.extra_metadata
+        if body.status is not None:
+            self._validate_status_transition(artifact.status, body.status)
 
         # Known limitation: concurrent updates need SELECT FOR UPDATE on PostgreSQL to avoid duplicate version_number.
         version = ArtifactVersion(
@@ -441,6 +456,14 @@ class ArtifactService:
         if member.scalar_one_or_none() is None:
             raise PermissionError("User không có quyền truy cập dự án")
 
+    def _validate_status_transition(self, current: ArtifactStatus, target: ArtifactStatus) -> None:
+        if current == target:
+            return
+        if target not in ALLOWED_STATUS_TRANSITIONS[current]:
+            raise InvalidArtifactStatusTransition(
+                f"Không thể chuyển trạng thái artifact từ {current.value} sang {target.value}"
+            )
+
 
 class ArtifactVersionService:
     def __init__(self, db: AsyncSession):
@@ -470,6 +493,7 @@ class ArtifactVersionService:
         )
         self.db.add(review)
         await self.db.flush()
+        await self.db.refresh(review)
         return ArtifactReviewResponse(
             id=review.id,
             artifact_id=review.artifact_id,

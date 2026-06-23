@@ -22,12 +22,13 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
-from sqlalchemy import exists, select
+from sqlalchemy import exists, func, select
 
 from app.config import settings
 from app.documents.registry import children_of, status_score
 from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
+from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import QualityReport, WorkflowState
 from app.models.agent import (
     AgentSession,
@@ -36,6 +37,7 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
+from app.models.artifact import Artifact, ArtifactStatus
 from app.services.document_service import DocumentService
 
 # ---------------------------------------------------------------------------
@@ -236,6 +238,38 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     session_id = uuid.UUID(cfg["thread_id"])
 
     async with session_factory() as db:
+        project_id_raw = cfg.get("project_id")
+        if project_id_raw:
+            project_id = uuid.UUID(str(project_id_raw))
+            artifact_type = state.get("artifact_type") or ""
+            missing_predecessors: list[str] = []
+            for pred_type in ARTIFACT_PREDECESSORS.get(artifact_type, []):
+                count = (
+                    await db.execute(
+                        select(func.count(Artifact.id)).where(
+                            Artifact.project_id == project_id,
+                            Artifact.type == pred_type,
+                            Artifact.status == ArtifactStatus.ACCEPTED,
+                        )
+                    )
+                ).scalar() or 0
+                if count == 0:
+                    missing_predecessors.append(pred_type)
+            if missing_predecessors:
+                return Command(
+                    update={
+                        "messages": [
+                            ToolMessage(
+                                content=(
+                                    "Không thể finalize: artifact tiền nhiệm chưa accepted "
+                                    f"({', '.join(missing_predecessors)})."
+                                ),
+                                tool_call_id=tool_call_id,
+                            )
+                        ]
+                    }
+                )
+
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == session_id))
         ).scalar_one()

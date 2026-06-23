@@ -68,6 +68,42 @@ async def test_update_artifact_creates_immutable_version_and_preserves_old_conte
 
 
 @pytest.mark.asyncio
+async def test_update_artifact_rejects_invalid_status_transition(client):
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"])
+
+    resp = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "accepted"},
+        headers=headers,
+    )
+
+    assert resp.status_code == 400
+    assert "draft sang accepted" in resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_update_artifact_allows_review_transition_path(client):
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"])
+
+    first = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "needs_clarification"},
+        headers=headers,
+    )
+    assert first.status_code == 200, first.text
+
+    second = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"status": "accepted"},
+        headers=headers,
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["data"]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
 async def test_review_approve_and_reject_create_review_rows(client, db_session):
     headers, project = await _project_context(client)
     artifact = await _create_artifact(client, headers, project["id"])

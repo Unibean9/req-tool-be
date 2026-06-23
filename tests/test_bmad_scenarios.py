@@ -97,7 +97,7 @@ def test_scenario4_prd_near_completion():
     assert report["readiness_score"] >= 0.7
     rec = _compute_recommendation({s: "filled" for s in _ALL_SECTIONS}, "standard")
     assert rec["recommended_next_workflow"] in {
-        "prd", "readiness_check", "architecture_readiness", "epic_story_readiness",
+        "prd", "readiness_check", "architecture_readiness",
     }
 
 

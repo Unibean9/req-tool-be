@@ -254,6 +254,46 @@ async def test_create_session_intent_has_no_predecessors(client, db_session):
     assert result["missing_context"] == []
 
 
+@pytest.mark.asyncio
+async def test_create_session_blocks_when_predecessor_not_accepted(client, db_session):
+    project_id = await _setup(client)
+    db_session.add(
+        Artifact(
+            project_id=project_id,
+            type=ArtifactType.BRD,
+            status=ArtifactStatus.DRAFT,
+            title="BRD nháp",
+            extra_metadata={},
+        )
+    )
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["missing_context"] == ["brd"]
+
+
+@pytest.mark.asyncio
+async def test_create_session_allows_accepted_predecessor(client, db_session):
+    project_id = await _setup(client)
+    db_session.add(
+        Artifact(
+            project_id=project_id,
+            type=ArtifactType.BRD,
+            status=ArtifactStatus.ACCEPTED,
+            title="BRD đã accepted",
+            extra_metadata={},
+        )
+    )
+    await db_session.flush()
+
+    result = await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
+
+    assert result["missing_context"] == []
+
+
 # ---------------------------------------------------------------------------
 # create_session — duplicate → 409
 # ---------------------------------------------------------------------------
@@ -766,18 +806,20 @@ async def test_approve_tool_call_batch_first_does_not_resume(client, db_session,
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_batch_all_approved_resumes_once(client, db_session, _no_background_tasks):
+async def test_approve_tool_call_batch_all_approved_completes_without_resume(client, db_session, _no_background_tasks):
     project_id = await _setup(client)
     svc = _make_service(db_session)
 
-    _, _, tc1, tc2 = await _make_propose_session(db_session, project_id)
+    session, _, tc1, tc2 = await _make_propose_session(db_session, project_id)
+    call_count_before = _no_background_tasks.call_count
 
     await svc.approve_tool_call(project_id=project_id, tool_call_id=tc1.id, created_by_id=None)
     await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=None)
 
-    assert _no_background_tasks.call_count == 1
-    scheduled = _no_background_tasks.call_args.args[0]
-    assert scheduled.cr_code.co_name == "_run_graph"
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.COMPLETED
+    assert session.interrupt_type is None
+    assert _no_background_tasks.call_count == call_count_before
 
 
 @pytest.mark.asyncio
@@ -834,6 +876,34 @@ async def test_approve_tool_call_sets_artifact_version_traceability(client, db_s
     assert version.agent_run_id == run.id
     assert version.tool_call_id == tc.id
     assert version.body == "Mô tả"
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_retry_does_not_create_duplicate_version(
+    client, db_session, _no_background_tasks
+):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused_artifact_id = uuid.UUID(tc.input_snapshot["focused_artifact_id"])
+
+    first = await svc.approve_tool_call(
+        project_id=project_id, tool_call_id=tc.id, created_by_id=None
+    )
+    call_count_after_first = _no_background_tasks.call_count
+    second = await svc.approve_tool_call(
+        project_id=project_id, tool_call_id=tc.id, created_by_id=None
+    )
+
+    versions = (
+        await db_session.execute(
+            select(ArtifactVersion).where(ArtifactVersion.artifact_id == focused_artifact_id)
+        )
+    ).scalars().all()
+    assert first.created_artifact_id == second.created_artifact_id == focused_artifact_id
+    assert first.created_version_id == second.created_version_id
+    assert len(versions) == 1
+    assert _no_background_tasks.call_count == call_count_after_first
 
 
 @pytest.mark.asyncio
@@ -911,6 +981,24 @@ async def test_reject_tool_call_batch_all_rejected_resumes(client, db_session, _
     await svc.reject_tool_call(project_id=project_id, tool_call_id=tc2.id)
 
     assert _no_background_tasks.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_reject_tool_call_retry_is_idempotent(client, db_session, _no_background_tasks):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    _, _, tc = await _make_single_propose_session(db_session, project_id)
+
+    first = await svc.reject_tool_call(project_id=project_id, tool_call_id=tc.id)
+    call_count_after_first = _no_background_tasks.call_count
+    second = await svc.reject_tool_call(project_id=project_id, tool_call_id=tc.id)
+
+    assert first.id == second.id == tc.id
+    assert second.status == AgentToolCallStatus.REJECTED
+    assert second.created_artifact_id is None
+    assert second.created_version_id is None
+    assert _no_background_tasks.call_count == call_count_after_first
 
 
 # ---------------------------------------------------------------------------
