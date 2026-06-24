@@ -2,8 +2,8 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.responses import StreamingResponse
 
 from app.core.guards import require_project_member_404
 from app.core.responses import created, ok
@@ -44,7 +44,11 @@ def _require_graph(request: Request):
 # Session CRUD
 # ---------------------------------------------------------------------------
 
-@router.post(_SESSION_PREFIX, response_model=ApiResponse[AgentSessionCreateResponse], status_code=status.HTTP_201_CREATED)
+@router.post(
+    _SESSION_PREFIX,
+    response_model=ApiResponse[AgentSessionCreateResponse],
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_session(
     request: Request,
     project_id: uuid.UUID,
@@ -53,13 +57,16 @@ async def create_session(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    result = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).create_session(
+    result = await AgentService(
+        db=db, graph=_require_graph(request), session_factory=async_session_factory
+    ).create_session(
         project_id=project_id,
         artifact_type=body.artifact_type,
         step_key=body.step_key,
         workflow_area=body.workflow_area,
         agent_role=body.agent_role,
         provider_config_id=body.provider_config_id,
+        focused_artifact_id=body.focused_artifact_id,
         created_by_id=user.id,
     )
     return created(result)
@@ -74,10 +81,11 @@ async def get_session(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    session = await AgentService(db=db, graph=_graph(request), session_factory=async_session_factory).get_session(
+    service = AgentService(db=db, graph=_graph(request), session_factory=async_session_factory)
+    session = await service.get_session_response(
         project_id=project_id, session_id=session_id, user_id=user.id
     )
-    return ok(AgentSessionResponse.model_validate(session))
+    return ok(session)
 
 
 @router.delete(_SESSION_PREFIX + "/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -108,8 +116,10 @@ async def send_message(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    msg = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).handle_user_message(
-        project_id=project_id, session_id=session_id, content=body.content, user_id=user.id
+    msg = await AgentService(
+        db=db, graph=_require_graph(request), session_factory=async_session_factory
+    ).handle_user_message(
+        project_id=project_id, session_id=session_id, content=body.content, user_id=user.id, mode_hint=body.mode_hint
     )
     return ok(AgentMessageResponse.model_validate(msg))
 
@@ -138,7 +148,7 @@ async def stream_session_events(
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     await require_project_member_404(project_id, user, db)
-    service = AgentEventService(db)
+    service = AgentEventService(db, session_factory=async_session_factory)
     await service.build_snapshot(project_id=project_id, session_id=session_id, user_id=user.id)
     return StreamingResponse(
         service.stream_session_events(
@@ -180,7 +190,9 @@ async def approve_tool_call(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    tc = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).approve_tool_call(
+    tc = await AgentService(
+        db=db, graph=_require_graph(request), session_factory=async_session_factory
+    ).approve_tool_call(
         project_id=project_id, tool_call_id=tool_call_id, created_by_id=user.id, user_id=user.id
     )
     return ok(AgentToolCallResponse.model_validate(tc))
@@ -195,7 +207,9 @@ async def reject_tool_call(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_member_404(project_id, user, db)
-    tc = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).reject_tool_call(
+    tc = await AgentService(
+        db=db, graph=_require_graph(request), session_factory=async_session_factory
+    ).reject_tool_call(
         project_id=project_id, tool_call_id=tool_call_id, user_id=user.id
     )
     return ok(AgentToolCallResponse.model_validate(tc))
@@ -212,6 +226,10 @@ async def request_edit(
 ) -> Any:
     await require_project_member_404(project_id, user, db)
     tc = await AgentService(db=db, graph=_require_graph(request), session_factory=async_session_factory).request_edit(
-        project_id=project_id, tool_call_id=tool_call_id, note=body.note, user_id=user.id
+        project_id=project_id,
+        tool_call_id=tool_call_id,
+        note=body.note,
+        base_version_id=body.base_version_id,
+        user_id=user.id,
     )
     return ok(AgentToolCallResponse.model_validate(tc))

@@ -6,11 +6,13 @@ from hashlib import sha256
 from sqlalchemy import delete, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.documents.registry import container_for
 from app.models.artifact import (
     Artifact,
     ArtifactEvidence,
     ArtifactLink,
     ArtifactReview,
+    ArtifactStatus,
     ArtifactVersion,
     RelationType,
     SourceDocument,
@@ -31,10 +33,22 @@ from app.schemas.artifact import (
     ArtifactReviewResponse,
     ArtifactUpdateRequest,
     ArtifactVersionResponse,
+    GraphWarning,
     SourceDocumentCreateRequest,
     SourceDocumentResponse,
-    GraphWarning,
 )
+
+ALLOWED_STATUS_TRANSITIONS: dict[ArtifactStatus, set[ArtifactStatus]] = {
+    ArtifactStatus.DRAFT: {ArtifactStatus.NEEDS_CLARIFICATION},
+    ArtifactStatus.NEEDS_CLARIFICATION: {ArtifactStatus.DRAFT, ArtifactStatus.ACCEPTED},
+    ArtifactStatus.ACCEPTED: set(),
+    ArtifactStatus.REJECTED: {ArtifactStatus.DRAFT},
+    ArtifactStatus.ARCHIVED: set(),
+}
+
+
+class InvalidArtifactStatusTransition(ValueError):
+    pass
 
 
 class ArtifactService:
@@ -49,16 +63,22 @@ class ArtifactService:
         created_by_id: uuid.UUID,
     ) -> ArtifactResponse:
         await self._require_project_member(project_id, created_by_id)
+        if body.parent_id is not None:
+            parent = await self.db.get(Artifact, body.parent_id)
+            if parent is None or parent.project_id != project_id:
+                raise ValueError("Parent artifact không thuộc dự án này")
+            expected_container = container_for(body.type.value)
+            if parent.parent_id is not None or expected_container != parent.type.value:
+                raise ValueError("Parent artifact không phù hợp với document registry")
         artifact = Artifact(
             project_id=project_id,
+            parent_id=body.parent_id,
             type=body.type,
             status=body.status,
             priority=body.priority,
             code=body.code,
             title=body.title,
             confidence=body.confidence,
-            nfr_category=body.nfr_category,
-            stakeholder_role=body.stakeholder_role,
             extra_metadata=body.metadata,
             created_by_id=created_by_id,
         )
@@ -133,8 +153,10 @@ class ArtifactService:
         next_title = body.title if body.title is not None else current.title
         next_body = body.body if body.body is not None else current.body
         next_metadata = body.metadata if body.metadata is not None else artifact.extra_metadata
+        if body.status is not None:
+            self._validate_status_transition(artifact.status, body.status)
 
-        # Giới hạn đã biết: cập nhật đồng thời cần SELECT FOR UPDATE trên PostgreSQL để tránh trùng version_number.
+        # Known limitation: concurrent updates need SELECT FOR UPDATE on PostgreSQL to avoid duplicate version_number.
         version = ArtifactVersion(
             artifact_id=artifact.id,
             version_number=current.version_number + 1,
@@ -161,10 +183,6 @@ class ArtifactService:
             artifact.code = body.code
         if body.confidence is not None:
             artifact.confidence = body.confidence
-        if body.nfr_category is not None:
-            artifact.nfr_category = body.nfr_category
-        if body.stakeholder_role is not None:
-            artifact.stakeholder_role = body.stakeholder_role
         if body.metadata is not None:
             artifact.extra_metadata = body.metadata
         await self.db.flush()
@@ -197,6 +215,17 @@ class ArtifactService:
     ) -> None:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
+        child_ids = (
+            await self.db.execute(
+                select(Artifact.id).where(Artifact.parent_id == artifact.id)
+            )
+        ).scalars().all()
+        for child_id in child_ids:
+            await self.delete(
+                project_id=project_id,
+                artifact_id=child_id,
+                user_id=user_id,
+            )
         artifact.current_version_id = None
         await self.db.flush()
         await self.db.execute(
@@ -260,7 +289,9 @@ class ArtifactService:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
         result = await self.db.execute(
-            select(ArtifactEvidence).where(ArtifactEvidence.artifact_id == artifact.id).order_by(ArtifactEvidence.created_at)
+            select(ArtifactEvidence)
+            .where(ArtifactEvidence.artifact_id == artifact.id)
+            .order_by(ArtifactEvidence.created_at)
         )
         return [self.evidence_to_response(evidence) for evidence in result.scalars().all()]
 
@@ -347,10 +378,11 @@ class ArtifactService:
         if artifact.current_version_id is not None:
             current = await self.db.get(ArtifactVersion, artifact.current_version_id)
             if current is not None:
-                version = await self.version_to_response(current)
+                version = await self.version_to_response(current, artifact_type=artifact.type.value)
         return ArtifactResponse(
             id=artifact.id,
             project_id=artifact.project_id,
+            parent_id=artifact.parent_id,
             current_version_id=artifact.current_version_id,
             type=artifact.type,
             status=artifact.status,
@@ -358,15 +390,20 @@ class ArtifactService:
             code=artifact.code,
             title=artifact.title,
             confidence=artifact.confidence,
-            nfr_category=artifact.nfr_category,
-            stakeholder_role=artifact.stakeholder_role,
             created_by_id=artifact.created_by_id,
             created_at=artifact.created_at,
             metadata=artifact.extra_metadata or {},
             current_version=version,
         )
 
-    async def version_to_response(self, version: ArtifactVersion) -> ArtifactVersionResponse:
+    async def version_to_response(
+        self, version: ArtifactVersion, artifact_type: str | None = None
+    ) -> ArtifactVersionResponse:
+        if artifact_type is None:
+            artifact_type = (
+                await self.db.execute(select(Artifact.type).where(Artifact.id == version.artifact_id))
+            ).scalar_one_or_none()
+            artifact_type = artifact_type.value if artifact_type is not None else None
         review_result = await self.db.execute(
             select(ArtifactReview.review_status)
             .where(ArtifactReview.artifact_version_id == version.id)
@@ -390,7 +427,9 @@ class ArtifactService:
         )
 
     async def _get_project_artifact(self, project_id: uuid.UUID, artifact_id: uuid.UUID) -> Artifact:
-        result = await self.db.execute(select(Artifact).where(Artifact.id == artifact_id, Artifact.project_id == project_id))
+        result = await self.db.execute(
+            select(Artifact).where(Artifact.id == artifact_id, Artifact.project_id == project_id)
+        )
         artifact = result.scalar_one_or_none()
         if artifact is None:
             raise ValueError("Không tìm thấy artifact")
@@ -416,6 +455,14 @@ class ArtifactService:
         )
         if member.scalar_one_or_none() is None:
             raise PermissionError("User không có quyền truy cập dự án")
+
+    def _validate_status_transition(self, current: ArtifactStatus, target: ArtifactStatus) -> None:
+        if current == target:
+            return
+        if target not in ALLOWED_STATUS_TRANSITIONS[current]:
+            raise InvalidArtifactStatusTransition(
+                f"Không thể chuyển trạng thái artifact từ {current.value} sang {target.value}"
+            )
 
 
 class ArtifactVersionService:
@@ -446,6 +493,7 @@ class ArtifactVersionService:
         )
         self.db.add(review)
         await self.db.flush()
+        await self.db.refresh(review)
         return ArtifactReviewResponse(
             id=review.id,
             artifact_id=review.artifact_id,
@@ -506,10 +554,18 @@ class ArtifactLinkService:
     async def graph(self, *, project_id: uuid.UUID, user_id: uuid.UUID) -> ArtifactGraphResponse:
         await self.artifacts._require_project_member(project_id, user_id)
         artifact_rows = (
-            await self.db.execute(select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at, Artifact.id))
+            await self.db.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id)
+                .order_by(Artifact.created_at, Artifact.id)
+            )
         ).scalars().all()
         link_rows = (
-            await self.db.execute(select(ArtifactLink).where(ArtifactLink.project_id == project_id).order_by(ArtifactLink.created_at))
+            await self.db.execute(
+                select(ArtifactLink)
+                .where(ArtifactLink.project_id == project_id)
+                .order_by(ArtifactLink.created_at)
+            )
         ).scalars().all()
 
         nodes = [
@@ -519,7 +575,9 @@ class ArtifactLinkService:
                 status=artifact.status,
                 title=artifact.title,
                 current_version_id=artifact.current_version_id,
-                current_version=await self.artifacts.version_to_response(await self.artifacts._get_current_version(artifact))
+                current_version=await self.artifacts.version_to_response(
+                    await self.artifacts._get_current_version(artifact)
+                )
                 if artifact.current_version_id
                 else None,
             )
@@ -541,7 +599,9 @@ class ArtifactLinkService:
                 warnings.append(GraphWarning(type="orphan_artifact", artifact_id=artifact.id))
             if artifact.status.value == "needs_clarification":
                 warnings.append(GraphWarning(type="needs_clarification", artifact_id=artifact.id))
-            if artifact.type.value in {"functional_requirement", "story"} and not self._has_upstream_trace(artifact, links, artifacts_by_id):
+            if artifact.type.value in {"functional_requirement", "story"} and not self._has_upstream_trace(
+                artifact, links, artifacts_by_id
+            ):
                 warnings.append(GraphWarning(type="missing_upstream_trace", artifact_id=artifact.id))
 
         for link in links:
@@ -557,7 +617,7 @@ class ArtifactLinkService:
         artifacts_by_id: dict[uuid.UUID, Artifact],
     ) -> bool:
         upstream_relations = {"satisfies", "derives_from"}
-        upstream_types = {"goal", "capability"}
+        upstream_types = {"brd"}
         for link in links:
             if link.source_artifact_id != artifact.id or link.relation_type.value not in upstream_relations:
                 continue

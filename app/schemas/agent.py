@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -10,15 +10,16 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCallStatus,
 )
-from app.models.artifact import ArtifactType
+from app.schemas.document import DocumentView
 
 
 class AgentSessionCreate(BaseModel):
-    artifact_type: ArtifactType
+    artifact_type: str = Field(max_length=100)
     step_key: str | None = Field(default=None, max_length=100)
     workflow_area: str = Field(default="analysis", max_length=50)
     agent_role: str | None = Field(default=None, max_length=100)
     provider_config_id: uuid.UUID | None = None
+    focused_artifact_id: uuid.UUID | None = None
 
 
 class AgentSessionResponse(BaseModel):
@@ -28,8 +29,11 @@ class AgentSessionResponse(BaseModel):
     workflow_area: str
     step_key: str | None
     status: AgentSessionStatus
+    ui_status: str | None = None
     interrupt_type: AgentSessionInterruptType | None
     missing_context: Any | None
+    focused_artifact_id: uuid.UUID | None = None
+    document: DocumentView | None = None
     agent_role: str | None
     provider_config_id: uuid.UUID | None
     created_by_id: uuid.UUID | None
@@ -42,10 +46,16 @@ class AgentSessionResponse(BaseModel):
 class AgentSessionCreateResponse(BaseModel):
     session_id: str
     missing_context: list[str]
+    artifact_type: str | None = None
+    focused_artifact_id: uuid.UUID | None = None
+    document_type: str | None = None
 
 
 class AgentMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    # Optional one-shot steer: switch the agent's angle for this turn only.
+    # Constrained to the active_mode enum so user input can never be injected into the prompt.
+    mode_hint: Literal["qa", "critique", "explore", "draft"] | None = None
 
 
 class AgentMessageResponse(BaseModel):
@@ -77,3 +87,4 @@ class AgentToolCallResponse(BaseModel):
 
 class ToolCallEditRequest(BaseModel):
     note: str = Field(min_length=1, max_length=8000)
+    base_version_id: uuid.UUID | None = None

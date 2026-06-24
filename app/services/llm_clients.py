@@ -1,11 +1,11 @@
 import asyncio
+import copy
 import json
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
 from app.models.llm_provider import ProviderType
-
 
 DEFAULT_MODEL_BY_PROVIDER = {
     ProviderType.BEDROCK: "amazon.nova-lite-v1:0",
@@ -352,7 +352,7 @@ def _extract_bedrock_text(data: dict[str, Any]) -> str | None:
 
 
 def _normalize_usage(input_tokens: Any, output_tokens: Any, total_tokens: Any = None) -> dict[str, int] | None:
-    """Chuẩn hoá token usage về {"input", "output", "total"}; trả None nếu provider không cung cấp."""
+    """Normalize token usage into {"input", "output", "total"}; return None if the provider omits it."""
     if input_tokens is None and output_tokens is None and total_tokens is None:
         return None
     inp = int(input_tokens or 0)
@@ -402,6 +402,9 @@ def _parse_generate_text(text: str | None, response_format: dict[str, Any] | Non
         raise ValueError("Không parse được JSON từ phản hồi LLM") from exc
     if not isinstance(parsed, dict):
         raise ValueError("Không parse được JSON object từ phản hồi LLM")
+    schema = _parse_validation_schema(response_format)
+    if schema:
+        _validate_json_schema(parsed, schema)
     return parsed
 
 
@@ -429,13 +432,127 @@ def _json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
 def _responses_json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
     schema_format = _json_schema_format(response_format)
     if schema_format.get("type") == "json_schema":
-        return schema_format
+        normalized = dict(schema_format)
+        normalized["schema"] = _normalize_json_schema(
+            schema_format.get("schema") or {},
+            require_all_properties=True,
+        )
+        normalized["strict"] = True
+        return normalized
     return {
         "type": "json_schema",
         "name": schema_format.get("name", "structured_output"),
-        "schema": schema_format.get("schema", schema_format),
-        "strict": response_format.get("strict", False),
+        "schema": _normalize_json_schema(
+            schema_format.get("schema", schema_format),
+            require_all_properties=True,
+        ),
+        "strict": True,
     }
+
+
+def _parse_validation_schema(response_format: dict[str, Any]) -> dict[str, Any]:
+    schema_format = _json_schema_format(response_format)
+    if schema_format.get("type") == "json_schema":
+        schema = schema_format.get("schema") or {}
+    else:
+        schema = schema_format.get("schema", schema_format)
+    if (schema.get("type") == "object" or "properties" in schema) and not schema.get("properties"):
+        return {}
+    return _normalize_json_schema(schema, require_all_properties=False)
+
+
+def _normalize_json_schema(schema: dict[str, Any], *, require_all_properties: bool) -> dict[str, Any]:
+    normalized = copy.deepcopy(schema)
+    if normalized.get("type") == "object" or "properties" in normalized:
+        properties = normalized.get("properties") or {}
+        original_required = set(normalized.get("required") or [])
+        normalized["properties"] = {
+            key: _normalize_json_schema(value, require_all_properties=require_all_properties)
+            for key, value in properties.items()
+        }
+        if require_all_properties:
+            normalized["required"] = list(properties.keys())
+            for key, value in normalized["properties"].items():
+                if key not in original_required:
+                    normalized["properties"][key] = _nullable_schema(value)
+        elif original_required:
+            normalized["required"] = list(normalized.get("required") or [])
+            for key, value in normalized["properties"].items():
+                if key not in original_required:
+                    normalized["properties"][key] = _nullable_schema(value)
+        elif "required" in normalized:
+            normalized["required"] = []
+            for key, value in normalized["properties"].items():
+                normalized["properties"][key] = _nullable_schema(value)
+        normalized["additionalProperties"] = False
+    if normalized.get("type") == "array" and isinstance(normalized.get("items"), dict):
+        normalized["items"] = _normalize_json_schema(
+            normalized["items"],
+            require_all_properties=require_all_properties,
+        )
+    return normalized
+
+
+def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    nullable = copy.deepcopy(schema)
+    schema_type = nullable.get("type")
+    if isinstance(schema_type, list):
+        if "null" not in schema_type:
+            nullable["type"] = [*schema_type, "null"]
+    elif schema_type:
+        nullable["type"] = [schema_type, "null"]
+    else:
+        nullable["type"] = ["null"]
+    if isinstance(nullable.get("enum"), list) and None not in nullable["enum"]:
+        nullable["enum"] = [*nullable["enum"], None]
+    return nullable
+
+
+def _validate_json_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
+    expected_type = schema.get("type")
+    if expected_type is not None and not _matches_json_type(value, expected_type):
+        raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: sai type")
+    enum = schema.get("enum")
+    if enum is not None and value not in enum:
+        raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: sai enum")
+    if value is None:
+        return
+    if isinstance(value, dict):
+        properties = schema.get("properties") or {}
+        required = schema.get("required") or []
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: thiếu {missing[0]}")
+        if schema.get("additionalProperties") is False:
+            extra = [key for key in value if key not in properties]
+            if extra:
+                raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: thừa {extra[0]}")
+        for key, child_schema in properties.items():
+            if key in value:
+                _validate_json_schema(value[key], child_schema, f"{path}.{key}")
+    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            _validate_json_schema(item, schema["items"], f"{path}[{index}]")
+
+
+def _matches_json_type(value: Any, expected_type: str | list[str]) -> bool:
+    if isinstance(expected_type, list):
+        return any(_matches_json_type(value, item) for item in expected_type)
+    if expected_type == "null":
+        return value is None
+    if expected_type == "object":
+        return isinstance(value, dict)
+    if expected_type == "array":
+        return isinstance(value, list)
+    if expected_type == "string":
+        return isinstance(value, str)
+    if expected_type == "number":
+        return (isinstance(value, int | float) and not isinstance(value, bool))
+    if expected_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected_type == "boolean":
+        return isinstance(value, bool)
+    return True
 
 
 def _system_with_schema_instruction(system: str | None, response_format: dict[str, Any] | None) -> str | None:
@@ -474,7 +591,10 @@ def _extract_openai_text(data: dict[str, Any]) -> str | None:
 
 
 def _anthropic_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [{"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]} for item in messages]
+    return [
+        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]}
+        for item in messages
+    ]
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str | None:

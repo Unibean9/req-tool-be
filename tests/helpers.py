@@ -17,7 +17,7 @@ async def make_auth_headers(client, db_session=None) -> dict:
         try:
             db_session = await gen.__anext__()
         except StopAsyncIteration:
-            raise RuntimeError("Override get_db không trả về session")
+            raise RuntimeError("Override get_db không trả về session") from None
 
     uid = uuid_mod.uuid4().hex[:8]
     user = User(

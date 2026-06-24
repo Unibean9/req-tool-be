@@ -1,8 +1,48 @@
 [tool.ruff]
 line-length = 120
-extend-exclude = ["alembic/versions"]
+target-version = "py313"
+extend-exclude = ["alembic"]
+# Honor extend-exclude even when paths are passed explicitly (CI runs `ruff check app tests alembic`).
+force-exclude = true
+
+[tool.ruff.lint]
+select = ["F", "E", "I", "ARG", "ERA", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately have long assertion/mock-data lines, receive pytest fixtures
+# for their side effects (unused params), and assert on broad exception types.
+"tests/**" = ["E501", "ARG001", "ARG002", "B017"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI dependency-injection callables are evaluated at call time by design;
+# they are not B008 mutable-default bugs.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.Security",
+]
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+pythonpath = ["."]
 markers = [
-    "integration: test gọi LLM thật, chỉ chạy khi có JUDGE_API_KEY",
+    "integration: Test requires JUDGE_API_KEY because it makes real API calls",
+    "eval: Requires JUDGE_API_KEY; calls real LLM judge — run with pytest tests/eval/",
 ]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/alembic/*",
+    "app/main.py",
+    "app/eval/*",
+]
+
+[tool.coverage.report]
+show_missing = true

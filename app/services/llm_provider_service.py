@@ -157,7 +157,7 @@ class LLMProviderService:
             config.last_checked_at = now
             config.last_check_error = _sanitize_error(exc)
             await self.db.flush()
-            raise ProviderUnavailableError(config.last_check_error)
+            raise ProviderUnavailableError(config.last_check_error) from exc
         config.status = LLMProviderStatus.ACTIVE
         config.last_checked_at = now
         config.last_check_error = None
@@ -171,7 +171,9 @@ class LLMProviderService:
         )
 
     async def _unset_user_default(self, user_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
-        query = update(LLMProviderConfig).where(LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_default.is_(True))
+        query = update(LLMProviderConfig).where(
+            LLMProviderConfig.user_id == user_id, LLMProviderConfig.is_default.is_(True)
+        )
         if exclude_id:
             query = query.where(LLMProviderConfig.id != exclude_id)
         await self.db.execute(query.values(is_default=False))

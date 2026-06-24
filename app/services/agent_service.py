@@ -4,13 +4,16 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException
+from langgraph.types import Command
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.documents.registry import container_for
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
+from app.graphs.state import build_initial_workflow_state
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -24,12 +27,45 @@ from app.models.agent import (
 from app.models.artifact import (
     Artifact,
     ArtifactStatus,
-    ArtifactType,
     ArtifactVersion,
     ChangeSource,
-    VersionStatus,
 )
-from langgraph.types import Command
+from app.schemas.agent import AgentSessionResponse
+from app.schemas.artifact_synthesis import (
+    evaluate_candidate_readiness,
+    synthesis_metadata_dict,
+    synthesis_metadata_from_snapshot,
+)
+from app.services.agent_tool_visibility import public_tool_call_filter
+from app.services.document_service import DocumentService
+
+
+def _snapshot_base_version_id(snapshot: dict[str, Any]) -> uuid.UUID | None:
+    try:
+        return synthesis_metadata_from_snapshot(snapshot).base_version_id
+    except ValueError:
+        raw_base = snapshot.get("base_version_id")
+        return uuid.UUID(str(raw_base)) if raw_base else None
+
+
+def _stale_base_version_detail(
+    *,
+    snapshot: dict[str, Any],
+    requested_base_version_id: uuid.UUID | None,
+    current_version_id: uuid.UUID | None,
+) -> dict[str, Any] | None:
+    base_version_id = (
+        requested_base_version_id
+        if requested_base_version_id is not None
+        else _snapshot_base_version_id(snapshot)
+    )
+    if base_version_id == current_version_id:
+        return None
+    return {
+        "detail": "Bản nháp sửa đang dựa trên version cũ",
+        "base_version_id": str(base_version_id) if base_version_id else None,
+        "current_version_id": str(current_version_id) if current_version_id else None,
+    }
 
 
 class AgentService:
@@ -48,9 +84,28 @@ class AgentService:
         agent_role: str | None = None,
         provider_config_id: uuid.UUID | None = None,
         created_by_id: uuid.UUID | None = None,
-        llm_client: Any = None,
+        focused_artifact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
         missing = await self._check_predecessors(project_id, artifact_type)
+        if missing:
+            raise HTTPException(
+                409,
+                detail={
+                    "detail": "Predecessor artifact chưa được accepted",
+                    "missing_context": missing,
+                },
+            )
+        if focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, focused_artifact_id)
+            if focused is None or focused.project_id != project_id:
+                raise HTTPException(422, detail="focused_artifact_id không thuộc dự án")
+            if focused.parent_id is None:
+                raise HTTPException(422, detail="Agent phải focus vào document item, không phải container")
+            if focused.type.value != artifact_type:
+                raise HTTPException(
+                    422,
+                    detail="artifact_type phải khớp với document item được focus",
+                )
 
         try:
             session = AgentSession(
@@ -62,6 +117,7 @@ class AgentService:
                 status=AgentSessionStatus.WAITING_FOR_HUMAN,
                 graph_checkpoint={},
                 missing_context=missing or None,
+                focused_artifact_id=focused_artifact_id,
                 provider_config_id=provider_config_id,
                 created_by_id=created_by_id,
             )
@@ -84,9 +140,58 @@ class AgentService:
                     "detail": "Active session already exists",
                     "session_id": str(existing.id) if existing else None,
                 },
-            )
+            ) from None
 
-        return {"session_id": str(session.id), "missing_context": missing}
+        return await self.create_session_response(session, missing)
+
+    async def create_session_response(self, session: AgentSession, missing: list[str]) -> dict[str, Any]:
+        document_type = await self._document_type_for_session(session)
+        return {
+            "session_id": str(session.id),
+            "missing_context": missing,
+            "artifact_type": session.artifact_type,
+            "focused_artifact_id": session.focused_artifact_id,
+            "document_type": document_type,
+        }
+
+    async def get_session_response(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
+    ) -> AgentSessionResponse:
+        session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
+        await self._load_graph_state_values(session_id)
+        document_type = await self._document_type_for_session(session)
+        document = (
+            await DocumentService(self.db).get_document(
+                project_id=project_id,
+                document_type=document_type,
+            )
+            if document_type
+            else None
+        )
+        return AgentSessionResponse.model_validate(session).model_copy(
+            update={
+                "ui_status": _session_ui_status(session.status, session.interrupt_type),
+                "document": document,
+            }
+        )
+
+    async def _document_type_for_session(self, session: AgentSession) -> str | None:
+        if session.focused_artifact_id is not None:
+            focused = await self.db.get(Artifact, session.focused_artifact_id)
+            if focused is not None:
+                if focused.parent_id is not None:
+                    parent = await self.db.get(Artifact, focused.parent_id)
+                    if parent is not None:
+                        return parent.type.value
+                if focused.type.value in {"brd", "prd", "sad"}:
+                    return focused.type.value
+        if session.artifact_type in {"brd", "prd", "sad"}:
+            return session.artifact_type
+        return container_for(session.artifact_type)
 
     async def get_session(
         self,
@@ -105,6 +210,16 @@ class AgentService:
         if not session:
             raise HTTPException(404, detail="Agent session không tồn tại")
         return session
+
+    async def _load_graph_state_values(self, session_id: uuid.UUID) -> dict[str, Any] | None:
+        if self.graph is None:
+            return None
+        try:
+            snapshot = await self.graph.aget_state({"configurable": {"thread_id": str(session_id)}})
+        except Exception as exc:
+            raise HTTPException(500, detail="Không thể đọc checkpoint workspace") from exc
+        values = getattr(snapshot, "values", None)
+        return values if isinstance(values, dict) else None
 
     async def delete_session(
         self,
@@ -125,10 +240,13 @@ class AgentService:
         content: str,
         user_id: uuid.UUID | None = None,
         llm_client: Any = None,
+        mode_hint: str | None = None,
     ) -> AgentMessage:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
+        # A queued message carries only its content; a mode_hint on it is intentionally not
+        # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
         if session.status == AgentSessionStatus.ACTIVE:
             return await self._queue_message(session.id, content)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
@@ -153,29 +271,21 @@ class AgentService:
             llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
 
         if is_first_message:
-            initial_state = {
-                "artifact_type": session.artifact_type,
-                "workflow_area": session.workflow_area,
-                "step_key": session.step_key,
-                "messages": [{"role": "user", "content": content}],
-                "conversation_summary": "",
-                "analysis_result": None,
-                "pending_tool_call_ids": [],
-                "last_agent_run_id": None,
-                "turn_count": 0,
-                "missing_context": session.missing_context or [],
-                "user_confirmed": None,
-                "locale": None,
-                "intent": None,
-                "slot_coverage": None,
-                "coverage_ratio": None,
-                "coverage_complete": None,
-                "coverage_stall_count": None,
-            }
+            initial_state = build_initial_workflow_state(
+                artifact_type=session.artifact_type,
+                workflow_area=session.workflow_area,
+                step_key=session.step_key,
+                messages=[{"role": "user", "content": content}],
+                missing_context=session.missing_context or [],
+                focused_artifact_id=session.focused_artifact_id,
+                mode_hint=mode_hint,
+            )
             resume_command = None
         else:
             initial_state = None
-            resume_command = self._resume_command(session, {"content": content})
+            resume_command = self._resume_command(
+                session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
+            )
 
         asyncio.create_task(
             self._run_graph(
@@ -185,6 +295,7 @@ class AgentService:
                 step_key=session.step_key,
                 workflow_area=session.workflow_area,
                 agent_role=session.agent_role,
+                focused_artifact_id=session.focused_artifact_id,
                 missing_context=session.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -241,6 +352,7 @@ class AgentService:
                 select(AgentToolCall)
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
+                .where(public_tool_call_filter())
                 .order_by(AgentToolCall.created_at)
             )
         ).scalars().all()
@@ -253,12 +365,17 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
         user_id: uuid.UUID | None = None,
-        llm_client: Any = None,
+        _llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
+        if tool_call.status == AgentToolCallStatus.EXECUTED:
+            return tool_call
+        if tool_call.status == AgentToolCallStatus.REJECTED:
+            raise HTTPException(400, detail="Tool call đã bị reject")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
+        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)
         artifact, version = await self._execute_create_artifact(
             project_id=project_id,
             snapshot=tool_call.input_snapshot or {},
@@ -273,7 +390,7 @@ class AgentService:
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
-        await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self._complete_when_all_artifact_proposals_approved(session_id=session_id)
         await self.db.refresh(tool_call)
         return tool_call
 
@@ -286,6 +403,10 @@ class AgentService:
         llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
+        if tool_call.status == AgentToolCallStatus.REJECTED:
+            return tool_call
+        if tool_call.status == AgentToolCallStatus.EXECUTED:
+            raise HTTPException(400, detail="Tool call đã được approve")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
 
@@ -303,12 +424,14 @@ class AgentService:
         project_id: uuid.UUID,
         tool_call_id: uuid.UUID,
         note: str,
+        base_version_id: uuid.UUID | None = None,
         user_id: uuid.UUID | None = None,
         llm_client: Any = None,
     ) -> AgentToolCall:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call không ở trạng thái proposed")
+        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, base_version_id)
 
         tool_call.status = AgentToolCallStatus.SUPERSEDED
         tool_call.resolved_at = datetime.now(UTC)
@@ -334,6 +457,7 @@ class AgentService:
                     select(func.count(Artifact.id)).where(
                         Artifact.project_id == project_id,
                         Artifact.type == pred,
+                        Artifact.status == ArtifactStatus.ACCEPTED,
                     )
                 )
             ).scalar() or 0
@@ -353,6 +477,8 @@ class AgentService:
             .join(AgentSession, AgentRun.session_id == AgentSession.id)
             .where(AgentToolCall.id == tool_call_id)
             .where(AgentSession.project_id == project_id)
+            .where(public_tool_call_filter())
+            .with_for_update()
         )
         if user_id is not None:
             query = query.where(AgentSession.created_by_id == user_id)
@@ -371,48 +497,83 @@ class AgentService:
         tool_call_id: uuid.UUID,
         created_by_id: uuid.UUID | None,
     ) -> tuple[Artifact, ArtifactVersion]:
-        raw_type = snapshot.get("artifact_type", "")
-        try:
-            artifact_type = ArtifactType(raw_type)
-        except ValueError:
+        focused_artifact_id = snapshot.get("focused_artifact_id")
+        if not focused_artifact_id:
             raise HTTPException(
-                400,
-                detail=f"Artifact type không hợp lệ: '{raw_type}'. "
-                       f"Giá trị hợp lệ: {[e.value for e in ArtifactType]}",
+                422,
+                detail="Tool call thiếu focused_artifact_id; vui lòng chọn document item hiện tại",
             )
         title = snapshot.get("title", "Untitled")
         body = snapshot.get("body", "")
+        try:
+            synthesis_metadata = synthesis_metadata_dict(snapshot)
+        except ValueError as exc:
+            raise HTTPException(422, detail="Tool call metadata synthesis không hợp lệ") from exc
+        self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 
-        artifact = Artifact(
-            project_id=project_id,
-            type=artifact_type,
-            status=ArtifactStatus.DRAFT,
-            title=title,
-            extra_metadata={},
-            created_by_id=created_by_id,
-        )
-        self.db.add(artifact)
-        await self.db.flush()
-
-        version = ArtifactVersion(
-            artifact_id=artifact.id,
-            version_number=1,
-            title=title,
-            body=body,
-            status=VersionStatus.DRAFT,
-            change_source=ChangeSource.AI_GENERATION,
-            agent_run_id=run_id,
-            tool_call_id=tool_call_id,
-            created_by_id=created_by_id,
-            extra_metadata={},
-        )
-        self.db.add(version)
-        await self.db.flush()
-
-        artifact.current_version_id = version.id
-        await self.db.flush()
+        try:
+            artifact, version = await DocumentService(self.db).create_item_version(
+                artifact_id=uuid.UUID(str(focused_artifact_id)),
+                project_id=project_id,
+                title=title,
+                body=body,
+                created_by_id=created_by_id,
+                change_source=ChangeSource.AI_GENERATION,
+                agent_run_id=run_id,
+                tool_call_id=tool_call_id,
+                metadata=synthesis_metadata,
+                mark_accepted=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, detail="Document item được focus không tồn tại") from exc
 
         return artifact, version
+
+    def _validate_candidate_readiness_for_persist(
+        self,
+        snapshot: dict[str, Any],
+        synthesis_metadata: dict[str, Any],
+    ) -> None:
+        readiness = evaluate_candidate_readiness(
+            artifact_type=str(snapshot.get("artifact_type") or synthesis_metadata.get("artifact_type") or ""),
+            body=str(snapshot.get("body") or ""),
+            synthesis_metadata=synthesis_metadata,
+        )
+        if readiness.can_persist:
+            return
+        raise HTTPException(
+            422,
+            detail={
+                "detail": "Candidate chưa đủ readiness để persist thành version chính thức",
+                **readiness.model_dump(mode="json"),
+            },
+        )
+
+    async def _guard_current_base_version(
+        self,
+        project_id: uuid.UUID,
+        snapshot: dict[str, Any],
+        requested_base_version_id: uuid.UUID | None,
+    ) -> None:
+        focused_artifact_id = snapshot.get("focused_artifact_id")
+        if not focused_artifact_id:
+            raise HTTPException(422, detail="Tool call thiếu focused_artifact_id")
+        try:
+            focused = await DocumentService(self.db).get_document_item_artifact(
+                artifact_id=uuid.UUID(str(focused_artifact_id)),
+                project_id=project_id,
+                for_update=True,
+            )
+        except ValueError as exc:
+            raise HTTPException(404, detail="Document item được focus không tồn tại") from exc
+
+        detail = _stale_base_version_detail(
+            snapshot=snapshot,
+            requested_base_version_id=requested_base_version_id,
+            current_version_id=focused.current_version_id,
+        )
+        if detail is not None:
+            raise HTTPException(409, detail=detail)
 
     async def _check_and_resume(
         self, *, project_id: uuid.UUID, session_id: uuid.UUID, llm_client: Any = None
@@ -433,6 +594,7 @@ class AgentService:
                 .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
                 .where(AgentRun.session_id == session_id)
                 .where(AgentToolCall.status == AgentToolCallStatus.PROPOSED)
+                .where(public_tool_call_filter())
             )
         ).scalar() or 0
 
@@ -456,6 +618,7 @@ class AgentService:
                 step_key=session_row.step_key,
                 workflow_area=session_row.workflow_area,
                 agent_role=session_row.agent_role,
+                focused_artifact_id=session_row.focused_artifact_id,
                 missing_context=session_row.missing_context or [],
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -463,6 +626,29 @@ class AgentService:
                 resume_command=resume_command,
             )
         )
+
+    async def _complete_when_all_artifact_proposals_approved(self, *, session_id: uuid.UUID) -> None:
+        session_row = (
+            await self.db.execute(
+                select(AgentSession).where(AgentSession.id == session_id).with_for_update()
+            )
+        ).scalar_one()
+        if session_row.status != AgentSessionStatus.WAITING_FOR_HUMAN:
+            return
+        pending_count = (
+            await self.db.execute(
+                select(func.count(AgentToolCall.id))
+                .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
+                .where(AgentRun.session_id == session_id)
+                .where(AgentToolCall.status == AgentToolCallStatus.PROPOSED)
+                .where(public_tool_call_filter())
+            )
+        ).scalar() or 0
+        if pending_count > 0:
+            return
+        session_row.status = AgentSessionStatus.COMPLETED
+        session_row.interrupt_type = None
+        await self.db.commit()
 
     async def _run_graph(
         self,
@@ -476,45 +662,48 @@ class AgentService:
         missing_context: list[str],
         llm_client: Any,
         strong_llm_client: Any = None,
+        focused_artifact_id: uuid.UUID | None = None,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
     ) -> None:
         config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
         timeout = settings.agent_turn_timeout_seconds
+        if focused_artifact_id is None:
+            async with self.session_factory() as db:
+                focused_artifact_id = (
+                    await db.execute(
+                        select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id)
+                    )
+                ).scalar_one_or_none()
         try:
             if resume_command is not None:
                 # wait_for MUST wrap ainvoke INSIDE this coroutine. Wrapping from outside would raise
                 # CancelledError (a BaseException) which `except Exception` cannot catch → session stuck ACTIVE.
-                await asyncio.wait_for(self.graph.ainvoke(resume_command, config), timeout=timeout)
+                result = await asyncio.wait_for(self.graph.ainvoke(resume_command, config), timeout=timeout)
             else:
-                state = initial_state or {
-                    "artifact_type": artifact_type,
-                    "workflow_area": workflow_area,
-                    "step_key": step_key,
-                    "messages": [],
-                    "conversation_summary": "",
-                    "analysis_result": None,
-                    "pending_tool_call_ids": [],
-                    "last_agent_run_id": None,
-                    "turn_count": 0,
-                    "missing_context": missing_context,
-                    "user_confirmed": None,
-                    "locale": None,
-                    "intent": None,
-                    "slot_coverage": None,
-                    "coverage_ratio": None,
-                    "coverage_complete": None,
-                    "coverage_stall_count": None,
-                    "last_asked_slot": None,
-                }
-                await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
+                state = initial_state or build_initial_workflow_state(
+                    artifact_type=artifact_type,
+                    workflow_area=workflow_area,
+                    step_key=step_key,
+                    messages=[],
+                    missing_context=missing_context,
+                    focused_artifact_id=focused_artifact_id,
+                    mode_hint=None,
+                )
+                result = await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
+            # The graph paused iff its final state carries an __interrupt__. When it instead reached
+            # END, a WAITING_FOR_HUMAN left behind by a tool re-running on resume (tool-loop: the tool
+            # re-sets WAITING before its interrupt() returns the resume value) is stale → COMPLETED.
+            graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-                if row.status == AgentSessionStatus.ACTIVE:
+                if row.status == AgentSessionStatus.ACTIVE or (
+                    graph_ended and row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+                ):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
@@ -603,25 +792,15 @@ class AgentService:
             session_row.interrupt_type = None
             await db.commit()
 
-        initial_state = {
-            "artifact_type": artifact_type,
-            "workflow_area": workflow_area,
-            "step_key": step_key,
-            "messages": [{"role": "user", "content": content}],
-            "conversation_summary": "",
-            "analysis_result": None,
-            "pending_tool_call_ids": [],
-            "last_agent_run_id": None,
-            "turn_count": 0,
-            "missing_context": missing_context,
-            "user_confirmed": None,
-            "locale": None,
-            "intent": None,
-            "slot_coverage": None,
-            "coverage_ratio": None,
-            "coverage_complete": None,
-            "coverage_stall_count": None,
-        }
+        initial_state = build_initial_workflow_state(
+            artifact_type=artifact_type,
+            workflow_area=workflow_area,
+            step_key=step_key,
+            messages=[{"role": "user", "content": content}],
+            missing_context=missing_context,
+            focused_artifact_id=session_row.focused_artifact_id,
+            mode_hint=None,
+        )
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
             self._run_graph(
@@ -631,6 +810,7 @@ class AgentService:
                 step_key=step_key,
                 workflow_area=workflow_area,
                 agent_role=agent_role,
+                focused_artifact_id=session_row.focused_artifact_id,
                 missing_context=missing_context,
                 llm_client=llm_client,
                 strong_llm_client=strong_llm_client,
@@ -659,11 +839,16 @@ class AgentService:
             }
         }
 
-    def _resume_command(self, session: AgentSession, value: dict[str, Any]) -> Command:
+    def _resume_command(
+        self, session: AgentSession, value: dict[str, Any], state_update: dict[str, Any] | None = None
+    ) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
-        if interrupt_ids:
-            return Command(resume={iid: value for iid in interrupt_ids})
-        return Command(resume=value)
+        resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
+        # state_update lets a resuming turn seed state (e.g. a one-shot mode_hint) before the
+        # interrupted node re-runs — applied by LangGraph as a normal channel update.
+        if state_update:
+            return Command(resume=resume, update=state_update)
+        return Command(resume=resume)
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -747,3 +932,17 @@ def _agent_failure_message(exc: Exception) -> str:
     if not message:
         message = exc.__class__.__name__
     return f"Agent không thể hoàn tất lượt phân tích hiện tại. Lý do kỹ thuật: {message[:500]}"
+
+
+def _session_ui_status(status: Any, interrupt_type: Any) -> str:
+    status_val = getattr(status, "value", status)
+    interrupt_val = getattr(interrupt_type, "value", interrupt_type)
+    if status_val == AgentSessionStatus.ACTIVE.value:
+        return "processing"
+    if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
+        if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
+            return "waiting_approval"
+        return "waiting_input"
+    if status_val == AgentSessionStatus.FAILED.value:
+        return "error"
+    return "idle"

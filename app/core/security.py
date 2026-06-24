@@ -1,11 +1,12 @@
 import base64
 import hashlib
 import hmac as _hmac
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import bcrypt
-from jose import jwt, JWTError
+from jose import JWTError, jwt
+
 from app.config import settings
 
 
@@ -27,7 +28,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 def _create_token(subject: Any, expires_delta: timedelta, token_type: str, extra: dict | None = None) -> str:
-    expire = datetime.now(timezone.utc) + expires_delta
+    expire = datetime.now(UTC) + expires_delta
     payload = {"sub": str(subject), "exp": expire, "type": token_type, **(extra or {})}
     return jwt.encode(payload, settings.jwt_secret_key, algorithm=settings.jwt_algorithm)
 

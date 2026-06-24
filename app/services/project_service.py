@@ -4,10 +4,21 @@ import secrets
 import uuid
 
 from fastapi import HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.utils import slugify
+from app.models.agent import AgentMessage, AgentRun, AgentSession, AgentToolCall
+from app.models.artifact import (
+    Artifact,
+    ArtifactEvidence,
+    ArtifactLink,
+    ArtifactReview,
+    ArtifactVersion,
+    SourceDocument,
+    WorkflowRun,
+    WorkflowStep,
+)
 from app.models.project import Project
 from app.schemas.project import ProjectCreateRequest, ProjectUpdateRequest
 
@@ -63,4 +74,48 @@ class ProjectService:
 
     async def delete(self, org_id: uuid.UUID, project_id: uuid.UUID) -> None:
         project = await self.get(org_id, project_id)
+        await self._cascade_delete_children(project_id)
         await self.db.delete(project)
+
+    async def _cascade_delete_children(self, project_id: uuid.UUID) -> None:
+        artifact_ids = select(Artifact.id).where(Artifact.project_id == project_id)
+        version_ids = select(ArtifactVersion.id).where(ArtifactVersion.artifact_id.in_(artifact_ids))
+        run_ids = select(AgentRun.id).where(
+            AgentRun.session_id.in_(select(AgentSession.id).where(AgentSession.project_id == project_id))
+        )
+
+        # 1. Break the cyclic cross-FKs before deleting the rows they reference.
+        await self.db.execute(
+            update(Artifact).where(Artifact.project_id == project_id).values(current_version_id=None)
+        )
+        await self.db.execute(
+            update(ArtifactVersion)
+            .where(ArtifactVersion.artifact_id.in_(artifact_ids))
+            .values(parent_version_id=None)
+        )
+        await self.db.execute(
+            update(AgentToolCall)
+            .where(AgentToolCall.run_id.in_(run_ids))
+            .values(created_artifact_id=None, created_version_id=None)
+        )
+
+        # 2. Delete children from leaves up to the root.
+        await self.db.execute(delete(ArtifactEvidence).where(ArtifactEvidence.artifact_id.in_(artifact_ids)))
+        await self.db.execute(delete(ArtifactReview).where(ArtifactReview.artifact_id.in_(artifact_ids)))
+        await self.db.execute(delete(ArtifactLink).where(ArtifactLink.project_id == project_id))
+        await self.db.execute(delete(ArtifactVersion).where(ArtifactVersion.id.in_(version_ids)))
+        await self.db.execute(delete(Artifact).where(Artifact.project_id == project_id))
+
+        await self.db.execute(delete(AgentToolCall).where(AgentToolCall.run_id.in_(run_ids)))
+        await self.db.execute(
+            delete(AgentMessage).where(
+                AgentMessage.session_id.in_(select(AgentSession.id).where(AgentSession.project_id == project_id))
+            )
+        )
+        await self.db.execute(delete(AgentRun).where(AgentRun.id.in_(run_ids)))
+        await self.db.execute(delete(AgentSession).where(AgentSession.project_id == project_id))
+
+        await self.db.execute(delete(SourceDocument).where(SourceDocument.project_id == project_id))
+        await self.db.execute(delete(WorkflowStep).where(WorkflowStep.project_id == project_id))
+        await self.db.execute(delete(WorkflowRun).where(WorkflowRun.project_id == project_id))
+        await self.db.flush()

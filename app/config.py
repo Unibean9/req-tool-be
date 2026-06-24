@@ -1,6 +1,6 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+
 from pydantic import field_validator, model_validator
-from typing import List
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     app_debug: bool = False
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
     max_agent_turns: int = 10
     llm_provider_health_timeout_seconds: float = 25.0
@@ -69,13 +69,13 @@ class Settings(BaseSettings):
             if not self.password_pepper:
                 raise ValueError("PASSWORD_PEPPER must be set in non-development environments")
             if not self.github_client_id or not self.github_client_secret:
-                raise ValueError("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments")
+                raise ValueError("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments")  # noqa: E501 — single message string
             if not self.github_state_secret:
                 raise ValueError("GITHUB_STATE_SECRET must be set in non-development environments")
             if not self.cors_origins:
                 raise ValueError("CORS_ORIGINS must be non-empty in non-development environments")
             if not self.github_app_id or not self.github_app_private_key or not self.github_app_slug:
-                raise ValueError("GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in non-development environments")
+                raise ValueError("GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in non-development environments")  # noqa: E501 — single message string
         return self
 
 

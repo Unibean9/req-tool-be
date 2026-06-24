@@ -1,8 +1,3 @@
-from app.models.base import Base
-from app.models.user import User
-from app.models.organization import Organization, OrgMember
-from app.models.project import Project
-from app.models.llm_provider import LLMProviderConfig
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -23,6 +18,11 @@ from app.models.artifact import (
     WorkflowRun,
     WorkflowStep,
 )
+from app.models.base import Base
+from app.models.llm_provider import LLMProviderConfig
+from app.models.organization import Organization, OrgMember
+from app.models.project import Project
+from app.models.user import User
 
 __all__ = [
     "Base",
