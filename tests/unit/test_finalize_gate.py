@@ -1,4 +1,4 @@
-"""Finalize gate: working_draft non-empty AND critique_rounds > 0 AND quality gate passed (spec §15.1)."""
+"""Finalize gate: working_draft non-empty AND critique_rounds > 0 AND quality gate passed AND candidate_readiness sufficient."""
 
 import hashlib
 import uuid
@@ -8,6 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from app.graphs.agent_tools import _finalize_impl, current_draft_body, get_available_tools
+from app.schemas.artifact_synthesis import ArtifactReadinessState
 from app.models.artifact import (
     Artifact,
     ArtifactStatus,
@@ -27,13 +28,14 @@ def _hash(body: str) -> str:
 
 
 def _passing_state(draft: str = "Một bản nháp", critique_rounds: int = 1) -> dict:
-    """A state where every finalize-gate condition is satisfied (pass gate + fresh hash)."""
+    """A state where every finalize-gate condition is satisfied (pass gate + fresh hash + sufficient readiness)."""
     return {
         "messages": [],
         "working_draft": draft,
         "critique_rounds": critique_rounds,
         "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
         "last_critiqued_draft_hash": _hash(draft),
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
 
 
@@ -63,6 +65,7 @@ def test_finalize_available_for_db_draft_without_working_draft():
         "critique_rounds": 1,
         "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
         "last_critiqued_draft_hash": _hash(draft),
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
     names = _names(state)
     assert "finalize" in names
@@ -127,6 +130,7 @@ async def test_finalize_interrupt_triggers_when_available():
         "critique_rounds": 1,
         "quality_report": {"quality_gate_result": "pass"},
         "last_critiqued_draft_hash": _hash("draft"),
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:

@@ -30,10 +30,12 @@ def _hash(body: str) -> str:
 
 
 def _pass_gate(draft: str) -> dict:
-    """Quality-report + hash keys that satisfy the finalize gate for `draft`."""
+    """Quality-report + hash + readiness keys that satisfy the finalize gate for `draft`."""
+    from app.schemas.artifact_synthesis import ArtifactReadinessState
     return {
         "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
         "last_critiqued_draft_hash": _hash(draft),
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
 
 
