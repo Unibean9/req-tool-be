@@ -64,6 +64,11 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
+        "candidate_readiness": None,
+        "tool_errors": [],
+        "feedback_summary": None,
+        "verification_status": None,
+        "latest_checked_revision": None,
         "mode_hint": None,
     }
 
@@ -245,6 +250,17 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert brd_title in prompt, "Predecessor BRD title must appear in the analyst prompt context"
+
+
+def test_output_contract_block_requires_candidate_gap_markers():
+    from app.graphs.nodes import _build_output_contract_block
+
+    block = _build_output_contract_block(_state(artifact_type="vision_objectives"))
+
+    assert "inferred" in block
+    assert "missing" in block
+    assert "needs_confirmation" in block
+    assert "phần thiếu" in block
 
 
 @pytest.mark.asyncio
@@ -1199,6 +1215,35 @@ async def test_active_mode_passes_through_analyze_node(client, db_session):
     assert result["analysis_result"]["active_mode"] == "critique"
 
 
+@pytest.mark.asyncio
+async def test_respond_colon_terminated_message_uses_fallback(client, db_session):
+    from app.graphs.nodes import _RESPOND_FALLBACK, analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "tool": "respond",
+        "message": "Dựa trên thông tin hiện có:",
+        "active_mode": "critique",
+    }, None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    tool_call = result["messages"][0].tool_calls[0]
+    assert tool_call["name"] == "respond"
+    assert tool_call["args"]["message"] == _RESPOND_FALLBACK
+    assert tool_call["args"]["mode"] == "critique"
+
+
 def test_mode_hint_injects_directive_into_prompt():
     """T4a: a user-supplied mode_hint must surface the requested mode in the prompt."""
     from app.graphs.nodes import _build_tool_selection_prompt
@@ -1209,6 +1254,64 @@ def test_mode_hint_injects_directive_into_prompt():
     prompt = _build_tool_selection_prompt(state, [])
 
     assert "critique" in prompt
+
+
+def test_feedback_control_block_injects_blockers_and_revision_plan():
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    state = _state(artifact_type="goal")
+    state["quality_report"] = {
+        "mode": "critique",
+        "score": 0.41,
+        "findings": ["Metric success chưa đo được"],
+        "suggestions": ["Thêm baseline và target định lượng"],
+        "blocking_issues": ["Metric success chưa đo được"],
+        "non_blocking_warnings": [],
+        "revision_plan": ["Thêm baseline và target định lượng"],
+        "quality_gate_result": "fail",
+        "recommended_next_action": "revise",
+    }
+    state["candidate_readiness"] = {
+        "state": "well_structured_but_incomplete",
+        "can_persist": False,
+        "missing": ["Success Metrics"],
+        "needs_confirmation": ["Target 15%"],
+        "inferred": [],
+        "blocking_reasons": ["Thiếu metric bắt buộc"],
+    }
+
+    prompt = _build_tool_selection_prompt(state, [])
+
+    assert "FEEDBACK CONTROL" in prompt
+    assert "Metric success chưa đo được" in prompt
+    assert "Thêm baseline và target định lượng" in prompt
+    assert "well_structured_but_incomplete" in prompt
+    assert "Success Metrics" in prompt
+    assert "revise" in prompt
+
+
+def test_finalize_degrade_reason_uses_feedback_state():
+    from app.graphs.nodes import _degrade_reason
+
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft"
+    state["quality_report"] = {
+        "quality_gate_result": "fail",
+        "blocking_issues": ["Metric chưa kiểm chứng"],
+        "recommended_next_action": "revise",
+    }
+    state["candidate_readiness"] = {
+        "state": "well_structured_but_incomplete",
+        "can_persist": False,
+        "blocking_reasons": ["Thiếu heading bắt buộc"],
+    }
+
+    degrade = _degrade_reason(state, "finalize", "ask_user", {"tool": "finalize", "summary": "Xong"})
+
+    assert degrade is not None
+    assert "quality_gate=fail" in degrade["gated_reason"]
+    assert "candidate_readiness=well_structured_but_incomplete" in degrade["gated_reason"]
+    assert "Metric chưa kiểm chứng" in degrade["message"]
 
 
 def test_proactive_rule_lives_in_instruction_layer_not_payload():

@@ -13,6 +13,8 @@ from app.services.llm_clients import (
     LLMClientFactory,
     OpenAILLMClient,
     _extract_bedrock_text,
+    _parse_generate_text,
+    _responses_json_schema_format,
 )
 
 ANALYSIS_RESULT_SCHEMA = {
@@ -122,9 +124,53 @@ async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch
     assert body["text"]["format"] == {
         "type": "json_schema",
         "name": "analysis_result",
-        "schema": {"type": "object"},
-        "strict": False,
+        "schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
+        "strict": True,
     }
+
+
+def test_openai_responses_schema_makes_optional_fields_nullable_and_required():
+    schema = {
+        "type": "object",
+        "properties": {
+            "tool": {"type": "string", "enum": ["ask_user", "write_draft"]},
+            "message": {"type": "string"},
+        },
+        "required": ["tool"],
+    }
+
+    formatted = _responses_json_schema_format({"name": "tool_selection", "schema": schema})
+
+    assert formatted["strict"] is True
+    assert formatted["schema"]["additionalProperties"] is False
+    assert formatted["schema"]["required"] == ["tool", "message"]
+    assert formatted["schema"]["properties"]["message"]["type"] == ["string", "null"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"message": "Thiếu tool"},
+        {"tool": "finalize", "message": "Sai enum"},
+        {"tool": "ask_user", "message": "ok", "extra": "không hợp lệ"},
+    ],
+)
+def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
+    response_format = {
+        "name": "tool_selection",
+        "schema": {
+            "type": "object",
+            "properties": {
+                "tool": {"type": "string", "enum": ["ask_user", "write_draft"]},
+                "message": {"type": "string"},
+            },
+            "required": ["tool", "message"],
+            "additionalProperties": False,
+        },
+    }
+
+    with pytest.raises(ValueError, match="không khớp JSON Schema"):
+        _parse_generate_text(json.dumps(payload, ensure_ascii=False), response_format)
 
 
 @pytest.mark.asyncio
@@ -182,9 +228,15 @@ async def test_generate_without_response_format_returns_raw_text_and_no_extra_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("client_class", [AnthropicLLMClient, BedrockLLMClient])
 async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, client_class):
-    recorder = _install_httpx_recorder(monkeypatch, {"content": [{"text": '{"answer": "ok"}'}]})
+    recorder = _install_httpx_recorder(
+        monkeypatch,
+        {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]},
+    )
     if client_class is BedrockLLMClient:
-        recorder = _install_httpx_recorder(monkeypatch, {"output": {"message": {"content": [{"text": '{"answer": "ok"}'}]}}})
+        recorder = _install_httpx_recorder(
+            monkeypatch,
+            {"output": {"message": {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}},
+        )
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
     await client.generate(

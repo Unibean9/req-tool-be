@@ -9,7 +9,7 @@ import pytest
 
 from app.graphs.agent_tools import artifact_stage, current_draft_body
 from app.graphs.nodes import _degrade_reason, _missing_required_arg
-from tests.test_graph_nodes import _state
+from tests.integration.test_graph_nodes import _state
 
 # --------------------------------------------------------------------------- Phase 1
 

@@ -9,7 +9,7 @@ from app.graphs.agent_tools import (
     get_available_tools,
 )
 from app.graphs.critique import CRITIQUE_MODES, _invoke_judge
-from tests.test_graph_nodes import _state
+from tests.integration.test_graph_nodes import _state
 
 
 def _tool_names(state):

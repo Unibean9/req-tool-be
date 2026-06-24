@@ -12,10 +12,10 @@ import uuid
 
 import pytest
 
-from tests.scenarios.driver import ScenarioDriver
-from tests.scenarios.eval_support import mock_judge, score_artifacts
-from tests.scenarios.library import DOCUMENT_PIPELINE
-from tests.scenarios.recorder import TranscriptRecorder
+from tests.integration.scenarios.driver import ScenarioDriver
+from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
+from tests.integration.scenarios.library import DOCUMENT_PIPELINE
+from tests.integration.scenarios.recorder import TranscriptRecorder
 
 pytestmark = pytest.mark.asyncio
 

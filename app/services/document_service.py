@@ -94,6 +94,26 @@ class DocumentService:
         metadata: dict[str, Any] | None = None,
         mark_accepted: bool = False,
     ) -> tuple[Artifact, ArtifactVersion]:
+        if tool_call_id is not None:
+            existing_version = (
+                await self.db.execute(
+                    select(ArtifactVersion).where(ArtifactVersion.tool_call_id == tool_call_id)
+                )
+            ).scalar_one_or_none()
+            if existing_version is not None:
+                artifact = await self.get_document_item_artifact(
+                    artifact_id=existing_version.artifact_id,
+                    project_id=project_id,
+                    for_update=True,
+                )
+                artifact.current_version_id = existing_version.id
+                artifact.title = existing_version.title or artifact.title
+                if mark_accepted:
+                    artifact.status = ArtifactStatus.ACCEPTED
+                    await self._recompute_parent_acceptance(artifact)
+                await self.db.flush()
+                return artifact, existing_version
+
         artifact = await self.get_document_item_artifact(
             artifact_id=artifact_id,
             project_id=project_id,
@@ -125,8 +145,35 @@ class DocumentService:
         artifact.title = title or artifact.title
         if mark_accepted:
             artifact.status = ArtifactStatus.ACCEPTED
+            await self._recompute_parent_acceptance(artifact)
         await self.db.flush()
         return artifact, version
+
+    async def _recompute_parent_acceptance(self, artifact: Artifact) -> None:
+        if artifact.parent_id is None:
+            return
+        parent = await self.db.get(Artifact, artifact.parent_id, with_for_update=True)
+        if parent is None:
+            return
+        expected_children = children_of(parent.type.value)
+        if not expected_children:
+            return
+        versioned_rows = (
+            await self.db.execute(
+                select(Artifact.type).where(
+                    Artifact.project_id == artifact.project_id,
+                    Artifact.parent_id == parent.id,
+                    Artifact.type.in_([ArtifactType(item) for item in expected_children]),
+                    Artifact.current_version_id.is_not(None),
+                )
+            )
+        ).scalars()
+        versioned_types = {value.value for value in versioned_rows}
+        parent.status = (
+            ArtifactStatus.ACCEPTED
+            if set(expected_children).issubset(versioned_types)
+            else ArtifactStatus.DRAFT
+        )
 
     async def document_coverage(
         self,
@@ -321,6 +368,7 @@ class DocumentService:
         self.db.add(version)
         await self.db.flush()
         artifact.current_version_id = version.id
+        await self._recompute_parent_acceptance(artifact)
         await self.db.flush()
         return await self._item_view(item_type, artifact)
 

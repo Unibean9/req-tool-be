@@ -2,7 +2,7 @@
 
 from app.graphs.nodes import TOOL_SELECTION_SCHEMA, _build_tool_selection_prompt
 from app.instructions import get_instruction, load_instructions
-from tests.test_graph_nodes import _state
+from tests.integration.test_graph_nodes import _state
 
 
 def test_llm_schema_no_longer_accepts_section_assessment():

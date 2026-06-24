@@ -10,15 +10,22 @@ import uuid
 
 import pytest
 
-from tests.scenarios.driver import Scenario, ScenarioDriver
-from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+from tests.integration.scenarios.driver import Scenario, ScenarioDriver
+from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
 pytestmark = pytest.mark.asyncio
 
 _GOAL_BODY = (
-    "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút "
-    "xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log "
-    "thao tác trong hệ thống và khảo sát cuối kỳ."
+    "## Scope\n"
+    "MVP tập trung vào nhóm sinh viên cần tìm khung giờ học chung trong tuần.\n\n"
+    "## Capabilities\n"
+    "| capability | priority | rationale | dependency |\n"
+    "| --- | --- | --- | --- |\n"
+    "| Tạo nhóm học | Must | Có danh sách thành viên để đối chiếu lịch | Tài khoản người dùng |\n"
+    "| Đồng bộ lịch cá nhân | Must | Xác định khung bận/rảnh | Tích hợp Google Calendar |\n"
+    "| Gợi ý khung giờ chung | Must | Giảm thời gian điều phối | Dữ liệu lịch |\n\n"
+    "## Out of Scope\n"
+    "- Thanh toán, quản lý điểm danh nâng cao và phân tích học tập dài hạn."
 )
 
 

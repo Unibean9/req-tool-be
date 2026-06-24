@@ -2,7 +2,6 @@ from sqlalchemy import or_
 
 from app.models.agent import AgentToolCall
 
-
 PUBLIC_TOOL_CALL_NAMES = {
     "create_artifact",
     "create_artifact_link",

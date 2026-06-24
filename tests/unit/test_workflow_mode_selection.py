@@ -9,7 +9,7 @@ from app.graphs.nodes import (
     _infer_workflow_mode,
     analyze_node,
 )
-from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
+from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 
 
 class _LLM:

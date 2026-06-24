@@ -164,6 +164,11 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "readiness",
         "working_draft",
         "mode_hint",
+        "candidate_readiness",
+        "verification_status",
+        "latest_checked_revision",
+        "tool_errors",
+        "feedback_summary",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

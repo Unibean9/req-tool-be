@@ -29,6 +29,20 @@ extend-immutable-calls = [
 ]
 
 [tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+pythonpath = ["."]
 markers = [
     "integration: Test requires JUDGE_API_KEY because it makes real API calls",
+    "eval: Requires JUDGE_API_KEY; calls real LLM judge — run with pytest tests/eval/",
 ]
+
+[tool.coverage.run]
+source = ["app"]
+omit = [
+    "app/alembic/*",
+    "app/main.py",
+    "app/eval/*",
+]
+
+[tool.coverage.report]
+show_missing = true
