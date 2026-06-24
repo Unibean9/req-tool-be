@@ -43,6 +43,7 @@ TOOL_SELECTION_SCHEMA = {
                             "ask_user", "respond", "write_draft", "finalize",
                             "critique_note", "explore_note", "run_critique",
                             "recommend_next_workflow", "run_readiness_check",
+                            "confirm_intent",
                         ],
                     },
                     "args": {"type": "object"},
@@ -89,6 +90,7 @@ _TOOL_ARG_KEYS = {
     "run_critique": ["target", "mode"],
     "recommend_next_workflow": ["current_artifact_type", "planning_track"],
     "run_readiness_check": ["target"],
+    "confirm_intent": ["summary"],
 }
 
 # Args that MUST be non-empty for a pick to dispatch — a subset of _TOOL_ARG_KEYS. Emitting a
@@ -100,6 +102,7 @@ _TOOL_REQUIRED_ARGS = {
     "write_draft": ["body"],
     "finalize": ["summary"],
     "run_critique": ["mode"],
+    "confirm_intent": ["summary"],
 }
 
 # Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
@@ -794,7 +797,7 @@ def _record_gate_observability(
 # DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
 # be paired with another tool in the same turn to preserve idempotency invariants.
 _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
-    "ask_user", "respond", "write_draft", "finalize",
+    "ask_user", "respond", "write_draft", "finalize", "confirm_intent",
 })
 
 

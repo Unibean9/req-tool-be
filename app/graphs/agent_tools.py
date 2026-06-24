@@ -161,6 +161,44 @@ async def ask_user(
 
 
 # ---------------------------------------------------------------------------
+# confirm_intent — one-shot intent phase transition
+# ---------------------------------------------------------------------------
+
+async def _confirm_intent_impl(
+    summary: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+) -> Command:
+    # interrupt_kind="stream_response" keeps the session ACTIVE (D4): the user can reply, and the
+    # next turn sees user_confirmed=True — which unlocks the artifact tool menu in get_available_tools.
+    # kind="assessment": this is a surfaced intent summary, not a clarifying question.
+    user_content = await nodes._save_and_interrupt_ask(
+        state, config, summary, run_id=tool_call_id, kind="assessment", interrupt_kind="stream_response"
+    )
+    return Command(
+        update={
+            "user_confirmed": True,
+            "messages": [
+                ToolMessage(content=summary, tool_call_id=tool_call_id),
+                {"role": "user", "content": user_content},
+            ],
+        }
+    )
+
+
+@tool
+async def confirm_intent(
+    summary: str,
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Present an intent summary and transition to artifact phase."""
+    return await _confirm_intent_impl(summary, state, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # write_draft — parity for the `propose` enum branch
 # ---------------------------------------------------------------------------
 
@@ -772,7 +810,16 @@ def get_available_tools(state: WorkflowState) -> list:
       one critique round to assess.
     - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
     - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
+
+    Intent phase (user_confirmed is None) restricts the menu to exploration + confirmation:
+    write_draft / finalize / run_critique are absent until confirm_intent flips user_confirmed=True.
     """
+    if state.get("user_confirmed") is None:
+        intent_tools = [ask_user, respond, explore_note, critique_note, confirm_intent]
+        if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
+            intent_tools = [t for t in intent_tools if t.name not in NOTE_TOOL_NAMES]
+        return intent_tools
+
     tools = [ask_user, respond, write_draft, critique_note, explore_note]
     has_draft = bool(_cached_draft_body(state).strip())
     critique_rounds = state.get("critique_rounds") or 0

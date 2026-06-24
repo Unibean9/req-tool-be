@@ -40,6 +40,9 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
 
     llm = ScriptedLLM(tool_brain=[
         tool_select("ask_user", message="Đối tượng người dùng chính là ai?", active_mode="discovery"),
+        tool_select("confirm_intent",
+                    summary="Đặt mục tiêu đo lường được cho công cụ điều phối lịch học nhóm của sinh viên.",
+                    active_mode="discovery"),
         tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -49,6 +52,7 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
         actions=[
             {"type": "send", "content": "Tôi muốn đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
             {"type": "send", "content": "Chủ yếu là sinh viên đại học học theo nhóm."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -73,6 +77,9 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     project_id = uuid.UUID(project["id"])
 
     llm = ScriptedLLM(tool_brain=[
+        tool_select("confirm_intent",
+                    summary="Đặt mục tiêu cho công cụ điều phối lịch học nhóm của sinh viên.",
+                    active_mode="discovery"),
         tool_select("write_draft", title="Mục tiêu (bản nháp)", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -81,6 +88,7 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
         llm=llm,
         actions=[
             {"type": "send", "content": "Đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
             {"type": "reject_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 0},

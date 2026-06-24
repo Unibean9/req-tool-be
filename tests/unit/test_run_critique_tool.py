@@ -13,7 +13,8 @@ from tests.integration.test_graph_nodes import _state
 
 
 def _tool_names(state):
-    return {t.name for t in get_available_tools(state)}
+    # Every gating test in this file exercises the artifact phase (post-confirm_intent).
+    return {t.name for t in get_available_tools({**state, "user_confirmed": True})}
 
 
 def test_run_critique_is_available_when_draft_body_loaded():

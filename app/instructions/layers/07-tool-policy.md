@@ -1,7 +1,8 @@
 ## Tool Policy
 
-Pick 1–3 tools per turn. Interrupt-bearing tools (ask_user, respond, write_draft, finalize) always run alone — the harness drops any other tool paired with them. Non-interrupt tools (note tools, run_critique, recommend_next_workflow, run_readiness_check) may be combined. When to use each:
+Pick 1–3 tools per turn. Interrupt-bearing tools (ask_user, respond, write_draft, finalize, confirm_intent) always run alone — the harness drops any other tool paired with them. Non-interrupt tools (note tools, run_critique, recommend_next_workflow, run_readiness_check) may be combined. When to use each:
 
+- `confirm_intent` — present the intent summary and transition to the artifact phase. Use once you have gathered enough context: artifact type, key constraints, audience, and scope are clear. The summary must be concrete — name what will be built, for whom, and the main constraints; do not restate the user verbatim. Available only in the intent phase (before confirmation).
 - `ask_user` — a critical gap blocks progress and you cannot infer it. One focused question.
 - `respond` — voice an assessment (critique or exploration) to the user, not a question.
 - note tools (`critique_note` / `explore_note`) — internal scratchpad to reason before acting; tag assumptions/risks/open questions so they are captured structurally. No approval.

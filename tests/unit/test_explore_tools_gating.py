@@ -62,7 +62,7 @@ def test_finalize_not_available_without_draft_body():
 def test_finalize_available_after_write_draft():
     # finalize now also requires critique_rounds > 0 AND a passing, current quality gate (spec §15.1).
     draft = "Một nội dung draft"
-    state = {"messages": [], "working_draft": draft, "critique_rounds": 1, **_pass_gate(draft)}
+    state = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 1, **_pass_gate(draft)}
     assert "finalize" in _names(get_available_tools(state))
 
 
@@ -70,6 +70,7 @@ def test_finalize_hidden_when_gate_fails():
     draft = "Một nội dung draft"
     state = {
         "messages": [],
+        "user_confirmed": True,
         "working_draft": draft,
         "critique_rounds": 1,
         "quality_report": {"quality_gate_result": "fail", "blocking_issues": ["x"]},
@@ -80,15 +81,15 @@ def test_finalize_hidden_when_gate_fails():
 
 def test_finalize_hidden_when_draft_stale():
     draft = "Một nội dung draft"
-    state = {"messages": [], "working_draft": draft + " (đã sửa)", "critique_rounds": 1, **_pass_gate(draft)}
+    state = {"messages": [], "user_confirmed": True, "working_draft": draft + " (đã sửa)", "critique_rounds": 1, **_pass_gate(draft)}
     assert "finalize" not in _names(get_available_tools(state))
 
 
 def test_readiness_check_gated_on_critique_rounds():
     draft = "Một nội dung draft"
-    no_critique = {"messages": [], "working_draft": draft, "critique_rounds": 0}
+    no_critique = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 0}
     assert "run_readiness_check" not in _names(get_available_tools(no_critique))
-    with_critique = {"messages": [], "working_draft": draft, "critique_rounds": 1}
+    with_critique = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 1}
     assert "run_readiness_check" in _names(get_available_tools(with_critique))
 
 
@@ -137,7 +138,7 @@ def test_note_step_limit_does_not_block_run_critique():
     # run_critique is not a NOTE_TOOL, so the note step-limit must not gate it — only the draft
     # presence + critique-rounds cap do. After NOTE_STEP_LIMIT notes it is still offered.
     messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
-    names = _names(get_available_tools({"messages": messages, "working_draft": "draft body"}))
+    names = _names(get_available_tools({"messages": messages, "user_confirmed": True, "working_draft": "draft body"}))
     assert "run_critique" in names
 
 

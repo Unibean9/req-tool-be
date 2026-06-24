@@ -114,6 +114,20 @@ _STORY_BODY = (
 )
 
 
+# Every session opens in the intent phase (user_confirmed is None); confirm_intent transitions to
+# the artifact phase before write_draft becomes available (D6). Each scenario passes through this
+# gate with a confirm turn followed by a user continue.
+def _confirm_turn():
+    return tool_select(
+        "confirm_intent",
+        summary="Xây công cụ điều phối lịch học nhóm cho sinh viên, ưu tiên tìm khung giờ rảnh chung.",
+        active_mode="discovery",
+    )
+
+
+_CONTINUE = {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."}
+
+
 def _scenario(name: str, artifact_type: str, llm: ScriptedLLM, actions, expect) -> Scenario:
     return Scenario(name=name, artifact_type=artifact_type, llm=llm, actions=actions, expect=expect)
 
@@ -126,13 +140,17 @@ def _draft_approve(
     Used to give every artifact type one self-contained behavior scenario whose
     produced artifact the judge can score.
     """
-    llm = ScriptedLLM(tool_brain=[tool_select("write_draft", title=title, body=body, active_mode="structuring")])
+    llm = ScriptedLLM(tool_brain=[
+        _confirm_turn(),
+        tool_select("write_draft", title=title, body=body, active_mode="structuring"),
+    ])
     return _scenario(
         name,
         artifact_type,
         llm,
         actions=[
             {"type": "send", "content": opening},
+            _CONTINUE,
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -157,6 +175,7 @@ def multi_turn_qna() -> Scenario:
             tool_select("ask_user", message="Đối tượng người dùng chính của công cụ là ai?", active_mode="discovery"),
             tool_select("ask_user", message="Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
                         active_mode="discovery", acknowledgment="Rõ rồi, là sinh viên."),
+            _confirm_turn(),
             tool_select("write_draft", title="Intent: Điều phối lịch học nhóm cho sinh viên",
                         body=_INTENT_BODY, active_mode="structuring"),
         ]
@@ -169,6 +188,7 @@ def multi_turn_qna() -> Scenario:
             {"type": "send", "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm."},
             {"type": "send", "content": "Chủ yếu là sinh viên đại học học theo nhóm."},
             {"type": "send", "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm."},
+            _CONTINUE,
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -179,6 +199,7 @@ def reject_then_explore() -> Scenario:
     """User rejects the first proposed draft (explore more), agent asks, then drafts again."""
     llm = ScriptedLLM(
         tool_brain=[
+            _confirm_turn(),
             tool_select("write_draft", title="Intent (bản nháp)", body=_INTENT_BODY, active_mode="structuring"),
             tool_select("ask_user", active_mode="structuring",
                         message="Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?"),
@@ -192,6 +213,7 @@ def reject_then_explore() -> Scenario:
         llm,
         actions=[
             {"type": "send", "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm."},
+            _CONTINUE,
             {"type": "reject_all"},
             {"type": "send", "content": "Hãy làm rõ phạm vi MVP giúp tôi."},
             {"type": "approve_all"},
@@ -203,7 +225,10 @@ def reject_then_explore() -> Scenario:
 def reject_proposal() -> Scenario:
     """User rejects the proposed draft at the approval gate — no artifacts created."""
     llm = ScriptedLLM(
-        tool_brain=[tool_select("write_draft", title="Intent: bản đề xuất", body=_INTENT_BODY, active_mode="structuring")]
+        tool_brain=[
+            _confirm_turn(),
+            tool_select("write_draft", title="Intent: bản đề xuất", body=_INTENT_BODY, active_mode="structuring"),
+        ]
     )
     return _scenario(
         "reject-proposal",
@@ -211,6 +236,7 @@ def reject_proposal() -> Scenario:
         llm,
         actions=[
             {"type": "send", "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch."},
+            _CONTINUE,
             {"type": "reject_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 0},
@@ -221,12 +247,13 @@ def problem_propose_approve() -> Scenario:
     """Happy path for a `problem` artifact — used by the aggregated-document test."""
     llm = ScriptedLLM(
         tool_brain=[
+            _confirm_turn(),
             tool_select(
                 "write_draft",
                 title="Vấn đề: Điều phối lịch học nhóm thủ công",
                 body=_PROBLEM_BODY,
                 active_mode="structuring",
-            )
+            ),
         ]
     )
     return _scenario(
@@ -235,6 +262,7 @@ def problem_propose_approve() -> Scenario:
         llm,
         actions=[
             {"type": "send", "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch."},
+            _CONTINUE,
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},

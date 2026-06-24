@@ -4,6 +4,7 @@ from langgraph.prebuilt import ToolNode
 
 from app.graphs.agent_tools import (
     ask_user,
+    confirm_intent,
     critique_note,
     explore_note,
     finalize,
@@ -40,6 +41,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         ToolNode([
             ask_user, write_draft, finalize, critique_note, explore_note,
             respond, run_critique, recommend_next_workflow, run_readiness_check,
+            confirm_intent,
         ]),
     )
 
