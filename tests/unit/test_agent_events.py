@@ -137,6 +137,7 @@ async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_s
 
 def test_ui_status_function_unit():
     assert _ui_status(AgentSessionStatus.ACTIVE, None) == "processing"
+    assert _ui_status(AgentSessionStatus.ACTIVE, AgentSessionInterruptType.STREAM_RESPONSE) == "waiting_input"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.PROPOSE_ARTIFACTS) == "waiting_approval"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.ASK_HUMAN) == "waiting_input"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, None) == "waiting_input"
@@ -167,6 +168,17 @@ async def test_ui_status_active(client, db_session):
     project_id = await _project_id(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.ACTIVE)
     assert snapshot["session"]["ui_status"] == "processing"
+
+
+@pytest.mark.asyncio
+async def test_ui_status_stream_response(client, db_session):
+    project_id = await _project_id(client)
+    snapshot = await _snapshot_for(
+        db_session, project_id,
+        status=AgentSessionStatus.ACTIVE,
+        interrupt_type=AgentSessionInterruptType.STREAM_RESPONSE,
+    )
+    assert snapshot["session"]["ui_status"] == "waiting_input"
 
 
 @pytest.mark.asyncio

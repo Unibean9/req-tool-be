@@ -943,6 +943,8 @@ def _session_ui_status(status: Any, interrupt_type: Any) -> str:
     status_val = getattr(status, "value", status)
     interrupt_val = getattr(interrupt_type, "value", interrupt_type)
     if status_val == AgentSessionStatus.ACTIVE.value:
+        if interrupt_val == AgentSessionInterruptType.STREAM_RESPONSE.value:
+            return "waiting_input"
         return "processing"
     if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
