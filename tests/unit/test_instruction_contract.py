@@ -1,10 +1,14 @@
-"""Tests for the layered instruction contract (Phase 7B; spec §5, §6, §13, addendum §9)."""
+"""Tests for the layered instruction contract (Phase 7B; spec §5, §6, §13, addendum §9).
+
+Also covers D5 contextual layers: has_draft filtering and cache isolation.
+"""
 
 from pathlib import Path
 
 import pytest
 
-from app.instructions import get_instruction, load_instructions, role_overlay
+import app.instructions as instr_module
+from app.instructions import _assembled_cache, get_instruction, load_instructions, role_overlay
 
 _SHARED_MARKERS = (
     "Requirements Taxonomy",
@@ -109,3 +113,44 @@ def test_output_contract_carries_content_depth_rule():
     assert "evidence and context" in instruction
     assert "Do not paste the full transcript" in instruction
     assert "(agent suy diễn, cần xác nhận)" in instruction
+
+
+# ---------------------------------------------------------------------------
+# D5 — Contextual layers (has_draft filtering)
+# ---------------------------------------------------------------------------
+
+def test_has_draft_false_omits_critique_policy():
+    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
+    if not layer_path.exists():
+        pytest.skip("layer 08 not present in this env")
+    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    assert result is not None
+    assert marker not in result
+
+
+def test_has_draft_true_includes_critique_policy():
+    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
+    if not layer_path.exists():
+        pytest.skip("layer 08 not present in this env")
+    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    assert result is not None
+    assert marker in result
+
+
+def test_context_none_behaves_same_as_has_draft_true():
+    """context=None backward-compat: same full instruction as has_draft=True."""
+    r_none = get_instruction("brd", "product_analysis", None, context=None)
+    r_true = get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    assert r_none == r_true
+
+
+def test_cache_entries_for_false_and_true_are_distinct():
+    _assembled_cache.clear()
+    get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    role = "business_analyst"
+    assert (role, False) in _assembled_cache
+    assert (role, True) in _assembled_cache
+    assert _assembled_cache[(role, False)] != _assembled_cache[(role, True)]

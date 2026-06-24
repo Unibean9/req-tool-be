@@ -157,6 +157,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "assumptions",
         "risks",
         "open_questions",
+        "key_facts",
         "focused_artifact_id",
         "draft_body",
         "method_profile",

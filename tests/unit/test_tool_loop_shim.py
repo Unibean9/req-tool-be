@@ -53,8 +53,8 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
     assert isinstance(ai, AIMessage)
     assert ai.tool_calls[0]["name"] == "ask_user"
     assert ai.tool_calls[0]["args"]["message"] == "Bạn muốn xây gì?"
-    # tool_call.id == AgentRun.id so the tool idempotency keys line up on resume.
-    assert ai.tool_calls[0]["id"] == out["last_agent_run_id"]
+    # D1: tool_call.id == "{run_id}:{i}" — first tool has id "{run_id}:0".
+    assert ai.tool_calls[0]["id"] == f"{out['last_agent_run_id']}:0"
     # analytic fields still persist so eval (active_mode) and coverage do not regress; the model
     # reports the spec §7.1 'discovery' baseline directly.
     assert out["analysis_result"]["active_mode"] == "discovery"

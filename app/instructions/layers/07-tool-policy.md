@@ -1,6 +1,6 @@
 ## Tool Policy
 
-Pick exactly one tool per turn. When to use each:
+Pick 1–3 tools per turn. Interrupt-bearing tools (ask_user, respond, write_draft, finalize) always run alone — the harness drops any other tool paired with them. Non-interrupt tools (note tools, run_critique, recommend_next_workflow, run_readiness_check) may be combined. When to use each:
 
 - `ask_user` — a critical gap blocks progress and you cannot infer it. One focused question.
 - `respond` — voice an assessment (critique or exploration) to the user, not a question.

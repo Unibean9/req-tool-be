@@ -134,7 +134,11 @@ async def artifact_stage(
 async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     # ToolCall.id is the correct idempotency key here: inside the ToolNode body
     # state["last_agent_run_id"] still belongs to the prior analyze_node, not this invocation.
-    user_content = await nodes._save_and_interrupt_ask(state, config, message, run_id=tool_call_id)
+    # interrupt_kind="stream_response": session stays ACTIVE so the conversation resume path applies
+    # (not the approval-gate path). The graph still halts via interrupt() — only the DB fields differ.
+    user_content = await nodes._save_and_interrupt_ask(
+        state, config, message, run_id=tool_call_id, interrupt_kind="stream_response"
+    )
     return Command(
         update={
             "messages": [
@@ -368,7 +372,7 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
     # them. Append (prior + new) since these channels have no reducer.
     extracted = extract_structured_objects(content)
     update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
-    for bucket in ("assumptions", "risks", "open_questions"):
+    for bucket in ("assumptions", "risks", "open_questions", "key_facts"):
         if extracted[bucket]:
             update[bucket] = [*(state.get(bucket) or []), *extracted[bucket]]
     return Command(update=update)

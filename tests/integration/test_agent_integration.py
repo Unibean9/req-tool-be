@@ -109,7 +109,7 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
 
     # Tool-loop: analyze (the entry node) picks the ask_user tool, which interrupts for the human.
     # The mock returns this selection dict for every generate.
-    llm = _mock_llm({"tool": "ask_user", "message": "Bạn muốn gì?", "confidence": 0.9, "active_mode": "discovery"})
+    llm = _mock_llm({"tools": [{"name": "ask_user", "args": {"message": "Bạn muốn gì?"}}], "confidence": 0.9, "active_mode": "discovery"})
 
     # No checkpointer — avoids checkpointer + node concurrent session writes in test
     graph = build_graph(checkpointer=None)
@@ -145,8 +145,8 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
     from sqlalchemy import select
     async with TestSessionFactory() as verify_db:
         session_row = (await verify_db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-    assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-    assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
+    assert session_row.status == AgentSessionStatus.ACTIVE
+    assert session_row.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
 
 
 # ---------------------------------------------------------------------------

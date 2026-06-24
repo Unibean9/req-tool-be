@@ -188,8 +188,7 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=({
-        "tool": "finalize",
-        "summary": "Hoàn tất",
+        "tools": [{"name": "finalize", "args": {"summary": "Hoàn tất"}}],
     }, None))
 
     state = _state(artifact_type="problem_statement")
@@ -205,7 +204,7 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     assert result["focused_artifact_id"] == str(child_b.id)
     assert result["critique_rounds"] == 0
     assert result["last_critiqued_draft_hash"] is None
-    assert result["analysis_result"]["tool"] == "ask_user"
+    assert result["analysis_result"]["tools"][0]["name"] == "ask_user"
     assert result["analysis_result"]["gated_tool"] == "finalize"
 
 
@@ -705,8 +704,8 @@ def _smart_llm():
     async def _generate(*, messages, system, max_tokens, response_format=None):
         if response_format is TOOL_SELECTION_SCHEMA:
             analyze_calls.append(1)
-            return {"tool": "ask_user", "message": "Bạn cần gì thêm?", "confidence": 0.3,
-                    "active_mode": "discovery", "locale": "vi"}, None
+            return {"tools": [{"name": "ask_user", "args": {"message": "Bạn cần gì thêm?"}}],
+                    "confidence": 0.3, "active_mode": "discovery", "locale": "vi"}, None
         return {}, None
 
     llm.generate = _generate
@@ -882,7 +881,7 @@ def test_analysis_schema_accepts_answer_assessment_and_acknowledgment():
     props = TOOL_SELECTION_SCHEMA["properties"]
     assert "answer_assessment" in props
     assert "acknowledgment" in props
-    assert TOOL_SELECTION_SCHEMA["required"] == ["tool"]
+    assert TOOL_SELECTION_SCHEMA["required"] == ["tools"]
 
 
 # ---------------------------------------------------------------------------
@@ -1071,7 +1070,7 @@ def test_analysis_schema_accepts_draft_update():
 
     assert "draft_update" in TOOL_SELECTION_SCHEMA["properties"]
     assert TOOL_SELECTION_SCHEMA["properties"]["draft_update"]["type"] == "string"
-    assert TOOL_SELECTION_SCHEMA["required"] == ["tool"]
+    assert TOOL_SELECTION_SCHEMA["required"] == ["tools"]
 
 
 def test_build_prompt_includes_working_draft_block_when_present():
@@ -1227,8 +1226,7 @@ async def test_respond_colon_terminated_message_uses_fallback(client, db_session
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=({
-        "tool": "respond",
-        "message": "Dựa trên thông tin hiện có:",
+        "tools": [{"name": "respond", "args": {"message": "Dựa trên thông tin hiện có:"}}],
         "active_mode": "critique",
     }, None))
 
@@ -1306,7 +1304,7 @@ def test_finalize_degrade_reason_uses_feedback_state():
         "blocking_reasons": ["Thiếu heading bắt buộc"],
     }
 
-    degrade = _degrade_reason(state, "finalize", "ask_user", {"tool": "finalize", "summary": "Xong"})
+    degrade = _degrade_reason(state, "finalize", "ask_user", {"tools": [{"name": "finalize", "args": {"summary": "Xong"}}]})
 
     assert degrade is not None
     assert "quality_gate=fail" in degrade["gated_reason"]

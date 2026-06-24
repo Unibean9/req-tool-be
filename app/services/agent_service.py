@@ -247,15 +247,20 @@ class AgentService:
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
         # A queued message carries only its content; a mode_hint on it is intentionally not
         # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
+        #
+        # Exception: ACTIVE + STREAM_RESPONSE means the graph halted via interrupt() while keeping
+        # status=ACTIVE (conversational Q&A). This is not a "busy" session — it is waiting for a
+        # reply. Fall through to the resume path below rather than queuing.
         if session.status == AgentSessionStatus.ACTIVE:
-            return await self._queue_message(session.id, content)
+            if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
+                return await self._queue_message(session.id, content)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
             raise HTTPException(400, detail="Session đã kết thúc, không thể nhận thêm message")
-        # status == WAITING_FOR_HUMAN below.
+        # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
             return await self._queue_message(session.id, content)
-        if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, None):
+        if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, AgentSessionInterruptType.STREAM_RESPONSE, None):
             raise HTTPException(400, detail="Session không ở trạng thái chờ user message")
 
         is_first_message = session.interrupt_type is None
@@ -695,11 +700,13 @@ class AgentService:
             # The graph paused iff its final state carries an __interrupt__. When it instead reached
             # END, a WAITING_FOR_HUMAN left behind by a tool re-running on resume (tool-loop: the tool
             # re-sets WAITING before its interrupt() returns the resume value) is stale → COMPLETED.
+            # ACTIVE+STREAM_RESPONSE is a valid interrupt-paused state (D4) — only promote ACTIVE to
+            # COMPLETED when the graph actually reached END (graph_ended=True), not on every interrupt.
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-                if row.status == AgentSessionStatus.ACTIVE or (
-                    graph_ended and row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+                if graph_ended and row.status in (
+                    AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN
                 ):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()

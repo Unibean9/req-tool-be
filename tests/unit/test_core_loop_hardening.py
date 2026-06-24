@@ -3,9 +3,11 @@
 Phase 1 — artifact lifecycle helpers (current_draft_body, artifact_stage).
 Phase 2 — per-tool required-arg validation before emit (_missing_required_arg).
 Phase 3 — fail-loud degrade reasons replacing silent coerce (_degrade_reason).
+Phase D4 — interrupt semantics: ask_user → ACTIVE+STREAM_RESPONSE; write_draft regression guard.
 """
 
 import pytest
+from unittest.mock import AsyncMock, patch
 
 from app.graphs.agent_tools import artifact_stage, current_draft_body
 from app.graphs.nodes import _degrade_reason, _missing_required_arg
@@ -121,3 +123,91 @@ def test_degrade_reason_none_for_well_formed_available_pick():
 
 def test_degrade_reason_none_when_model_picks_ask_user():
     assert _degrade_reason(_state(), "ask_user", "ask_user", {"message": "hi"}) is None
+
+
+# --------------------------------------------------------------------------- Phase D4
+
+@pytest.mark.asyncio
+async def test_save_and_interrupt_ask_stream_response_sets_active_status(client, db_session):
+    """ask_user uses interrupt_kind='stream_response' → ACTIVE + STREAM_RESPONSE."""
+    from app.graphs import nodes
+    from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
+    from sqlalchemy import select
+    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.helpers import create_org, create_project, make_auth_headers
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    import uuid
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+        await nodes._save_and_interrupt_ask(
+            state, config, "Câu hỏi?", run_id="call_1", interrupt_kind="stream_response"
+        )
+
+    from tests.conftest import TestSessionFactory
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
+        assert row.status == AgentSessionStatus.ACTIVE
+        assert row.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
+
+
+@pytest.mark.asyncio
+async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_session):
+    """write_draft/respond use default interrupt_kind='ask_human' → WAITING_FOR_HUMAN + ASK_HUMAN (regression guard)."""
+    from app.graphs import nodes
+    from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
+    from sqlalchemy import select
+    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.helpers import create_org, create_project, make_auth_headers
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    import uuid
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    state = _state()
+    state["locale"] = "vi"
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+        await nodes._save_and_interrupt_ask(
+            state, config, "Câu hỏi?", run_id="call_2"
+        )
+
+    from tests.conftest import TestSessionFactory
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))).scalar_one()
+        assert row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+        assert row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
+
+
+def test_ask_user_impl_passes_stream_response_interrupt_kind():
+    """_ask_user_impl calls _save_and_interrupt_ask with interrupt_kind='stream_response'."""
+    from app.graphs import nodes
+    from app.graphs.agent_tools import _ask_user_impl
+
+    captured = {}
+
+    async def fake_save(state, config, content, *, run_id, interrupt_kind="ask_human", **kw):
+        captured["interrupt_kind"] = interrupt_kind
+        return "user_reply"
+
+    with patch.object(nodes, "_save_and_interrupt_ask", side_effect=fake_save):
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(
+            _ask_user_impl("Q?", _state(), {}, "call_x")
+        )
+
+    assert captured["interrupt_kind"] == "stream_response"

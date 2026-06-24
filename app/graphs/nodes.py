@@ -24,28 +24,33 @@ from app.models.agent import (
 )
 from app.services.document_service import DocumentService
 
-# Tool-loop selection schema (Phase 5 shim). The analyst names the tool to run this turn plus its
-# args. The analytic fields feed eval (active_mode) and incremental draft (draft_update).
+# Tool-loop selection schema. The analyst names the tools to run this turn plus per-tool args.
+# tools: list of 1–3 {name, args} objects. Analytic fields (active_mode, locale, etc.) are
+# top-level — they inform eval and state updates, not dispatched as tool args.
 TOOL_SELECTION_SCHEMA = {
     "type": "object",
     "properties": {
-        "tool": {
-            "type": "string",
-            "enum": [
-                "ask_user", "respond", "write_draft", "finalize",
-                "critique_note", "explore_note", "run_critique",
-                "recommend_next_workflow", "run_readiness_check",
-            ],
+        "tools": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "enum": [
+                            "ask_user", "respond", "write_draft", "finalize",
+                            "critique_note", "explore_note", "run_critique",
+                            "recommend_next_workflow", "run_readiness_check",
+                        ],
+                    },
+                    "args": {"type": "object"},
+                },
+                "required": ["name"],
+            },
         },
-        "message": {"type": "string"},
-        "target": {"type": "string"},
-        "mode": {"type": "string"},
-        "title": {"type": "string"},
-        "body": {"type": "string"},
-        "summary": {"type": "string"},
-        "content": {"type": "string"},
         "confidence": {"type": "number"},
-        "gaps": {"type": "array", "items": {"type": "string"}},
         "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
         "acknowledgment": {"type": "string"},
         "active_mode": {
@@ -64,7 +69,7 @@ TOOL_SELECTION_SCHEMA = {
         },
         "planning_track": {"type": "string", "enum": ["quick", "standard", "enterprise"]},
     },
-    "required": ["tool"],
+    "required": ["tools"],
 }
 
 # Valid BMAD workflow modes and planning tracks, plus aliases the LLM may report. analyze_node
@@ -417,6 +422,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         artifact_type=effective_state["artifact_type"],
         workflow_area=effective_state["workflow_area"],
         agent_role=cfg.get("agent_role"),
+        context={"has_draft": draft_body is not None},
     )
     started_at = time.monotonic()
     analysis_result, usage = await llm_client.generate(
@@ -432,28 +438,31 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             "coverage_complete": coverage["coverage_complete"],
         }
 
-    # Tool-loop shim: enforce the finalize hard-gate (and reject unknown picks) by coercing a
-    # selection that names a tool not currently offered down to a safe ask_user (S4). Done before
-    # persist so analysis_result records the tool actually dispatched.
+    # Gate and normalize the tools list. Done before persist so analysis_result records the tools
+    # actually dispatched. The gate coerces unavailable tools to ask_user, then enforces that
+    # interrupt-bearing tools run solo (first interrupt-bearing tool wins, others dropped).
     if isinstance(analysis_result, dict):
-        requested = analysis_result.get("tool")
-        gated_tool = _gate_selected_tool(effective_state, requested)
-        # Fail-loud (Phase 2/3): rather than dispatch a broken or gated tool_call, degrade to a
-        # clarifying re-ask and record WHY in analysis_result (gated_tool/gated_reason) so eval and
-        # tests can observe the degrade instead of seeing a silent ask_user.
-        degrade = _degrade_reason(effective_state, requested, gated_tool, analysis_result)
-        if degrade:
-            analysis_result = {**analysis_result, "tool": "ask_user", **degrade}
-            gated_tool = "ask_user"
-        else:
-            analysis_result = {**analysis_result, "tool": gated_tool}
-        # Derive active_mode from a note tool so S1 proactive coverage is tool-driven, not
-        # dependent on the model also filling active_mode (which it reliably defaults to 'qa').
-        if gated_tool in _NOTE_TOOL_MODE:
-            analysis_result["active_mode"] = _NOTE_TOOL_MODE[gated_tool]
-        # respond carries its own angle: clamp to a valid proactive mode (default critique) so a
-        # user-facing assessment is always a proactive mode, never the discovery baseline.
-        elif gated_tool == "respond":
+        raw_tools = analysis_result.get("tools") or []
+        if not isinstance(raw_tools, list) or not raw_tools:
+            # Backward-compat: model returned old format {"tool": "name", ...}.
+            # Reconstruct per-tool args so the gate can coerce it normally.
+            # NOTE: empty dict {} is a terminal signal (analyst is done) — do NOT coerce it.
+            old_tool = analysis_result.get("tool") or ""
+            if old_tool:
+                old_args = {k: analysis_result.get(k, "") for k in _TOOL_ARG_KEYS.get(old_tool, [])}
+                raw_tools = [{"name": old_tool, "args": old_args}]
+        gated_tools = _gate_selected_tools(effective_state, raw_tools)
+        analysis_result = {**analysis_result, "tools": gated_tools}
+
+        # Observability: record first coerced/dropped tool as gated_tool/gated_reason so eval and
+        # tests can see what was requested vs dispatched (mirrors old _degrade_reason behavior).
+        _record_gate_observability(analysis_result, raw_tools, gated_tools, effective_state)
+
+        # Derive active_mode from the primary (first) gated tool.
+        primary_tool = gated_tools[0]["name"] if gated_tools else None
+        if primary_tool in _NOTE_TOOL_MODE:
+            analysis_result["active_mode"] = _NOTE_TOOL_MODE[primary_tool]
+        elif primary_tool == "respond":
             mode = analysis_result.get("active_mode")
             analysis_result["active_mode"] = mode if mode in _RESPOND_MODES else "critique"
 
@@ -506,23 +515,26 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         **focus_reset_update,
         **coverage,
     }
-    # Tool-loop shim: emit the selected tool as an AIMessage(tool_calls) so route_node dispatches it
-    # to the ToolNode. tool_call.id = AgentRun.id keeps the tool idempotency keys aligned on resume.
-    # tool=None means the analyst is done: emit a plain AIMessage (no tool_calls) so route_node ends.
+    # Emit the gated tools as AIMessage(tool_calls=[...]) so route_node dispatches to the ToolNode.
+    # tool_call.id = "{run_id}:{i}" — unique per call in the same turn for LangGraph ToolNode
+    # uniqueness. DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
+    # Empty tools list means the analyst is done: emit a plain AIMessage (no tool_calls).
     if isinstance(analysis_result, dict):
-        tool = analysis_result.get("tool")
-        if tool:
-            args = {key: analysis_result.get(key, "") for key in _TOOL_ARG_KEYS[tool]}
-            # A pick coerced to ask_user (gated-out tool) often carries no message — never ask a blank
-            # question; fall back to the same prompt the coverage-gate uses.
-            if tool == "ask_user" and not str(args.get("message") or "").strip():
-                args["message"] = _COERCED_ASK_FALLBACK
-            # respond needs its angle as a tool arg; take the active_mode just clamped above.
-            if tool == "respond":
-                if _response_message_incomplete(args.get("message")):
-                    args["message"] = _RESPOND_FALLBACK
-                args["mode"] = analysis_result.get("active_mode") or "critique"
-            result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
+        gated_tools_list = analysis_result.get("tools") or []
+        if gated_tools_list:
+            tool_calls = []
+            for i, item in enumerate(gated_tools_list):
+                tool = item.get("name") or ""
+                args = dict(item.get("args") or {})
+                # Per-tool post-processing (coercions that must happen at dispatch time).
+                if tool == "ask_user" and not str(args.get("message") or "").strip():
+                    args["message"] = _COERCED_ASK_FALLBACK
+                if tool == "respond":
+                    if _response_message_incomplete(args.get("message")):
+                        args["message"] = _RESPOND_FALLBACK
+                    args["mode"] = args.get("mode") or analysis_result.get("active_mode") or "critique"
+                tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
+            result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
         else:
             done_message = str(analysis_result.get("summary") or analysis_result.get("message") or "")
             result["messages"] = [AIMessage(content=done_message)]
@@ -606,15 +618,26 @@ async def _save_and_interrupt_ask(
     run_id,
     kind: str = "question",
     mode: str | None = None,
+    interrupt_kind: str = "ask_human",
 ) -> str:
-    """Persist one agent turn (idempotently), mark the session waiting, then interrupt.
+    """Persist one agent turn (idempotently), mark the session, then interrupt.
 
-    Shared by ask_user (kind="question") and respond (kind="assessment", mode set). Both use the
-    ASK_HUMAN interrupt_type so the resume accepts a free-text reply; only the persisted message kind
-    and the carried mode differ. Keying the idempotency guard on run_id is what makes an HTTP-resume —
-    which re-executes the tool body from the top — skip the duplicate insert (R1). Returns the resumed
-    user content so the caller can fold it back into the conversation.
+    Shared by ask_user and respond. interrupt_kind controls both DB fields:
+    - "ask_human"      → status=WAITING_FOR_HUMAN, interrupt_type=ASK_HUMAN (default, approval flow)
+    - "stream_response" → status=ACTIVE, interrupt_type=STREAM_RESPONSE (conversational Q&A)
+
+    Keying the idempotency guard on run_id makes an HTTP-resume (which re-executes the tool body
+    from the top) skip the duplicate insert (R1).
     """
+    _INTERRUPT_KIND_MAP = {
+        "ask_human": (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.ASK_HUMAN),
+        "stream_response": (AgentSessionStatus.ACTIVE, AgentSessionInterruptType.STREAM_RESPONSE),
+    }
+    session_status, session_interrupt_type = _INTERRUPT_KIND_MAP.get(
+        interrupt_kind,
+        _INTERRUPT_KIND_MAP["ask_human"],
+    )
+
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
@@ -638,8 +661,8 @@ async def _save_and_interrupt_ask(
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == session_id))
         ).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        session_row.status = session_status
+        session_row.interrupt_type = session_interrupt_type
         await db.commit()
 
     interrupt_payload = {"type": "respond" if kind == "assessment" else "ask_human", "message": content}
@@ -698,6 +721,19 @@ def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     )
 
 
+def _build_key_facts_block(state: WorkflowState) -> str:
+    """Accumulated key facts: confirmed data points the analyst must not re-ask or contradict."""
+    facts = state.get("key_facts") or []
+    if not facts:
+        return ""
+    lines = "\n".join(
+        f"- {f['statement']}"
+        + (f" (nguồn: {f['source']})" if f.get("source") else "")
+        for f in facts
+    )
+    return f"\n\nKEY FACTS đã xác nhận (không hỏi lại):\n{lines}"
+
+
 def _build_working_draft_block(state: WorkflowState) -> str:
     """Running-draft block (C1): the in-session draft accumulated across turns, newer than the
     persisted body, so the model treats it as the live target."""
@@ -721,20 +757,104 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     return bool(getattr(messages[-1], "tool_calls", None))
 
 
-def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | None:
-    """Clamp the analyst's tool pick to the currently offered set.
+def _record_gate_observability(
+    analysis_result: dict, raw_tools: list[dict], gated_tools: list[dict], state: WorkflowState
+) -> None:
+    """Mutate analysis_result in-place with gated_tool/gated_reason when coercion occurred.
 
-    - No pick (None/empty) → None: the loop is done, route_node ends the turn.
-    - A pick outside get_available_tools (e.g. finalize before working_draft exists, an unknown name)
-      → ask_user: a gated-out tool must not dispatch, so degrade to a safe clarifying question.
-    - An offered pick → itself.
+    Preserves the fail-loud contract: eval and tests can always observe what was requested vs
+    dispatched. The first coerced or dropped tool drives the markers.
     """
-    if not selected:
-        return None
+    raw_names = [item.get("name") for item in raw_tools]
+    gated_names = [item.get("name") for item in gated_tools]
+    # Coercion: a tool was replaced by ask_user
+    for orig, gated in zip(raw_names, gated_names):
+        if orig != gated:
+            feedback_detail = _feedback_degrade_detail(state) if orig == "finalize" else ""
+            reason = f"gated: {orig} not available this turn"
+            if feedback_detail:
+                reason = f"{reason}; {feedback_detail}"
+            analysis_result["gated_tool"] = orig
+            analysis_result["gated_reason"] = reason
+            analysis_result.setdefault(
+                "message",
+                _feedback_degrade_message(state) or _GATED_TOOL_PROMPT.format(tool=orig),
+            )
+            return
+    # Solo enforcement: tools were dropped (interrupt-bearing kept, others dropped)
+    if len(gated_tools) < len(raw_tools):
+        gated_set = set(gated_names)
+        dropped = [n for n in raw_names if n not in gated_set]
+        if dropped:
+            analysis_result["gated_tool"] = dropped[0]
+            analysis_result["gated_reason"] = f"dropped: {dropped[0]} paired with interrupt-bearing tool"
+
+
+# Tools that call interrupt() — they must always run solo (no composite dispatch).
+# DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
+# be paired with another tool in the same turn to preserve idempotency invariants.
+_INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
+    "ask_user", "respond", "write_draft", "finalize",
+})
+
+
+def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
+    """Coerce and gate a requested tools list to what is safe to dispatch this turn.
+
+    Three-step gate (order matters):
+    1. Per-tool availability coercion: any tool not in get_available_tools() is replaced by ask_user.
+    2. Required-arg validation: any tool missing a required arg (see _TOOL_REQUIRED_ARGS) is replaced
+       by ask_user so the model must re-ask rather than dispatch an incomplete call.
+    3. Interrupt-bearing solo enforcement: if any tool in the coerced list is interrupt-bearing,
+       keep only the first such tool and drop everything else.
+
+    Returns the gated list (1–N elements, all available, interrupt-bearing at most one).
+    """
     from app.graphs.agent_tools import get_available_tools
 
     available = {t.name for t in get_available_tools(state)}
-    return selected if selected in available else "ask_user"
+
+    # Step 1: per-tool availability coercion
+    coerced: list[dict] = []
+    for item in requested:
+        name = item.get("name") or ""
+        gated_name = name if name in available else "ask_user"
+        coerced.append({**item, "name": gated_name})
+
+    # Step 2: required-arg validation — coerce to ask_user when a required arg is blank
+    validated: list[dict] = []
+    for item in coerced:
+        name = item.get("name") or ""
+        args = item.get("args") or {}
+        missing = next(
+            (a for a in _TOOL_REQUIRED_ARGS.get(name, ()) if not str(args.get(a) or "").strip()),
+            None,
+        )
+        if missing:
+            validated.append({
+                "name": "ask_user",
+                "args": {"message": _MISSING_ARG_PROMPT.format(field=missing)},
+            })
+        else:
+            validated.append(item)
+
+    # Step 3: interrupt-bearing solo enforcement — keep first interrupt-bearing tool only
+    for item in validated:
+        if item["name"] in _INTERRUPT_BEARING_TOOLS:
+            return [item]
+
+    return validated
+
+
+def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | None:
+    """Legacy single-tool gate — kept for backward compatibility with existing call sites.
+
+    Delegates to _gate_selected_tools; always returns a single tool name or None.
+    """
+    if not selected:
+        return None
+    result = _gate_selected_tools(state, [{"name": selected, "args": {}}])
+    return result[0]["name"] if result else None
 
 
 def _missing_required_arg(tool: str | None, analysis_result: dict) -> str | None:
@@ -823,15 +943,17 @@ def _build_tool_selection_prompt(
     working_draft_block = _build_working_draft_block(state)
     contract_block = _build_output_contract_block(state)
     feedback_block = _build_feedback_control_block(state)
+    key_facts_block = _build_key_facts_block(state)
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
         f"Context hiện tại:\n{artifact_context}\n\n"
         f"Hội thoại gần đây:\n{messages_summary}\n\n"
         f"Công cụ khả dụng lượt này: {tool_menu}.\n"
-        "Chọn đúng MỘT công cụ và điền các field của nó theo policy trong system prompt."
+        "Chọn 1–3 công cụ phù hợp và điền các field của từng công cụ theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
         f"{contract_block}"
+        f"{key_facts_block}"
         f"{feedback_block}"
         f"{draft_block}"
         f"{working_draft_block}"

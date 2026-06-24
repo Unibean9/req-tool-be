@@ -54,7 +54,7 @@ async def _analyze(client, db_session, payload, artifact_type="intent", state_mu
 @pytest.mark.asyncio
 async def test_scenario1_vague_idea(client, db_session):
     """Vague idea: no workflow_mode reported, sparse coverage -> brainstorm/brief on the quick track."""
-    result, _, _ = await _analyze(client, db_session, {"tool": "ask_user", "message": "?"})
+    result, _, _ = await _analyze(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}]})
     assert result["method_profile"]["current_workflow"] in {"brainstorm", "brief"}
     assert result["method_profile"]["planning_track"] == "quick"
 
@@ -62,7 +62,7 @@ async def test_scenario1_vague_idea(client, db_session):
 @pytest.mark.asyncio
 async def test_scenario2_clear_direction_records_assumptions_and_risks(client, db_session):
     """Clear direction: workflow_mode brief/prd, and notes feed structured assumptions + risks."""
-    result, _, _ = await _analyze(client, db_session, {"tool": "ask_user", "message": "?", "workflow_mode": "brief"})
+    result, _, _ = await _analyze(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}], "workflow_mode": "brief"})
     assert result["method_profile"]["current_workflow"] in {"brief", "prd"}
 
     note = await _write_note_impl(
@@ -112,7 +112,7 @@ async def test_active_mode_and_workflow_mode_coexist_end_to_end(client, db_sessi
     """active_mode and method_profile.current_workflow are written to distinct state locations."""
     result, _, _ = await _analyze(
         client, db_session,
-        {"tool": "ask_user", "message": "?", "active_mode": "structuring", "workflow_mode": "prd"},
+        {"tools": [{"name": "ask_user", "args": {"message": "?"}}], "active_mode": "structuring", "workflow_mode": "prd"},
     )
     assert result["analysis_result"]["active_mode"] == "structuring"
     assert result["method_profile"]["current_workflow"] == "prd"

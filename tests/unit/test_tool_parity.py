@@ -431,8 +431,9 @@ async def test_ask_user_tool_call_scenario(client, db_session):
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))
         ).scalar_one()
-        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-        assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
+        # D4: ask_user keeps session ACTIVE (conversational Q&A) with STREAM_RESPONSE interrupt type.
+        assert session_row.status == AgentSessionStatus.ACTIVE
+        assert session_row.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
 
     # Resume round-trip: a second invoke with the user's reply must complete, no crash.
     resumed = await graph.ainvoke(Command(resume={"content": "Một app lịch nhóm"}), config)

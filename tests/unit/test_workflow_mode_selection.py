@@ -37,15 +37,15 @@ async def _run(client, db_session, payload, artifact_type="intent"):
 
 @pytest.mark.asyncio
 async def test_workflow_mode_assigned_after_analyze_node(client, db_session):
-    result = await _run(client, db_session, {"tool": "ask_user", "message": "?", "workflow_mode": "brief",
-                                             "planning_track": "quick"})
+    result = await _run(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}],
+                                             "workflow_mode": "brief", "planning_track": "quick"})
     assert result["method_profile"]["current_workflow"] == "brief"
     assert result["method_profile"]["planning_track"] == "quick"
 
 
 @pytest.mark.asyncio
 async def test_active_mode_and_workflow_mode_coexist(client, db_session):
-    result = await _run(client, db_session, {"tool": "ask_user", "message": "?",
+    result = await _run(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}],
                                              "active_mode": "structuring", "workflow_mode": "prd"})
     assert result["analysis_result"]["active_mode"] == "structuring"
     assert result["method_profile"]["current_workflow"] == "prd"
@@ -53,14 +53,14 @@ async def test_active_mode_and_workflow_mode_coexist(client, db_session):
 
 @pytest.mark.asyncio
 async def test_workflow_mode_invalid_value_falls_back_to_brainstorm(client, db_session):
-    result = await _run(client, db_session, {"tool": "ask_user", "message": "?",
+    result = await _run(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}],
                                              "workflow_mode": "invalid_value"})
     assert result["method_profile"]["current_workflow"] == "brainstorm"
 
 
 @pytest.mark.asyncio
 async def test_workflow_mode_product_brief_alias_normalizes_to_brief(client, db_session):
-    result = await _run(client, db_session, {"tool": "ask_user", "message": "?",
+    result = await _run(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}],
                                              "workflow_mode": "product_brief"})
     assert result["method_profile"]["current_workflow"] == "brief"
 
@@ -75,6 +75,9 @@ def test_tool_selection_schema_contains_workflow_mode_and_planning_track():
     # active_mode (Phase 6) still present alongside.
     for value in ("discovery", "structuring", "critique", "revision", "finalization"):
         assert value in props["active_mode"]["enum"]
+    # D1: tools is the required field, not tool.
+    assert "tools" in props
+    assert TOOL_SELECTION_SCHEMA["required"] == ["tools"]
 
 
 def test_infer_workflow_mode_low_coverage_returns_brainstorm():

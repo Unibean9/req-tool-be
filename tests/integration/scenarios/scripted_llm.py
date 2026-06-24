@@ -107,8 +107,9 @@ class ScriptedLLM:
         props = ((response_format or {}).get("properties")) or {}
         if "__tool_call__" in props:
             return "tool_call"
-        # Tool-selection: the analyst names a tool to pick this turn.
-        if "tool" in props:
+        # Tool-selection: the analyst names tools to run this turn (D1: "tools" array schema).
+        # Also accept legacy "tool" key for backward-compat with older tests.
+        if "tools" in props or "tool" in props:
             return "tool_select"
         # Judge guard before the others: the on-topic harness schema.
         if "on_topic" in props:
@@ -159,9 +160,10 @@ def tool_select(tool: str, *, active_mode: str | None = None, **args: Any) -> di
     """A scripted tool-SELECTION turn: the analyst names a tool plus its args.
 
     analyze_node converts this dict into an AIMessage(tool_calls=[...]). `active_mode` is kept as a
-    top-level analytic field (eval reads it from analysis_result), the rest become the tool args.
+    top-level analytic field (eval reads it from analysis_result); remaining kwargs become the
+    per-tool args in the new D1 schema: {"tools": [{"name": tool, "args": {...}}]}.
     """
-    turn: dict[str, Any] = {"tool": tool, **args}
+    turn: dict[str, Any] = {"tools": [{"name": tool, "args": dict(args)}]}
     if active_mode is not None:
         turn["active_mode"] = active_mode
     return turn

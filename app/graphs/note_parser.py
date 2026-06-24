@@ -20,18 +20,20 @@ _OBJECT_SPECS: dict[str, tuple[str, list[str]]] = {
     "ASSUMPTION": ("statement", ["source", "confidence", "impact", "owner", "status"]),
     "RISK": ("statement", ["likelihood", "impact", "mitigation", "owner", "status"]),
     "OPEN_QUESTION": ("question", ["domain", "decision_needed", "status"]),
+    "KEY_FACT": ("statement", ["source", "turn"]),
 }
 
 _PREFIX_TO_BUCKET = {
     "ASSUMPTION": "assumptions",
     "RISK": "risks",
     "OPEN_QUESTION": "open_questions",
+    "KEY_FACT": "key_facts",
 }
 
 
 def extract_structured_objects(content: str) -> dict[str, list[dict[str, Any]]]:
-    """Parse tagged lines in `content` into assumption / risk / open_question objects."""
-    result: dict[str, list[dict[str, Any]]] = {"assumptions": [], "risks": [], "open_questions": []}
+    """Parse tagged lines in `content` into assumption / risk / open_question / key_fact objects."""
+    result: dict[str, list[dict[str, Any]]] = {"assumptions": [], "risks": [], "open_questions": [], "key_facts": []}
     for line in (content or "").splitlines():
         line = line.strip()
         prefix, _, remainder = line.partition(":")
