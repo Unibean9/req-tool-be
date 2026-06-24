@@ -814,14 +814,12 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
 
     available = {t.name for t in get_available_tools(state)}
 
-    # Step 1: per-tool availability coercion
     coerced: list[dict] = []
     for item in requested:
         name = item.get("name") or ""
         gated_name = name if name in available else "ask_user"
         coerced.append({**item, "name": gated_name})
 
-    # Step 2: required-arg validation — coerce to ask_user when a required arg is blank
     validated: list[dict] = []
     for item in coerced:
         name = item.get("name") or ""
@@ -831,6 +829,7 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
             None,
         )
         if missing:
+            # Re-ask rather than dispatch an incomplete call — the model owes a required arg it left blank.
             validated.append({
                 "name": "ask_user",
                 "args": {"message": _MISSING_ARG_PROMPT.format(field=missing)},
@@ -838,7 +837,6 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
         else:
             validated.append(item)
 
-    # Step 3: interrupt-bearing solo enforcement — keep first interrupt-bearing tool only
     for item in validated:
         if item["name"] in _INTERRUPT_BEARING_TOOLS:
             return [item]

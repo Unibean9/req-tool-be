@@ -697,11 +697,9 @@ class AgentService:
                 )
                 result = await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
-            # The graph paused iff its final state carries an __interrupt__. When it instead reached
-            # END, a WAITING_FOR_HUMAN left behind by a tool re-running on resume (tool-loop: the tool
-            # re-sets WAITING before its interrupt() returns the resume value) is stale → COMPLETED.
-            # ACTIVE+STREAM_RESPONSE is a valid interrupt-paused state (D4) — only promote ACTIVE to
-            # COMPLETED when the graph actually reached END (graph_ended=True), not on every interrupt.
+            # Only END (no __interrupt__) means the turn truly finished. A status left behind by a
+            # paused tool is stale and must not be promoted: WAITING_FOR_HUMAN re-set by a tool
+            # re-running on resume, or ACTIVE+STREAM_RESPONSE while halted on a conversational ask (D4).
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
