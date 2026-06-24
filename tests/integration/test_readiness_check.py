@@ -7,7 +7,7 @@ from app.graphs.agent_tools import _run_readiness_check_impl, get_available_tool
 from app.graphs.readiness import compute_readiness_score
 from app.models.agent import AgentToolCall
 from tests.conftest import TestSessionFactory
-from tests.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
+from tests.integration.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
 
 _ALL_SECTIONS = [
     "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",

@@ -10,8 +10,8 @@ step), so a happy path is simply `send opening → approve_all`. ask_user pauses
 turns; reject_all declines a proposed draft.
 """
 
-from tests.scenarios.driver import Scenario
-from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+from tests.integration.scenarios.driver import Scenario
+from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
 # A realistic intent artifact body — gives the judge something substantive to score.
 _INTENT_BODY = (

@@ -12,8 +12,8 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END
 
 from app.graphs.nodes import route_node
-from tests.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
-from tests.test_tool_parity import _project
+from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
+from tests.unit.test_tool_parity import _project
 
 # ---------------------------------------------------------------------------
 # T1 — tool-loop routing behavior
@@ -37,7 +37,7 @@ def test_no_tool_calls_routes_end():
 @pytest.mark.asyncio
 async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_session):
     from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -66,7 +66,7 @@ async def test_respond_selection_derives_mode_and_dispatches_arg(client, db_sess
     proactive mode and passes it as the tool's `mode` arg, so a critique cannot silently fall back
     to Q&A (the note-default-'qa' regression)."""
     from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -90,7 +90,7 @@ async def test_tool_selection_unavailable_tool_coerced_to_ask(client, db_session
     """finalize hard-gate: with an empty working_draft finalize is not offered, so a model that
     picks it anyway is coerced to ask_user rather than dispatching an ungated finalize (S4)."""
     from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -112,7 +112,7 @@ async def test_empty_tool_selection_ends_turn(client, db_session):
     """An empty selection (no tool) is the loop terminal: a plain AIMessage with no tool_calls so
     route_node ends the turn instead of dispatching."""
     from app.graphs.nodes import analyze_node
-    from tests.scenarios.scripted_llm import ScriptedLLM
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -136,7 +136,7 @@ async def test_write_note_selection_dispatches_without_crash(client, db_session)
     from langgraph.checkpoint.memory import MemorySaver
 
     from app.graphs.graph import build_graph
-    from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)

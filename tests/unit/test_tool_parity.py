@@ -27,7 +27,7 @@ from app.models.agent import (
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
-from tests.test_graph_nodes import (
+from tests.integration.test_graph_nodes import (
     _config,
     _make_agent_run,
     _make_agent_session,

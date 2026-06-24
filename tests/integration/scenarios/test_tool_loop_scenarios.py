@@ -10,8 +10,8 @@ import uuid
 
 import pytest
 
-from tests.scenarios.driver import Scenario, ScenarioDriver
-from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
+from tests.integration.scenarios.driver import Scenario, ScenarioDriver
+from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
 pytestmark = pytest.mark.asyncio
 

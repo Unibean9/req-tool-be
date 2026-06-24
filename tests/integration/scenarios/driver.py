@@ -13,9 +13,9 @@ from typing import Any
 from sqlalchemy import select
 
 from tests.conftest import BASE
-from tests.scenarios.conftest import ScenarioEnv
-from tests.scenarios.recorder import TranscriptRecorder
-from tests.scenarios.scripted_llm import ScriptedLLM
+from tests.integration.scenarios.conftest import ScenarioEnv
+from tests.integration.scenarios.recorder import TranscriptRecorder
+from tests.integration.scenarios.scripted_llm import ScriptedLLM
 
 _SCENARIO_ITEM_TYPES = {
     "intent": "vision_objectives",
@@ -114,7 +114,7 @@ class ScenarioDriver:
     async def _seed_accepted_predecessors(self, artifact_type: str) -> None:
         from app.graphs.policy import ARTIFACT_PREDECESSORS
         from app.models.artifact import Artifact, ArtifactStatus
-        from tests.scenarios.conftest import ScenarioSessionFactory
+        from tests.integration.scenarios.conftest import ScenarioSessionFactory
 
         pending = list(ARTIFACT_PREDECESSORS.get(artifact_type, []))
         seen: set[str] = set()

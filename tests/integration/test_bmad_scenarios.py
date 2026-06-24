@@ -15,7 +15,7 @@ from app.graphs.agent_tools import (
 )
 from app.graphs.nodes import analyze_node
 from app.graphs.readiness import compute_readiness_score
-from tests.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
+from tests.integration.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
 
 _ALL_SECTIONS = [
     "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",

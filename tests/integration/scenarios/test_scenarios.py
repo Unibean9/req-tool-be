@@ -10,9 +10,9 @@ import uuid
 
 import pytest
 
-from tests.scenarios.driver import ScenarioDriver
-from tests.scenarios.eval_support import mock_judge, score_artifacts
-from tests.scenarios.library import ALL_SCENARIOS
+from tests.integration.scenarios.driver import ScenarioDriver
+from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
+from tests.integration.scenarios.library import ALL_SCENARIOS
 
 pytestmark = pytest.mark.asyncio
 
