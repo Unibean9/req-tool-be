@@ -10,6 +10,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import select
+
 from tests.conftest import BASE
 from tests.scenarios.conftest import ScenarioEnv
 from tests.scenarios.recorder import TranscriptRecorder
@@ -70,6 +72,7 @@ class ScenarioDriver:
             self.scenario.artifact_type,
         )
         focused_artifact_id = await self._ensure_document_item(item_type)
+        await self._seed_accepted_predecessors(item_type)
         resp = await self.client.post(
             self._sessions_url(),
             json={
@@ -107,6 +110,49 @@ class ScenarioDriver:
         )
         assert created.status_code == 201, created.text
         return created.json()["data"]["artifact_id"]
+
+    async def _seed_accepted_predecessors(self, artifact_type: str) -> None:
+        from app.graphs.policy import ARTIFACT_PREDECESSORS
+        from app.models.artifact import Artifact, ArtifactStatus
+        from tests.scenarios.conftest import ScenarioSessionFactory
+
+        pending = list(ARTIFACT_PREDECESSORS.get(artifact_type, []))
+        seen: set[str] = set()
+        predecessors: list[str] = []
+        while pending:
+            current = pending.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            predecessors.append(current)
+            pending.extend(ARTIFACT_PREDECESSORS.get(current, []))
+        if not predecessors:
+            return
+
+        async with ScenarioSessionFactory() as db:
+            for pred in predecessors:
+                existing_rows = (
+                    await db.execute(
+                        select(Artifact).where(
+                            Artifact.project_id == self.project_id,
+                            Artifact.type == pred,
+                        )
+                    )
+                ).scalars().all()
+                if existing_rows:
+                    for row in existing_rows:
+                        row.status = ArtifactStatus.ACCEPTED
+                    continue
+                db.add(
+                    Artifact(
+                        project_id=self.project_id,
+                        type=pred,
+                        title=f"Seed {pred}",
+                        status=ArtifactStatus.ACCEPTED,
+                        extra_metadata={"scenario_seed": True},
+                    )
+                )
+            await db.commit()
 
     async def _send_message(self, content: str) -> int:
         resp = await self.client.post(

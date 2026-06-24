@@ -65,6 +65,10 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
         "candidate_readiness": None,
+        "tool_errors": [],
+        "feedback_summary": None,
+        "verification_status": None,
+        "latest_checked_revision": None,
         "mode_hint": None,
     }
 
@@ -1250,6 +1254,64 @@ def test_mode_hint_injects_directive_into_prompt():
     prompt = _build_tool_selection_prompt(state, [])
 
     assert "critique" in prompt
+
+
+def test_feedback_control_block_injects_blockers_and_revision_plan():
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    state = _state(artifact_type="goal")
+    state["quality_report"] = {
+        "mode": "critique",
+        "score": 0.41,
+        "findings": ["Metric success chưa đo được"],
+        "suggestions": ["Thêm baseline và target định lượng"],
+        "blocking_issues": ["Metric success chưa đo được"],
+        "non_blocking_warnings": [],
+        "revision_plan": ["Thêm baseline và target định lượng"],
+        "quality_gate_result": "fail",
+        "recommended_next_action": "revise",
+    }
+    state["candidate_readiness"] = {
+        "state": "well_structured_but_incomplete",
+        "can_persist": False,
+        "missing": ["Success Metrics"],
+        "needs_confirmation": ["Target 15%"],
+        "inferred": [],
+        "blocking_reasons": ["Thiếu metric bắt buộc"],
+    }
+
+    prompt = _build_tool_selection_prompt(state, [])
+
+    assert "FEEDBACK CONTROL" in prompt
+    assert "Metric success chưa đo được" in prompt
+    assert "Thêm baseline và target định lượng" in prompt
+    assert "well_structured_but_incomplete" in prompt
+    assert "Success Metrics" in prompt
+    assert "revise" in prompt
+
+
+def test_finalize_degrade_reason_uses_feedback_state():
+    from app.graphs.nodes import _degrade_reason
+
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft"
+    state["quality_report"] = {
+        "quality_gate_result": "fail",
+        "blocking_issues": ["Metric chưa kiểm chứng"],
+        "recommended_next_action": "revise",
+    }
+    state["candidate_readiness"] = {
+        "state": "well_structured_but_incomplete",
+        "can_persist": False,
+        "blocking_reasons": ["Thiếu heading bắt buộc"],
+    }
+
+    degrade = _degrade_reason(state, "finalize", "ask_user", {"tool": "finalize", "summary": "Xong"})
+
+    assert degrade is not None
+    assert "quality_gate=fail" in degrade["gated_reason"]
+    assert "candidate_readiness=well_structured_but_incomplete" in degrade["gated_reason"]
+    assert "Metric chưa kiểm chứng" in degrade["message"]
 
 
 def test_proactive_rule_lives_in_instruction_layer_not_payload():

@@ -137,6 +137,10 @@ class WorkflowState(TypedDict):
     draft_body: str | None
     working_draft: str | None
     candidate_readiness: dict[str, Any] | None
+    tool_errors: list[dict[str, Any]]
+    feedback_summary: dict[str, Any] | None
+    verification_status: dict[str, Any] | None
+    latest_checked_revision: str | None
     # BMAD method layer (addendum §8) — sits above the 7-section engine; analyze_node assigns
     # workflow_mode / planning_track each turn. Independent of active_mode.
     method_profile: MethodProfile
@@ -145,3 +149,53 @@ class WorkflowState(TypedDict):
     # Multi-angle mode steering. A one-shot hint set by the user to switch the
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.
     mode_hint: str | None
+
+
+def build_initial_workflow_state(
+    *,
+    artifact_type: str,
+    workflow_area: str,
+    step_key: str | None,
+    messages: list[dict[str, Any]] | None = None,
+    missing_context: list[str] | None = None,
+    focused_artifact_id: Any = None,
+    mode_hint: str | None = None,
+) -> WorkflowState:
+    """Tạo state khởi tạo duy nhất cho mọi đường vào graph."""
+    return {
+        "artifact_type": artifact_type,
+        "workflow_area": workflow_area,
+        "step_key": step_key,
+        "messages": list(messages or []),
+        "conversation_summary": "",
+        "analysis_result": None,
+        "pending_tool_call_ids": [],
+        "last_agent_run_id": None,
+        "turn_count": 0,
+        "missing_context": list(missing_context or []),
+        "user_confirmed": None,
+        "critique_rounds": 0,
+        "quality_report": None,
+        "last_critiqued_draft_hash": None,
+        "locale": None,
+        "turn_type": None,
+        "triage_reply": None,
+        "section_coverage": None,
+        "coverage_complete": None,
+        "section_coverage_stall_count": None,
+        "assumptions": [],
+        "risks": [],
+        "open_questions": [],
+        "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
+        "draft_body": None,
+        "working_draft": None,
+        "candidate_readiness": None,
+        "tool_errors": [],
+        "feedback_summary": None,
+        "verification_status": None,
+        "latest_checked_revision": None,
+        "method_profile": dict(DEFAULT_METHOD_PROFILE),
+        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
+        "readiness": dict(DEFAULT_READINESS),
+        "mode_hint": mode_hint,
+    }

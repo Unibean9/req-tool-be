@@ -15,59 +15,100 @@ from tests.scenarios.scripted_llm import ScriptedLLM, tool_select
 
 # A realistic intent artifact body — gives the judge something substantive to score.
 _INTENT_BODY = (
-    "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. "
-    "Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. "
-    "Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung."
+    "## Vision\n"
+    "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung để giảm xung đột lịch.\n\n"
+    "## Objectives\n"
+    "- Tạo nhóm học và đồng bộ lịch cá nhân.\n"
+    "- Gợi ý khung giờ rảnh chung cho cả nhóm.\n"
+    "- Tăng tỉ lệ tham gia buổi học nhóm.\n\n"
+    "## Success Metrics\n"
+    "- Giảm thời gian điều phối từ 30 phút xuống dưới 10 phút mỗi tuần trong 3 tháng."
 )
 
 _PROBLEM_BODY = (
-    "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi. "
-    "Tần suất: mỗi tuần mỗi nhóm mất ~30 phút điều phối. "
-    "Tác động: tỉ lệ tham gia buổi nhóm dưới 60%."
+    "## Problem Statement\n"
+    "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi.\n\n"
+    "## Affected Users\n"
+    "Nhóm sinh viên 4-6 người và trưởng nhóm chịu trách nhiệm chốt lịch.\n\n"
+    "## Impact\n"
+    "Mỗi tuần mỗi nhóm mất khoảng 30 phút điều phối; tỉ lệ tham gia buổi nhóm dưới 60%.\n\n"
+    "## Root Cause / Contributing Factors\n"
+    "Lịch cá nhân phân tán, thiếu cách tính giao khung giờ rảnh và thiếu xác nhận tập trung."
 )
 
 _STAKEHOLDER_BODY = (
-    "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; "
-    "(2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; "
-    "(3) Giảng viên — theo dõi tiến độ buổi nhóm. "
-    "Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, "
-    "thành viên chỉ xem và xác nhận khung giờ rảnh của mình."
+    "## Stakeholders\n"
+    "| role | responsibility | decision authority | needs/concerns | involvement |\n"
+    "| --- | --- | --- | --- | --- |\n"
+    "| Trưởng nhóm | Tạo nhóm và chốt buổi học | Cao | Cần lịch chung nhanh | Hằng tuần |\n"
+    "| Thành viên | Đồng bộ lịch cá nhân | Trung bình | Chỉ chia sẻ trạng thái rảnh/bận | Hằng tuần |\n"
+    "| Giảng viên | Theo dõi tiến độ nhóm | Thấp | Muốn nhóm duy trì nhịp học | Theo đợt |"
 )
 
 # Goal must carry a metric + time-bound to satisfy the SMART validator heuristic.
 _GOAL_BODY = (
-    "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm "
-    "từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm "
-    "từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ."
+    "## Scope\n"
+    "MVP tập trung vào nhóm sinh viên cần tìm khung giờ học chung trong tuần.\n\n"
+    "## Capabilities\n"
+    "| capability | priority | rationale | dependency |\n"
+    "| --- | --- | --- | --- |\n"
+    "| Tạo nhóm học | Must | Có danh sách thành viên để đối chiếu lịch | Tài khoản người dùng |\n"
+    "| Đồng bộ lịch cá nhân | Must | Xác định khung bận/rảnh | Tích hợp Google Calendar |\n"
+    "| Gợi ý khung giờ chung | Must | Giảm thời gian điều phối từ 30 phút xuống dưới 10 phút | Dữ liệu lịch |\n\n"
+    "## Out of Scope\n"
+    "- Thanh toán, quản lý điểm danh nâng cao và phân tích học tập dài hạn."
 )
 
 # Functional requirement — concrete, measurable behavior.
 _FR_BODY = (
-    "Hệ thống phải cho phép thành viên kết nối lịch cá nhân (Google Calendar) và "
-    "trích xuất các khung giờ bận. Khi trưởng nhóm yêu cầu, hệ thống tính giao của "
-    "các khung rảnh và trả về danh sách khung giờ chung kèm số thành viên rảnh tương ứng. "
-    "Kết quả cập nhật lại trong vòng 5 giây sau khi có thay đổi lịch."
+    "## Functional Requirement\n"
+    "Hệ thống phải cho phép thành viên kết nối lịch cá nhân và trích xuất các khung giờ bận.\n\n"
+    "## Behavior\n"
+    "Khi trưởng nhóm yêu cầu, hệ thống tính giao các khung rảnh và trả về danh sách khung giờ chung.\n\n"
+    "## Inputs and Outputs\n"
+    "- Input: lịch cá nhân, danh sách thành viên, khoảng thời gian cần tìm.\n"
+    "- Output: khung giờ chung kèm số thành viên rảnh tương ứng.\n\n"
+    "## Acceptance Signals\n"
+    "- Kết quả cập nhật trong vòng 5 giây sau khi có thay đổi lịch."
 )
 
 # Non-functional requirement — quality attributes with thresholds.
 _NFR_BODY = (
-    "Thời gian phản hồi khi tính khung giờ chung cho nhóm tối đa 8 thành viên phải dưới "
-    "2 giây ở phân vị 95. Hệ thống phục vụ đồng thời 500 nhóm hoạt động mà không vượt 70% CPU. "
-    "Dữ liệu lịch cá nhân được mã hoá khi lưu và chỉ trưởng nhóm xem được bản tổng hợp."
+    "## Quality Attribute\n"
+    "Hiệu năng và bảo mật dữ liệu lịch cá nhân.\n\n"
+    "## Requirement\n"
+    "Tính khung giờ chung cho nhóm tối đa 8 thành viên phải phản hồi dưới 2 giây ở p95.\n\n"
+    "## Measurement\n"
+    "- Load test 500 nhóm hoạt động đồng thời, CPU không vượt 70%.\n"
+    "- Kiểm tra dữ liệu lịch được mã hóa khi lưu.\n\n"
+    "## Scope and Tradeoffs\n"
+    "Ưu tiên phản hồi nhanh cho nhóm nhỏ; báo lỗi rõ nếu nhóm vượt giới hạn MVP."
 )
 
 # Epic must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _EPIC_BODY = (
-    "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, "
-    "gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, "
-    "thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi."
+    "## Use Case\n"
+    "Đồng bộ và đối chiếu lịch nhóm để gợi ý buổi học.\n\n"
+    "## Actors\n"
+    "- Trưởng nhóm\n"
+    "- Thành viên nhóm\n\n"
+    "## Preconditions\n"
+    "Các thành viên đã tham gia nhóm và có thể kết nối lịch cá nhân.\n\n"
+    "## Main Flow\n"
+    "1. Thành viên đồng bộ lịch.\n"
+    "2. Trưởng nhóm yêu cầu tìm khung giờ chung.\n"
+    "3. Hệ thống trả danh sách khung giờ khả dụng.\n"
+    "4. Trưởng nhóm chốt buổi học.\n\n"
+    "## Alternate / Exception Flows\n"
+    "- Nếu không có khung giờ chung, hệ thống gợi ý khung gần nhất kèm thành viên vắng.\n\n"
+    "## Postconditions\n"
+    "Buổi học được chốt hoặc có lý do rõ vì sao chưa thể chốt."
 )
 
 # Story must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _STORY_BODY = (
-    "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học "
-    "mà không phải hỏi từng người.\n"
-    "Tiêu chí chấp nhận (acceptance):\n"
+    "## Acceptance Criteria\n"
+    "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học mà không phải hỏi từng người.\n\n"
     "- Khi tất cả thành viên đã đồng bộ lịch, thì hệ thống hiển thị tối thiểu 3 khung giờ trùng rảnh trong tuần.\n"
     "- Khi không có khung giờ chung, thì hệ thống gợi ý khung gần nhất kèm số thành viên vắng."
 )

@@ -45,6 +45,31 @@ from app.schemas.artifact_synthesis import (
 )
 from app.services.document_service import DocumentService
 
+
+class RecoverableToolError(Exception):
+    def __init__(self, *, code: str, message: str, user_fixable: bool = False) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.user_fixable = user_fixable
+
+
+def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Command:
+    return Command(
+        update={
+            "tool_errors": [
+                {
+                    "code": exc.code,
+                    "classification": "recoverable",
+                    "user_fixable": exc.user_fixable,
+                    "message": exc.message,
+                }
+            ],
+            "messages": [ToolMessage(content=exc.message, tool_call_id=tool_call_id)],
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Artifact lifecycle — single source for the draft body and a derived stage
 # ---------------------------------------------------------------------------
@@ -146,7 +171,17 @@ async def _write_draft_impl(
     run_id = uuid.UUID(state["last_agent_run_id"])
     focused_artifact_id = state.get("focused_artifact_id")
     if not focused_artifact_id:
-        raise RuntimeError("write_draft requires focused_artifact_id")
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="missing_focused_artifact",
+                message=(
+                    "Không thể write_draft vì state thiếu focused_artifact_id; "
+                    "hãy chọn document item cần viết trước khi tạo proposal."
+                ),
+                user_fixable=True,
+            ),
+            tool_call_id,
+        )
     tool_key = f"write_draft:{focused_artifact_id}"
 
     async with session_factory() as db:
@@ -177,8 +212,8 @@ async def _write_draft_impl(
                 base_version_id=focused.current_version_id,
                 evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
                 inference_level="medium",
-                confirmed_assumptions=list(state.get("assumptions") or []),
-                pending_assumptions=list(state.get("open_questions") or []),
+                confirmed_assumptions=[a["statement"] for a in (state.get("assumptions") or [])],
+                pending_assumptions=[q["question"] for q in (state.get("open_questions") or [])],
             )
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
@@ -215,6 +250,7 @@ async def _write_draft_impl(
             "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
             "draft_body": body,
             "candidate_readiness": readiness,
+            "tool_errors": [],
         }
     )
 

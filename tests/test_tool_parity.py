@@ -230,8 +230,8 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     state = _state(artifact_type="vision_objectives")
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["assumptions"] = ["Metric retention đã được user xác nhận"]
-    state["open_questions"] = ["Target cụ thể cần xác nhận"]
+    state["assumptions"] = [{"statement": "Metric retention đã được user xác nhận", "source": "user", "status": "confirmed"}]
+    state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -261,7 +261,7 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     state = _state(artifact_type="vision_objectives")
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["open_questions"] = ["Target cụ thể cần xác nhận"]
+    state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
     body = "\n\n".join(
@@ -281,6 +281,27 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
         assert readiness["can_persist"] is False
         assert readiness["blocking_reasons"]
         assert command.update["candidate_readiness"]["state"] == "well_structured_but_incomplete"
+        assert command.update["tool_errors"] == []
+
+
+@pytest.mark.asyncio
+async def test_write_draft_missing_focus_returns_recoverable_observation(client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    command = await _write_draft_impl("Vision", "## Vision\nNội dung", state, config, "call_1")
+
+    assert command.update["tool_errors"][0]["classification"] == "recoverable"
+    assert command.update["tool_errors"][0]["code"] == "missing_focused_artifact"
+    assert "focused_artifact_id" in command.update["messages"][0].content
 
 
 # ---------------------------------------------------------------------------

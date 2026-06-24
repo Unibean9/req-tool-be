@@ -357,7 +357,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                     else None
                 ),
                 "critique_rounds": 0,
+                "quality_report": None,
                 "last_critiqued_draft_hash": None,
+                "candidate_readiness": None,
+                "feedback_summary": None,
+                "verification_status": None,
+                "latest_checked_revision": None,
             }
             effective_state = {**state, **focus_reset_update}
 
@@ -744,7 +749,7 @@ def _missing_required_arg(tool: str | None, analysis_result: dict) -> str | None
 
 
 def _degrade_reason(
-    _state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
+    state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
 ) -> dict | None:
     """Why this pick can't dispatch as-is (fail-loud), or None when it's fine to emit.
 
@@ -754,10 +759,14 @@ def _degrade_reason(
     - missing required arg (Phase 2): the picked tool's required arg is empty.
     """
     if requested and requested != "ask_user" and gated_tool == "ask_user":
+        feedback_detail = _feedback_degrade_detail(state) if requested == "finalize" else ""
+        gated_reason = f"gated: {requested} not available this turn"
+        if feedback_detail:
+            gated_reason = f"{gated_reason}; {feedback_detail}"
         return {
             "gated_tool": requested,
-            "gated_reason": f"gated: {requested} not available this turn",
-            "message": _GATED_TOOL_PROMPT.format(tool=requested),
+            "gated_reason": gated_reason,
+            "message": _feedback_degrade_message(state) or _GATED_TOOL_PROMPT.format(tool=requested),
         }
     missing = _missing_required_arg(gated_tool, analysis_result)
     if missing:
@@ -813,6 +822,7 @@ def _build_tool_selection_prompt(
     draft_block = _build_draft_block(state, draft_body)
     working_draft_block = _build_working_draft_block(state)
     contract_block = _build_output_contract_block(state)
+    feedback_block = _build_feedback_control_block(state)
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
@@ -822,11 +832,74 @@ def _build_tool_selection_prompt(
         "Chọn đúng MỘT công cụ và điền các field của nó theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
         f"{contract_block}"
+        f"{feedback_block}"
         f"{draft_block}"
         f"{working_draft_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
     )
+
+
+def _build_feedback_control_block(state: WorkflowState) -> str:
+    parts: list[str] = []
+    report = state.get("quality_report") or {}
+    if report:
+        parts.append(f"- quality_gate: {report.get('quality_gate_result') or 'unknown'}")
+        blockers = report.get("blocking_issues") or []
+        if blockers:
+            parts.append(f"- blockers: {_compact_list(blockers)}")
+        revision_plan = report.get("revision_plan") or []
+        if revision_plan:
+            parts.append(f"- revision_plan: {_compact_list(revision_plan)}")
+        if report.get("recommended_next_action"):
+            parts.append(f"- recommended_next_action: {report['recommended_next_action']}")
+
+    readiness = state.get("candidate_readiness") or {}
+    if readiness:
+        parts.append(f"- candidate_readiness: {readiness.get('state') or 'unknown'}")
+        for key in ("missing", "needs_confirmation", "blocking_reasons"):
+            values = readiness.get(key) or []
+            if values:
+                parts.append(f"- {key}: {_compact_list(values)}")
+
+    feedback_summary = state.get("feedback_summary") or {}
+    if feedback_summary.get("stale_warning"):
+        parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
+
+    if not parts:
+        return ""
+    return "\n\nFEEDBACK CONTROL:\n" + "\n".join(parts)
+
+
+def _feedback_degrade_detail(state: WorkflowState) -> str:
+    details: list[str] = []
+    report = state.get("quality_report") or {}
+    if report.get("quality_gate_result"):
+        details.append(f"quality_gate={report['quality_gate_result']}")
+    readiness = state.get("candidate_readiness") or {}
+    if readiness.get("state"):
+        details.append(f"candidate_readiness={readiness['state']}")
+    return "; ".join(details)
+
+
+def _feedback_degrade_message(state: WorkflowState) -> str:
+    report = state.get("quality_report") or {}
+    readiness = state.get("candidate_readiness") or {}
+    blockers = list(report.get("blocking_issues") or [])
+    blockers.extend(readiness.get("blocking_reasons") or [])
+    if not blockers:
+        return ""
+    return (
+        "Chưa thể finalize vì feedback hiện tại còn blocker: "
+        f"{_compact_list(blockers)}. Hãy revise candidate trước."
+    )
+
+
+def _compact_list(values: list[Any], limit: int = 3) -> str:
+    rendered = [str(value) for value in values[:limit] if str(value).strip()]
+    if len(values) > limit:
+        rendered.append(f"... (+{len(values) - limit})")
+    return "; ".join(rendered)
 
 
 def _build_output_contract_block(state: WorkflowState) -> str:

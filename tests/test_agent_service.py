@@ -925,6 +925,58 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
 
 
 @pytest.mark.asyncio
+async def test_approve_tool_call_rejects_stale_base_version(client, db_session, _no_background_tasks):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
+    old_version = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=1,
+        title="Vision cũ",
+        body="Body cũ",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    current_version = ArtifactVersion(
+        artifact_id=focused.id,
+        version_number=2,
+        title="Vision mới",
+        body="Body mới",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add_all([old_version, current_version])
+    await db_session.flush()
+    focused.current_version_id = current_version.id
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "base_version_id": str(old_version.id),
+        "synthesis_metadata": {
+            **tc.input_snapshot["synthesis_metadata"],
+            "base_version_id": str(old_version.id),
+        },
+    }
+    await db_session.flush()
+    _no_background_tasks.reset_mock()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["base_version_id"] == str(old_version.id)
+    assert exc.value.detail["current_version_id"] == str(current_version.id)
+    await db_session.refresh(tc)
+    assert tc.status == AgentToolCallStatus.PROPOSED
+    assert tc.created_version_id is None
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)

@@ -1,4 +1,4 @@
-from app.graphs.state import WorkflowState
+from app.graphs.state import WorkflowState, build_initial_workflow_state
 
 
 def test_workflow_state_accepts_document_focus_fields():
@@ -29,6 +29,11 @@ def test_workflow_state_accepts_document_focus_fields():
         "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": None,
         "working_draft": None,
+        "candidate_readiness": None,
+        "tool_errors": [],
+        "feedback_summary": None,
+        "verification_status": None,
+        "latest_checked_revision": None,
         "method_profile": {
             "method": "bmad_inspired",
             "planning_track": "quick",
@@ -60,6 +65,11 @@ def test_state_has_section_coverage_field():
     assert "section_coverage" in WorkflowState.__annotations__
     assert "section_coverage_stall_count" in WorkflowState.__annotations__
     assert "focused_artifact_id" in WorkflowState.__annotations__
+    assert "candidate_readiness" in WorkflowState.__annotations__
+    assert "tool_errors" in WorkflowState.__annotations__
+    assert "feedback_summary" in WorkflowState.__annotations__
+    assert "verification_status" in WorkflowState.__annotations__
+    assert "latest_checked_revision" in WorkflowState.__annotations__
     assert "section_assessment" not in WorkflowState.__annotations__
     assert "coverage_ratio" not in WorkflowState.__annotations__
     assert "sections_body" not in WorkflowState.__annotations__
@@ -70,3 +80,28 @@ def test_state_no_longer_has_slot_coverage_field():
     assert "slot_coverage" not in WorkflowState.__annotations__
     assert "last_asked_slot" not in WorkflowState.__annotations__
     assert "coverage_stall_count" not in WorkflowState.__annotations__
+
+
+def test_initial_workflow_state_seeds_governance_fields():
+    state = build_initial_workflow_state(
+        artifact_type="vision_objectives",
+        workflow_area="analysis",
+        step_key=None,
+        messages=[{"role": "user", "content": "Tạo vision"}],
+        missing_context=["brd"],
+        focused_artifact_id="00000000-0000-0000-0000-000000000001",
+        mode_hint="critique",
+    )
+
+    assert state["messages"] == [{"role": "user", "content": "Tạo vision"}]
+    assert state["missing_context"] == ["brd"]
+    assert state["focused_artifact_id"] == "00000000-0000-0000-0000-000000000001"
+    assert state["mode_hint"] == "critique"
+    assert state["critique_rounds"] == 0
+    assert state["quality_report"] is None
+    assert state["last_critiqued_draft_hash"] is None
+    assert state["candidate_readiness"] is None
+    assert state["tool_errors"] == []
+    assert state["feedback_summary"] is None
+    assert state["verification_status"] is None
+    assert state["latest_checked_revision"] is None

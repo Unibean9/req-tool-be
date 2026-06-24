@@ -195,7 +195,7 @@ def _configure_cli_streams() -> None:
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
-            reconfigure(encoding="utf-8", errors="backslashreplace")
+            reconfigure(encoding=getattr(stream, "encoding", None) or "utf-8", errors="backslashreplace")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
