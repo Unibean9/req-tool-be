@@ -158,20 +158,20 @@ class DocumentService:
         expected_children = children_of(parent.type.value)
         if not expected_children:
             return
-        accepted_rows = (
+        versioned_rows = (
             await self.db.execute(
                 select(Artifact.type).where(
                     Artifact.project_id == artifact.project_id,
                     Artifact.parent_id == parent.id,
                     Artifact.type.in_([ArtifactType(item) for item in expected_children]),
-                    Artifact.status == ArtifactStatus.ACCEPTED,
+                    Artifact.current_version_id.is_not(None),
                 )
             )
         ).scalars()
-        accepted_types = {value.value for value in accepted_rows}
+        versioned_types = {value.value for value in versioned_rows}
         parent.status = (
             ArtifactStatus.ACCEPTED
-            if set(expected_children).issubset(accepted_types)
+            if set(expected_children).issubset(versioned_types)
             else ArtifactStatus.DRAFT
         )
 

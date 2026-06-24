@@ -1151,6 +1151,7 @@ async def test_approve_tool_call_reuses_existing_version_for_partial_retry(
 @pytest.mark.asyncio
 async def test_approve_last_required_child_accepts_parent_container(client, db_session):
     from app.documents.registry import children_of, get_config
+    from app.models.artifact import ChangeSource, VersionStatus
 
     project_id = await _setup(client)
     svc = _make_service(db_session)
@@ -1177,7 +1178,18 @@ async def test_approve_last_required_child_accepts_parent_container(client, db_s
     db_session.add_all(children)
     await db_session.flush()
     for child in children[:-1]:
-        child.status = ArtifactStatus.ACCEPTED
+        version = ArtifactVersion(
+            artifact_id=child.id,
+            version_number=1,
+            title=child.title,
+            body=f"{child.type.value} body",
+            status=VersionStatus.DRAFT,
+            change_source=ChangeSource.MANUAL,
+            extra_metadata={},
+        )
+        db_session.add(version)
+        await db_session.flush()
+        child.current_version_id = version.id
 
     session = AgentSession(
         project_id=project_id, artifact_type=children[-1].type.value, workflow_area="analysis",

@@ -106,7 +106,7 @@ async def test_prd_container_and_functional_requirement_flow(client):
 
 
 @pytest.mark.asyncio
-async def test_manual_accepted_children_auto_accept_container(client):
+async def test_manual_versioned_children_auto_accept_container(client):
     headers, project = await _project_context(client)
     container_response = await client.post(
         f"{BASE}/projects/{project['id']}/documents/brd",
@@ -120,7 +120,6 @@ async def test_manual_accepted_children_auto_accept_container(client):
             json={
                 "title": item_type,
                 "body": f"{item_type} body",
-                "status": "accepted",
             },
             headers=headers,
         )
@@ -135,7 +134,7 @@ async def test_manual_accepted_children_auto_accept_container(client):
 
 
 @pytest.mark.asyncio
-async def test_manual_child_downgrade_reverts_container_to_draft(client):
+async def test_manual_child_status_downgrade_keeps_versioned_container_accepted(client):
     headers, project = await _project_context(client)
     container_response = await client.post(
         f"{BASE}/projects/{project['id']}/documents/brd",
@@ -171,4 +170,4 @@ async def test_manual_child_downgrade_reverts_container_to_draft(client):
         headers=headers,
     )
     assert document_response.status_code == 200, document_response.text
-    assert document_response.json()["data"]["status"] == "draft"
+    assert document_response.json()["data"]["status"] == "accepted"
