@@ -64,6 +64,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
+        "candidate_readiness": None,
         "mode_hint": None,
     }
 
@@ -245,6 +246,17 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert brd_title in prompt, "Predecessor BRD title must appear in the analyst prompt context"
+
+
+def test_output_contract_block_requires_candidate_gap_markers():
+    from app.graphs.nodes import _build_output_contract_block
+
+    block = _build_output_contract_block(_state(artifact_type="vision_objectives"))
+
+    assert "inferred" in block
+    assert "missing" in block
+    assert "needs_confirmation" in block
+    assert "phần thiếu" in block
 
 
 @pytest.mark.asyncio

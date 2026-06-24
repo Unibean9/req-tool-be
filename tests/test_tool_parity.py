@@ -246,6 +246,43 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
         assert metadata["pending_assumptions"] == ["Target cụ thể cần xác nhận"]
 
 
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["open_questions"] = ["Target cụ thể cần xác nhận"]
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+    body = "\n\n".join(
+        [
+            "## Vision\nTăng retention.",
+            "## Objectives\n- Cải thiện activation.",
+            "## Success Metrics\n- Retention target đang thiếu.",
+        ]
+    )
+
+    command = await _write_draft_impl("Vision", body, state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        readiness = row.input_snapshot["candidate_readiness"]
+        assert readiness["state"] == "well_structured_but_incomplete"
+        assert readiness["can_persist"] is False
+        assert readiness["blocking_reasons"]
+        assert command.update["candidate_readiness"]["state"] == "well_structured_but_incomplete"
+
+
 # ---------------------------------------------------------------------------
 # T4 — finalize interrupt gate
 # ---------------------------------------------------------------------------
@@ -263,6 +300,7 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     state["critique_rounds"] = 1
     state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
+    state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -274,6 +312,25 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
             await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))
         ).scalar_one()
         assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+
+
+def test_finalize_not_available_when_candidate_readiness_is_not_sufficient():
+    from app.graphs.agent_tools import get_available_tools
+
+    state = _state(artifact_type="vision_objectives")
+    state["working_draft"] = "draft"
+    state["critique_rounds"] = 1
+    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["quality_report"] = {"quality_gate_result": "pass"}
+    state["candidate_readiness"] = {
+        "state": "well_structured_but_incomplete",
+        "can_persist": False,
+        "blocking_reasons": ["Thiếu target cần xác nhận"],
+    }
+
+    tool_names = {tool.name for tool in get_available_tools(state)}
+
+    assert "finalize" not in tool_names
 
 
 # ---------------------------------------------------------------------------
@@ -412,6 +469,7 @@ async def test_finalize_tool_call_scenario(client, db_session):
     state["critique_rounds"] = 1
     state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
+    state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
     state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()

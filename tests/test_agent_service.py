@@ -875,7 +875,7 @@ async def test_approve_tool_call_sets_artifact_version_traceability(client, db_s
     version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.id == updated_tc.created_version_id))).scalar_one()
     assert version.agent_run_id == run.id
     assert version.tool_call_id == tc.id
-    assert version.body == "Mô tả"
+    assert version.body == _vision_body()
 
 
 @pytest.mark.asyncio
@@ -908,9 +908,10 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
             "evidence_refs": [f"agent_run:{run.id}"],
             "inference_level": "medium",
             "confirmed_assumptions": ["Metric retention đã xác nhận"],
-            "pending_assumptions": ["Target cần xác nhận"],
+            "pending_assumptions": [],
             "synthesis_source": "bmad_synthesis",
         },
+        "candidate_readiness": _sufficient_readiness(),
     }
     await db_session.flush()
 
@@ -919,8 +920,164 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
     version = await db_session.get(ArtifactVersion, updated_tc.created_version_id)
     assert version.parent_version_id == old_version.id
     assert version.extra_metadata["synthesis_source"] == "bmad_synthesis"
-    assert version.extra_metadata["pending_assumptions"] == ["Target cần xác nhận"]
+    assert version.extra_metadata["pending_assumptions"] == []
     assert version.extra_metadata["focused_artifact_id"] == str(focused.id)
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "synthesis_metadata": {
+            **tc.input_snapshot["synthesis_metadata"],
+            "pending_assumptions": ["Target retention 15%"],
+        },
+        "candidate_readiness": {
+            "state": "well_structured_but_incomplete",
+            "can_persist": False,
+            "missing": ["target"],
+            "needs_confirmation": [],
+            "inferred": [],
+            "blocking_reasons": ["Thiếu target cần xác nhận"],
+        },
+    }
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["state"] == "well_structured_but_incomplete"
+    await db_session.refresh(tc)
+    focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
+    assert tc.status == AgentToolCallStatus.PROPOSED
+    assert tc.created_version_id is None
+    assert focused.status == ArtifactStatus.DRAFT
+    versions = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
+    ).scalars().all()
+    assert versions == []
+
+
+@pytest.mark.asyncio
+async def test_feedback_loop_many_edits_only_persists_final_ready_version(client, db_session, _no_background_tasks):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused_artifact_id = uuid.UUID(tc.input_snapshot["focused_artifact_id"])
+
+    for index in range(5):
+        if index > 0:
+            tc = AgentToolCall(
+                run_id=run.id,
+                tool_name="create_artifact",
+                input_snapshot={
+                    **tc.input_snapshot,
+                    "candidate_readiness": {
+                        "state": "well_structured_but_incomplete",
+                        "can_persist": False,
+                        "missing": [f"gap-{index}"],
+                        "needs_confirmation": [],
+                        "inferred": [],
+                        "blocking_reasons": [f"Feedback nhỏ {index} chưa đủ readiness"],
+                    },
+                },
+                status=AgentToolCallStatus.PROPOSED,
+            )
+            db_session.add(tc)
+            await db_session.flush()
+        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note=f"Chỉnh nhỏ {index}")
+
+    versions_before_approve = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.artifact_id == focused_artifact_id))
+    ).scalars().all()
+    assert versions_before_approve == []
+
+    final_tc = AgentToolCall(
+        run_id=run.id,
+        tool_name="create_artifact",
+        input_snapshot={
+            **tc.input_snapshot,
+            "candidate_readiness": _sufficient_readiness(),
+        },
+        status=AgentToolCallStatus.PROPOSED,
+    )
+    db_session.add(final_tc)
+    await db_session.flush()
+
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=final_tc.id, created_by_id=None)
+
+    versions_after_approve = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.artifact_id == focused_artifact_id))
+    ).scalars().all()
+    assert len(versions_after_approve) == 1
+    assert final_tc.created_version_id == versions_after_approve[0].id
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_blocks_unconfirmed_candidate_readiness(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "body": "\n\n".join(
+            [
+                "## Vision\nTăng retention.",
+                "## Objectives\n- Cải thiện activation.",
+                "## Success Metrics\n- Retention target 15% (agent suy diễn, cần xác nhận).",
+            ]
+        ),
+        "synthesis_metadata": {
+            **tc.input_snapshot["synthesis_metadata"],
+            "pending_assumptions": ["Target retention 15%"],
+        },
+        "candidate_readiness": {
+            "state": "needs_confirmation",
+            "can_persist": False,
+            "missing": [],
+            "needs_confirmation": ["Target retention 15%"],
+            "inferred": ["Retention target 15% (agent suy diễn, cần xác nhận)."],
+            "blocking_reasons": ["Candidate còn assumption cần user xác nhận trước khi persist."],
+        },
+    }
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["state"] == "needs_confirmation"
+    versions = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
+    ).scalars().all()
+    assert versions == []
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_recomputes_readiness_even_when_snapshot_claims_sufficient(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "body": "Nội dung thiếu heading",
+        "candidate_readiness": _sufficient_readiness(),
+    }
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    assert exc.value.status_code == 422
+    assert exc.value.detail["state"] == "poorly_structured"
+    versions = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
+    ).scalars().all()
+    assert versions == []
 
 
 @pytest.mark.asyncio
@@ -1039,8 +1196,9 @@ async def test_approve_last_required_child_accepts_parent_container(client, db_s
         input_snapshot={
             "artifact_type": children[-1].type.value,
             "title": children[-1].title,
-            "body": "Nội dung",
+            "body": _risks_body(),
             "focused_artifact_id": str(children[-1].id),
+            "candidate_readiness": _sufficient_readiness(),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1083,14 +1241,16 @@ async def test_approve_tool_call_updates_each_focused_document_item(
     tc1.input_snapshot = {
         "artifact_type": "vision_objectives",
         "title": "Vision",
-        "body": "Section A",
+        "body": _vision_body(),
         "focused_artifact_id": tc1.input_snapshot["focused_artifact_id"],
+        "candidate_readiness": _sufficient_readiness(),
     }
     tc2.input_snapshot = {
         "artifact_type": "problem_statement",
         "title": "Problem",
-        "body": "Section B",
+        "body": _problem_body(),
         "focused_artifact_id": tc2.input_snapshot["focused_artifact_id"],
+        "candidate_readiness": _sufficient_readiness(),
     }
     await db_session.flush()
 
@@ -1108,8 +1268,8 @@ async def test_approve_tool_call_updates_each_focused_document_item(
         version = await db_session.get(ArtifactVersion, artifact.current_version_id)
         bodies[artifact.type.value] = version.body
     assert bodies == {
-        "vision_objectives": "Section A",
-        "problem_statement": "Section B",
+        "vision_objectives": _vision_body(),
+        "problem_statement": _problem_body(),
     }
 
 
@@ -1247,8 +1407,10 @@ async def _make_single_propose_session(db_session, project_id, created_by_id=Non
         input_snapshot={
             "artifact_type": "vision_objectives",
             "title": "Mục tiêu",
-            "body": "Mô tả",
+            "body": _vision_body(),
             "focused_artifact_id": str(focused.id),
+            "synthesis_metadata": _synthesis_metadata("vision_objectives", focused.id),
+            "candidate_readiness": _sufficient_readiness(),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1278,8 +1440,10 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
         input_snapshot={
             "artifact_type": "vision_objectives",
             "title": "Mục tiêu A",
-            "body": "Mô tả",
+            "body": _vision_body(),
             "focused_artifact_id": str(focused_a.id),
+            "synthesis_metadata": _synthesis_metadata("vision_objectives", focused_a.id),
+            "candidate_readiness": _sufficient_readiness(),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1288,8 +1452,10 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
         input_snapshot={
             "artifact_type": "problem_statement",
             "title": "Mục tiêu B",
-            "body": "Mô tả",
+            "body": _problem_body(),
             "focused_artifact_id": str(focused_b.id),
+            "synthesis_metadata": _synthesis_metadata("problem_statement", focused_b.id),
+            "candidate_readiness": _sufficient_readiness(),
         },
         status=AgentToolCallStatus.PROPOSED,
     )
@@ -1328,6 +1494,61 @@ async def _make_brd_items(db_session, project_id):
     db_session.add_all([focused_a, focused_b])
     await db_session.flush()
     return parent, focused_a, focused_b
+
+
+def _vision_body():
+    return "\n\n".join(
+        [
+            "## Vision\nTăng retention.",
+            "## Objectives\n- Cải thiện activation.",
+            "## Success Metrics\n- Retention target 15%.",
+        ]
+    )
+
+
+def _problem_body():
+    return "\n\n".join(
+        [
+            "## Problem Statement\nNgười dùng chưa thấy giá trị sớm.",
+            "## Affected Users\nNgười dùng mới.",
+            "## Impact\nRetention thấp.",
+            "## Root Cause / Contributing Factors\nOnboarding thiếu hướng dẫn.",
+        ]
+    )
+
+
+def _risks_body():
+    return "\n\n".join(
+        [
+            "## Risks\n- Rủi ro adoption thấp.",
+            "## Issues\n- Chưa có baseline retention.",
+            "## Mitigation Plan\n- Đo baseline và thử onboarding mới.",
+        ]
+    )
+
+
+def _synthesis_metadata(artifact_type, focused_artifact_id):
+    return {
+        "artifact_type": artifact_type,
+        "focused_artifact_id": str(focused_artifact_id),
+        "base_version_id": None,
+        "evidence_refs": [],
+        "inference_level": "medium",
+        "confirmed_assumptions": [],
+        "pending_assumptions": [],
+        "synthesis_source": "bmad_synthesis",
+    }
+
+
+def _sufficient_readiness():
+    return {
+        "state": "sufficient",
+        "can_persist": True,
+        "missing": [],
+        "needs_confirmation": [],
+        "inferred": [],
+        "blocking_reasons": [],
+    }
 
 
 # ---------------------------------------------------------------------------

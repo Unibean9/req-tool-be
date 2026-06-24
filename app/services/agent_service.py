@@ -35,7 +35,11 @@ from app.models.artifact import (
     ChangeSource,
 )
 from app.schemas.agent import AgentSessionResponse
-from app.schemas.artifact_synthesis import synthesis_metadata_dict, synthesis_metadata_from_snapshot
+from app.schemas.artifact_synthesis import (
+    evaluate_candidate_readiness,
+    synthesis_metadata_dict,
+    synthesis_metadata_from_snapshot,
+)
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
@@ -504,6 +508,7 @@ class AgentService:
             synthesis_metadata = synthesis_metadata_dict(snapshot)
         except ValueError as exc:
             raise HTTPException(422, detail="Tool call metadata synthesis không hợp lệ") from exc
+        self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 
         try:
             artifact, version = await DocumentService(self.db).create_item_version(
@@ -522,6 +527,26 @@ class AgentService:
             raise HTTPException(404, detail="Document item được focus không tồn tại") from exc
 
         return artifact, version
+
+    def _validate_candidate_readiness_for_persist(
+        self,
+        snapshot: dict[str, Any],
+        synthesis_metadata: dict[str, Any],
+    ) -> None:
+        readiness = evaluate_candidate_readiness(
+            artifact_type=str(snapshot.get("artifact_type") or synthesis_metadata.get("artifact_type") or ""),
+            body=str(snapshot.get("body") or ""),
+            synthesis_metadata=synthesis_metadata,
+        )
+        if readiness.can_persist:
+            return
+        raise HTTPException(
+            422,
+            detail={
+                "detail": "Candidate chưa đủ readiness để persist thành version chính thức",
+                **readiness.model_dump(mode="json"),
+            },
+        )
 
     async def _guard_current_base_version(
         self,

@@ -38,7 +38,11 @@ from app.models.agent import (
     AgentToolCallStatus,
 )
 from app.models.artifact import Artifact, ArtifactStatus
-from app.schemas.artifact_synthesis import ArtifactSynthesisMetadata
+from app.schemas.artifact_synthesis import (
+    ArtifactReadinessState,
+    ArtifactSynthesisMetadata,
+    evaluate_candidate_readiness,
+)
 from app.services.document_service import DocumentService
 
 # ---------------------------------------------------------------------------
@@ -156,15 +160,17 @@ async def _write_draft_impl(
         # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
         # proposed write already exists for this run. tool_name discriminates it from the enum
         # path's "create_artifact" rows — no new column, no migration (R3).
-        already = (
+        existing_tool_call = (
             await db.execute(
-                select(exists().where(
+                select(AgentToolCall).where(
                     AgentToolCall.run_id == run_id,
                     AgentToolCall.tool_name == tool_key,
-                ))
+                )
             )
-        ).scalar()
-        if not already:
+        ).scalar_one_or_none()
+        if existing_tool_call:
+            readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
+        else:
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
@@ -173,6 +179,11 @@ async def _write_draft_impl(
                 inference_level="medium",
                 confirmed_assumptions=list(state.get("assumptions") or []),
                 pending_assumptions=list(state.get("open_questions") or []),
+            )
+            readiness = evaluate_candidate_readiness(
+                artifact_type=focused.type.value,
+                body=body,
+                synthesis_metadata=metadata,
             ).model_dump(mode="json")
             input_snapshot = {
                 "artifact_type": focused.type.value,
@@ -180,7 +191,8 @@ async def _write_draft_impl(
                 "base_version_id": str(focused.current_version_id) if focused.current_version_id else None,
                 "title": title,
                 "body": body,
-                "synthesis_metadata": metadata,
+                "synthesis_metadata": metadata.model_dump(mode="json"),
+                "candidate_readiness": readiness,
             }
             db.add(
                 AgentToolCall(
@@ -202,6 +214,7 @@ async def _write_draft_impl(
         update={
             "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
             "draft_body": body,
+            "candidate_readiness": readiness,
         }
     )
 
@@ -677,6 +690,9 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     """
     report = state.get("quality_report")
     if not report or report.get("quality_gate_result") != "pass":
+        return False
+    readiness = state.get("candidate_readiness")
+    if not isinstance(readiness, dict) or readiness.get("state") != ArtifactReadinessState.SUFFICIENT:
         return False
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
         return True

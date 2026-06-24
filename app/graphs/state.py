@@ -136,6 +136,7 @@ class WorkflowState(TypedDict):
     # confirmed artifact even when no in-session working_draft exists yet.
     draft_body: str | None
     working_draft: str | None
+    candidate_readiness: dict[str, Any] | None
     # BMAD method layer (addendum §8) — sits above the 7-section engine; analyze_node assigns
     # workflow_mode / planning_track each turn. Independent of active_mode.
     method_profile: MethodProfile
