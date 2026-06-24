@@ -1,5 +1,6 @@
 import pytest
 
+from app.documents.registry import children_of
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 
@@ -102,3 +103,72 @@ async def test_prd_container_and_functional_requirement_flow(client):
     )
     assert item_response.status_code == 201, item_response.text
     assert item_response.json()["data"]["parent_id"] == container["artifact_id"]
+
+
+@pytest.mark.asyncio
+async def test_manual_accepted_children_auto_accept_container(client):
+    headers, project = await _project_context(client)
+    container_response = await client.post(
+        f"{BASE}/projects/{project['id']}/documents/brd",
+        headers=headers,
+    )
+    assert container_response.status_code == 201, container_response.text
+
+    for item_type in children_of("brd"):
+        item_response = await client.post(
+            f"{BASE}/projects/{project['id']}/documents/brd/{item_type}",
+            json={
+                "title": item_type,
+                "body": f"{item_type} body",
+                "status": "accepted",
+            },
+            headers=headers,
+        )
+        assert item_response.status_code == 201, item_response.text
+
+    document_response = await client.get(
+        f"{BASE}/projects/{project['id']}/documents/brd",
+        headers=headers,
+    )
+    assert document_response.status_code == 200, document_response.text
+    assert document_response.json()["data"]["status"] == "accepted"
+
+
+@pytest.mark.asyncio
+async def test_manual_child_downgrade_reverts_container_to_draft(client):
+    headers, project = await _project_context(client)
+    container_response = await client.post(
+        f"{BASE}/projects/{project['id']}/documents/brd",
+        headers=headers,
+    )
+    assert container_response.status_code == 201, container_response.text
+
+    for item_type in children_of("brd"):
+        item_response = await client.post(
+            f"{BASE}/projects/{project['id']}/documents/brd/{item_type}",
+            json={
+                "title": item_type,
+                "body": f"{item_type} body",
+                "status": "accepted",
+            },
+            headers=headers,
+        )
+        assert item_response.status_code == 201, item_response.text
+
+    downgrade_response = await client.post(
+        f"{BASE}/projects/{project['id']}/documents/brd/vision_objectives",
+        json={
+            "title": "Vision draft",
+            "body": "Needs revision.",
+            "status": "draft",
+        },
+        headers=headers,
+    )
+    assert downgrade_response.status_code == 201, downgrade_response.text
+
+    document_response = await client.get(
+        f"{BASE}/projects/{project['id']}/documents/brd",
+        headers=headers,
+    )
+    assert document_response.status_code == 200, document_response.text
+    assert document_response.json()["data"]["status"] == "draft"

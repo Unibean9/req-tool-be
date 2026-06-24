@@ -514,6 +514,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                 args["message"] = _COERCED_ASK_FALLBACK
             # respond needs its angle as a tool arg; take the active_mode just clamped above.
             if tool == "respond":
+                if _response_message_incomplete(args.get("message")):
+                    args["message"] = _RESPOND_FALLBACK
                 args["mode"] = analysis_result.get("active_mode") or "critique"
             result["messages"] = [AIMessage(content="", tool_calls=[{"id": run_id, "name": tool, "args": args}])]
         else:
@@ -538,6 +540,16 @@ _GATED_TOOL_PROMPT = (
     "Bước '{tool}' chưa khả dụng ở thời điểm này — mình cần làm rõ thêm trước đã. "
     "Bạn chia sẻ thêm thông tin quan trọng còn thiếu giúp mình nhé?"
 )
+
+_RESPOND_FALLBACK = (
+    "Dựa trên thông tin hiện có, mình cần phân tích thêm trước khi kết luận. "
+    "Bạn bổ sung thêm bối cảnh hoặc xác nhận các điểm chính để mình tiếp tục nhé?"
+)
+
+
+def _response_message_incomplete(message: Any) -> bool:
+    text = str(message or "").strip()
+    return not text or text.endswith(":")
 
 
 async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:

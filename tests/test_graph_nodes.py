@@ -1199,6 +1199,35 @@ async def test_active_mode_passes_through_analyze_node(client, db_session):
     assert result["analysis_result"]["active_mode"] == "critique"
 
 
+@pytest.mark.asyncio
+async def test_respond_colon_terminated_message_uses_fallback(client, db_session):
+    from app.graphs.nodes import _RESPOND_FALLBACK, analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=({
+        "tool": "respond",
+        "message": "Dựa trên thông tin hiện có:",
+        "active_mode": "critique",
+    }, None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    tool_call = result["messages"][0].tool_calls[0]
+    assert tool_call["name"] == "respond"
+    assert tool_call["args"]["message"] == _RESPOND_FALLBACK
+    assert tool_call["args"]["mode"] == "critique"
+
+
 def test_mode_hint_injects_directive_into_prompt():
     """T4a: a user-supplied mode_hint must surface the requested mode in the prompt."""
     from app.graphs.nodes import _build_tool_selection_prompt

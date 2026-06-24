@@ -952,6 +952,108 @@ async def test_approve_tool_call_retry_does_not_create_duplicate_version(
 
 
 @pytest.mark.asyncio
+async def test_approve_tool_call_reuses_existing_version_for_partial_retry(
+    client, db_session, _no_background_tasks
+):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    focused_artifact_id = uuid.UUID(tc.input_snapshot["focused_artifact_id"])
+    existing = ArtifactVersion(
+        artifact_id=focused_artifact_id,
+        version_number=1,
+        title="Mục tiêu",
+        body="Mô tả",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.AI_GENERATION,
+        agent_run_id=run.id,
+        tool_call_id=tc.id,
+        extra_metadata={},
+    )
+    db_session.add(existing)
+    await db_session.flush()
+
+    updated = await svc.approve_tool_call(
+        project_id=project_id, tool_call_id=tc.id, created_by_id=None
+    )
+
+    versions = (
+        await db_session.execute(
+            select(ArtifactVersion).where(ArtifactVersion.artifact_id == focused_artifact_id)
+        )
+    ).scalars().all()
+    focused = await db_session.get(Artifact, focused_artifact_id)
+    assert updated.created_version_id == existing.id
+    assert focused.current_version_id == existing.id
+    assert focused.status == ArtifactStatus.ACCEPTED
+    assert len(versions) == 1
+
+
+@pytest.mark.asyncio
+async def test_approve_last_required_child_accepts_parent_container(client, db_session):
+    from app.documents.registry import children_of, get_config
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    parent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.BRD,
+        status=ArtifactStatus.DRAFT,
+        title="BRD",
+        extra_metadata={},
+    )
+    db_session.add(parent)
+    await db_session.flush()
+    children = []
+    for item_type in children_of("brd"):
+        child = Artifact(
+            project_id=project_id,
+            parent_id=parent.id,
+            type=ArtifactType(item_type),
+            status=ArtifactStatus.DRAFT,
+            title=get_config(item_type).label,
+            extra_metadata={},
+        )
+        children.append(child)
+    db_session.add_all(children)
+    await db_session.flush()
+    for child in children[:-1]:
+        child.status = ArtifactStatus.ACCEPTED
+
+    session = AgentSession(
+        project_id=project_id, artifact_type=children[-1].type.value, workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
+        focused_artifact_id=children[-1].id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    run = AgentRun(session_id=session.id, analysis_result={})
+    db_session.add(run)
+    await db_session.flush()
+    tc = AgentToolCall(
+        run_id=run.id,
+        tool_name="create_artifact",
+        input_snapshot={
+            "artifact_type": children[-1].type.value,
+            "title": children[-1].title,
+            "body": "Nội dung",
+            "focused_artifact_id": str(children[-1].id),
+        },
+        status=AgentToolCallStatus.PROPOSED,
+    )
+    db_session.add(tc)
+    await db_session.flush()
+
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    await db_session.refresh(parent)
+    assert parent.status == ArtifactStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
 async def test_approve_tool_call_rejects_missing_focused_artifact(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
