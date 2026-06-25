@@ -128,6 +128,46 @@ async def artifact_stage(
 
 
 # ---------------------------------------------------------------------------
+# Shared audit helper for interaction tools (ask_user / respond / confirm_intent)
+# ---------------------------------------------------------------------------
+
+async def _audit_interaction_tool_call(
+    state: WorkflowState,
+    config: RunnableConfig,
+    *,
+    tool_name: str,
+    message: str,
+) -> None:
+    """Best-effort AgentToolCall row for interaction tools (ask_user/respond/confirm_intent)."""
+    run_id_raw = state.get("last_agent_run_id")
+    if not run_id_raw:
+        return
+    try:
+        session_factory = config["configurable"]["session_factory"]
+        async with session_factory() as db:
+            already = (
+                await db.execute(
+                    select(exists().where(
+                        AgentToolCall.run_id == uuid.UUID(str(run_id_raw)),
+                        AgentToolCall.tool_name == tool_name,
+                    ))
+                )
+            ).scalar()
+            if not already:
+                db.add(
+                    AgentToolCall(
+                        run_id=uuid.UUID(str(run_id_raw)),
+                        tool_name=tool_name,
+                        input_snapshot={"message": message},
+                        status=AgentToolCallStatus.EXECUTED,
+                    )
+                )
+                await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("interaction tool audit persist failed (%s): %s", tool_name, exc)
+
+
+# ---------------------------------------------------------------------------
 # ask_user — parity for the `ask` enum branch
 # ---------------------------------------------------------------------------
 
@@ -139,6 +179,7 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
     user_content = await nodes._save_and_interrupt_ask(
         state, config, message, run_id=tool_call_id, interrupt_kind="stream_response"
     )
+    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=message)
     return Command(
         update={
             "messages": [
@@ -176,6 +217,7 @@ async def _confirm_intent_impl(
     user_content = await nodes._save_and_interrupt_ask(
         state, config, summary, run_id=tool_call_id, kind="assessment", interrupt_kind="stream_response"
     )
+    await _audit_interaction_tool_call(state, config, tool_name=f"confirm_intent:{tool_call_id}", message=summary)
     return Command(
         update={
             "user_confirmed": True,
@@ -453,6 +495,7 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     user_content = await nodes._save_and_interrupt_ask(
         state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
     )
+    await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
     return Command(
         update={
             "messages": [

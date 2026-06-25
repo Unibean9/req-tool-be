@@ -116,3 +116,91 @@ def test_confirm_intent_solo_enforced_against_note():
         ],
     )
     assert [g["name"] for g in gated] == ["confirm_intent"]
+
+
+# ---------------------------------------------------------------------------
+# Interaction tool audit tracking (Bug fix: tool call table was write-only)
+# ---------------------------------------------------------------------------
+
+def _make_session_factory(mock_db):
+    """Build an async-context-manager session factory backed by mock_db."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=mock_db)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    factory = MagicMock(return_value=ctx)
+    return factory
+
+
+def _make_mock_db(already_exists: bool):
+    """AsyncMock db where execute().scalar() returns a bool (sync, not a coroutine)."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    execute_result = MagicMock()
+    execute_result.scalar.return_value = already_exists
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=execute_result)
+    mock_db.add = MagicMock()  # synchronous
+    return mock_db
+
+
+@pytest.mark.asyncio
+async def test_confirm_intent_creates_audit_row():
+    from app.graphs.agent_tools import _audit_interaction_tool_call
+    from app.models.agent import AgentToolCallStatus
+
+    mock_db = _make_mock_db(already_exists=False)
+    state = {"messages": [], "last_agent_run_id": "00000000-0000-0000-0000-000000000002"}
+    config = {"configurable": {"session_factory": _make_session_factory(mock_db)}}
+
+    await _audit_interaction_tool_call(state, config, tool_name="confirm_intent:tc-001", message="Intent summary")
+
+    mock_db.add.assert_called_once()
+    added = mock_db.add.call_args[0][0]
+    assert added.tool_name == "confirm_intent:tc-001"
+    assert added.status == AgentToolCallStatus.EXECUTED
+    assert added.input_snapshot == {"message": "Intent summary"}
+    mock_db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_audit_skips_without_run_id():
+    from app.graphs.agent_tools import _audit_interaction_tool_call
+
+    state = {"messages": []}  # no last_agent_run_id
+    config = {"configurable": {}}
+
+    await _audit_interaction_tool_call(state, config, tool_name="ask_user:tc-x", message="hello")
+
+
+@pytest.mark.asyncio
+async def test_audit_idempotent_when_row_exists():
+    from app.graphs.agent_tools import _audit_interaction_tool_call
+
+    mock_db = _make_mock_db(already_exists=True)
+    state = {"messages": [], "last_agent_run_id": "00000000-0000-0000-0000-000000000003"}
+    config = {"configurable": {"session_factory": _make_session_factory(mock_db)}}
+
+    await _audit_interaction_tool_call(state, config, tool_name="respond:tc-002", message="assessment")
+
+    mock_db.add.assert_not_called()
+    mock_db.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_confirm_intent_impl_calls_audit():
+    state = {"messages": [], "user_confirmed": None, "last_agent_run_id": "00000000-0000-0000-0000-000000000004"}
+    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
+
+    with (
+        patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new_callable=AsyncMock) as mock_save,
+        patch("app.graphs.agent_tools._audit_interaction_tool_call", new_callable=AsyncMock) as mock_audit,
+    ):
+        mock_save.return_value = "ok"
+        await _confirm_intent_impl("Build Y for A", state, config, "tc-007")
+
+    mock_audit.assert_awaited_once()
+    call_kwargs = mock_audit.call_args
+    assert call_kwargs.kwargs["tool_name"] == "confirm_intent:tc-007"
+    assert call_kwargs.kwargs["message"] == "Build Y for A"
