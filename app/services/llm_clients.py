@@ -172,7 +172,7 @@ class LLMClient(Protocol):
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         pass
@@ -223,7 +223,7 @@ class OpenAILLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
@@ -331,7 +331,7 @@ class GoogleLLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
@@ -437,7 +437,7 @@ class AnthropicLLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
@@ -515,7 +515,7 @@ class BedrockLLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         if self.config.secret_key:
@@ -611,7 +611,7 @@ class BedrockLLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         def _generate() -> dict[str, Any]:
@@ -644,7 +644,7 @@ class BedrockLLMClient:
         messages: list[dict[str, str]],
         system: str | None,
         max_tokens: int,
-        response_format: dict[str, Any] | None,
+        response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         import httpx

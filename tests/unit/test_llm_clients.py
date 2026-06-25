@@ -340,11 +340,12 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
     # Bedrock api-key path (no secret_key) uses httpx — the recorder covers it.
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
+    # Call exactly like analyze_node does: tools set, response_format OMITTED. Guards the regression
+    # where the real clients declared response_format without a default and raised TypeError.
     result, _ = await client.generate(
         messages=[{"role": "user", "content": "Phân tích"}],
         system="Bạn là BA.",
         max_tokens=256,
-        response_format=None,
         tools=[_ASK_TOOL],
     )
 
