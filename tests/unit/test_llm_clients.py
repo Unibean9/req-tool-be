@@ -511,6 +511,15 @@ async def test_bedrock_tool_choice_required_sends_any(monkeypatch):
     assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
 
 
+@pytest.mark.asyncio
+async def test_bedrock_ping_tool_calling_forces_any_tool_choice(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
+    client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    assert await client.ping_tool_calling() is True
+    assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
+
+
 class _HttpxRecorder:
     def __init__(self, payload):
         self.payload = payload

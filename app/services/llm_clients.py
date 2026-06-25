@@ -612,7 +612,7 @@ class BedrockLLMClient:
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "ok"}]}],
                 inferenceConfig={"maxTokens": 20, "temperature": 0.0},
-                toolConfig={"tools": [_to_bedrock_probe_tool()]},
+                toolConfig={"tools": [_to_bedrock_probe_tool()], "toolChoice": {"any": {}}},
             )
             content = response.get("output", {}).get("message", {}).get("content") or []
             return any(b.get("toolUse") for b in content)
@@ -627,7 +627,7 @@ class BedrockLLMClient:
         body = {
             "messages": [{"role": "user", "content": [{"text": "ok"}]}],
             "inferenceConfig": {"maxTokens": 20, "temperature": 0.0},
-            "toolConfig": {"tools": [_to_bedrock_probe_tool()]},
+            "toolConfig": {"tools": [_to_bedrock_probe_tool()], "toolChoice": {"any": {}}},
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(

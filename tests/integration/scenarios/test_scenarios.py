@@ -1,11 +1,13 @@
-"""API-level behavior scenarios for the requirements agent.
+"""Agent behavior scenarios at the API layer.
 
-For each scenario: drive a full conversation through the HTTP API, assert the
-user-facing contract (final status, payload envelopes, artifacts produced),
-score the produced artifacts with the judge, and write a JSON transcript of every
-raw message for later validation.
+Each scenario runs a conversation through the real HTTP API, asserts the
+user-facing contract, records a JSON transcript, and evaluates the artifact.
+By default it uses a mock judge so golden transcripts stay deterministic; the
+real judge is enabled only through an explicit environment variable.
+
 """
 
+import os
 import uuid
 
 import pytest
@@ -14,11 +16,17 @@ from tests.integration.scenarios.driver import ScenarioDriver
 from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
 from tests.integration.scenarios.library import ALL_SCENARIOS
 
+_REAL_JUDGE_ENV = "SCENARIO_USE_REAL_JUDGE"
+
 
 def _judge_client():
-    from tests.eval.config import judge_settings
-    if not judge_settings.judge_api_key:
+    if os.getenv(_REAL_JUDGE_ENV) != "1":
         return mock_judge()
+
+    from tests.eval.config import JudgeSettings
+    judge_settings = JudgeSettings()
+    if not judge_settings.judge_api_key:
+        pytest.skip(f"{_REAL_JUDGE_ENV}=1 nhưng thiếu JUDGE_API_KEY")
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
     return LLMClientFactory.create(
