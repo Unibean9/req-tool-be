@@ -704,7 +704,7 @@ def _smart_llm():
     analyze_calls = []
     llm = AsyncMock()
 
-    async def _generate(*, messages, system, max_tokens, response_format=None, tools=None):
+    async def _generate(*, messages, system, max_tokens, response_format=None, tools=None, **_kwargs):
         if tools is not None:
             analyze_calls.append(1)
             return AIMessage(content="", tool_calls=[

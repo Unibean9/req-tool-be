@@ -1,3 +1,10 @@
+# Freeze the module-level `judge_settings` singleton at collection time, under a clean env.
+# These tests monkeypatch JUDGE_* and then import tests.eval.config; without this top-level
+# import the singleton would be created lazily during a monkeypatched test and leak a wrong
+# provider into the whole session (scenario judge -> 401).
+import tests.eval.config  # noqa: E402,F401
+
+
 def test_judge_settings_reads_from_env(monkeypatch):
     monkeypatch.setenv("JUDGE_PROVIDER", "openai")
     monkeypatch.setenv("JUDGE_MODEL", "gpt-4o")
