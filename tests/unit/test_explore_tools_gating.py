@@ -126,6 +126,16 @@ def test_respond_always_available():
     assert "respond" in _names(get_available_tools({"messages": []}))
 
 
+# ---------------------------------------------------------------------------
+# M2 — read_artifact offered in both phases (read-only, never gated)
+# ---------------------------------------------------------------------------
+
+def test_read_artifact_available_in_intent_and_artifact_phase():
+    # Intent phase (user_confirmed None) and artifact phase both offer the side-effect-free read.
+    assert "read_artifact" in _names(get_available_tools({"messages": []}))
+    assert "read_artifact" in _names(get_available_tools({"messages": [], "user_confirmed": True}))
+
+
 def test_respond_resets_note_step_limit():
     # NOTE_STEP_LIMIT notes would normally drop the note tools; a respond turn after them is a
     # user-facing pause that resets the streak, so the note tools are offered again.

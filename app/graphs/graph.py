@@ -8,6 +8,7 @@ from app.graphs.agent_tools import (
     critique_note,
     explore_note,
     finalize,
+    read_artifact,
     recommend_next_workflow,
     respond,
     run_critique,
@@ -41,7 +42,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         ToolNode([
             ask_user, write_draft, finalize, critique_note, explore_note,
             respond, run_critique, recommend_next_workflow, run_readiness_check,
-            confirm_intent,
+            confirm_intent, read_artifact,
         ]),
     )
 

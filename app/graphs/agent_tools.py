@@ -30,6 +30,7 @@ from app.graphs import nodes
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import QualityReport, WorkflowState
+from app.graphs.tools import read_current_body
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
@@ -818,6 +819,71 @@ async def run_readiness_check(
 
 
 # ---------------------------------------------------------------------------
+# read_artifact — side-effect-free body read by id (no interrupt, no DB write)
+# ---------------------------------------------------------------------------
+# Lets the model pull a sibling/ancestor artifact's body mid-session instead of re-asking the user
+# for content already recorded. Loops back through analyze_node like the note tools — appends a
+# ToolMessage, never interrupts. Project-scoped via read_current_body's project_id filter so a session
+# can only read its own project's artifacts.
+
+# Cap a single read so a large body cannot dominate the analyze prompt; the head is enough to orient,
+# and a focused draft is reached through write_draft/current_draft_body, not this tool.
+READ_ARTIFACT_MAX_CHARS = 8000
+
+
+async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_call_id: str):
+    cfg = config["configurable"]
+    project_id_raw = cfg.get("project_id")
+    session_factory = cfg.get("session_factory")
+    try:
+        target_id = uuid.UUID(str(artifact_id))
+    except (ValueError, TypeError):
+        return Command(
+            update={
+                "messages": [
+                    ToolMessage(
+                        content=f"read_artifact: id không hợp lệ ({artifact_id!r}).",
+                        tool_call_id=tool_call_id,
+                    )
+                ]
+            }
+        )
+
+    result = None
+    if session_factory is not None and project_id_raw is not None:
+        async with session_factory() as db:
+            result = await read_current_body(
+                db=db,
+                project_id=uuid.UUID(str(project_id_raw)),
+                artifact_id=target_id,
+            )
+
+    if result is None:
+        content = f"read_artifact: không tìm thấy artifact {artifact_id} (hoặc chưa có nội dung) trong project."
+    else:
+        body = result["body"] or ""
+        if len(body) > READ_ARTIFACT_MAX_CHARS:
+            body = body[:READ_ARTIFACT_MAX_CHARS] + "\n\n…(đã cắt bớt phần còn lại)"
+        content = f"# {result['title']}\n\n{body}"
+    return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
+
+
+@tool
+async def read_artifact(
+    id: Annotated[str, "The artifact id (UUID) to read — a sibling or ancestor in this project."],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Read the current body of another artifact in this project by its id.
+
+    Use to pull context from a sibling or ancestor artifact (e.g. the parent BRD) instead of asking
+    the user for content that already exists. Read-only and non-interrupting; the body is returned to
+    you, not shown to the user.
+    """
+    return await _read_artifact_impl(id, config, tool_call_id)
+
+
+# ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
@@ -898,12 +964,14 @@ def get_available_tools(state: WorkflowState) -> list:
     write_draft / finalize / run_critique are absent until confirm_intent flips user_confirmed=True.
     """
     if state.get("user_confirmed") is None:
-        intent_tools = [ask_user, respond, explore_note, critique_note, confirm_intent]
+        # read_artifact is offered in the intent phase too: reading the parent BRD to ground an intent
+        # summary is exploration, and it is side-effect-free so it does not widen the gate's risk.
+        intent_tools = [ask_user, respond, explore_note, critique_note, confirm_intent, read_artifact]
         if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
             intent_tools = [t for t in intent_tools if t.name not in NOTE_TOOL_NAMES]
         return intent_tools
 
-    tools = [ask_user, respond, write_draft, critique_note, explore_note]
+    tools = [ask_user, respond, write_draft, critique_note, explore_note, read_artifact]
     has_draft = bool(_cached_draft_body(state).strip())
     critique_rounds = state.get("critique_rounds") or 0
     if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
