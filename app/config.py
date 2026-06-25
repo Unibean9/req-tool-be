@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
 
+    # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
+    analyze_max_tokens: int = 6000
+
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":
         if self.app_env != "development":

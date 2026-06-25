@@ -4,6 +4,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import BaseTool
 from langgraph.graph import END
 from langgraph.types import interrupt
 from sqlalchemy import exists, select
@@ -24,100 +25,14 @@ from app.models.agent import (
 )
 from app.services.document_service import DocumentService
 
-# Tool-loop selection schema. The analyst names the tools to run this turn plus per-tool args.
-# tools: list of 1–3 {name, args} objects. Analytic fields (active_mode, locale, etc.) are
-# top-level — they inform eval and state updates, not dispatched as tool args.
-TOOL_SELECTION_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "tools": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 3,
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "enum": [
-                            "ask_user", "respond", "write_draft", "finalize",
-                            "critique_note", "explore_note", "run_critique",
-                            "recommend_next_workflow", "run_readiness_check",
-                            "confirm_intent",
-                        ],
-                    },
-                    "args": {
-                        "type": "object",
-                        "properties": {
-                            "message": {"type": "string"},
-                            "prompt": {"type": "string"},
-                            "question": {"type": "string"},
-                            "title": {"type": "string"},
-                            "body": {"type": "string"},
-                            "summary": {"type": "string"},
-                            "content": {"type": "string"},
-                            "target": {"type": "string"},
-                            "mode": {"type": "string"},
-                            "current_artifact_type": {"type": "string"},
-                            "planning_track": {"type": "string"},
-                        },
-                    },
-                },
-                "required": ["name"],
-            },
-        },
-        "confidence": {"type": "number"},
-        "answer_assessment": {"type": "string", "enum": ["complete", "partial", "none"]},
-        "acknowledgment": {"type": "string"},
-        "active_mode": {
-            "type": "string",
-            "enum": ["discovery", "structuring", "critique", "revision", "finalization"],
-        },
-        # Detected on first contact and kept sticky by analyze_node; drives the output language lock.
-        "locale": {"type": "string", "enum": ["vi", "en"]},
-        "draft_update": {"type": "string"},
-        # BMAD method layer (addendum §11) — separate from active_mode. workflow_mode = planning
-        # stage of the project; planning_track = artifact-chain depth.
-        "workflow_mode": {
-            "type": "string",
-            "enum": ["brainstorm", "brief", "prd", "readiness_check",
-                     "architecture_readiness"],
-        },
-        "planning_track": {"type": "string", "enum": ["quick", "standard", "enterprise"]},
-    },
-    "required": ["tools"],
-}
+# Native tool calling replaces the old JSON tool-selection schema: analyze_node binds the available
+# tool schemas to the provider API (see _build_tool_schemas) and the model returns native tool_calls.
+# Analytic fields (active_mode, locale, workflow_mode) are derived from the picked tool + state.
 
-# Valid BMAD workflow modes and planning tracks, plus aliases the LLM may report. analyze_node
-# normalizes (alias -> lowercase/strip -> enum) and falls back to brainstorm / quick on miss.
-_WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness"}
-_WORKFLOW_MODE_ALIASES = {"product_brief": "brief"}
+# Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 
-# Per-tool arg names the shim copies from the selection dict into the tool_call args.
-_TOOL_ARG_KEYS = {
-    "ask_user": ["message"],
-    "respond": ["message"],
-    "write_draft": ["title", "body"],
-    "finalize": ["summary"],
-    "critique_note": ["content"],
-    "explore_note": ["content"],
-    "run_critique": ["target", "mode"],
-    "recommend_next_workflow": ["current_artifact_type", "planning_track"],
-    "run_readiness_check": ["target"],
-    "confirm_intent": ["summary"],
-}
-
-_TOOL_ARG_ALIASES = {
-    "ask_user": {"prompt": "message", "question": "message"},
-    "respond": {"prompt": "message", "question": "message"},
-    "confirm_intent": {"prompt": "summary", "message": "summary"},
-    "finalize": {"prompt": "summary", "message": "summary"},
-    "critique_note": {"prompt": "content", "message": "content"},
-    "explore_note": {"prompt": "content", "message": "content"},
-}
-
-# Args that MUST be non-empty for a pick to dispatch — a subset of _TOOL_ARG_KEYS. Emitting a
+# Args that MUST be non-empty for a pick to dispatch. Emitting a
 # tool_call with an empty required arg is a silent failure (write_draft body="", finalize summary=""),
 # so analyze_node degrades to a re-ask naming the field instead. Tools with their own coerced
 # fallback (ask_user/respond/notes) are deliberately absent. `run_critique.target` is NOT listed:
@@ -129,17 +44,47 @@ _TOOL_REQUIRED_ARGS = {
     "confirm_intent": ["summary"],
 }
 
-# Note tools commit the analyst to an operating angle; analyze_node derives active_mode from the
-# picked tool so proactive S1 coverage no longer depends on the model self-reporting it. Values are
-# already in the spec §7.1 vocabulary (explore_note -> structuring, not discovery).
-_NOTE_TOOL_MODE = {"critique_note": "critique", "explore_note": "structuring"}
+# analyze_node derives active_mode from the picked (primary) tool, so the operating angle no longer
+# depends on the model self-reporting it (the JSON-shim era field). Values are in the spec §7.1
+# vocabulary (explore_note -> structuring, not discovery). respond falls back to critique; the
+# discovery baseline covers any tool not listed.
+_TOOL_ACTIVE_MODE: dict[str, str] = {
+    "critique_note": "critique",
+    "explore_note": "structuring",
+    "ask_user": "discovery",
+    "confirm_intent": "discovery",
+    "write_draft": "structuring",
+    "finalize": "finalization",
+    "run_critique": "critique",
+    "respond": "critique",
+    "run_readiness_check": "finalization",
+    "recommend_next_workflow": "finalization",
+}
+
+# Injected tool params are runtime wiring (LangGraph fills them), never LLM-visible args — strip
+# them from the schema passed to the provider so the model only sees real arguments.
+_INJECTED_TOOL_PARAMS = frozenset({"state", "config", "tool_call_id"})
 
 
-def _normalize_workflow_mode(mode: Any) -> str:
-    """Alias -> lowercase/strip -> enum; fall back to 'brainstorm' on anything unrecognized."""
-    raw = str(mode or "").strip().lower()
-    raw = _WORKFLOW_MODE_ALIASES.get(raw, raw)
-    return raw if raw in _WORKFLOW_MODES else "brainstorm"
+def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
+    """Remove injected params (state, config, tool_call_id) from a tool's JSON-Schema properties."""
+    props = {k: v for k, v in (schema.get("properties") or {}).items() if k not in _INJECTED_TOOL_PARAMS}
+    required = [r for r in (schema.get("required") or []) if r not in _INJECTED_TOOL_PARAMS]
+    return {**schema, "properties": props, "required": required}
+
+
+def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
+    """Convert LangGraph tool objects → provider-agnostic schema list for generate(tools=...).
+
+    The model only sees tools the per-turn gate (get_available_tools) admits, so pre-binding the menu
+    here is the first half of the gate; post-call validation in _gate_selected_tools is the second.
+    """
+    schemas: list[dict[str, Any]] = []
+    for t in tools:
+        raw = t.args_schema.model_json_schema() if t.args_schema else {"type": "object", "properties": {}}
+        params = _strip_injected_params(raw)
+        schemas.append({"name": t.name, "description": t.description or "", "parameters": params})
+    return schemas
 
 
 def _normalize_planning_track(track: Any) -> str:
@@ -199,9 +144,6 @@ def _infer_workflow_mode(state: WorkflowState) -> str:
         return "brainstorm"
     return "prd" if state.get("artifact_type") == "product_brief" else "brief"
 
-# respond is a user-facing critique/exploration; its angle is the mode the model picked (defaulting
-# to critique). active_mode is derived from it and also passed as the tool's `mode` arg.
-_RESPOND_MODES = ("critique", "structuring")
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -444,55 +386,52 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     draft_body = draft["body"] if draft else None
 
     prompt = _build_tool_selection_prompt(effective_state, artifacts, draft_body)
-    response_format = TOOL_SELECTION_SCHEMA
     system_prompt = get_instruction(
         artifact_type=effective_state["artifact_type"],
         workflow_area=effective_state["workflow_area"],
         agent_role=cfg.get("agent_role"),
         context={"has_draft": draft_body is not None},
     )
+    # Pre-bind gate: the model only sees the tools this turn's state admits, so it cannot pick a
+    # gated tool. The native tool-calling API returns an AIMessage(tool_calls=[...]) directly.
+    from app.graphs.agent_tools import get_available_tools
+
+    tool_schemas = _build_tool_schemas(get_available_tools(effective_state))
     started_at = time.monotonic()
-    analysis_result, usage = await llm_client.generate(
+    ai_message, usage = await llm_client.generate(
         messages=[{"role": "user", "content": prompt}],
         system=system_prompt,
-        max_tokens=2000,
-        response_format=response_format,
+        max_tokens=settings.analyze_max_tokens,
+        tools=tool_schemas,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
-    if isinstance(analysis_result, dict):
-        analysis_result = {
-            **analysis_result,
-            "coverage_complete": coverage["coverage_complete"],
-        }
 
-    # Gate and normalize the tools list. Done before persist so analysis_result records the tools
-    # actually dispatched. The gate coerces unavailable tools to ask_user, then enforces that
-    # interrupt-bearing tools run solo (first interrupt-bearing tool wins, others dropped).
-    if isinstance(analysis_result, dict):
-        raw_tools = analysis_result.get("tools") or []
-        if not isinstance(raw_tools, list) or not raw_tools:
-            # Backward-compat: model returned old format {"tool": "name", ...}.
-            # Reconstruct per-tool args so the gate can coerce it normally.
-            # NOTE: empty dict {} is a terminal signal (analyst is done) — do NOT coerce it.
-            old_tool = analysis_result.get("tool") or ""
-            if old_tool:
-                old_args = {k: analysis_result.get(k, "") for k in _TOOL_ARG_KEYS.get(old_tool, [])}
-                raw_tools = [{"name": old_tool, "args": old_args}]
-        raw_tools = _normalize_requested_tools(raw_tools)
-        gated_tools = _gate_selected_tools(effective_state, raw_tools)
-        analysis_result = {**analysis_result, "tools": gated_tools}
+    # Post-call gate: pre-binding cannot enforce required args or interrupt-bearing solo semantics,
+    # and the availability coercion stays as a safety net against a hallucinated out-of-menu name.
+    raw_tools = [
+        {"name": tc.get("name") or "", "args": dict(tc.get("args") or {})}
+        for tc in (getattr(ai_message, "tool_calls", None) or [])
+    ]
+    gated_tools = _gate_selected_tools(effective_state, raw_tools)
 
-        # Observability: record first coerced/dropped tool as gated_tool/gated_reason so eval and
-        # tests can see what was requested vs dispatched (mirrors old _degrade_reason behavior).
-        _record_gate_observability(analysis_result, raw_tools, gated_tools, effective_state)
+    # Analytic fields are derived from the gated primary tool + state, not self-reported by the LLM:
+    # active_mode from the tool's operating angle, locale sticky-from-state (default vi), and the
+    # draft_update captured from any text the model emitted alongside its tool calls.
+    primary_tool = gated_tools[0]["name"] if gated_tools else None
+    active_mode = _TOOL_ACTIVE_MODE.get(primary_tool or "", "discovery")
+    locale = effective_state.get("locale") or "vi"
+    draft_update = (getattr(ai_message, "content", None) or "").strip() or None
 
-        # Derive active_mode from the primary (first) gated tool.
-        primary_tool = gated_tools[0]["name"] if gated_tools else None
-        if primary_tool in _NOTE_TOOL_MODE:
-            analysis_result["active_mode"] = _NOTE_TOOL_MODE[primary_tool]
-        elif primary_tool == "respond":
-            mode = analysis_result.get("active_mode")
-            analysis_result["active_mode"] = mode if mode in _RESPOND_MODES else "critique"
+    analysis_result: dict[str, Any] = {
+        "tools": gated_tools,
+        "active_mode": active_mode,
+        "locale": locale,
+        "draft_update": draft_update,
+        "coverage_complete": coverage["coverage_complete"],
+    }
+    # Observability: record the first coerced/dropped tool as gated_tool/gated_reason so eval and
+    # tests can see what was requested vs dispatched.
+    _record_gate_observability(analysis_result, raw_tools, gated_tools, effective_state)
 
     async with session_factory() as db:
         run = AgentRun(
@@ -505,34 +444,22 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         await db.commit()
         run_id = str(run.id)
 
-    # Incremental write (C1): carry the running draft forward. A turn that emits no
-    # draft_update keeps the prior draft instead of None-ing it out. An empty-string
-    # draft_update is treated as absent — intentional: the draft only grows, the model is
-    # never allowed to reset it mid-session (the prompt forbids rewriting from scratch).
-    draft_update = analysis_result.get("draft_update") if isinstance(analysis_result, dict) else None
-
-    # BMAD method profile: take the LLM's workflow_mode (alias->enum, fallback brainstorm) or infer
-    # from coverage when omitted; planning_track normalized to quick on miss. Merge so other profile
-    # fields persist. Independent of active_mode.
-    reported = analysis_result if isinstance(analysis_result, dict) else {}
+    # BMAD method profile: workflow_mode is inferred from coverage (no longer LLM-reported);
+    # planning_track normalized to quick on miss. Merge so other profile fields persist.
     method_profile = dict(effective_state.get("method_profile") or DEFAULT_METHOD_PROFILE)
-    if reported.get("workflow_mode"):
-        method_profile["current_workflow"] = _normalize_workflow_mode(reported.get("workflow_mode"))
-    else:
-        method_profile["current_workflow"] = _infer_workflow_mode(effective_state)
-    method_profile["planning_track"] = _normalize_planning_track(
-        reported.get("planning_track") or method_profile.get("planning_track")
-    )
+    method_profile["current_workflow"] = _infer_workflow_mode(effective_state)
+    method_profile["planning_track"] = _normalize_planning_track(method_profile.get("planning_track"))
 
     result = {
         "analysis_result": analysis_result,
         "turn_count": effective_state["turn_count"] + 1,
         "last_agent_run_id": run_id,
-        # Locale is detected on first contact and then sticky: once set it overrides later turns so the
-        # output language lock stays stable even if the model omits the field mid-conversation.
-        "locale": effective_state.get("locale") or reported.get("locale"),
+        # Locale stays sticky once set so the output language lock holds across turns.
+        "locale": locale,
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
+        # Incremental write (C1): carry the running draft forward. A turn with no draft_update keeps
+        # the prior draft; the draft only grows (the model is never allowed to reset it mid-session).
         "working_draft": draft_update or effective_state.get("working_draft"),
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
@@ -546,28 +473,25 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # Emit the gated tools as AIMessage(tool_calls=[...]) so route_node dispatches to the ToolNode.
     # tool_call.id = "{run_id}:{i}" — unique per call in the same turn for LangGraph ToolNode
     # uniqueness. DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
-    # Empty tools list means the analyst is done: emit a plain AIMessage (no tool_calls).
-    if isinstance(analysis_result, dict):
-        gated_tools_list = analysis_result.get("tools") or []
-        if gated_tools_list:
-            tool_calls = []
-            for i, item in enumerate(gated_tools_list):
-                tool = item.get("name") or ""
-                args = dict(item.get("args") or {})
-                # Per-tool post-processing (coercions that must happen at dispatch time).
-                if tool == "ask_user" and not str(args.get("message") or "").strip():
-                    # Prefer the gate-set message (names the gated tool) over the generic fallback.
-                    gate_msg = str(analysis_result.get("message") or "") if isinstance(analysis_result, dict) else ""
-                    args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK
-                if tool == "respond":
-                    if _response_message_incomplete(args.get("message")):
-                        args["message"] = _RESPOND_FALLBACK
-                    args["mode"] = args.get("mode") or analysis_result.get("active_mode") or "critique"
-                tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
-            result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
-        else:
-            done_message = str(analysis_result.get("summary") or analysis_result.get("message") or "")
-            result["messages"] = [AIMessage(content=done_message)]
+    # Empty tool_calls means the analyst is done: emit a plain AIMessage carrying its final text.
+    if gated_tools:
+        tool_calls = []
+        for i, item in enumerate(gated_tools):
+            tool = item.get("name") or ""
+            args = dict(item.get("args") or {})
+            # Per-tool post-processing (coercions that must happen at dispatch time).
+            if tool == "ask_user" and not str(args.get("message") or "").strip():
+                # Prefer the gate-set message (names the gated tool) over the generic fallback.
+                gate_msg = str(analysis_result.get("message") or "")
+                args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK
+            if tool == "respond":
+                if _response_message_incomplete(args.get("message")):
+                    args["message"] = _RESPOND_FALLBACK
+                args["mode"] = args.get("mode") or active_mode or "critique"
+            tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
+        result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
+    else:
+        result["messages"] = [AIMessage(content=(getattr(ai_message, "content", None) or "").strip())]
     return result
 
 
@@ -787,25 +711,6 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     return bool(getattr(messages[-1], "tool_calls", None))
 
 
-def _normalize_requested_tools(raw_tools: list[Any]) -> list[dict]:
-    normalized: list[dict] = []
-    for item in raw_tools:
-        if not isinstance(item, dict):
-            continue
-        name = str(item.get("name") or "")
-        normalized.append({**item, "args": _normalize_tool_args(name, item.get("args"))})
-    return normalized
-
-
-def _normalize_tool_args(tool: str, args: Any) -> dict[str, Any]:
-    raw = dict(args) if isinstance(args, dict) else {}
-    for source, target in _TOOL_ARG_ALIASES.get(tool, {}).items():
-        if source in raw and not str(raw.get(target) or "").strip():
-            raw[target] = raw[source]
-    allowed = _TOOL_ARG_KEYS.get(tool, [])
-    return {key: raw[key] for key in allowed if key in raw}
-
-
 def _record_gate_observability(
     analysis_result: dict, raw_tools: list[dict], gated_tools: list[dict], state: WorkflowState
 ) -> None:
@@ -819,6 +724,8 @@ def _record_gate_observability(
     # Coercion: a tool was replaced by ask_user
     for orig, gated in zip(raw_names, gated_names):
         if orig != gated:
+            if orig == "write_draft" and gated == "confirm_intent":
+                continue
             feedback_detail = _feedback_degrade_detail(state) if orig == "finalize" else ""
             reason = f"gated: {orig} not available this turn"
             if feedback_detail:
@@ -847,6 +754,33 @@ _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
 })
 
 
+# Confirmation prompt appended to a coerced intent draft so the user is asked to confirm or revise,
+# rather than handed a draft with no call to action.
+_INTENT_CONFIRM_PROMPT = {
+    "vi": "Đây là bản nháp mình chuẩn bị dựa trên thông tin bạn chia sẻ. Bạn xác nhận để mình tiếp "
+          "tục, hay muốn chỉnh sửa/bổ sung điểm nào không?",
+    "en": "Here's the draft I prepared from what you shared. Does this look right, or would you like "
+          "to adjust or add anything?",
+}
+
+
+def _intent_summary_from_draft(title: str, body: str, locale: str | None = None) -> str:
+    """Build the confirm_intent message from a write_draft coerced in the intent phase.
+
+    Surfaces the full prepared draft (title + body) verbatim — the user must see the complete content
+    to confirm it, so nothing is trimmed — then appends a confirm/revise prompt so the user has a
+    clear call to action. Returns "" only when both title and body are empty, in which case the caller
+    falls back to ask_user.
+    """
+    title = title.strip()
+    body = body.strip()
+    draft = f"{title}\n\n{body}" if title and body else (title or body)
+    if not draft:
+        return ""
+    prompt = _INTENT_CONFIRM_PROMPT.get(locale or "vi", _INTENT_CONFIRM_PROMPT["vi"])
+    return f"{draft}\n\n---\n\n{prompt}"
+
+
 def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
     """Coerce and gate a requested tools list to what is safe to dispatch this turn.
 
@@ -873,11 +807,10 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
         # agent surfaces its prepared summary rather than falling back to a generic ask_user prompt.
         if name == "write_draft" and state.get("user_confirmed") is None and "confirm_intent" in available:
             args = item.get("args") or {}
-            title = str(args.get("title") or "")
-            body = str(args.get("body") or "")
-            first_para = (body.split("\n\n")[0].strip() if body else "")[:200]
-            summary = f"{title}: {first_para}" if title and first_para else (title or first_para)
-            if summary.strip():
+            summary = _intent_summary_from_draft(
+                str(args.get("title") or ""), str(args.get("body") or ""), state.get("locale")
+            )
+            if summary:
                 coerced.append({"name": "confirm_intent", "args": {"summary": summary}})
                 continue
         coerced.append({**item, "name": "ask_user"})

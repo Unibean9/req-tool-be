@@ -11,10 +11,9 @@ from langchain_core.messages import AIMessage
 
 from app.graphs.agent_tools import _confirm_intent_impl, get_available_tools, NOTE_STEP_LIMIT
 from app.graphs.nodes import (
-    TOOL_SELECTION_SCHEMA,
-    _TOOL_ARG_KEYS,
     _TOOL_REQUIRED_ARGS,
     _INTERRUPT_BEARING_TOOLS,
+    _build_tool_schemas,
     _gate_selected_tools,
 )
 
@@ -33,13 +32,11 @@ def _note_turn(call_id: str):
 # Schema registration
 # ---------------------------------------------------------------------------
 
-def test_confirm_intent_in_tool_selection_schema():
-    enum = TOOL_SELECTION_SCHEMA["properties"]["tools"]["items"]["properties"]["name"]["enum"]
-    assert "confirm_intent" in enum
-
-
 def test_confirm_intent_arg_and_required_keys():
-    assert _TOOL_ARG_KEYS["confirm_intent"] == ["summary"]
+    state = {"messages": [], "user_confirmed": None}
+    tool = next(t for t in get_available_tools(state) if t.name == "confirm_intent")
+    parameters = _build_tool_schemas([tool])[0]["parameters"]
+    assert list(parameters["properties"].keys()) == ["summary"]
     assert _TOOL_REQUIRED_ARGS["confirm_intent"] == ["summary"]
 
 
@@ -203,6 +200,18 @@ def test_write_draft_in_artifact_phase_not_coerced():
     state = {"messages": [], "user_confirmed": True}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "T", "body": "B"}}])
     assert gated[0]["name"] == "write_draft"
+
+
+def test_coerced_summary_returns_full_body():
+    # Regression: the full prepared draft must be surfaced verbatim (the old [:200] bug cut it
+    # mid-word at "...thời gian thự"). Nothing may be trimmed.
+    state = {"messages": [], "user_confirmed": None}
+    body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in cho người tham gia. " * 12)
+    gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision", "body": body}}])
+    summary = gated[0]["args"]["summary"]
+    assert body.strip() in summary  # whole body present, not truncated
+    assert summary.startswith("Vision")  # title prefixed
+    assert "chỉnh sửa" in summary  # confirm/revise prompt appended
 
 
 def test_write_draft_without_body_falls_back_to_ask_user():

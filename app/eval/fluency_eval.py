@@ -224,23 +224,24 @@ def _layers_cache_key_has_draft_distinct() -> GateResult:
 # ---------------------------------------------------------------------------
 
 def _dispatch_schema_uses_tools_array() -> GateResult:
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
+    # Native tool calling: analyze_node binds the available tools as a provider-agnostic schema list,
+    # each {name, description, parameters} — the model returns native tool_calls, no JSON shim.
+    from app.graphs.agent_tools import get_available_tools
+    from app.graphs.nodes import _build_tool_schemas
+    from tests.integration.test_graph_nodes import _state
 
-    props = TOOL_SELECTION_SCHEMA.get("properties", {})
-    required = TOOL_SELECTION_SCHEMA.get("required", [])
-    has_tools_array = (
-        "tools" in props
-        and props["tools"].get("type") == "array"
-        and "tools" in required
+    schemas = _build_tool_schemas(get_available_tools(_state()))
+    passed = bool(schemas) and all(
+        {"name", "parameters"} <= set(s) and isinstance(s["parameters"], dict) for s in schemas
     )
     return GateResult(
-        gate="TOOL_SELECTION_SCHEMA uses 'tools' array (not legacy 'tool' string)",
-        passed=has_tools_array,
-        score=1.0 if has_tools_array else 0.0,
+        gate="analyze_node binds native tool schemas (not legacy JSON tool-selection)",
+        passed=passed,
+        score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="schema has required 'tools' array property" if has_tools_array
-               else f"schema properties: {list(props.keys())}",
+        reason=f"bound tools: {[s['name'] for s in schemas]}" if passed
+               else f"malformed schemas: {schemas}",
     )
 
 

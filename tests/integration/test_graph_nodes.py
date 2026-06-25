@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 from sqlalchemy import select
 
 from app.graphs.policy import GovernanceDenied
@@ -126,13 +127,9 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "next_action": "ask",
-        "confidence": 0.3,
-        "gaps": ["thiếu business context"],
-        "message": "Bạn có thể mô tả thêm về mục tiêu không?",
-        "proposals": [],
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Bạn có thể mô tả thêm về mục tiêu không?"}}
+    ]), None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -140,7 +137,7 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
     result = await analyze_node(state, config)
 
-    assert result["analysis_result"]["next_action"] == "ask"
+    assert result["analysis_result"]["tools"][0]["name"] == "ask_user"
     assert result["turn_count"] == 1
     assert result["last_agent_run_id"] is not None
 
@@ -187,9 +184,9 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     await db_session.commit()
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "tools": [{"name": "finalize", "args": {"summary": "Hoàn tất"}}],
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "finalize", "args": {"summary": "Hoàn tất"}}
+    ]), None))
 
     state = _state(artifact_type="problem_statement")
     state["focused_artifact_id"] = str(child_a.id)
@@ -559,36 +556,6 @@ async def test_messages_not_truncated_by_summarize(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_high_confidence_returns_propose_action(client, db_session):
-    from app.graphs.nodes import analyze_node
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    project_id = uuid.UUID(project["id"])
-
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "next_action": "propose",
-        "confidence": 0.9,
-        "gaps": [],
-        "message": "",
-        "proposals": [{"artifact_type": "goal", "title": "Tăng doanh thu", "body": "..."}],
-    }, None))
-
-    state = _state(artifact_type="goal")
-    config = _config(str(agent_session.id), str(project_id), mock_llm)
-    config["configurable"]["session_factory"] = _session_factory()
-
-    result = await analyze_node(state, config)
-
-    assert result["analysis_result"]["next_action"] == "propose"
-    assert result["turn_count"] == 1
-
-
-@pytest.mark.asyncio
 async def test_analyze_node_creates_agent_run_record(client, db_session):
     from app.graphs.nodes import analyze_node
 
@@ -695,17 +662,19 @@ def test_analyst_prompt_includes_language_lock_directive():
 
 def _smart_llm():
     """LLM mock driving analyze→ask_user each turn. Counts analyze (tool-selection) calls so a test
-    can prove the loop advances across a resume."""
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
+    can prove the loop advances across a resume. The analyze pass is the one passing tools=; it gets
+    an AIMessage with tool_calls. Other passes (triage) read a dict via response_format."""
+    from langchain_core.messages import AIMessage
 
     analyze_calls = []
     llm = AsyncMock()
 
-    async def _generate(*, messages, system, max_tokens, response_format=None):
-        if response_format is TOOL_SELECTION_SCHEMA:
+    async def _generate(*, messages, system, max_tokens, response_format=None, tools=None):
+        if tools is not None:
             analyze_calls.append(1)
-            return {"tools": [{"name": "ask_user", "args": {"message": "Bạn cần gì thêm?"}}],
-                    "confidence": 0.3, "active_mode": "discovery", "locale": "vi"}, None
+            return AIMessage(content="", tool_calls=[
+                {"id": "scripted:0", "name": "ask_user", "args": {"message": "Bạn cần gì thêm?"}}
+            ]), None
         return {}, None
 
     llm.generate = _generate
@@ -874,15 +843,6 @@ async def test_greeting_turn_skips_full_analysis(client, db_session):
 # ---------------------------------------------------------------------------
 # Phase 6 — One-question Rhythm (S8)
 # ---------------------------------------------------------------------------
-
-def test_analysis_schema_accepts_answer_assessment_and_acknowledgment():
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
-
-    props = TOOL_SELECTION_SCHEMA["properties"]
-    assert "answer_assessment" in props
-    assert "acknowledgment" in props
-    assert TOOL_SELECTION_SCHEMA["required"] == ["tools"]
-
 
 # ---------------------------------------------------------------------------
 # build_graph tests
@@ -1064,15 +1024,6 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
 # Phase A2 (C1): incremental running draft (working_draft)
 # ---------------------------------------------------------------------------
 
-def test_analysis_schema_accepts_draft_update():
-    """`draft_update` is additive and optional — the required set must not change."""
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
-
-    assert "draft_update" in TOOL_SELECTION_SCHEMA["properties"]
-    assert TOOL_SELECTION_SCHEMA["properties"]["draft_update"]["type"] == "string"
-    assert TOOL_SELECTION_SCHEMA["required"] == ["tools"]
-
-
 def test_build_prompt_includes_working_draft_block_when_present():
     from app.graphs.nodes import _build_tool_selection_prompt
 
@@ -1113,13 +1064,9 @@ async def test_analyze_node_persists_working_draft_from_draft_update(client, db_
 
     new_draft = "## Mục tiêu\n- Tăng tỷ lệ giữ chân người dùng lên 30%."
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "next_action": "ask",
-        "confidence": 0.4,
-        "gaps": [],
-        "message": "Còn ràng buộc nào không?",
-        "draft_update": new_draft,
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content=new_draft, tool_calls=[
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Còn ràng buộc nào không?"}}
+    ]), None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -1164,29 +1111,13 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
 # Multi-angle: active_mode + mode_hint + proactive directive
 # ---------------------------------------------------------------------------
 
-def test_active_mode_field_in_analysis_schema():
-    """T1: `active_mode` is additive and optional — the required set must not change."""
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
-
-    assert "active_mode" in TOOL_SELECTION_SCHEMA["properties"]
-    assert "active_mode" not in TOOL_SELECTION_SCHEMA.get("required", [])
-
-
-def test_active_mode_schema_is_spec_vocabulary_only():
-    """The enum is the spec §7.1 vocabulary only — the legacy qa/explore/draft values are gone."""
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
-
-    enum = set(TOOL_SELECTION_SCHEMA["properties"]["active_mode"]["enum"])
-    assert enum == {"discovery", "structuring", "critique", "revision", "finalization"}
-    assert {"qa", "explore", "draft"}.isdisjoint(enum)
-
-
 @pytest.mark.asyncio
 async def test_active_mode_passes_through_analyze_node(client, db_session):
-    """T2: an `active_mode` the LLM emits survives into the persisted analysis_result.
+    """T2: `active_mode` is derived from the gated primary tool and persisted into analysis_result.
 
     `active_mode` lives inside analysis_result (no new state channel), so the eval layer
-    can mine it from AgentRun.analysis_result — it must not be stripped by analyze_node.
+    can mine it from AgentRun.analysis_result. It is derived (critique_note → critique), not
+    self-reported by the LLM.
     """
     from app.graphs.nodes import analyze_node
 
@@ -1197,13 +1128,9 @@ async def test_active_mode_passes_through_analyze_node(client, db_session):
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "next_action": "ask",
-        "confidence": 0.4,
-        "gaps": [],
-        "message": "Ta thử soi lại nhé?",
-        "active_mode": "critique",
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "critique_note", "args": {"content": "Ta thử soi lại nhé?"}}
+    ]), None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -1225,10 +1152,9 @@ async def test_respond_colon_terminated_message_uses_fallback(client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "tools": [{"name": "respond", "args": {"message": "Dựa trên thông tin hiện có:"}}],
-        "active_mode": "critique",
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "respond", "args": {"message": "Dựa trên thông tin hiện có:"}}
+    ]), None))
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)

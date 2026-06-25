@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
+from langchain_core.messages import AIMessage
+
 from app.models.llm_provider import ProviderType
 
 DEFAULT_MODEL_BY_PROVIDER = {
@@ -40,6 +42,123 @@ def _to_bedrock_probe_tool() -> dict[str, Any]:
     }
 
 
+# Provider-agnostic tool schema (input to generate(tools=...)):
+#   {"name": str, "description": str, "parameters": <JSON Schema object>}
+# Each converter maps it to the wire format the provider's tool-calling API expects.
+_EMPTY_PARAMS = {"type": "object", "properties": {}}
+
+
+def _to_anthropic_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": tool_schema["name"],
+        "description": tool_schema.get("description", ""),
+        "input_schema": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+    }
+
+
+def _to_openai_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
+    # Responses API uses the flat function format (not nested under "function" like Chat
+    # Completions) — confirmed live by ping_tool_calling.
+    return {
+        "type": "function",
+        "name": tool_schema["name"],
+        "description": tool_schema.get("description", ""),
+        "parameters": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+    }
+
+
+def _to_google_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": tool_schema["name"],
+        "description": tool_schema.get("description", ""),
+        "parameters": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+    }
+
+
+def _to_bedrock_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "toolSpec": {
+            "name": tool_schema["name"],
+            "description": tool_schema.get("description", ""),
+            "inputSchema": {"json": tool_schema.get("parameters") or dict(_EMPTY_PARAMS)},
+        }
+    }
+
+
+def _parse_anthropic_tool_response(data: dict[str, Any]) -> AIMessage:
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    for block in data.get("content") or []:
+        if block.get("type") == "tool_use":
+            tool_calls.append(
+                {"id": block.get("id") or "", "name": block.get("name") or "", "args": block.get("input") or {}}
+            )
+        elif block.get("type") == "text":
+            text_parts.append(block.get("text") or "")
+    return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
+
+
+def _parse_openai_tool_response(data: dict[str, Any]) -> AIMessage:
+    # Responses API: output is a list; function_call items carry .name, .arguments (JSON string),
+    # .call_id; message items hold output_text parts.
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    for item in data.get("output") or []:
+        if item.get("type") == "function_call":
+            tool_calls.append(
+                {
+                    "id": item.get("call_id") or item.get("id") or "",
+                    "name": item.get("name") or "",
+                    "args": _loads_args(item.get("arguments")),
+                }
+            )
+        elif item.get("type") == "message":
+            for part in item.get("content") or []:
+                if part.get("type") == "output_text" and part.get("text") is not None:
+                    text_parts.append(part["text"])
+    return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
+
+
+def _parse_google_tool_response(data: dict[str, Any]) -> AIMessage:
+    candidates = data.get("candidates") or []
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    if candidates:
+        for part in candidates[0].get("content", {}).get("parts") or []:
+            fn = part.get("functionCall")
+            if fn:
+                tool_calls.append({"id": "", "name": fn.get("name") or "", "args": fn.get("args") or {}})
+            elif part.get("text"):
+                text_parts.append(part["text"])
+    return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
+
+
+def _parse_bedrock_tool_response(data: dict[str, Any]) -> AIMessage:
+    content = data.get("output", {}).get("message", {}).get("content") or []
+    tool_calls: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    for block in content:
+        use = block.get("toolUse")
+        if use:
+            tool_calls.append(
+                {"id": use.get("toolUseId") or "", "name": use.get("name") or "", "args": use.get("input") or {}}
+            )
+        elif block.get("text"):
+            text_parts.append(block["text"])
+    return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
+
+
+def _loads_args(raw: Any) -> dict[str, Any]:
+    """Parse a tool-call arguments payload that may arrive as a JSON string or already a dict."""
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 class LLMClient(Protocol):
     async def ping(self) -> str | None:
         pass
@@ -54,7 +173,8 @@ class LLMClient(Protocol):
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         pass
 
 
@@ -104,8 +224,12 @@ class OpenAILLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
+
+        if tools:
+            return await self._generate_with_tools(messages, system, max_tokens, tools)
 
         input_messages = _openai_messages(messages, system)
         body: dict[str, Any] = {
@@ -127,6 +251,32 @@ class OpenAILLMClient:
 
         text = _extract_openai_text(data)
         return _parse_generate_text(text, response_format), _extract_openai_usage(data)
+
+    async def _generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        system: str | None,
+        max_tokens: int,
+        tools: list[dict[str, Any]],
+    ) -> tuple[AIMessage, dict[str, int] | None]:
+        import httpx
+
+        body = {
+            "model": self.config.model,
+            "input": _openai_messages(messages, system),
+            "max_output_tokens": max_tokens,
+            "tools": [_to_openai_tool(t) for t in tools],
+            "tool_choice": "required",
+        }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return _parse_openai_tool_response(data), _extract_openai_usage(data)
 
 
 class GoogleLLMClient:
@@ -182,8 +332,12 @@ class GoogleLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
+
+        if tools:
+            return await self._generate_with_tools(messages, system, max_tokens, tools)
 
         generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
         if response_format:
@@ -208,6 +362,33 @@ class GoogleLLMClient:
 
         text = _extract_google_text(data)
         return _parse_generate_text(text, response_format), _extract_google_usage(data)
+
+    async def _generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        system: str | None,
+        max_tokens: int,
+        tools: list[dict[str, Any]],
+    ) -> tuple[AIMessage, dict[str, int] | None]:
+        import httpx
+
+        body: dict[str, Any] = {
+            "contents": _google_contents(messages),
+            "tools": [{"functionDeclarations": [_to_google_tool(t) for t in tools]}],
+            "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
+            "generationConfig": {"maxOutputTokens": max_tokens},
+        }
+        if system:
+            body["systemInstruction"] = {"parts": [{"text": system}]}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
+                params={"key": self.config.api_key},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return _parse_google_tool_response(data), _extract_google_usage(data)
 
 
 class AnthropicLLMClient:
@@ -257,8 +438,12 @@ class AnthropicLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
+
+        if tools:
+            return await self._generate_with_tools(messages, system, max_tokens, tools)
 
         body: dict[str, Any] = {
             "model": self.config.model,
@@ -280,6 +465,34 @@ class AnthropicLLMClient:
 
         text = _extract_anthropic_text(data)
         return _parse_generate_text(text, response_format), _extract_anthropic_usage(data)
+
+    async def _generate_with_tools(
+        self,
+        messages: list[dict[str, str]],
+        system: str | None,
+        max_tokens: int,
+        tools: list[dict[str, Any]],
+    ) -> tuple[AIMessage, dict[str, int] | None]:
+        import httpx
+
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "max_tokens": max_tokens,
+            "messages": _anthropic_messages(messages),
+            "tools": [_to_anthropic_tool(t) for t in tools],
+            "tool_choice": {"type": "any"},
+        }
+        if system:
+            body["system"] = system
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return _parse_anthropic_tool_response(data), _extract_anthropic_usage(data)
 
 
 class BedrockLLMClient:
@@ -303,11 +516,14 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
-    ) -> tuple[str | dict[str, Any], dict[str, int] | None]:
+        tools: list[dict[str, Any]] | None = None,
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         if self.config.secret_key:
-            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format)
+            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format, tools)
         else:
-            data = await self._generate_with_api_key(messages, system, max_tokens, response_format)
+            data = await self._generate_with_api_key(messages, system, max_tokens, response_format, tools)
+        if tools:
+            return _parse_bedrock_tool_response(data), _extract_bedrock_usage(data)
         text = _extract_bedrock_text(data)
         return _parse_generate_text(text, response_format), _extract_bedrock_usage(data)
 
@@ -396,6 +612,7 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         def _generate() -> dict[str, Any]:
             import boto3
@@ -411,9 +628,13 @@ class BedrockLLMClient:
                 "messages": _bedrock_messages(messages),
                 "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.0},
             }
-            bedrock_system = _bedrock_system(system, response_format)
+            # Tool calls suppress the JSON-schema system instruction: the toolConfig drives the
+            # structured output instead, so only the raw caller system prompt is forwarded.
+            bedrock_system = [{"text": system}] if (tools and system) else _bedrock_system(system, response_format)
             if bedrock_system:
                 converse_kwargs["system"] = bedrock_system
+            if tools:
+                converse_kwargs["toolConfig"] = {"tools": [_to_bedrock_tool(t) for t in tools]}
             return client.converse(**converse_kwargs)
 
         return await asyncio.to_thread(_generate)
@@ -424,6 +645,7 @@ class BedrockLLMClient:
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None,
+        tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         import httpx
 
@@ -433,9 +655,11 @@ class BedrockLLMClient:
             "messages": _bedrock_messages(messages),
             "inferenceConfig": {"maxTokens": max_tokens, "temperature": 0.0},
         }
-        bedrock_system = _bedrock_system(system, response_format)
+        bedrock_system = [{"text": system}] if (tools and system) else _bedrock_system(system, response_format)
         if bedrock_system:
             body["system"] = bedrock_system
+        if tools:
+            body["toolConfig"] = {"tools": [_to_bedrock_tool(t) for t in tools]}
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(

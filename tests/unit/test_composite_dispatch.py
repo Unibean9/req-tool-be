@@ -76,13 +76,10 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
 
     from unittest.mock import AsyncMock
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "tools": [
-            {"name": "critique_note", "args": {"content": "Note A"}},
-            {"name": "explore_note", "args": {"content": "Note B"}},
-        ],
-        "active_mode": "critique",
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "critique_note", "args": {"content": "Note A"}},
+        {"id": "scripted:1", "name": "explore_note", "args": {"content": "Note B"}},
+    ]), None))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -100,6 +97,10 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
     assert tool_calls[1]["id"] == f"{run_id}:1"
 
 
+# (test_backward_compat_old_format_degrades_gracefully removed: the {"tool": ...} legacy
+# format path was deleted with the JSON-shim contract; native tool-calling has no such path.)
+
+
 @pytest.mark.asyncio
 async def test_composite_gate_keeps_interrupt_bearing_drops_non_interrupt(client, db_session):
     """ask_user + explore_note → gate keeps only ask_user."""
@@ -110,12 +111,10 @@ async def test_composite_gate_keeps_interrupt_bearing_drops_non_interrupt(client
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "tools": [
-            {"name": "ask_user", "args": {"message": "Câu hỏi?"}},
-            {"name": "explore_note", "args": {"content": "note"}},
-        ],
-    }, None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Câu hỏi?"}},
+        {"id": "scripted:1", "name": "explore_note", "args": {"content": "note"}},
+    ]), None))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -128,27 +127,3 @@ async def test_composite_gate_keeps_interrupt_bearing_drops_non_interrupt(client
     assert out["analysis_result"]["gated_tool"] == "explore_note"
 
 
-@pytest.mark.asyncio
-async def test_backward_compat_old_format_degrades_gracefully(client, db_session):
-    """Negative test: LLM returns old format {"tool": "ask_user"} — dispatcher handles gracefully."""
-    from app.graphs.nodes import analyze_node
-    from unittest.mock import AsyncMock
-
-    project_id = await _project(client)
-    agent_session = await _make_agent_session(client, db_session, project_id)
-
-    mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "tool": "ask_user",
-        "message": "Old format message",
-    }, None))
-
-    state = _state()
-    config = _config(str(agent_session.id), str(project_id), mock_llm)
-    config["configurable"]["session_factory"] = _session_factory()
-
-    out = await analyze_node(state, config)
-    # Must not crash; dispatches ask_user (backward-compat reconstructs the tools list)
-    tool_calls = out["messages"][-1].tool_calls
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "ask_user"

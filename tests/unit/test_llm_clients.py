@@ -2,8 +2,8 @@ import json
 
 import httpx
 import pytest
+from langchain_core.messages import AIMessage
 
-from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 from app.models.llm_provider import ProviderType
 from app.services.llm_clients import (
     DEFAULT_MODEL_BY_PROVIDER,
@@ -176,8 +176,9 @@ def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
 
 def test_parse_generate_text_accepts_tool_args_prompt_alias():
     payload = {"tools": [{"name": "ask_user", "args": {"prompt": "Bạn muốn phân tích phần nào?"}}]}
+    schema = {"type": "object", "properties": {"tools": {"type": "array"}}, "required": ["tools"]}
 
-    result = _parse_generate_text(json.dumps(payload, ensure_ascii=False), TOOL_SELECTION_SCHEMA)
+    result = _parse_generate_text(json.dumps(payload, ensure_ascii=False), schema)
 
     assert result == payload
 
@@ -292,6 +293,67 @@ def _install_httpx_recorder(monkeypatch, payload):
     recorder = _HttpxRecorder(payload)
     monkeypatch.setattr(httpx, "AsyncClient", recorder.client_class)
     return recorder
+
+
+# ---------------------------------------------------------------------------
+# Native tool calling — generate(tools=...) returns an AIMessage(tool_calls=[...])
+# Deterministic parser coverage; per-provider LIVE smoke tests are a separate exit gate.
+# ---------------------------------------------------------------------------
+
+_ASK_TOOL = {
+    "name": "ask_user",
+    "description": "Ask the user a question.",
+    "parameters": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+}
+
+_TOOL_RESPONSE_BY_PROVIDER = {
+    OpenAILLMClient: {
+        "output": [
+            {"type": "function_call", "call_id": "c1", "name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+            {"type": "message", "content": [{"type": "output_text", "text": "draft text"}]},
+        ]
+    },
+    AnthropicLLMClient: {
+        "content": [
+            {"type": "text", "text": "draft text"},
+            {"type": "tool_use", "id": "tu1", "name": "ask_user", "input": {"message": "hi"}},
+        ]
+    },
+    GoogleLLMClient: {
+        "candidates": [
+            {"content": {"parts": [{"text": "draft text"}, {"functionCall": {"name": "ask_user", "args": {"message": "hi"}}}]}}
+        ]
+    },
+    BedrockLLMClient: {
+        "output": {"message": {"content": [
+            {"text": "draft text"},
+            {"toolUse": {"toolUseId": "b1", "name": "ask_user", "input": {"message": "hi"}}},
+        ]}}
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", list(_TOOL_RESPONSE_BY_PROVIDER))
+async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
+    # Bedrock api-key path (no secret_key) uses httpx — the recorder covers it.
+    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    result, _ = await client.generate(
+        messages=[{"role": "user", "content": "Phân tích"}],
+        system="Bạn là BA.",
+        max_tokens=256,
+        response_format=None,
+        tools=[_ASK_TOOL],
+    )
+
+    assert isinstance(result, AIMessage)
+    assert [tc["name"] for tc in result.tool_calls] == ["ask_user"]
+    assert result.tool_calls[0]["args"] == {"message": "hi"}
+    assert result.content == "draft text"  # text emitted alongside the tool call -> draft_update
+    # The request carried the tool config (so a real provider would force the call).
+    assert "ask_user" in str(recorder.requests[0]["json"])
 
 
 class _HttpxRecorder:

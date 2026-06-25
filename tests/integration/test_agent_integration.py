@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.graphs.checkpointer import AgentSessionCheckpointer, DelegatingCheckpointer
 from app.graphs.graph import build_graph
@@ -26,8 +27,20 @@ async def _project(client):
 
 
 def _mock_llm(analysis: dict):
+    """Smart stub: the analyze pass calls generate(tools=...) and expects an AIMessage with
+    tool_calls; every other pass (triage/summary) uses response_format and reads a dict."""
     llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=(analysis, None))
+
+    async def _generate(**kwargs):
+        if kwargs.get("tools") is not None:
+            tool_calls = [
+                {"id": f"scripted:{i}", "name": item["name"], "args": item.get("args") or {}}
+                for i, item in enumerate(analysis.get("tools") or [])
+            ]
+            return AIMessage(content=analysis.get("draft_update", ""), tool_calls=tool_calls), None
+        return analysis, None
+
+    llm.generate = _generate
     return llm
 
 

@@ -5,10 +5,11 @@ each call to a scripted/auto response by inspecting `response_format`, so a scen
 script the analyst tool-selection turns — everything else gets a sensible default.
 
 Routing keys (matching app/graphs):
-- SUMMARY_SCHEMA         -> property set == {"summary"} -> summary response
-- ON_TOPIC_SCHEMA        -> has property "on_topic" -> judge response (M2 harness only)
-- TOOL_CALL_SCHEMA       -> has property "__tool_call__" -> native AIMessage(tool_calls)
-- TOOL_SELECTION_SCHEMA  -> has property "tool"     -> next scripted tool-selection turn
+- TOOL_CALL_SCHEMA  -> has property "__tool_call__" -> native AIMessage(tool_calls) (harness self-test)
+- tools param set   -> native tool-selection: next scripted tool-selection turn as an AIMessage
+- ON_TOPIC_SCHEMA   -> has property "on_topic" -> judge response (M2 harness only)
+- TRIAGE_SCHEMA     -> has property "turn_type" -> triage classifier
+- SUMMARY_SCHEMA    -> property set == {"summary"} -> summary response
 
 `generate` returns `(result, usage)` like the real clients; usage is None
 (AgentRun.token_usage is nullable).
@@ -47,9 +48,9 @@ class ScriptedLLM:
     Parameters
     ----------
     tool_brain:
-        Ordered tool-SELECTION turns (TOOL_SELECTION_SCHEMA shape), consumed one per `analyze_node`
-        run. analyze_node converts each into an AIMessage(tool_calls). When exhausted, an empty
-        selection ({}) is returned: the shim emits a plain AIMessage and the loop ends.
+        Ordered tool-SELECTION turns, consumed one per `analyze_node` run and converted to an
+        AIMessage(tool_calls). When exhausted, a plain AIMessage with no tool_calls is returned and
+        the loop ends.
     summary:
         Response for `summarize_node`.
     judge:
@@ -94,7 +95,7 @@ class ScriptedLLM:
         tools: list[Any] | None = None,
         **_kwargs: Any,
     ) -> tuple[Any, None]:
-        route = self._route(response_format)
+        route = self._route(response_format, tools=tools)
         result = self._respond(route)
         self.calls.append({"route": route, "result": result})
         return result, None
@@ -103,13 +104,14 @@ class ScriptedLLM:
     # Internal routing
     # ------------------------------------------------------------------
 
-    def _route(self, response_format: dict[str, Any] | None) -> str:
+    def _route(self, response_format: dict[str, Any] | None, *, tools: list[Any] | None = None) -> str:
         props = ((response_format or {}).get("properties")) or {}
+        # __tool_call__ marker wins so the harness self-test (which passes BOTH tools and
+        # TOOL_CALL_SCHEMA) still routes to the native tool_call brain.
         if "__tool_call__" in props:
             return "tool_call"
-        # Tool-selection: the analyst names tools to run this turn (D1: "tools" array schema).
-        # Also accept legacy "tool" key for backward-compat with older tests.
-        if "tools" in props or "tool" in props:
+        # Native tool-selection: analyze_node passes the bound tool schemas (response_format=None).
+        if tools is not None:
             return "tool_select"
         # Judge guard before the others: the on-topic harness schema.
         if "on_topic" in props:
@@ -134,10 +136,10 @@ class ScriptedLLM:
             if self._tool_brain_idx < len(self._tool_brain):
                 turn = self._tool_brain[self._tool_brain_idx]
                 self._tool_brain_idx += 1
-                return dict(turn)
-            # Exhausted -> empty selection (no tool). The shim emits a plain AIMessage and route_node
-            # ends the turn: the tool-loop terminal.
-            return {}
+                return _tool_select_to_ai_message(turn)
+            # Exhausted -> terminal: a plain AIMessage with no tool_calls. analyze_node sees the empty
+            # tool_calls and ends the turn (route_node -> END).
+            return AIMessage(content="", tool_calls=[])
         if route == "triage":
             return {"turn_type": "work", "locale": "vi"}
         if route == "judge":
@@ -150,6 +152,21 @@ class ScriptedLLM:
 # ---------------------------------------------------------------------------
 # Brain-turn builders — keep scenario definitions terse and readable.
 # ---------------------------------------------------------------------------
+
+def _tool_select_to_ai_message(turn: dict[str, Any]) -> AIMessage:
+    """Convert a scripted tool-selection turn → AIMessage(tool_calls=[...]).
+
+    Mirrors the native client path: analyze_node now receives an AIMessage directly (not a dict), so
+    the scripted turn `{"tools": [{"name": "ask_user", "args": {...}}], "active_mode": ...}` is mapped
+    to `AIMessage(tool_calls=[{"id": "scripted:0", "name": ..., "args": ...}])`. The analytic
+    `active_mode` is dropped — analyze_node derives it from the picked tool, same as production.
+    """
+    tool_calls = [
+        {"id": f"scripted:{i}", "name": item["name"], "args": dict(item.get("args") or {})}
+        for i, item in enumerate(turn.get("tools") or [])
+    ]
+    return AIMessage(content="", tool_calls=tool_calls)
+
 
 def tool_call(name: str, args: dict[str, Any], *, call_id: str = "call_1") -> dict[str, Any]:
     """A scripted native tool-call turn. Shape matches a LangGraph ToolNode tool_call."""

@@ -32,41 +32,36 @@ class GateResult:
 # ---------------------------------------------------------------------------
 
 def _confirm_intent_in_schema_enum() -> GateResult:
-    from app.graphs.nodes import TOOL_SELECTION_SCHEMA
+    # Native tool calling: confirm_intent is registered iff it is bound to the intent-phase menu.
+    from app.graphs.agent_tools import get_available_tools
 
-    enum = (
-        TOOL_SELECTION_SCHEMA
-        .get("properties", {})
-        .get("tools", {})
-        .get("items", {})
-        .get("properties", {})
-        .get("name", {})
-        .get("enum", [])
-    )
-    passed = "confirm_intent" in enum
+    names = [t.name for t in get_available_tools({"user_confirmed": None, "messages": []})]
+    passed = "confirm_intent" in names
     return GateResult(
-        gate="confirm_intent listed in TOOL_SELECTION_SCHEMA name enum",
+        gate="confirm_intent bound to the intent-phase tool menu",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="confirm_intent in schema enum" if passed else f"enum: {enum}",
+        reason="confirm_intent in intent menu" if passed else f"menu: {names}",
     )
 
 
 def _confirm_intent_arg_keys() -> GateResult:
-    from app.graphs.nodes import _TOOL_ARG_KEYS, _TOOL_REQUIRED_ARGS
+    from app.graphs.agent_tools import confirm_intent
+    from app.graphs.nodes import _build_tool_schemas, _TOOL_REQUIRED_ARGS
 
-    arg_ok = _TOOL_ARG_KEYS.get("confirm_intent") == ["summary"]
+    params = _build_tool_schemas([confirm_intent])[0]["parameters"]
+    arg_ok = list(params.get("properties", {}).keys()) == ["summary"]
     req_ok = _TOOL_REQUIRED_ARGS.get("confirm_intent") == ["summary"]
     passed = arg_ok and req_ok
     return GateResult(
-        gate="confirm_intent arg keys = ['summary']; summary is required",
+        gate="confirm_intent native arg = ['summary']; summary is required",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"_TOOL_ARG_KEYS={_TOOL_ARG_KEYS.get('confirm_intent')}, _TOOL_REQUIRED_ARGS={_TOOL_REQUIRED_ARGS.get('confirm_intent')}",
+        reason=f"params={list(params.get('properties', {}).keys())}, _TOOL_REQUIRED_ARGS={_TOOL_REQUIRED_ARGS.get('confirm_intent')}",
     )
 
 
