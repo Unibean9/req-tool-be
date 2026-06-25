@@ -556,7 +556,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                 args = dict(item.get("args") or {})
                 # Per-tool post-processing (coercions that must happen at dispatch time).
                 if tool == "ask_user" and not str(args.get("message") or "").strip():
-                    args["message"] = _COERCED_ASK_FALLBACK
+                    # Prefer the gate-set message (names the gated tool) over the generic fallback.
+                    gate_msg = str(analysis_result.get("message") or "") if isinstance(analysis_result, dict) else ""
+                    args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK
                 if tool == "respond":
                     if _response_message_incomplete(args.get("message")):
                         args["message"] = _RESPOND_FALLBACK
@@ -864,8 +866,21 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
     coerced: list[dict] = []
     for item in requested:
         name = item.get("name") or ""
-        gated_name = name if name in available else "ask_user"
-        coerced.append({**item, "name": gated_name})
+        if name in available:
+            coerced.append(item)
+            continue
+        # write_draft in intent phase (user_confirmed is None): redirect to confirm_intent so the
+        # agent surfaces its prepared summary rather than falling back to a generic ask_user prompt.
+        if name == "write_draft" and state.get("user_confirmed") is None and "confirm_intent" in available:
+            args = item.get("args") or {}
+            title = str(args.get("title") or "")
+            body = str(args.get("body") or "")
+            first_para = (body.split("\n\n")[0].strip() if body else "")[:200]
+            summary = f"{title}: {first_para}" if title and first_para else (title or first_para)
+            if summary.strip():
+                coerced.append({"name": "confirm_intent", "args": {"summary": summary}})
+                continue
+        coerced.append({**item, "name": "ask_user"})
 
     validated: list[dict] = []
     for item in coerced:
