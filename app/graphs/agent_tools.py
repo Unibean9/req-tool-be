@@ -176,10 +176,10 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
     # state["last_agent_run_id"] still belongs to the prior analyze_node, not this invocation.
     # interrupt_kind="stream_response": session stays ACTIVE so the conversation resume path applies
     # (not the approval-gate path). The graph still halts via interrupt() — only the DB fields differ.
+    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=message)
     user_content = await nodes._save_and_interrupt_ask(
         state, config, message, run_id=tool_call_id, interrupt_kind="stream_response"
     )
-    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=message)
     return Command(
         update={
             "messages": [
@@ -214,10 +214,10 @@ async def _confirm_intent_impl(
     # interrupt_kind="stream_response" keeps the session ACTIVE (D4): the user can reply, and the
     # next turn sees user_confirmed=True — which unlocks the artifact tool menu in get_available_tools.
     # kind="assessment": this is a surfaced intent summary, not a clarifying question.
+    await _audit_interaction_tool_call(state, config, tool_name=f"confirm_intent:{tool_call_id}", message=summary)
     user_content = await nodes._save_and_interrupt_ask(
         state, config, summary, run_id=tool_call_id, kind="assessment", interrupt_kind="stream_response"
     )
-    await _audit_interaction_tool_call(state, config, tool_name=f"confirm_intent:{tool_call_id}", message=summary)
     return Command(
         update={
             "user_confirmed": True,
@@ -492,10 +492,10 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id, ASK_HUMAN
     # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
     # mode differ, so the user sees an assessment rather than a question.
+    await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
     user_content = await nodes._save_and_interrupt_ask(
         state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
     )
-    await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
     return Command(
         update={
             "messages": [
