@@ -25,12 +25,12 @@ def test_gate_passes_non_interrupt_tools_through():
     assert [r["name"] for r in result] == ["critique_note", "explore_note"]
 
 
-def test_gate_coerces_unavailable_tool_to_ask_user():
+def test_gate_passes_unavailable_tool_to_tool_feedback():
     state = _state()  # finalize not available (no working_draft, no passed critique)
     requested = [{"name": "finalize", "args": {"summary": "done"}}]
     result = _gate_selected_tools(state, requested)
     assert len(result) == 1
-    assert result[0]["name"] == "ask_user"
+    assert result[0]["name"] == "finalize"
 
 
 def test_gate_keeps_note_alongside_interrupt_tool():
@@ -56,10 +56,8 @@ def test_gate_drops_second_interrupt_bearing_tool():
     assert [r["name"] for r in result] == ["ask_user"]
 
 
-def test_gate_observability_reports_dropped_not_unavailable_when_note_rides_along():
-    """A second interrupt-bearing tool dropped BEFORE a kept note must report as 'dropped', not
-    'not available' — the observability compares against the pre-solo aligned list, not a positional
-    raw↔gated zip that a kept note would misalign."""
+def test_gate_observability_does_not_write_gated_markers_for_solo_drop():
+    """Solo enforcement vẫn drop interrupt thứ hai, nhưng không ghi gated_* vào analysis_result."""
     from app.graphs.nodes import _record_gate_observability
 
     state = _state()  # intent phase: ask_user/respond/explore_note all available
@@ -73,19 +71,19 @@ def test_gate_observability_reports_dropped_not_unavailable_when_note_rides_alon
 
     analysis_result: dict = {}
     _record_gate_observability(analysis_result, raw, gated, state)
-    assert analysis_result["gated_tool"] == "respond"
-    assert analysis_result["gated_reason"] == "dropped: respond paired with interrupt-bearing tool"
+    assert "gated_tool" not in analysis_result
+    assert "gated_reason" not in analysis_result
 
 
-def test_gate_coerce_then_keeps_note():
-    """Unavailable finalize → coerced to ask_user (interrupt-bearing); the explore_note rides along."""
+def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
+    """Unavailable finalize vẫn dispatch để tool trả lỗi; note side-effect-free được giữ cùng lượt."""
     state = _state()  # finalize not available
     requested = [
         {"name": "finalize", "args": {"summary": "done"}},
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
-    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
+    assert [r["name"] for r in result] == ["finalize", "explore_note"]
 
 
 def test_gate_interrupt_tools_set_is_complete():
@@ -155,5 +153,4 @@ async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session)
     tool_calls = out["messages"][-1].tool_calls
     assert [tc["name"] for tc in tool_calls] == ["ask_user", "explore_note"]
     assert "gated_tool" not in out["analysis_result"]
-
 

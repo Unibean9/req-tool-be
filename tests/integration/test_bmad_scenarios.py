@@ -75,6 +75,7 @@ async def test_scenario2_clear_direction_records_assumptions_and_risks(client, d
         "ASSUMPTION: users have phones | confidence: high\nRISK: vendor lock-in | likelihood: medium",
         _state(artifact_type="intent"),
         "call_1",
+        "explore_note",
     )
     assert note.update["assumptions"]
     assert note.update["risks"]

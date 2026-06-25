@@ -3,17 +3,7 @@ from langgraph.graph import END, StateGraph
 from langgraph.prebuilt import ToolNode
 
 from app.graphs.agent_tools import (
-    ask_user,
-    confirm_intent,
-    critique_note,
-    explore_note,
-    finalize,
-    read_artifact,
-    recommend_next_workflow,
-    respond,
-    run_critique,
-    run_readiness_check,
-    write_draft,
+    get_all_analyzer_tools,
 )
 from app.graphs.nodes import (
     analyze_node,
@@ -39,11 +29,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # conversation summary is checked on the way back (route_before_analyze).
     builder.add_node(
         "tools",
-        ToolNode([
-            ask_user, write_draft, finalize, critique_note, explore_note,
-            respond, run_critique, recommend_next_workflow, run_readiness_check,
-            confirm_intent, read_artifact,
-        ]),
+        ToolNode(get_all_analyzer_tools()),
     )
 
     # Entry: a cheap triage classifies each fresh turn. A conversational turn (greeting/smalltalk)

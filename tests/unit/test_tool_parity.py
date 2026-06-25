@@ -143,6 +143,7 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives", analysis_result={"next_action": "propose"})
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     config = _config(str(agent_session.id), str(project_id))
@@ -179,6 +180,7 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(analysis_result={"next_action": "propose"})
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused_a.id)
     config = _config(str(agent_session.id), str(project_id))
@@ -229,6 +231,7 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["assumptions"] = [{"statement": "Metric retention đã được user xác nhận", "source": "user", "status": "confirmed"}]
@@ -260,6 +263,7 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
@@ -294,6 +298,7 @@ async def test_write_draft_missing_focus_returns_recoverable_observation(client,
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -456,6 +461,7 @@ async def test_write_draft_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
+    state["user_confirmed"] = True  # artifact phase mở: write_draft mới dispatch thay vì self-reject
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["messages"] = [_ai_tool_call("write_draft", {"title": "Mục tiêu", "body": "Nội dung"})]

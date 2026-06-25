@@ -157,6 +157,8 @@ async def test_finalize_hard_blocks_when_gate_fails():
 
     mock_interrupt.assert_not_called()
     msg = command.update["messages"][0]
+    assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
+    assert msg.status == "error"
     assert "Không thể finalize" in msg.content
     assert "thiếu tiêu chí đo lường" in msg.content
 
@@ -174,6 +176,7 @@ async def test_finalize_hard_blocks_without_current_draft_body():
         command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
 
     mock_interrupt.assert_not_called()
+    assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
     assert "Không thể finalize" in command.update["messages"][0].content
 
 

@@ -160,7 +160,7 @@ def test_note_step_limit_does_not_block_run_critique():
 async def test_write_note_appends_to_messages():
     from app.graphs.agent_tools import _write_note_impl
 
-    command = await _write_note_impl("Giả định X có thể sai vì...", {}, "call_1")
+    command = await _write_note_impl("Giả định X có thể sai vì...", {}, "call_1", "explore_note")
 
     appended = command.update["messages"]
     assert len(appended) == 1

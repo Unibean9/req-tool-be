@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
 
-from app.graphs.agent_tools import _confirm_intent_impl, get_available_tools, NOTE_STEP_LIMIT
+from app.graphs.agent_tools import _confirm_intent_impl, _write_draft_impl, get_available_tools, NOTE_STEP_LIMIT
 from app.graphs.nodes import (
     _TOOL_REQUIRED_ARGS,
     _INTERRUPT_BEARING_TOOLS,
@@ -95,11 +95,24 @@ async def test_confirm_intent_sets_user_confirmed():
     assert mock_save.call_args.kwargs["kind"] == "assessment"
 
 
-def test_empty_summary_coerced_to_ask_user():
-    # Empty required arg degrades to a re-ask rather than dispatching a blank confirmation.
+def test_empty_summary_passes_gate_for_tool_feedback():
+    # Gate không đổi tool; confirm_intent tự reject bằng ToolMessage lỗi.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "confirm_intent", "args": {"summary": ""}}])
-    assert gated[0]["name"] == "ask_user"
+    assert gated[0]["name"] == "confirm_intent"
+
+
+@pytest.mark.asyncio
+async def test_confirm_intent_empty_summary_returns_tool_error():
+    state = {"messages": [], "user_confirmed": None}
+    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
+
+    command = await _confirm_intent_impl("", state, config, "tc-empty")
+
+    assert command.update["tool_errors"][0]["code"] == "missing_required_arg"
+    msg = command.update["messages"][0]
+    assert msg.status == "error"
+    assert "summary" in msg.content
 
 
 def test_confirm_intent_keeps_note_alongside():
@@ -186,14 +199,12 @@ async def test_audit_idempotent_when_row_exists():
     mock_db.commit.assert_not_awaited()
 
 
-def test_write_draft_in_intent_phase_coerces_to_confirm_intent():
-    # write_draft not available → should redirect to confirm_intent (not ask_user) so the agent
-    # surfaces its prepared summary and triggers the proper intent-confirmation flow.
+def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
+    # write_draft chưa khả dụng nhưng vẫn được dispatch để tool trả lỗi cho model tự sửa.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
     assert len(gated) == 1
-    assert gated[0]["name"] == "confirm_intent"
-    assert "Vision doc" in gated[0]["args"]["summary"]
+    assert gated[0]["name"] == "write_draft"
 
 
 def test_write_draft_in_artifact_phase_not_coerced():
@@ -203,23 +214,28 @@ def test_write_draft_in_artifact_phase_not_coerced():
     assert gated[0]["name"] == "write_draft"
 
 
-def test_coerced_summary_returns_full_body():
-    # Regression: the full prepared draft must be surfaced verbatim (the old [:200] bug cut it
-    # mid-word at "...thời gian thự"). Nothing may be trimmed.
+@pytest.mark.asyncio
+async def test_write_draft_in_intent_phase_returns_tool_error():
     state = {"messages": [], "user_confirmed": None}
     body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in cho người tham gia. " * 12)
-    gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision", "body": body}}])
-    summary = gated[0]["args"]["summary"]
-    assert body.strip() in summary  # whole body present, not truncated
-    assert summary.startswith("Vision")  # title prefixed
-    assert "chỉnh sửa" in summary  # confirm/revise prompt appended
+    command = await _write_draft_impl("Vision", body, state, {"configurable": {}}, "tc-write")
+
+    assert command.update["tool_errors"][0]["code"] == "tool_not_available"
+    msg = command.update["messages"][0]
+    assert msg.status == "error"
+    assert "confirm_intent" in msg.content
 
 
-def test_write_draft_without_body_falls_back_to_ask_user():
-    # If write_draft has no body/title, confirm_intent summary is empty → fall back to ask_user.
+@pytest.mark.asyncio
+async def test_write_draft_without_body_returns_tool_error():
+    # Body rỗng là lỗi tool-level, không còn coerce sang ask_user.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {}}])
-    assert gated[0]["name"] == "ask_user"
+    assert gated[0]["name"] == "write_draft"
+
+    command = await _write_draft_impl("", "", state, {"configurable": {}}, "tc-empty-body")
+    assert command.update["tool_errors"][0]["code"] == "missing_required_arg"
+    assert "body" in command.update["messages"][0].content
 
 
 @pytest.mark.asyncio

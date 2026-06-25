@@ -201,8 +201,8 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     assert result["focused_artifact_id"] == str(child_b.id)
     assert result["critique_rounds"] == 0
     assert result["last_critiqued_draft_hash"] is None
-    assert result["analysis_result"]["tools"][0]["name"] == "ask_user"
-    assert result["analysis_result"]["gated_tool"] == "finalize"
+    assert result["analysis_result"]["tools"][0]["name"] == "finalize"
+    assert "gated_tool" not in result["analysis_result"]
 
 
 @pytest.mark.asyncio

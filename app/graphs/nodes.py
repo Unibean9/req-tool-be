@@ -32,11 +32,8 @@ from app.services.document_service import DocumentService
 # Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 
-# Args that MUST be non-empty for a pick to dispatch. Emitting a
-# tool_call with an empty required arg is a silent failure (write_draft body="", finalize summary=""),
-# so analyze_node degrades to a re-ask naming the field instead. Tools with their own coerced
-# fallback (ask_user/respond/notes) are deliberately absent. `run_critique.target` is NOT listed:
-# it is cosmetic (ARG001 — the judge scores the loaded draft, not target), so only `mode` is required.
+# Legacy: tool impls now reject empty required args via a ToolMessage error, so this table only
+# feeds the remaining _missing_required_arg call sites (eval/tests), not the live dispatch path.
 _TOOL_REQUIRED_ARGS = {
     "write_draft": ["body"],
     "finalize": ["summary"],
@@ -74,10 +71,10 @@ def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
-    """Convert LangGraph tool objects → provider-agnostic schema list for generate(tools=...).
+    """Convert LangGraph tool objects to the provider-agnostic schema list for generate(tools=...).
 
-    The model only sees tools the per-turn gate (get_available_tools) admits, so pre-binding the menu
-    here is the first half of the gate; post-call validation in _gate_selected_tools is the second.
+    analyze_node binds the full registry so an out-of-turn tool self-rejects via a tool_result error
+    rather than being swapped out by the graph; the per-state menu is surfaced in the prompt instead.
     """
     schemas: list[dict[str, Any]] = []
     for t in tools:
@@ -397,11 +394,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         agent_role=cfg.get("agent_role"),
         context={"has_draft": draft_body is not None},
     )
-    # Pre-bind gate: the model only sees the tools this turn's state admits, so it cannot pick a
-    # gated tool. The native tool-calling API returns an AIMessage(tool_calls=[...]) directly.
-    from app.graphs.agent_tools import get_available_tools
+    from app.graphs.agent_tools import get_all_analyzer_tools
 
-    tool_schemas = _build_tool_schemas(get_available_tools(effective_state))
+    tool_schemas = _build_tool_schemas(get_all_analyzer_tools())
     started_at = time.monotonic()
     ai_message, usage = await llm_client.generate(
         messages=_build_analyzer_messages(effective_state, prompt),
@@ -412,8 +407,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
 
-    # Post-call gate: pre-binding cannot enforce required args or interrupt-bearing solo semantics,
-    # and the availability coercion stays as a safety net against a hallucinated out-of-menu name.
+    # Post-call gate now keeps only the solo-enforcement invariant; availability and field errors
+    # round-trip through tool_result so the model self-corrects next turn.
     raw_tools = [
         {"name": tc.get("name") or "", "args": dict(tc.get("args") or {})}
         for tc in (getattr(ai_message, "tool_calls", None) or [])
@@ -440,8 +435,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "draft_update": draft_update,
         "coverage_complete": coverage["coverage_complete"],
     }
-    # Observability: record the first coerced/dropped tool as gated_tool/gated_reason so eval and
-    # tests can see what was requested vs dispatched.
     _record_gate_observability(analysis_result, raw_tools, gated_tools, effective_state)
 
     async with session_factory() as db:
@@ -511,8 +504,8 @@ _COERCED_ASK_FALLBACK = (
     "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
 )
 
-# Fail-loud re-ask messages (Phase 2/3). User-facing, so Vietnamese; the machine-readable reason
-# lives in analysis_result["gated_reason"], not here.
+# Legacy re-ask prompt for the eval helpers; the live path now surfaces a ToolMessage error instead
+# of an analysis_result.gated_* overlay.
 _MISSING_ARG_PROMPT = (
     "Mình chưa đủ thông tin để hoàn tất bước này (thiếu '{field}'). "
     "Bạn bổ sung giúp mình phần đó để mình tiếp tục nhé?"
@@ -837,41 +830,37 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
 def _record_gate_observability(
     analysis_result: dict, raw_tools: list[dict], gated_tools: list[dict], state: WorkflowState
 ) -> None:
-    """Mutate analysis_result in-place with gated_tool/gated_reason when coercion occurred.
+    """Log the tools solo enforcement dropped — the only control decision the gate still makes.
 
-    Preserves the fail-loud contract: eval and tests can always observe what was requested vs
-    dispatched. The first coerced or dropped tool drives the markers.
+    Reduced to logging: tool-level rejects now write their own ToolMessage + tool_errors, so the
+    gated_* overlay is gone. A drop here is a forced control decision, so it stays traceable in logs.
     """
-    # Compare against the pre-solo, position-aligned coercion result (not the final gated list): solo
-    # enforcement may drop a tool BEFORE a kept note, which would misalign a raw↔gated positional zip
-    # and misreport a solo-dropped tool as "not available".
-    validated = _coerce_and_validate_tools(state, raw_tools)
-    raw_names = [item.get("name") for item in raw_tools]
-    validated_names = [item.get("name") for item in validated]
+    _ = analysis_result, state
+    if len(gated_tools) >= len(raw_tools):
+        return
     gated_names = [item.get("name") for item in gated_tools]
-    # Coercion: a tool was replaced by ask_user (raw and validated are positionally aligned).
-    for orig, val in zip(raw_names, validated_names, strict=False):
-        if orig != val:
-            if orig == "write_draft" and val == "confirm_intent":
-                continue
-            feedback_detail = _feedback_degrade_detail(state) if orig == "finalize" else ""
-            reason = f"gated: {orig} not available this turn"
-            if feedback_detail:
-                reason = f"{reason}; {feedback_detail}"
-            analysis_result["gated_tool"] = orig
-            analysis_result["gated_reason"] = reason
-            analysis_result.setdefault(
-                "message",
-                _feedback_degrade_message(state) or _GATED_TOOL_PROMPT.format(tool=orig),
+    for item in raw_tools:
+        name = item.get("name")
+        if name in gated_names:
+            gated_names.remove(name)
+        else:
+            _log_tool_error(
+                "dropped_by_solo_enforcement",
+                str(name or ""),
+                "tool dropped from dispatch by solo enforcement",
             )
-            return
-    # Solo enforcement: tools surviving coercion that were then dropped (interrupt-bearing kept + notes).
-    if len(gated_tools) < len(validated):
-        gated_set = set(gated_names)
-        dropped = [n for n in validated_names if n not in gated_set]
-        if dropped:
-            analysis_result["gated_tool"] = dropped[0]
-            analysis_result["gated_reason"] = f"dropped: {dropped[0]} paired with interrupt-bearing tool"
+
+
+def _log_tool_error(code: str, tool_name: str, message: str) -> None:
+    """Emit a tool-control error in a grep-friendly format for eval/logs."""
+    import logging
+
+    logging.getLogger(__name__).info(
+        "tool-error code=%s tool=%s message=%s",
+        code,
+        tool_name,
+        message,
+    )
 
 
 # Tools that call interrupt() — they must always run solo (no composite dispatch).
@@ -889,94 +878,23 @@ _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
 _SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
 
 
-# Confirmation prompt appended to a coerced intent draft so the user is asked to confirm or revise,
-# rather than handed a draft with no call to action.
-_INTENT_CONFIRM_PROMPT = {
-    "vi": "Đây là bản nháp mình chuẩn bị dựa trên thông tin bạn chia sẻ. Bạn xác nhận để mình tiếp "
-          "tục, hay muốn chỉnh sửa/bổ sung điểm nào không?",
-    "en": "Here's the draft I prepared from what you shared. Does this look right, or would you like "
-          "to adjust or add anything?",
-}
+def _coerce_and_validate_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
+    """Normalize tool_calls to a stable shape without substituting the model's chosen tool.
 
-
-def _intent_summary_from_draft(title: str, body: str, locale: str | None = None) -> str:
-    """Build the confirm_intent message from a write_draft coerced in the intent phase.
-
-    Surfaces the full prepared draft (title + body) verbatim — the user must see the complete content
-    to confirm it, so nothing is trimmed — then appends a confirm/revise prompt so the user has a
-    clear call to action. Returns "" only when both title and body are empty, in which case the caller
-    falls back to ask_user.
+    Availability and required-arg errors are returned by the tools themselves via ToolMessage; this
+    only preserves a consistent shape for solo enforcement and the legacy call sites.
     """
-    title = title.strip()
-    body = body.strip()
-    draft = f"{title}\n\n{body}" if title and body else (title or body)
-    if not draft:
-        return ""
-    prompt = _INTENT_CONFIRM_PROMPT.get(locale or "vi", _INTENT_CONFIRM_PROMPT["vi"])
-    return f"{draft}\n\n---\n\n{prompt}"
-
-
-def _coerce_and_validate_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
-    """Apply the position-preserving steps of the gate: availability coercion + required-arg validation.
-
-    Returns a list the SAME length and order as `requested` — each item is either kept, replaced by
-    ask_user (unavailable or missing a required arg), or redirected write_draft→confirm_intent. Solo
-    enforcement (which drops items) is applied separately so observability can compare against this
-    aligned, pre-drop list.
-    """
-    from app.graphs.agent_tools import get_available_tools
-
-    available = {t.name for t in get_available_tools(state)}
-
-    coerced: list[dict] = []
-    for item in requested:
-        name = item.get("name") or ""
-        if name in available:
-            coerced.append(item)
-            continue
-        # write_draft in intent phase (user_confirmed is None): redirect to confirm_intent so the
-        # agent surfaces its prepared summary rather than falling back to a generic ask_user prompt.
-        if name == "write_draft" and state.get("user_confirmed") is None and "confirm_intent" in available:
-            args = item.get("args") or {}
-            summary = _intent_summary_from_draft(
-                str(args.get("title") or ""), str(args.get("body") or ""), state.get("locale")
-            )
-            if summary:
-                coerced.append({"name": "confirm_intent", "args": {"summary": summary}})
-                continue
-        coerced.append({**item, "name": "ask_user"})
-
-    validated: list[dict] = []
-    for item in coerced:
-        name = item.get("name") or ""
-        args = item.get("args") or {}
-        missing = next(
-            (a for a in _TOOL_REQUIRED_ARGS.get(name, ()) if not str(args.get(a) or "").strip()),
-            None,
-        )
-        if missing:
-            # Re-ask rather than dispatch an incomplete call — the model owes a required arg it left blank.
-            validated.append({
-                "name": "ask_user",
-                "args": {"message": _MISSING_ARG_PROMPT.format(field=missing)},
-            })
-        else:
-            validated.append(item)
-
-    return validated
+    return [
+        {"name": item.get("name") or "", "args": dict(item.get("args") or {})}
+        for item in requested
+    ]
 
 
 def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
-    """Coerce and gate a requested tools list to what is safe to dispatch this turn.
+    """Enforce the ToolNode safety invariant without picking a tool on the model's behalf.
 
-    Three-step gate (order matters):
-    1. Per-tool availability coercion: any tool not in get_available_tools() is replaced by ask_user.
-    2. Required-arg validation: any tool missing a required arg (see _TOOL_REQUIRED_ARGS) is replaced
-       by ask_user so the model must re-ask rather than dispatch an incomplete call.
-    3. Interrupt-bearing solo enforcement: keep the first interrupt-bearing tool plus any side-effect-free
-       notes, drop everything else.
-
-    Returns the gated list (1–N elements, all available, interrupt-bearing at most one).
+    The remaining gate is solo enforcement for interrupt-bearing tools: keep the first interrupt plus
+    side-effect-free notes, drop the rest. Tools decide unavailable/missing-arg via a tool_result error.
     """
     validated = _coerce_and_validate_tools(state, requested)
 
@@ -992,8 +910,20 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
                 if not seen_interrupt:
                     kept.append(item)
                     seen_interrupt = True
+                else:
+                    _log_tool_error(
+                        "dropped_interrupt_tool",
+                        name,
+                        "dropped: an interrupt-bearing tool was already selected this turn",
+                    )
             elif name in _SIDE_EFFECT_FREE_NOTE_TOOLS:
                 kept.append(item)
+            else:
+                _log_tool_error(
+                    "dropped_with_interrupt_tool",
+                    name,
+                    "dropped: paired with an interrupt-bearing tool",
+                )
         return kept
 
     return validated

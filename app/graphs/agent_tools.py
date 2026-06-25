@@ -46,6 +46,8 @@ from app.schemas.artifact_synthesis import (
 )
 from app.services.document_service import DocumentService
 
+logger = logging.getLogger(__name__)
+
 
 class RecoverableToolError(Exception):
     def __init__(self, *, code: str, message: str, user_fixable: bool = False) -> None:
@@ -56,6 +58,12 @@ class RecoverableToolError(Exception):
 
 
 def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Command:
+    logger.info(
+        "tool-error code=%s classification=recoverable user_fixable=%s message=%s",
+        exc.code,
+        exc.user_fixable,
+        exc.message,
+    )
     return Command(
         update={
             "tool_errors": [
@@ -66,9 +74,33 @@ def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Co
                     "message": exc.message,
                 }
             ],
-            "messages": [ToolMessage(content=exc.message, tool_call_id=tool_call_id)],
+            "messages": [ToolMessage(content=exc.message, tool_call_id=tool_call_id, status="error")],
         }
     )
+
+
+def _missing_required_arg_update(tool_name: str, arg_name: str, tool_call_id: str) -> Command:
+    return _recoverable_tool_update(
+        RecoverableToolError(
+            code="missing_required_arg",
+            message=f"Không thể {tool_name}: thiếu trường bắt buộc '{arg_name}'. Hãy gọi lại tool với giá trị rõ ràng.",
+        ),
+        tool_call_id,
+    )
+
+
+def _tool_not_available_update(tool_name: str, message: str, tool_call_id: str) -> Command:
+    return _recoverable_tool_update(
+        RecoverableToolError(
+            code="tool_not_available",
+            message=f"Không thể {tool_name}: {message}",
+        ),
+        tool_call_id,
+    )
+
+
+def _tool_is_available(state: WorkflowState, tool_name: str) -> bool:
+    return any(t.name == tool_name for t in get_available_tools(state))
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +205,9 @@ async def _audit_interaction_tool_call(
 # ---------------------------------------------------------------------------
 
 async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+    if not str(message or "").strip():
+        return _missing_required_arg_update("ask_user", "message", tool_call_id)
+
     # ToolCall.id is the correct idempotency key here: inside the ToolNode body
     # state["last_agent_run_id"] still belongs to the prior analyze_node, not this invocation.
     # interrupt_kind="stream_response": session stays ACTIVE so the conversation resume path applies
@@ -217,6 +252,15 @@ async def _confirm_intent_impl(
     config: RunnableConfig,
     tool_call_id: str,
 ) -> Command:
+    if not str(summary or "").strip():
+        return _missing_required_arg_update("confirm_intent", "summary", tool_call_id)
+    if state.get("user_confirmed") is not None:
+        return _tool_not_available_update(
+            "confirm_intent",
+            "intent đã được xác nhận; hãy dùng ask_user/respond/write_draft theo phase hiện tại.",
+            tool_call_id,
+        )
+
     # interrupt_kind="stream_response" keeps the session ACTIVE (D4): the user can reply, and the
     # next turn sees user_confirmed=True — which unlocks the artifact tool menu in get_available_tools.
     # kind="assessment": this is a surfaced intent summary, not a clarifying question.
@@ -261,6 +305,15 @@ async def confirm_intent(
 async def _write_draft_impl(
     title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str
 ):
+    if not str(body or "").strip():
+        return _missing_required_arg_update("write_draft", "body", tool_call_id)
+    if state.get("user_confirmed") is None:
+        return _tool_not_available_update(
+            "write_draft",
+            "artifact phase chưa mở; hãy gọi confirm_intent với summary cụ thể trước khi viết draft.",
+            tool_call_id,
+        )
+
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
@@ -379,6 +432,9 @@ async def write_draft(
 # ---------------------------------------------------------------------------
 
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+    if not str(summary or "").strip():
+        return _missing_required_arg_update("finalize", "summary", tool_call_id)
+
     # Hard-block: even if the menu gate is bypassed, never finalize over a failing quality gate.
     # A missing report counts as "fail" — finalize requires a passing critique to exist.
     report = state.get("quality_report")
@@ -390,15 +446,12 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     ):
         blocking = (report or {}).get("blocking_issues") or []
         detail = "; ".join(blocking) if blocking else "chưa có critique hợp lệ cho bản nháp hiện tại"
-        return Command(
-            update={
-                "messages": [
-                    ToolMessage(
-                        content=f"Không thể finalize: quality gate chưa pass ({detail}).",
-                        tool_call_id=tool_call_id,
-                    )
-                ]
-            }
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="finalize_gate_blocked",
+                message=f"Không thể finalize: quality gate chưa pass ({detail}).",
+            ),
+            tool_call_id,
         )
 
     cfg = config["configurable"]
@@ -424,18 +477,15 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
                 if count == 0:
                     missing_predecessors.append(pred_type)
             if missing_predecessors:
-                return Command(
-                    update={
-                        "messages": [
-                            ToolMessage(
-                                content=(
-                                    "Không thể finalize: artifact tiền nhiệm chưa accepted "
-                                    f"({', '.join(missing_predecessors)})."
-                                ),
-                                tool_call_id=tool_call_id,
-                            )
-                        ]
-                    }
+                return _recoverable_tool_update(
+                    RecoverableToolError(
+                        code="finalize_predecessor_blocked",
+                        message=(
+                            "Không thể finalize: artifact tiền nhiệm chưa accepted "
+                            f"({', '.join(missing_predecessors)})."
+                        ),
+                    ),
+                    tool_call_id,
                 )
 
         session_row = (
@@ -472,7 +522,16 @@ async def finalize(
 # first-class menu choice and lets analyze_node derive `active_mode` from the tool picked, so
 # proactive S1 coverage no longer depends on the model self-reporting active_mode.
 
-async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str):
+async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str, tool_name: str):
+    if not str(content or "").strip():
+        return _missing_required_arg_update(tool_name, "content", tool_call_id)
+    if not _tool_is_available(state, tool_name):
+        return _tool_not_available_update(
+            tool_name,
+            "note step-limit đã đạt; hãy hỏi user, respond, hoặc chuyển sang tool khác thay vì ghi thêm note.",
+            tool_call_id,
+        )
+
     # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
     # Beyond that, tagged lines (ASSUMPTION:/RISK:/OPEN_QUESTION:) are parsed into structured state
     # objects and appended to the accumulating lists so validators and the finalize gate can query
@@ -496,7 +555,7 @@ async def critique_note(
     Use to think critically (probe weaknesses, risky assumptions, contradictions) before asking or
     drafting. Not shown to the user — use respond to surface a critique to them.
     """
-    return await _write_note_impl(content, state, tool_call_id)
+    return await _write_note_impl(content, state, tool_call_id, "critique_note")
 
 
 @tool
@@ -510,7 +569,7 @@ async def explore_note(
     Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
     Its active_mode maps to 'structuring' after the spec §7.1 migration (see phase-06).
     """
-    return await _write_note_impl(content, state, tool_call_id)
+    return await _write_note_impl(content, state, tool_call_id, "explore_note")
 
 
 # ---------------------------------------------------------------------------
@@ -521,6 +580,9 @@ async def explore_note(
 # so the agent is not forced to phrase every proactive turn as an ask_user (the Q&A-bias fix).
 
 async def _respond_impl(message: str, mode: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+    if not str(message or "").strip():
+        return _missing_required_arg_update("respond", "message", tool_call_id)
+
     # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id, ASK_HUMAN
     # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
     # mode differ, so the user sees an assessment rather than a question.
@@ -570,11 +632,26 @@ async def _run_critique_impl(
 ):
     from app.graphs.critique import _invoke_judge
 
+    if not str(mode or "").strip():
+        return _missing_required_arg_update("run_critique", "mode", tool_call_id)
+    if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
+        return _tool_not_available_update(
+            "run_critique",
+            "đã đạt giới hạn critique rounds; hãy revise, respond/escalate, hoặc finalize nếu gate đã pass.",
+            tool_call_id,
+        )
+
     cfg = config["configurable"]
     llm_client = cfg.get("strong_llm_client") or cfg.get("llm_client")
     # Source of truth for both the critique target and the hash: see current_draft_body. The
     # finalize gate reads the same helper, so the scored body and the gate body can never diverge.
     body = await current_draft_body(state, config)
+    if not body.strip():
+        return _tool_not_available_update(
+            "run_critique",
+            "chưa có draft hiện tại để critique; hãy write_draft hoặc load artifact trước.",
+            tool_call_id,
+        )
     judged = await _invoke_judge(body, mode, llm_client)
 
     threshold = settings.critique_score_threshold
@@ -644,8 +721,6 @@ async def run_critique(
 # recommend_next_workflow — read-only analysis tool (no interrupt; audits to AgentToolCall)
 # ---------------------------------------------------------------------------
 
-logger = logging.getLogger(__name__)
-
 # First four sections define a product brief; all seven define a PRD (addendum §6).
 _BRIEF_SECTIONS = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
 
@@ -692,6 +767,8 @@ async def _recommend_next_workflow_impl(
     config: RunnableConfig,
     tool_call_id: str,
 ):
+    # Read-only and side-effect-free, so no availability gate: calling it early just yields a weaker
+    # recommendation, which is valid feedback. When to call is a prompt hint, not a safety invariant.
     result = _compute_recommendation(state.get("section_coverage"), planning_track or "quick")
 
     # Audit: reuse AgentToolCall.input_snapshot for the result blob (no output_snapshot column).
@@ -766,6 +843,8 @@ async def _run_readiness_check_impl(
     config: RunnableConfig,
     tool_call_id: str,
 ):
+    # No availability gate, same rationale as _recommend_next_workflow_impl: an early call returns a
+    # low readiness score, which is valid feedback rather than a safety error.
     from app.graphs.readiness import compute_readiness_score
 
     report = compute_readiness_score(state.get("section_coverage"), state)
@@ -909,6 +988,23 @@ NOTE_TOOL_NAMES = ("critique_note", "explore_note")
 # spin on critique forever (spec §5.5). write_draft / ask_user stay available regardless.
 # Sourced from config (max_critique_rounds) so the reflection-round cap is a single tunable.
 CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
+
+
+def get_all_analyzer_tools() -> list:
+    """Full tool registry for the ToolNode and the analyze schema; availability lives in the prompt + tool guards."""
+    return [
+        ask_user,
+        respond,
+        write_draft,
+        finalize,
+        critique_note,
+        explore_note,
+        read_artifact,
+        run_critique,
+        recommend_next_workflow,
+        run_readiness_check,
+        confirm_intent,
+    ]
 
 
 def _tool_call_names(message) -> list[str]:

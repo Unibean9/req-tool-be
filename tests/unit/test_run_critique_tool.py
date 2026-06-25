@@ -42,6 +42,30 @@ def test_run_critique_gated_after_max_rounds():
     assert "run_critique" not in _tool_names(state)
 
 
+@pytest.mark.asyncio
+async def test_run_critique_bypass_without_draft_returns_tool_error():
+    state = _state(artifact_type="goal")
+    config = {"configurable": {"llm_client": None}}
+
+    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+
+    assert command.update["tool_errors"][0]["code"] == "tool_not_available"
+    assert command.update["messages"][0].status == "error"
+
+
+@pytest.mark.asyncio
+async def test_run_critique_bypass_after_max_rounds_returns_tool_error():
+    state = _state(artifact_type="goal")
+    state["working_draft"] = "draft"
+    state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
+    config = {"configurable": {"llm_client": None}}
+
+    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+
+    assert command.update["tool_errors"][0]["code"] == "tool_not_available"
+    assert "giới hạn critique" in command.update["messages"][0].content
+
+
 def test_write_draft_always_available_regardless_of_critique_cap():
     state = _state(artifact_type="goal")
     state["working_draft"] = "draft"
