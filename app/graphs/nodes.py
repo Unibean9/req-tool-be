@@ -46,7 +46,22 @@ TOOL_SELECTION_SCHEMA = {
                             "confirm_intent",
                         ],
                     },
-                    "args": {"type": "object"},
+                    "args": {
+                        "type": "object",
+                        "properties": {
+                            "message": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "question": {"type": "string"},
+                            "title": {"type": "string"},
+                            "body": {"type": "string"},
+                            "summary": {"type": "string"},
+                            "content": {"type": "string"},
+                            "target": {"type": "string"},
+                            "mode": {"type": "string"},
+                            "current_artifact_type": {"type": "string"},
+                            "planning_track": {"type": "string"},
+                        },
+                    },
                 },
                 "required": ["name"],
             },
@@ -91,6 +106,15 @@ _TOOL_ARG_KEYS = {
     "recommend_next_workflow": ["current_artifact_type", "planning_track"],
     "run_readiness_check": ["target"],
     "confirm_intent": ["summary"],
+}
+
+_TOOL_ARG_ALIASES = {
+    "ask_user": {"prompt": "message", "question": "message"},
+    "respond": {"prompt": "message", "question": "message"},
+    "confirm_intent": {"prompt": "summary", "message": "summary"},
+    "finalize": {"prompt": "summary", "message": "summary"},
+    "critique_note": {"prompt": "content", "message": "content"},
+    "explore_note": {"prompt": "content", "message": "content"},
 }
 
 # Args that MUST be non-empty for a pick to dispatch — a subset of _TOOL_ARG_KEYS. Emitting a
@@ -454,6 +478,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             if old_tool:
                 old_args = {k: analysis_result.get(k, "") for k in _TOOL_ARG_KEYS.get(old_tool, [])}
                 raw_tools = [{"name": old_tool, "args": old_args}]
+        raw_tools = _normalize_requested_tools(raw_tools)
         gated_tools = _gate_selected_tools(effective_state, raw_tools)
         analysis_result = {**analysis_result, "tools": gated_tools}
 
@@ -758,6 +783,25 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     if not messages:
         return False
     return bool(getattr(messages[-1], "tool_calls", None))
+
+
+def _normalize_requested_tools(raw_tools: list[Any]) -> list[dict]:
+    normalized: list[dict] = []
+    for item in raw_tools:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "")
+        normalized.append({**item, "args": _normalize_tool_args(name, item.get("args"))})
+    return normalized
+
+
+def _normalize_tool_args(tool: str, args: Any) -> dict[str, Any]:
+    raw = dict(args) if isinstance(args, dict) else {}
+    for source, target in _TOOL_ARG_ALIASES.get(tool, {}).items():
+        if source in raw and not str(raw.get(target) or "").strip():
+            raw[target] = raw[source]
+    allowed = _TOOL_ARG_KEYS.get(tool, [])
+    return {key: raw[key] for key in allowed if key in raw}
 
 
 def _record_gate_observability(

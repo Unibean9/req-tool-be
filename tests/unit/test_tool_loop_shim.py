@@ -61,6 +61,28 @@ async def test_tool_selection_converts_to_ai_message_tool_calls(client, db_sessi
 
 
 @pytest.mark.asyncio
+async def test_tool_selection_prompt_alias_maps_to_message_arg(client, db_session):
+    from app.graphs.nodes import analyze_node
+    from tests.integration.scenarios.scripted_llm import ScriptedLLM
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    llm = ScriptedLLM(tool_brain=[
+        {"tools": [{"name": "ask_user", "args": {"prompt": "Bạn muốn phân tích phần nào?"}}]},
+    ])
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), llm_client=llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    out = await analyze_node(state, config)
+
+    call = out["messages"][-1].tool_calls[0]
+    assert call["name"] == "ask_user"
+    assert call["args"] == {"message": "Bạn muốn phân tích phần nào?"}
+
+
+@pytest.mark.asyncio
 async def test_respond_selection_derives_mode_and_dispatches_arg(client, db_session):
     """respond is the user-facing critique/explore surface: the shim clamps active_mode to a
     proactive mode and passes it as the tool's `mode` arg, so a critique cannot silently fall back

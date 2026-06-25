@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 
+from app.graphs.nodes import TOOL_SELECTION_SCHEMA
 from app.models.llm_provider import ProviderType
 from app.services.llm_clients import (
     DEFAULT_MODEL_BY_PROVIDER,
@@ -171,6 +172,14 @@ def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
 
     with pytest.raises(ValueError, match="không khớp JSON Schema"):
         _parse_generate_text(json.dumps(payload, ensure_ascii=False), response_format)
+
+
+def test_parse_generate_text_accepts_tool_args_prompt_alias():
+    payload = {"tools": [{"name": "ask_user", "args": {"prompt": "Bạn muốn phân tích phần nào?"}}]}
+
+    result = _parse_generate_text(json.dumps(payload, ensure_ascii=False), TOOL_SELECTION_SCHEMA)
+
+    assert result == payload
 
 
 @pytest.mark.asyncio
