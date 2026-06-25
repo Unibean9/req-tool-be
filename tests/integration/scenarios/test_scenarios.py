@@ -14,6 +14,21 @@ from tests.integration.scenarios.driver import ScenarioDriver
 from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
 from tests.integration.scenarios.library import ALL_SCENARIOS
 
+
+def _judge_client():
+    from tests.eval.config import judge_settings
+    if not judge_settings.judge_api_key:
+        return mock_judge()
+    from app.models.llm_provider import ProviderType
+    from app.services.llm_clients import LLMClientFactory
+    return LLMClientFactory.create(
+        provider_type=ProviderType(judge_settings.judge_provider),
+        api_key=judge_settings.judge_api_key,
+        model=judge_settings.judge_model,
+        region=judge_settings.judge_region,
+        secret_key=judge_settings.judge_secret_key or None,
+    )
+
 pytestmark = pytest.mark.asyncio
 
 # Tool-loop surfaces proposals as proposed tool calls, not chat messages; the only agent chat
@@ -55,7 +70,7 @@ async def test_behavior_scenario(factory, client, scenario_env, scenario_project
         assert final_snapshot["tool_calls"], f"{scenario.name}: expected a proposed write_draft tool call"
 
     # --- Eval: score produced artifacts and record into the transcript ---
-    scored = await score_artifacts(artifacts, mock_judge())
+    scored = await score_artifacts(artifacts, _judge_client())
     for s in scored:
         recorder.record_eval(
             artifact_type=s["artifact_type"], title=s["title"], body=s["body"], score=s["score"]

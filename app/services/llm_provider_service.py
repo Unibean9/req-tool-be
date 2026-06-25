@@ -148,7 +148,7 @@ class LLMProviderService:
             raise CooldownError("Health-check đang trong thời gian cooldown")
         start = time.perf_counter()
         try:
-            provider_reply = await asyncio.wait_for(
+            provider_reply, tool_calling_supported = await asyncio.wait_for(
                 _ping_provider(config),
                 timeout=settings.llm_provider_health_timeout_seconds,
             )
@@ -168,6 +168,7 @@ class LLMProviderService:
             config=config,
             response_time_ms=response_time_ms,
             provider_reply=provider_reply,
+            tool_calling_supported=tool_calling_supported,
         )
 
     async def _unset_user_default(self, user_id: uuid.UUID, exclude_id: uuid.UUID | None = None) -> None:
@@ -218,7 +219,7 @@ class LLMProviderService:
         return values
 
 
-async def _ping_provider(config: LLMProviderConfig) -> str | None:
+async def _ping_provider(config: LLMProviderConfig) -> tuple[str | None, bool | None]:
     api_key = _resolve_api_key(config)
     secret_key = _resolve_secret_key(config)
     client = LLMClientFactory.create(
@@ -228,4 +229,9 @@ async def _ping_provider(config: LLMProviderConfig) -> str | None:
         region=config.region,
         model=config.model_name,
     )
-    return await client.ping()
+    reply = await client.ping()
+    try:
+        tool_calling_supported = await client.ping_tool_calling()
+    except Exception:
+        tool_calling_supported = None
+    return reply, tool_calling_supported

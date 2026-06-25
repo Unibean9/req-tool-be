@@ -23,8 +23,28 @@ class LLMClientConfig:
     secret_key: str | None = None
 
 
+_TOOL_CALL_PROBE = {
+    "name": "probe",
+    "description": "Connectivity probe.",
+    "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+}
+
+
+def _to_bedrock_probe_tool() -> dict[str, Any]:
+    return {
+        "toolSpec": {
+            "name": _TOOL_CALL_PROBE["name"],
+            "description": _TOOL_CALL_PROBE["description"],
+            "inputSchema": {"json": _TOOL_CALL_PROBE["parameters"]},
+        }
+    }
+
+
 class LLMClient(Protocol):
     async def ping(self) -> str | None:
+        pass
+
+    async def ping_tool_calling(self) -> bool:
         pass
 
     async def generate(
@@ -54,6 +74,28 @@ class OpenAILLMClient:
             response.raise_for_status()
             data = response.json()
         return data.get("output_text")
+
+    async def ping_tool_calling(self) -> bool:
+        import httpx
+
+        # Responses API tool calling: "tools" array with function type
+        body = {
+            "model": self.config.model,
+            "input": "ok",
+            "max_output_tokens": 20,
+            "tools": [{"type": "function", "name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "parameters": _TOOL_CALL_PROBE["parameters"]}],
+            "tool_choice": "required",
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.openai.com/v1/responses",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        output = data.get("output") or []
+        return any(item.get("type") == "function_call" for item in output)
 
     async def generate(
         self,
@@ -110,6 +152,29 @@ class GoogleLLMClient:
             return None
         return parts[0].get("text")
 
+    async def ping_tool_calling(self) -> bool:
+        import httpx
+
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": "ok"}]}],
+            "tools": [{"functionDeclarations": [{"name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "parameters": _TOOL_CALL_PROBE["parameters"]}]}],
+            "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
+            "generationConfig": {"maxOutputTokens": 20},
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
+                params={"key": self.config.api_key},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return False
+        parts = candidates[0].get("content", {}).get("parts") or []
+        return any("functionCall" in p for p in parts)
+
     async def generate(
         self,
         *,
@@ -165,6 +230,26 @@ class AnthropicLLMClient:
             return None
         return content[0].get("text")
 
+    async def ping_tool_calling(self) -> bool:
+        import httpx
+
+        body = {
+            "model": self.config.model,
+            "max_tokens": 20,
+            "messages": [{"role": "user", "content": "ok"}],
+            "tools": [{"name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "input_schema": _TOOL_CALL_PROBE["parameters"]}],
+            "tool_choice": {"type": "any"},
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return any(b.get("type") == "tool_use" for b in (data.get("content") or []))
+
     async def generate(
         self,
         *,
@@ -205,6 +290,11 @@ class BedrockLLMClient:
         if self.config.secret_key:
             return await self._ping_with_iam_keys()
         return await self._ping_with_api_key()
+
+    async def ping_tool_calling(self) -> bool:
+        if self.config.secret_key:
+            return await self._ping_tool_calling_with_iam_keys()
+        return await self._ping_tool_calling_with_api_key()
 
     async def generate(
         self,
@@ -257,6 +347,48 @@ class BedrockLLMClient:
             response.raise_for_status()
             data = response.json()
         return _extract_bedrock_text(data)
+
+    async def _ping_tool_calling_with_iam_keys(self) -> bool:
+        def _check() -> bool:
+            import boto3
+
+            client = boto3.client(
+                "bedrock-runtime",
+                region_name=self.config.region or "us-east-1",
+                aws_access_key_id=self.config.api_key,
+                aws_secret_access_key=self.config.secret_key,
+            )
+            response = client.converse(
+                modelId=self.config.model,
+                messages=[{"role": "user", "content": [{"text": "ok"}]}],
+                inferenceConfig={"maxTokens": 20, "temperature": 0.0},
+                toolConfig={"tools": [_to_bedrock_probe_tool()]},
+            )
+            content = response.get("output", {}).get("message", {}).get("content") or []
+            return any(b.get("toolUse") for b in content)
+
+        return await asyncio.to_thread(_check)
+
+    async def _ping_tool_calling_with_api_key(self) -> bool:
+        import httpx
+
+        region = self.config.region or "us-east-1"
+        model_id = quote(self.config.model, safe="")
+        body = {
+            "messages": [{"role": "user", "content": [{"text": "ok"}]}],
+            "inferenceConfig": {"maxTokens": 20, "temperature": 0.0},
+            "toolConfig": {"tools": [_to_bedrock_probe_tool()]},
+        }
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                f"https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json=body,
+            )
+            response.raise_for_status()
+            data = response.json()
+        content = data.get("output", {}).get("message", {}).get("content") or []
+        return any(b.get("toolUse") for b in content)
 
     async def _generate_with_iam_keys(
         self,
