@@ -116,9 +116,10 @@ async def test_ask_user_tool_uses_shared_helper(client, db_session):
     config["configurable"]["session_factory"] = _session_factory()
 
     with patch.object(nodes, "_save_and_interrupt_ask", new=AsyncMock(return_value="ok")) as helper:
-        await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_1")
+        command = await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_1")
 
     helper.assert_awaited_once()
+    assert command.update["messages"][0].content == "ok"
 
 
 # ---------------------------------------------------------------------------

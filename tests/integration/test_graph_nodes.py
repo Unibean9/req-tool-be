@@ -1119,6 +1119,60 @@ async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_s
 
 
 @pytest.mark.asyncio
+async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
+    """Vòng analyze sau tool-result phải giữ tool_use/tool_result thật, không flatten thành transcript."""
+    from langchain_core.messages import ToolMessage
+
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="Đã đủ dữ kiện.", tool_calls=[]), None))
+
+    state = _state(artifact_type="goal")
+    state["messages"] = [
+        {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."},
+        AIMessage(content="Tôi sẽ ghi nhận dữ kiện.", tool_calls=[
+            {
+                "id": "prev:0",
+                "name": "explore_note",
+                "args": {"content": "Người dùng chính là sinh viên học nhóm."},
+            }
+        ]),
+        ToolMessage(content="Đã ghi nhận key fact.", tool_call_id="prev:0"),
+        {"role": "user", "content": "Đã ghi nhận key fact."},
+    ]
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+
+    sent_messages = mock_llm.generate.call_args.kwargs["messages"]
+    assert sent_messages[0] == {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."}
+    assert sent_messages[1]["role"] == "assistant"
+    assert sent_messages[1]["content"][1] == {
+        "type": "tool_use",
+        "id": "prev:0",
+        "name": "explore_note",
+        "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+    }
+    assert sent_messages[2]["role"] == "user"
+    assert sent_messages[2]["content"][0] == {
+        "type": "tool_result",
+        "tool_use_id": "prev:0",
+        "name": "explore_note",
+        "content": "Đã ghi nhận key fact.",
+    }
+    assert sent_messages[2]["content"][1]["type"] == "text"
+    assert "Bạn là analyst" in sent_messages[2]["content"][1]["text"]
+
+
+@pytest.mark.asyncio
 async def test_analyze_node_preserves_working_draft_when_no_update(client, db_session):
     """A turn with no draft_update must keep the prior draft, not None it out."""
     from app.graphs.nodes import analyze_node

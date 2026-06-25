@@ -357,6 +357,92 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
     assert "ask_user" in str(recorder.requests[0]["json"])
 
 
+_THREAD_WITH_TOOL_BLOCKS = [
+    {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."},
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Tôi sẽ ghi nhận dữ kiện trước."},
+            {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "explore_note",
+                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+            },
+        ],
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "name": "explore_note",
+                "content": "Đã ghi nhận key fact.",
+            },
+            {"type": "text", "text": "Tiếp tục phân tích từ dữ kiện đó."},
+        ],
+    },
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", list(_TOOL_RESPONSE_BY_PROVIDER))
+async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
+    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    await client.generate(
+        messages=_THREAD_WITH_TOOL_BLOCKS,
+        system="Bạn là BA.",
+        max_tokens=256,
+        tools=[_ASK_TOOL],
+    )
+
+    body = recorder.requests[0]["json"]
+    if client_class is OpenAILLMClient:
+        assert {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "explore_note",
+            "arguments": "{\"content\": \"Người dùng chính là sinh viên học nhóm.\"}",
+        } in body["input"]
+        assert {"type": "function_call_output", "call_id": "call_1", "output": "Đã ghi nhận key fact."} in body["input"]
+    elif client_class is AnthropicLLMClient:
+        assert body["messages"][1]["content"][1] == {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "explore_note",
+            "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+        }
+        assert body["messages"][2]["content"][0] == {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "Đã ghi nhận key fact.",
+        }
+    elif client_class is GoogleLLMClient:
+        assert body["contents"][1]["parts"][1] == {
+            "functionCall": {
+                "name": "explore_note",
+                "args": {"content": "Người dùng chính là sinh viên học nhóm."},
+            }
+        }
+        assert body["contents"][2]["parts"][0] == {
+            "functionResponse": {"name": "explore_note", "response": {"content": "Đã ghi nhận key fact."}}
+        }
+    else:
+        assert body["messages"][1]["content"][1] == {
+            "toolUse": {
+                "toolUseId": "call_1",
+                "name": "explore_note",
+                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+            }
+        }
+        assert body["messages"][2]["content"][0] == {
+            "toolResult": {"toolUseId": "call_1", "content": [{"text": "Đã ghi nhận key fact."}]}
+        }
+
+
 # ---------------------------------------------------------------------------
 # tool_choice wire format — verify "auto" (default) and "required" (rollback) reach each provider
 # ---------------------------------------------------------------------------

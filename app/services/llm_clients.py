@@ -169,7 +169,7 @@ class LLMClient(Protocol):
     async def generate(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -204,7 +204,12 @@ class OpenAILLMClient:
             "model": self.config.model,
             "input": "ok",
             "max_output_tokens": 20,
-            "tools": [{"type": "function", "name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "parameters": _TOOL_CALL_PROBE["parameters"]}],
+            "tools": [{
+                "type": "function",
+                "name": _TOOL_CALL_PROBE["name"],
+                "description": _TOOL_CALL_PROBE["description"],
+                "parameters": _TOOL_CALL_PROBE["parameters"],
+            }],
             "tool_choice": "required",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -221,7 +226,7 @@ class OpenAILLMClient:
     async def generate(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -256,7 +261,7 @@ class OpenAILLMClient:
 
     async def _generate_with_tools(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
@@ -311,7 +316,13 @@ class GoogleLLMClient:
 
         body = {
             "contents": [{"role": "user", "parts": [{"text": "ok"}]}],
-            "tools": [{"functionDeclarations": [{"name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "parameters": _TOOL_CALL_PROBE["parameters"]}]}],
+            "tools": [{
+                "functionDeclarations": [{
+                    "name": _TOOL_CALL_PROBE["name"],
+                    "description": _TOOL_CALL_PROBE["description"],
+                    "parameters": _TOOL_CALL_PROBE["parameters"],
+                }]
+            }],
             "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
             "generationConfig": {"maxOutputTokens": 20},
         }
@@ -332,7 +343,7 @@ class GoogleLLMClient:
     async def generate(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -370,7 +381,7 @@ class GoogleLLMClient:
 
     async def _generate_with_tools(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
@@ -427,7 +438,11 @@ class AnthropicLLMClient:
             "model": self.config.model,
             "max_tokens": 20,
             "messages": [{"role": "user", "content": "ok"}],
-            "tools": [{"name": _TOOL_CALL_PROBE["name"], "description": _TOOL_CALL_PROBE["description"], "input_schema": _TOOL_CALL_PROBE["parameters"]}],
+            "tools": [{
+                "name": _TOOL_CALL_PROBE["name"],
+                "description": _TOOL_CALL_PROBE["description"],
+                "input_schema": _TOOL_CALL_PROBE["parameters"],
+            }],
             "tool_choice": {"type": "any"},
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -443,7 +458,7 @@ class AnthropicLLMClient:
     async def generate(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -478,7 +493,7 @@ class AnthropicLLMClient:
 
     async def _generate_with_tools(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
@@ -526,7 +541,7 @@ class BedrockLLMClient:
     async def generate(
         self,
         *,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -534,9 +549,13 @@ class BedrockLLMClient:
         tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         if self.config.secret_key:
-            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format, tools, tool_choice=tool_choice)
+            data = await self._generate_with_iam_keys(
+                messages, system, max_tokens, response_format, tools, tool_choice=tool_choice
+            )
         else:
-            data = await self._generate_with_api_key(messages, system, max_tokens, response_format, tools, tool_choice=tool_choice)
+            data = await self._generate_with_api_key(
+                messages, system, max_tokens, response_format, tools, tool_choice=tool_choice
+            )
         if tools:
             return _parse_bedrock_tool_response(data), _extract_bedrock_usage(data)
         text = _extract_bedrock_text(data)
@@ -623,7 +642,7 @@ class BedrockLLMClient:
 
     async def _generate_with_iam_keys(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -663,7 +682,7 @@ class BedrockLLMClient:
 
     async def _generate_with_api_key(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         system: str | None,
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
@@ -952,11 +971,65 @@ def _system_with_schema_instruction(system: str | None, response_format: dict[st
     return instruction
 
 
-def _openai_messages(messages: list[dict[str, str]], system: str | None) -> list[dict[str, str]]:
-    result: list[dict[str, str]] = []
+def _message_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    text = str(content or "")
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _block_text(block: dict[str, Any]) -> str:
+    return str(block.get("text") if block.get("text") is not None else block.get("content") or "")
+
+
+def _content_text(content: Any) -> str:
+    if not isinstance(content, list):
+        return str(content or "")
+    return "\n".join(_block_text(block) for block in _message_blocks(content) if block.get("type") == "text")
+
+
+def _tool_use_id(block: dict[str, Any]) -> str:
+    return str(block.get("id") or block.get("tool_use_id") or block.get("tool_call_id") or "")
+
+
+def _tool_input(block: dict[str, Any]) -> dict[str, Any]:
+    value = block.get("input") if block.get("input") is not None else block.get("args")
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _tool_result_name(block: dict[str, Any]) -> str:
+    return str(block.get("name") or "tool")
+
+
+def _openai_messages(messages: list[dict[str, Any]], system: str | None) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
     if system:
         result.append({"role": "system", "content": system})
-    result.extend({"role": item["role"], "content": item["content"]} for item in messages)
+    for item in messages:
+        role = item["role"]
+        content = item.get("content", "")
+        if not isinstance(content, list):
+            result.append({"role": role, "content": _content_text(content)})
+            continue
+        for block in _message_blocks(content):
+            block_type = block.get("type")
+            if block_type == "text":
+                text = _block_text(block)
+                if text:
+                    result.append({"role": role, "content": text})
+            elif block_type == "tool_use":
+                result.append({
+                    "type": "function_call",
+                    "call_id": _tool_use_id(block),
+                    "name": block.get("name") or "",
+                    "arguments": json.dumps(_tool_input(block), ensure_ascii=False),
+                })
+            elif block_type == "tool_result":
+                result.append({
+                    "type": "function_call_output",
+                    "call_id": _tool_use_id(block),
+                    "output": _block_text(block),
+                })
     return result
 
 
@@ -973,9 +1046,39 @@ def _extract_openai_text(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _anthropic_messages(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
+    if not isinstance(content, list):
+        return _content_text(content)
+
+    result: list[dict[str, Any]] = []
+    for block in _message_blocks(content):
+        block_type = block.get("type")
+        if block_type == "text":
+            text = _block_text(block)
+            if text:
+                result.append({"type": "text", "text": text})
+        elif block_type == "tool_use":
+            result.append({
+                "type": "tool_use",
+                "id": _tool_use_id(block),
+                "name": block.get("name") or "",
+                "input": _tool_input(block),
+            })
+        elif block_type == "tool_result":
+            result.append({
+                "type": "tool_result",
+                "tool_use_id": _tool_use_id(block),
+                "content": _block_text(block),
+            })
+    return result
+
+
+def _anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": item["content"]}
+        {
+            "role": _assistant_to_model_role(item["role"], "assistant"),
+            "content": _anthropic_content(item.get("content")),
+        }
         for item in messages
     ]
 
@@ -988,9 +1091,29 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _google_contents(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+def _google_parts(content: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for block in _message_blocks(content):
+        block_type = block.get("type")
+        if block_type == "text":
+            text = _block_text(block)
+            if text:
+                result.append({"text": text})
+        elif block_type == "tool_use":
+            result.append({"functionCall": {"name": block.get("name") or "", "args": _tool_input(block)}})
+        elif block_type == "tool_result":
+            result.append({
+                "functionResponse": {
+                    "name": _tool_result_name(block),
+                    "response": {"content": _block_text(block)},
+                }
+            })
+    return result or [{"text": ""}]
+
+
+def _google_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {"role": _assistant_to_model_role(item["role"], "model"), "parts": [{"text": item["content"]}]}
+        {"role": _assistant_to_model_role(item["role"], "model"), "parts": _google_parts(item.get("content"))}
         for item in messages
     ]
 
@@ -1005,9 +1128,35 @@ def _extract_google_text(data: dict[str, Any]) -> str | None:
     return parts[0].get("text")
 
 
-def _bedrock_messages(messages: list[dict[str, str]]) -> list[dict[str, Any]]:
+def _bedrock_content(content: Any) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for block in _message_blocks(content):
+        block_type = block.get("type")
+        if block_type == "text":
+            text = _block_text(block)
+            if text:
+                result.append({"text": text})
+        elif block_type == "tool_use":
+            result.append({
+                "toolUse": {
+                    "toolUseId": _tool_use_id(block),
+                    "name": block.get("name") or "",
+                    "input": _tool_input(block),
+                }
+            })
+        elif block_type == "tool_result":
+            result.append({
+                "toolResult": {
+                    "toolUseId": _tool_use_id(block),
+                    "content": [{"text": _block_text(block)}],
+                }
+            })
+    return result or [{"text": ""}]
+
+
+def _bedrock_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [
-        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": [{"text": item["content"]}]}
+        {"role": _assistant_to_model_role(item["role"], "assistant"), "content": _bedrock_content(item.get("content"))}
         for item in messages
     ]
 

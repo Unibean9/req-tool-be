@@ -184,7 +184,7 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
     return Command(
         update={
             "messages": [
-                ToolMessage(content=message, tool_call_id=tool_call_id),
+                ToolMessage(content=user_content, tool_call_id=tool_call_id),
                 {"role": "user", "content": user_content},
             ]
         }
@@ -228,7 +228,7 @@ async def _confirm_intent_impl(
         update={
             "user_confirmed": True,
             "messages": [
-                ToolMessage(content=summary, tool_call_id=tool_call_id),
+                ToolMessage(content=user_content, tool_call_id=tool_call_id),
                 {"role": "user", "content": user_content},
             ],
         }
@@ -237,7 +237,10 @@ async def _confirm_intent_impl(
 
 @tool
 async def confirm_intent(
-    summary: Annotated[str, "A short restatement of the user's goal/intent for them to confirm or correct, in their locale."],
+    summary: Annotated[
+        str,
+        "A short restatement of the user's goal/intent for them to confirm or correct, in their locale.",
+    ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -353,7 +356,11 @@ async def _write_draft_impl(
 @tool
 async def write_draft(
     title: Annotated[str, "Short title for the proposed artifact."],
-    body: Annotated[str, "Full draft body in Markdown following the artifact's output contract (required headings); mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump."],
+    body: Annotated[
+        str,
+        "Full draft body in Markdown following the artifact's output contract (required headings); "
+        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump.",
+    ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -524,7 +531,7 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     return Command(
         update={
             "messages": [
-                ToolMessage(content=message, tool_call_id=tool_call_id),
+                ToolMessage(content=user_content, tool_call_id=tool_call_id),
                 {"role": "user", "content": user_content},
             ]
         }
@@ -732,7 +739,10 @@ async def _recommend_next_workflow_impl(
 
 @tool
 async def recommend_next_workflow(
-    current_artifact_type: Annotated[str, "The artifact type currently in focus (cosmetic; recommendation is coverage-driven)."],
+    current_artifact_type: Annotated[
+        str,
+        "The artifact type currently in focus (cosmetic; recommendation is coverage-driven).",
+    ],
     planning_track: Annotated[str, "Planning depth: 'quick' | 'standard' | 'enterprise'."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,

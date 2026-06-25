@@ -404,7 +404,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     tool_schemas = _build_tool_schemas(get_available_tools(effective_state))
     started_at = time.monotonic()
     ai_message, usage = await llm_client.generate(
-        messages=[{"role": "user", "content": prompt}],
+        messages=_build_analyzer_messages(effective_state, prompt),
         system=system_prompt,
         max_tokens=settings.analyze_max_tokens,
         tools=tool_schemas,
@@ -679,6 +679,113 @@ def _msg_role_content(m) -> tuple[str, str]:
     return role, str(getattr(m, "content", ""))
 
 
+def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str, Any]]:
+    """Dựng thread thật cho LLM: hội thoại + tool_use/tool_result + payload phân tích lượt này."""
+    messages: list[dict[str, Any]] = []
+    tool_names_by_id: dict[str, str] = {}
+    for raw in state.get("messages") or []:
+        message = _client_message_from_state(raw, tool_names_by_id)
+        if message is not None:
+            _append_client_message(messages, message)
+    _append_analyzer_prompt(messages, prompt)
+    return messages
+
+
+def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -> dict[str, Any] | None:
+    if isinstance(message, dict):
+        role = str(message.get("role") or "user")
+        content = message.get("content", "")
+        tool_call_id = message.get("tool_call_id")
+        name = message.get("name")
+        tool_calls = message.get("tool_calls") or []
+    else:
+        raw_role = getattr(message, "type", "user")
+        role = {"human": "user", "ai": "assistant", "tool": "tool"}.get(raw_role, str(raw_role))
+        content = getattr(message, "content", "")
+        tool_call_id = getattr(message, "tool_call_id", None)
+        name = getattr(message, "name", None)
+        tool_calls = getattr(message, "tool_calls", None) or []
+
+    if role == "tool" or tool_call_id:
+        call_id = str(tool_call_id or "")
+        return {
+            "role": "user",
+            "content": [{
+                "type": "tool_result",
+                "tool_use_id": call_id,
+                "name": str(name or tool_names_by_id.get(call_id) or "tool"),
+                "content": str(content or ""),
+            }],
+        }
+
+    if role == "assistant" and tool_calls:
+        blocks = _text_blocks(content)
+        for call in tool_calls:
+            call_id = str(call.get("id") or "")
+            tool_name = str(call.get("name") or "")
+            if call_id and tool_name:
+                tool_names_by_id[call_id] = tool_name
+            blocks.append({
+                "type": "tool_use",
+                "id": call_id,
+                "name": tool_name,
+                "input": dict(call.get("args") or {}),
+            })
+        return {"role": "assistant", "content": blocks}
+
+    if role not in {"user", "assistant"}:
+        role = "user"
+    return {"role": role, "content": str(content or "")}
+
+
+def _text_blocks(content: Any) -> list[dict[str, Any]]:
+    text = str(content or "")
+    return [{"type": "text", "text": text}] if text else []
+
+
+def _append_client_message(messages: list[dict[str, Any]], message: dict[str, Any]) -> None:
+    if messages and messages[-1]["role"] == message["role"] == "user":
+        if _has_tool_result(messages[-1].get("content")) or _has_tool_result(message.get("content")):
+            if _duplicates_last_tool_result(messages[-1].get("content"), message.get("content")):
+                return
+            messages[-1]["content"] = [
+                *_content_blocks(messages[-1].get("content")),
+                *_content_blocks(message.get("content")),
+            ]
+            return
+    messages.append(message)
+
+
+def _append_analyzer_prompt(messages: list[dict[str, Any]], prompt: str) -> None:
+    prompt_block = {"type": "text", "text": prompt}
+    if messages and messages[-1]["role"] == "user" and _has_tool_result(messages[-1].get("content")):
+        messages[-1]["content"] = [*_content_blocks(messages[-1].get("content")), prompt_block]
+        return
+    messages.append({"role": "user", "content": prompt})
+
+
+def _content_blocks(content: Any) -> list[dict[str, Any]]:
+    if isinstance(content, list):
+        return [block for block in content if isinstance(block, dict)]
+    return _text_blocks(content)
+
+
+def _has_tool_result(content: Any) -> bool:
+    return any(block.get("type") == "tool_result" for block in _content_blocks(content))
+
+
+def _duplicates_last_tool_result(existing_content: Any, new_content: Any) -> bool:
+    if isinstance(new_content, list):
+        return False
+    text = str(new_content or "").strip()
+    if not text:
+        return False
+    return any(
+        block.get("type") == "tool_result" and str(block.get("content") or "").strip() == text
+        for block in _content_blocks(existing_content)
+    )
+
+
 def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     """Persisted-draft block: tell the analyst the body already on record, so it mines the delta."""
     if not draft_body:
@@ -743,7 +850,7 @@ def _record_gate_observability(
     validated_names = [item.get("name") for item in validated]
     gated_names = [item.get("name") for item in gated_tools]
     # Coercion: a tool was replaced by ask_user (raw and validated are positionally aligned).
-    for orig, val in zip(raw_names, validated_names):
+    for orig, val in zip(raw_names, validated_names, strict=False):
         if orig != val:
             if orig == "write_draft" and val == "confirm_intent":
                 continue
