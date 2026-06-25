@@ -64,6 +64,10 @@ class Settings(BaseSettings):
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000
 
+    # "auto" → model decides whether to call a tool (enables clean terminal-text turns).
+    # "required" → model must pick at least one tool (pre-M1 behaviour, for rollback).
+    tool_choice_mode: str = "auto"
+
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":
         if self.app_env != "development":

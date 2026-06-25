@@ -408,6 +408,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         system=system_prompt,
         max_tokens=settings.analyze_max_tokens,
         tools=tool_schemas,
+        tool_choice=settings.tool_choice_mode,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -425,10 +426,10 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     primary_tool = gated_tools[0]["name"] if gated_tools else None
     active_mode = _TOOL_ACTIVE_MODE.get(primary_tool or "", "discovery")
     locale = effective_state.get("locale") or "vi"
-    # Under forced tool_choice the model emits its chain-of-thought as content alongside the tool_use
-    # blocks; that reasoning text is NOT a draft. Capturing it poisoned working_draft (OQ2 realized).
-    # Only treat content as a draft_update on a terminal turn (no tool_calls), where it is the model's
-    # final message — drafts of record flow through write_draft (-> draft_body), not content.
+    # When the model picks tools it may emit chain-of-thought as content alongside tool_use blocks;
+    # that reasoning text is NOT a draft (OQ2: capturing it poisoned working_draft).
+    # Only treat content as a draft_update on a terminal turn (no tool_calls), where it is the
+    # model's deliberate final message — drafts of record flow through write_draft (→ draft_body).
     has_tool_calls = bool(getattr(ai_message, "tool_calls", None))
     draft_update = None if has_tool_calls else ((getattr(ai_message, "content", None) or "").strip() or None)
 

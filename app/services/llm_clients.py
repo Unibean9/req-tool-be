@@ -174,6 +174,7 @@ class LLMClient(Protocol):
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         pass
 
@@ -225,11 +226,12 @@ class OpenAILLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
 
         if tools:
-            return await self._generate_with_tools(messages, system, max_tokens, tools)
+            return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
         input_messages = _openai_messages(messages, system)
         body: dict[str, Any] = {
@@ -258,6 +260,8 @@ class OpenAILLMClient:
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
+        *,
+        tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
         import httpx
 
@@ -266,7 +270,7 @@ class OpenAILLMClient:
             "input": _openai_messages(messages, system),
             "max_output_tokens": max_tokens,
             "tools": [_to_openai_tool(t) for t in tools],
-            "tool_choice": "required",
+            "tool_choice": tool_choice,
         }
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -333,11 +337,12 @@ class GoogleLLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
 
         if tools:
-            return await self._generate_with_tools(messages, system, max_tokens, tools)
+            return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
         generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
         if response_format:
@@ -369,13 +374,17 @@ class GoogleLLMClient:
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
+        *,
+        tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
         import httpx
 
+        # Google maps "auto" → AUTO (model decides), "required" → ANY (must call at least one).
+        _GOOGLE_MODE = {"auto": "AUTO", "required": "ANY"}
         body: dict[str, Any] = {
             "contents": _google_contents(messages),
             "tools": [{"functionDeclarations": [_to_google_tool(t) for t in tools]}],
-            "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
+            "toolConfig": {"functionCallingConfig": {"mode": _GOOGLE_MODE.get(tool_choice, "AUTO")}},
             "generationConfig": {"maxOutputTokens": max_tokens},
         }
         if system:
@@ -439,11 +448,12 @@ class AnthropicLLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         import httpx
 
         if tools:
-            return await self._generate_with_tools(messages, system, max_tokens, tools)
+            return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
         body: dict[str, Any] = {
             "model": self.config.model,
@@ -472,15 +482,19 @@ class AnthropicLLMClient:
         system: str | None,
         max_tokens: int,
         tools: list[dict[str, Any]],
+        *,
+        tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
         import httpx
 
+        # Anthropic maps "auto" → {"type": "auto"}, "required" → {"type": "any"}.
+        _ANTHROPIC_CHOICE = {"auto": {"type": "auto"}, "required": {"type": "any"}}
         body: dict[str, Any] = {
             "model": self.config.model,
             "max_tokens": max_tokens,
             "messages": _anthropic_messages(messages),
             "tools": [_to_anthropic_tool(t) for t in tools],
-            "tool_choice": {"type": "any"},
+            "tool_choice": _ANTHROPIC_CHOICE.get(tool_choice, {"type": "auto"}),
         }
         if system:
             body["system"] = system
@@ -517,11 +531,12 @@ class BedrockLLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
         if self.config.secret_key:
-            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format, tools)
+            data = await self._generate_with_iam_keys(messages, system, max_tokens, response_format, tools, tool_choice=tool_choice)
         else:
-            data = await self._generate_with_api_key(messages, system, max_tokens, response_format, tools)
+            data = await self._generate_with_api_key(messages, system, max_tokens, response_format, tools, tool_choice=tool_choice)
         if tools:
             return _parse_bedrock_tool_response(data), _extract_bedrock_usage(data)
         text = _extract_bedrock_text(data)
@@ -613,6 +628,8 @@ class BedrockLLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        *,
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         def _generate() -> dict[str, Any]:
             import boto3
@@ -634,7 +651,12 @@ class BedrockLLMClient:
             if bedrock_system:
                 converse_kwargs["system"] = bedrock_system
             if tools:
-                converse_kwargs["toolConfig"] = {"tools": [_to_bedrock_tool(t) for t in tools]}
+                tool_config: dict[str, Any] = {"tools": [_to_bedrock_tool(t) for t in tools]}
+                # Bedrock maps "required" → {"any": {}} (must call at least one).
+                # "auto" leaves toolChoice unset (model decides).
+                if tool_choice == "required":
+                    tool_config["toolChoice"] = {"any": {}}
+                converse_kwargs["toolConfig"] = tool_config
             return client.converse(**converse_kwargs)
 
         return await asyncio.to_thread(_generate)
@@ -646,6 +668,8 @@ class BedrockLLMClient:
         max_tokens: int,
         response_format: dict[str, Any] | None = None,
         tools: list[dict[str, Any]] | None = None,
+        *,
+        tool_choice: str = "auto",
     ) -> dict[str, Any]:
         import httpx
 
@@ -659,7 +683,10 @@ class BedrockLLMClient:
         if bedrock_system:
             body["system"] = bedrock_system
         if tools:
-            body["toolConfig"] = {"tools": [_to_bedrock_tool(t) for t in tools]}
+            tool_config: dict[str, Any] = {"tools": [_to_bedrock_tool(t) for t in tools]}
+            if tool_choice == "required":
+                tool_config["toolChoice"] = {"any": {}}
+            body["toolConfig"] = tool_config
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
