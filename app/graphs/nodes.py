@@ -225,12 +225,17 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
         "Nếu turn_type='converse', đặt 'reply' là một câu đáp ngắn, thân thiện ĐÚNG ngôn ngữ "
         "người dùng — chào lại, nói ngắn gọn bạn giúp được gì, và mời họ chia sẻ điều muốn xây."
     )
-    result, _usage = await llm_client.generate(
-        messages=[{"role": "user", "content": prompt}],
-        system=TRIAGE_SYSTEM,
-        max_tokens=300,
-        response_format=TRIAGE_SCHEMA,
-    )
+    try:
+        result, _usage = await llm_client.generate(
+            messages=[{"role": "user", "content": prompt}],
+            system=TRIAGE_SYSTEM,
+            max_tokens=300,
+            response_format=TRIAGE_SCHEMA,
+        )
+    except ValueError:
+        # A non-conforming classifier response must not crash the turn — default to a work turn so
+        # it falls through to the full analyst pass (the safe, non-conversational branch).
+        result = {}
     reported = result if isinstance(result, dict) else {}
     turn_type = reported.get("turn_type") or "work"
     locale = state.get("locale") or reported.get("locale")
@@ -533,12 +538,17 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
 
     prompt = _build_summary_prompt(state)
-    result, _usage = await llm_client.generate(
-        messages=[{"role": "user", "content": prompt}],
-        system=SUMMARY_SYSTEM,
-        max_tokens=1000,
-        response_format=SUMMARY_SCHEMA,
-    )
+    try:
+        result, _usage = await llm_client.generate(
+            messages=[{"role": "user", "content": prompt}],
+            system=SUMMARY_SYSTEM,
+            max_tokens=1000,
+            response_format=SUMMARY_SCHEMA,
+        )
+    except ValueError:
+        # The summary is an optional running aid (prompt context only), so a non-conforming LLM
+        # response must not crash the turn — keep the prior summary and continue to analyze.
+        return {"conversation_summary": state.get("conversation_summary", "")}
     if isinstance(result, dict):
         summary = str(result.get("summary", "")).strip()
     else:

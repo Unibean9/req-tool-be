@@ -375,6 +375,40 @@ async def test_summarize_triggers_at_threshold(monkeypatch):
     llm.generate.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_summarize_degrades_when_response_not_schema_conformant(monkeypatch):
+    """A non-conforming summary response (generate raises ValueError) must not crash the turn —
+    summarize_node keeps the prior summary and lets the loop continue to analyze."""
+    from app.graphs.nodes import summarize_node
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+    state = _state()
+    state["conversation_summary"] = "Tóm tắt cũ"
+    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(7)]
+    llm = AsyncMock()
+    llm.generate = AsyncMock(side_effect=ValueError("Phản hồi LLM không khớp JSON Schema tại $: thiếu summary"))
+
+    result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["conversation_summary"] == "Tóm tắt cũ"
+
+
+@pytest.mark.asyncio
+async def test_triage_degrades_to_work_turn_when_response_not_schema_conformant(monkeypatch):
+    """A non-conforming triage response must default to a work turn (falls through to analyze)."""
+    from app.graphs.nodes import route_after_triage, triage_node
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "Xây hệ thống điểm danh"}]
+    llm = AsyncMock()
+    llm.generate = AsyncMock(side_effect=ValueError("Phản hồi LLM không khớp JSON Schema tại $: thiếu turn_type"))
+
+    result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
+
+    assert result["turn_type"] == "work"
+    assert route_after_triage({**state, **result}) == "analyze"
+
+
 def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
     from app.graphs.nodes import route_before_analyze
 
