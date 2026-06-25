@@ -188,6 +188,30 @@ async def test_audit_idempotent_when_row_exists():
     mock_db.commit.assert_not_awaited()
 
 
+def test_write_draft_in_intent_phase_coerces_to_confirm_intent():
+    # write_draft not available → should redirect to confirm_intent (not ask_user) so the agent
+    # surfaces its prepared summary and triggers the proper intent-confirmation flow.
+    state = {"messages": [], "user_confirmed": None}
+    gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
+    assert len(gated) == 1
+    assert gated[0]["name"] == "confirm_intent"
+    assert "Vision doc" in gated[0]["args"]["summary"]
+
+
+def test_write_draft_in_artifact_phase_not_coerced():
+    # Once user_confirmed=True, write_draft is available and should pass through unchanged.
+    state = {"messages": [], "user_confirmed": True}
+    gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "T", "body": "B"}}])
+    assert gated[0]["name"] == "write_draft"
+
+
+def test_write_draft_without_body_falls_back_to_ask_user():
+    # If write_draft has no body/title, confirm_intent summary is empty → fall back to ask_user.
+    state = {"messages": [], "user_confirmed": None}
+    gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {}}])
+    assert gated[0]["name"] == "ask_user"
+
+
 @pytest.mark.asyncio
 async def test_confirm_intent_impl_calls_audit():
     state = {"messages": [], "user_confirmed": None, "last_agent_run_id": "00000000-0000-0000-0000-000000000004"}
