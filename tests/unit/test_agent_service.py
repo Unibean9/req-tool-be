@@ -394,6 +394,22 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
     command = svc._resume_command(session, {"content": "Có"})
 
     assert command.resume == {INTERRUPT_ID: {"content": "Có"}}
+    # Every human resume resets the per-request silent-loop counter so conversations are unbounded.
+    assert command.update == {"turn_count": 0}
+
+
+@pytest.mark.asyncio
+async def test_resume_command_merges_turn_count_reset_with_state_update(db_session):
+    svc = _make_service(db_session)
+    session = AgentSession(
+        id=uuid.uuid4(), project_id=uuid.uuid4(), artifact_type="goal",
+        workflow_area="analysis", graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN, interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+    )
+
+    command = svc._resume_command(session, {"content": "Có"}, state_update={"mode_hint": "critique"})
+
+    assert command.update == {"turn_count": 0, "mode_hint": "critique"}
 
 
 @pytest.mark.asyncio
@@ -647,6 +663,43 @@ async def test_run_graph_timeout_does_not_affect_normal_flow(client, db_session,
 
     updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
     assert updated.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session):
+    """A graph that ENDs with an undispatched tool_call (route_node hit the turn cap before the
+    pending ask_user ran) must be marked FAILED, not COMPLETED — it did not finish, it ran out of turns."""
+    from langchain_core.messages import AIMessage
+
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    # No __interrupt__ (the tool never ran), but the last message still carries tool_calls.
+    graph.ainvoke = AsyncMock(return_value={
+        "messages": [AIMessage(content="", tool_calls=[
+            {"id": "r:0", "name": "ask_user", "args": {"message": "Còn gì nữa không?"}}
+        ])],
+    })
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert updated.status == AgentSessionStatus.FAILED
+    assert any(m.role == AgentMessageRole.AGENT for m in messages)
 
 
 @pytest.mark.asyncio

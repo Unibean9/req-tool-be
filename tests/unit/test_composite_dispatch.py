@@ -33,28 +33,59 @@ def test_gate_coerces_unavailable_tool_to_ask_user():
     assert result[0]["name"] == "ask_user"
 
 
-def test_gate_interrupt_bearing_keeps_only_first_interrupt_tool():
-    """ask_user paired with explore_note → keep only ask_user (interrupt-bearing drops the rest)."""
+def test_gate_keeps_note_alongside_interrupt_tool():
+    """ask_user paired with explore_note → keep BOTH. The note is side-effect-free, so its structured
+    facts (key_facts) must reach state in the same turn instead of being dropped by solo enforcement."""
     state = _state()
     requested = [
         {"name": "ask_user", "args": {"message": "?"}},
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
-    assert len(result) == 1
-    assert result[0]["name"] == "ask_user"
+    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
 
 
-def test_gate_coerce_then_interrupt_enforcement():
-    """Unavailable finalize → coerced to ask_user → ask_user is interrupt-bearing → drop explore_note."""
+def test_gate_drops_second_interrupt_bearing_tool():
+    """Two interrupt-bearing tools → keep only the first; two interrupts in one node is unsafe."""
+    state = _state()
+    requested = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+    ]
+    result = _gate_selected_tools(state, requested)
+    assert [r["name"] for r in result] == ["ask_user"]
+
+
+def test_gate_observability_reports_dropped_not_unavailable_when_note_rides_along():
+    """A second interrupt-bearing tool dropped BEFORE a kept note must report as 'dropped', not
+    'not available' — the observability compares against the pre-solo aligned list, not a positional
+    raw↔gated zip that a kept note would misalign."""
+    from app.graphs.nodes import _record_gate_observability
+
+    state = _state()  # intent phase: ask_user/respond/explore_note all available
+    raw = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    gated = _gate_selected_tools(state, raw)
+    assert [g["name"] for g in gated] == ["ask_user", "explore_note"]
+
+    analysis_result: dict = {}
+    _record_gate_observability(analysis_result, raw, gated, state)
+    assert analysis_result["gated_tool"] == "respond"
+    assert analysis_result["gated_reason"] == "dropped: respond paired with interrupt-bearing tool"
+
+
+def test_gate_coerce_then_keeps_note():
+    """Unavailable finalize → coerced to ask_user (interrupt-bearing); the explore_note rides along."""
     state = _state()  # finalize not available
     requested = [
         {"name": "finalize", "args": {"summary": "done"}},
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
-    assert len(result) == 1
-    assert result[0]["name"] == "ask_user"
+    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
 
 
 def test_gate_interrupt_tools_set_is_complete():
@@ -102,8 +133,8 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_composite_gate_keeps_interrupt_bearing_drops_non_interrupt(client, db_session):
-    """ask_user + explore_note → gate keeps only ask_user."""
+async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session):
+    """ask_user + explore_note → gate keeps BOTH (the note rides along) and records no drop."""
     from app.graphs.nodes import analyze_node
     from unittest.mock import AsyncMock
 
@@ -122,8 +153,7 @@ async def test_composite_gate_keeps_interrupt_bearing_drops_non_interrupt(client
 
     out = await analyze_node(state, config)
     tool_calls = out["messages"][-1].tool_calls
-    assert len(tool_calls) == 1
-    assert tool_calls[0]["name"] == "ask_user"
-    assert out["analysis_result"]["gated_tool"] == "explore_note"
+    assert [tc["name"] for tc in tool_calls] == ["ask_user", "explore_note"]
+    assert "gated_tool" not in out["analysis_result"]
 
 

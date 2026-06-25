@@ -80,8 +80,10 @@ def test_route_node_ends_without_tool_calls():
 
 def test_route_node_ends_at_turn_cap():
     # turn_count >= max_agent_turns ends the loop regardless of pending tool_calls.
+    from app.config import settings
+
     state = {
-        "turn_count": 10,
+        "turn_count": settings.max_agent_turns,
         "messages": [AIMessage(content="", tool_calls=[{"id": "1", "name": "ask_user", "args": {}}])],
     }
     assert route_node(state) == "__end__"

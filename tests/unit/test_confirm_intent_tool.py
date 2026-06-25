@@ -102,8 +102,9 @@ def test_empty_summary_coerced_to_ask_user():
     assert gated[0]["name"] == "ask_user"
 
 
-def test_confirm_intent_solo_enforced_against_note():
-    # Interrupt-bearing: paired with a note, only confirm_intent survives the gate.
+def test_confirm_intent_keeps_note_alongside():
+    # Interrupt-bearing, but a side-effect-free note rides along so its facts persist this turn;
+    # solo enforcement only drops OTHER interrupt-bearing / non-note tools.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(
         state,
@@ -112,7 +113,7 @@ def test_confirm_intent_solo_enforced_against_note():
             {"name": "confirm_intent", "args": {"summary": "Build Y for A"}},
         ],
     )
-    assert [g["name"] for g in gated] == ["confirm_intent"]
+    assert [g["name"] for g in gated] == ["explore_note", "confirm_intent"]
 
 
 # ---------------------------------------------------------------------------

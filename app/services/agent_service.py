@@ -701,9 +701,25 @@ class AgentService:
             # paused tool is stale and must not be promoted: WAITING_FOR_HUMAN re-set by a tool
             # re-running on resume, or ACTIVE+STREAM_RESPONSE while halted on a conversational ask (D4).
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
+            # A graph that ENDs while its last message still carries tool_calls did not finish: it hit
+            # the per-request turn cap in route_node before the pending interrupt-bearing tool (e.g.
+            # ask_user) could run, so no __interrupt__ surfaced. Since turn_count resets each human turn,
+            # tripping the cap means the model looped silently within one request without ever
+            # interacting — a genuine runaway, not a long conversation. Fail it loudly (mirroring the
+            # timeout branch) rather than mislabel it COMPLETED.
+            turn_limit_hit = graph_ended and _result_has_pending_tool_calls(result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-                if graph_ended and row.status in (
+                if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
+                    row.status = AgentSessionStatus.FAILED
+                    db.add(
+                        AgentMessage(
+                            session_id=session_id,
+                            role=AgentMessageRole.AGENT,
+                            content=_agent_turn_limit_message(),
+                        )
+                    )
+                elif graph_ended and row.status in (
                     AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN
                 ):
                     row.status = AgentSessionStatus.COMPLETED
@@ -849,11 +865,11 @@ class AgentService:
     ) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
         resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
-        # state_update lets a resuming turn seed state (e.g. a one-shot mode_hint) before the
+        # A resume is a human-in-the-loop boundary (reply or approval), so the silent-loop circuit
+        # breaker resets here: turn_count counts internal steps per request, not across the session.
+        # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        if state_update:
-            return Command(resume=resume, update=state_update)
-        return Command(resume=resume)
+        return Command(resume=resume, update={"turn_count": 0, **(state_update or {})})
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -923,6 +939,25 @@ class AgentService:
                 region=config_row.region,
             )
         return default_client, strong_client
+
+
+def _result_has_pending_tool_calls(result: Any) -> bool:
+    """Whether the graph's final state ends on a message that still carries undispatched tool_calls.
+
+    True only when route_node returned END (turn cap) while analyze_node had emitted an
+    interrupt-bearing tool that never ran — the signature of a force-terminated, non-resumable turn.
+    """
+    if not isinstance(result, dict):
+        return False
+    messages = result.get("messages") or []
+    return bool(messages) and bool(getattr(messages[-1], "tool_calls", None))
+
+
+def _agent_turn_limit_message() -> str:
+    return (
+        "Phiên làm việc đã đạt giới hạn số lượt phân tích nên được dừng lại trước khi hoàn tất. "
+        "Bạn vui lòng tạo phiên mới để tiếp tục nhé."
+    )
 
 
 def _agent_timeout_message(timeout: float) -> str:

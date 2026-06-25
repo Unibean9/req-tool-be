@@ -657,9 +657,10 @@ async def test_analyze_node_records_token_usage_and_latency(client, db_session):
 def test_route_node_max_turns_routes_to_end():
     from langgraph.graph import END
 
+    from app.config import settings
     from app.graphs.nodes import route_node
 
-    state = _state(turn_count=10, analysis_result={"next_action": "propose"})
+    state = _state(turn_count=settings.max_agent_turns, analysis_result={"next_action": "propose"})
     assert route_node(state) == END
 
 
@@ -1086,8 +1087,12 @@ def test_build_prompt_no_working_draft_block_when_absent():
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_persists_working_draft_from_draft_update(client, db_session):
-    """M10: when the LLM emits draft_update, it becomes the running working_draft."""
+async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_session):
+    """Under forced tool_choice, content emitted alongside tool_calls is reasoning, not a draft.
+
+    Capturing it poisoned working_draft (OQ2 realized). The prior turn's draft must survive untouched;
+    drafts of record flow through write_draft (-> draft_body), never through AIMessage content.
+    """
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -1096,19 +1101,21 @@ async def test_analyze_node_persists_working_draft_from_draft_update(client, db_
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    new_draft = "## Mục tiêu\n- Tăng tỷ lệ giữ chân người dùng lên 30%."
+    prior = "## Mục tiêu\n- Đã ghi nhận từ lượt trước."
+    thinking_text = "Người dùng vừa nói X, mình nên hỏi thêm ràng buộc trước khi viết."
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=(AIMessage(content=new_draft, tool_calls=[
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content=thinking_text, tool_calls=[
         {"id": "scripted:0", "name": "ask_user", "args": {"message": "Còn ràng buộc nào không?"}}
     ]), None))
 
     state = _state(artifact_type="goal")
+    state["working_draft"] = prior
     config = _config(str(agent_session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 
     result = await analyze_node(state, config)
 
-    assert result["working_draft"] == new_draft
+    assert result["working_draft"] == prior
 
 
 @pytest.mark.asyncio

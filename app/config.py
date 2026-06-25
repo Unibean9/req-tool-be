@@ -48,7 +48,11 @@ class Settings(BaseSettings):
     app_debug: bool = False
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
     auto_migrate: bool = True
-    max_agent_turns: int = 10
+    # Circuit-breaker for silent internal tool-loops WITHIN one request (note/critique steps that
+    # don't interrupt), NOT a conversation-length limit: turn_count resets to 0 on every human
+    # resume, so user-facing exchanges are unbounded. A high backstop that should never trip in
+    # healthy operation — hitting it means the model is stuck looping without interacting.
+    max_agent_turns: int = 30
     llm_provider_health_timeout_seconds: float = 25.0
     agent_turn_timeout_seconds: float = 90.0
     summary_trigger_every: int = 6

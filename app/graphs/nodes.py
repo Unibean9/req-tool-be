@@ -425,7 +425,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     primary_tool = gated_tools[0]["name"] if gated_tools else None
     active_mode = _TOOL_ACTIVE_MODE.get(primary_tool or "", "discovery")
     locale = effective_state.get("locale") or "vi"
-    draft_update = (getattr(ai_message, "content", None) or "").strip() or None
+    # Under forced tool_choice the model emits its chain-of-thought as content alongside the tool_use
+    # blocks; that reasoning text is NOT a draft. Capturing it poisoned working_draft (OQ2 realized).
+    # Only treat content as a draft_update on a terminal turn (no tool_calls), where it is the model's
+    # final message — drafts of record flow through write_draft (-> draft_body), not content.
+    has_tool_calls = bool(getattr(ai_message, "tool_calls", None))
+    draft_update = None if has_tool_calls else ((getattr(ai_message, "content", None) or "").strip() or None)
 
     analysis_result: dict[str, Any] = {
         "tools": gated_tools,
@@ -707,7 +712,7 @@ def _build_working_draft_block(state: WorkflowState) -> str:
     return (
         "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
         f"{working_draft}\n\n"
-        "Với mỗi ý mới user vừa nêu, cập nhật draft trên qua field draft_update (bồi đắp, "
+        "Với mỗi ý mới user vừa nêu, cập nhật draft trên bằng tool write_draft (bồi đắp, "
         "không viết lại từ đầu, không bịa nội dung chưa có). KHÔNG hỏi lại nội dung đã có "
         "trong draft."
     )
@@ -729,12 +734,17 @@ def _record_gate_observability(
     Preserves the fail-loud contract: eval and tests can always observe what was requested vs
     dispatched. The first coerced or dropped tool drives the markers.
     """
+    # Compare against the pre-solo, position-aligned coercion result (not the final gated list): solo
+    # enforcement may drop a tool BEFORE a kept note, which would misalign a raw↔gated positional zip
+    # and misreport a solo-dropped tool as "not available".
+    validated = _coerce_and_validate_tools(state, raw_tools)
     raw_names = [item.get("name") for item in raw_tools]
+    validated_names = [item.get("name") for item in validated]
     gated_names = [item.get("name") for item in gated_tools]
-    # Coercion: a tool was replaced by ask_user
-    for orig, gated in zip(raw_names, gated_names):
-        if orig != gated:
-            if orig == "write_draft" and gated == "confirm_intent":
+    # Coercion: a tool was replaced by ask_user (raw and validated are positionally aligned).
+    for orig, val in zip(raw_names, validated_names):
+        if orig != val:
+            if orig == "write_draft" and val == "confirm_intent":
                 continue
             feedback_detail = _feedback_degrade_detail(state) if orig == "finalize" else ""
             reason = f"gated: {orig} not available this turn"
@@ -747,10 +757,10 @@ def _record_gate_observability(
                 _feedback_degrade_message(state) or _GATED_TOOL_PROMPT.format(tool=orig),
             )
             return
-    # Solo enforcement: tools were dropped (interrupt-bearing kept, others dropped)
-    if len(gated_tools) < len(raw_tools):
+    # Solo enforcement: tools surviving coercion that were then dropped (interrupt-bearing kept + notes).
+    if len(gated_tools) < len(validated):
         gated_set = set(gated_names)
-        dropped = [n for n in raw_names if n not in gated_set]
+        dropped = [n for n in validated_names if n not in gated_set]
         if dropped:
             analysis_result["gated_tool"] = dropped[0]
             analysis_result["gated_reason"] = f"dropped: {dropped[0]} paired with interrupt-bearing tool"
@@ -762,6 +772,13 @@ def _record_gate_observability(
 _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
     "ask_user", "respond", "write_draft", "finalize", "confirm_intent",
 })
+
+# Silent scratchpad notes: no interrupt, no DB write, pure state append (assumptions/risks/
+# open_questions/key_facts). They may ride along with an interrupt-bearing tool because the ToolNode
+# discards their partial update when the interrupt fires and re-applies it exactly once on resume —
+# so the model can record what it learned in the SAME turn it asks a question, instead of having the
+# note dropped by solo enforcement (the only key_facts populator, which starved the anti-re-ask block).
+_SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
 
 
 # Confirmation prompt appended to a coerced intent draft so the user is asked to confirm or revise,
@@ -791,17 +808,13 @@ def _intent_summary_from_draft(title: str, body: str, locale: str | None = None)
     return f"{draft}\n\n---\n\n{prompt}"
 
 
-def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
-    """Coerce and gate a requested tools list to what is safe to dispatch this turn.
+def _coerce_and_validate_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
+    """Apply the position-preserving steps of the gate: availability coercion + required-arg validation.
 
-    Three-step gate (order matters):
-    1. Per-tool availability coercion: any tool not in get_available_tools() is replaced by ask_user.
-    2. Required-arg validation: any tool missing a required arg (see _TOOL_REQUIRED_ARGS) is replaced
-       by ask_user so the model must re-ask rather than dispatch an incomplete call.
-    3. Interrupt-bearing solo enforcement: if any tool in the coerced list is interrupt-bearing,
-       keep only the first such tool and drop everything else.
-
-    Returns the gated list (1–N elements, all available, interrupt-bearing at most one).
+    Returns a list the SAME length and order as `requested` — each item is either kept, replaced by
+    ask_user (unavailable or missing a required arg), or redirected write_draft→confirm_intent. Solo
+    enforcement (which drops items) is applied separately so observability can compare against this
+    aligned, pre-drop list.
     """
     from app.graphs.agent_tools import get_available_tools
 
@@ -842,9 +855,38 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
         else:
             validated.append(item)
 
-    for item in validated:
-        if item["name"] in _INTERRUPT_BEARING_TOOLS:
-            return [item]
+    return validated
+
+
+def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
+    """Coerce and gate a requested tools list to what is safe to dispatch this turn.
+
+    Three-step gate (order matters):
+    1. Per-tool availability coercion: any tool not in get_available_tools() is replaced by ask_user.
+    2. Required-arg validation: any tool missing a required arg (see _TOOL_REQUIRED_ARGS) is replaced
+       by ask_user so the model must re-ask rather than dispatch an incomplete call.
+    3. Interrupt-bearing solo enforcement: keep the first interrupt-bearing tool plus any side-effect-free
+       notes, drop everything else.
+
+    Returns the gated list (1–N elements, all available, interrupt-bearing at most one).
+    """
+    validated = _coerce_and_validate_tools(state, requested)
+
+    # Solo enforcement: at most one interrupt-bearing tool per turn (two interrupts in a node is
+    # unsafe). When one is present, keep it plus any side-effect-free notes (so their structured facts
+    # persist this turn) and drop everything else, preserving original order.
+    if any(item["name"] in _INTERRUPT_BEARING_TOOLS for item in validated):
+        kept: list[dict] = []
+        seen_interrupt = False
+        for item in validated:
+            name = item["name"]
+            if name in _INTERRUPT_BEARING_TOOLS:
+                if not seen_interrupt:
+                    kept.append(item)
+                    seen_interrupt = True
+            elif name in _SIDE_EFFECT_FREE_NOTE_TOOLS:
+                kept.append(item)
+        return kept
 
     return validated
 

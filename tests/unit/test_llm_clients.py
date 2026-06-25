@@ -352,7 +352,7 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
     assert isinstance(result, AIMessage)
     assert [tc["name"] for tc in result.tool_calls] == ["ask_user"]
     assert result.tool_calls[0]["args"] == {"message": "hi"}
-    assert result.content == "draft text"  # text emitted alongside the tool call -> draft_update
+    assert result.content == "draft text"  # client surfaces the text verbatim; analyze_node treats it as reasoning, not a draft
     # The request carried the tool config (so a real provider would force the call).
     assert "ask_user" in str(recorder.requests[0]["json"])
 

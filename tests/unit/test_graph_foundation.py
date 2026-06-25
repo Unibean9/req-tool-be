@@ -175,4 +175,5 @@ def test_workflow_state_structure_and_add_messages_reducer():
 
 
 def test_max_agent_turns_setting_default():
-    assert settings.max_agent_turns == 10
+    # High per-request silent-loop backstop (resets each human turn), not a conversation limit.
+    assert settings.max_agent_turns == 30
