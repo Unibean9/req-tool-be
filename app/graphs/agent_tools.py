@@ -192,12 +192,17 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
 
 @tool
 async def ask_user(
-    message: str,
+    message: Annotated[str, "One focused question, written in the user's locale."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Ask the user a clarifying question and pause to wait for their reply."""
+    """Ask the user a clarifying question and pause for their reply.
+
+    Use when you need information you do not have and cannot reasonably infer. Do NOT use to deliver
+    an opinion or assessment (use respond) or to present a prepared draft (use write_draft /
+    confirm_intent). Ask one focused question, not a checklist.
+    """
     return await _ask_user_impl(message, state, config, tool_call_id)
 
 
@@ -231,12 +236,17 @@ async def _confirm_intent_impl(
 
 @tool
 async def confirm_intent(
-    summary: str,
+    summary: Annotated[str, "A short restatement of the user's goal/intent for them to confirm or correct, in their locale."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Present an intent summary and transition to artifact phase."""
+    """Present a concise summary of the user's intent and pause for confirmation.
+
+    Use in the intent phase, before any artifact work, to confirm you understood what they want to
+    build. This is the one-shot gate into the artifact phase. Not for clarifying questions (use
+    ask_user) and not for presenting a full draft (use write_draft).
+    """
     return await _confirm_intent_impl(summary, state, config, tool_call_id)
 
 
@@ -341,13 +351,18 @@ async def _write_draft_impl(
 
 @tool
 async def write_draft(
-    title: str,
-    body: str,
+    title: Annotated[str, "Short title for the proposed artifact."],
+    body: Annotated[str, "Full draft body in Markdown following the artifact's output contract (required headings); mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Propose an artifact draft and pause for the user to review it."""
+    """Propose an artifact draft and pause for the user to review it.
+
+    Use once enough confirmed information exists to produce a structured draft. Available only in the
+    artifact phase (after confirm_intent). The body grows incrementally across turns — never rewrite
+    it from scratch or invent content the user has not provided.
+    """
     return await _write_draft_impl(title, body, state, config, tool_call_id)
 
 
@@ -428,12 +443,16 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
 
 @tool
 async def finalize(
-    summary: str,
+    summary: Annotated[str, "Closing summary of what was accomplished, in the user's locale."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Finalize the working session and pause for the user to confirm completion."""
+    """Finalize the working session and pause for the user to confirm completion.
+
+    Use only after a passing quality critique exists for the current draft (run_critique). It is the
+    completion gate, not a substitute for write_draft. Blocked if the quality gate has not passed.
+    """
     return await _finalize_impl(summary, state, config, tool_call_id)
 
 
@@ -460,22 +479,27 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
 
 @tool
 async def critique_note(
-    content: str,
+    content: Annotated[str, "The critique. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."],  # noqa: E501
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Critique note: probe weaknesses, risky assumptions, or contradictions in the current information (no approval needed)."""  # noqa: E501
+    """Critique note — silent scratchpad, no user interrupt and no approval.
+
+    Use to think critically (probe weaknesses, risky assumptions, contradictions) before asking or
+    drafting. Not shown to the user — use respond to surface a critique to them.
+    """
     return await _write_note_impl(content, state, tool_call_id)
 
 
 @tool
 async def explore_note(
-    content: str,
+    content: Annotated[str, "The exploration. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."],  # noqa: E501
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Exploration note: broaden the perspective, raise angles or options not yet considered (no approval needed).
+    """Exploration note — silent scratchpad, no user interrupt and no approval.
 
+    Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
     Its active_mode maps to 'structuring' after the spec §7.1 migration (see phase-06).
     """
     return await _write_note_impl(content, state, tool_call_id)
@@ -508,13 +532,17 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
 
 @tool
 async def respond(
-    message: str,
-    mode: str,
+    message: Annotated[str, "The assessment to deliver, in the user's locale — a complete thought, not a question."],
+    mode: Annotated[str, "Operating angle: 'critique' or 'structuring'."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Share an assessment with the user — a critique or exploration, not a question — and pause for their reaction."""  # noqa: E501
+    """Share an assessment with the user — a critique or exploration, NOT a question — and pause for their reaction.
+
+    Use to deliver a proactive opinion or analysis instead of phrasing every turn as a question. Use
+    ask_user when you actually need an answer; use the note tools to think without interrupting.
+    """  # noqa: E501
     return await _respond_impl(message, mode, state, config, tool_call_id)
 
 
@@ -590,13 +618,17 @@ async def _run_critique_impl(
 
 @tool
 async def run_critique(
-    target: str,
-    mode: str,
+    target: Annotated[str, "Cosmetic label for the target; the judge always scores the current draft body."],
+    mode: Annotated[str, "Critique dimension, e.g. 'completeness', 'clarity', 'feasibility'."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Run a formal quality critique over the current draft along one mode and record the report."""
+    """Run a formal quality critique over the current draft along one mode and record the report.
+
+    Use after a draft exists to score it before finalizing. Does not interrupt — surface the result
+    to the user with respond on a later turn. Gated off after the critique-rounds cap is reached.
+    """
     return await _run_critique_impl(target, mode, state, config, tool_call_id)
 
 
@@ -699,13 +731,17 @@ async def _recommend_next_workflow_impl(
 
 @tool
 async def recommend_next_workflow(
-    current_artifact_type: str,
-    planning_track: str,
+    current_artifact_type: Annotated[str, "The artifact type currently in focus (cosmetic; recommendation is coverage-driven)."],
+    planning_track: Annotated[str, "Planning depth: 'quick' | 'standard' | 'enterprise'."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Recommend the next planning workflow from current coverage; records an audit entry."""
+    """Recommend the next planning workflow from current coverage; records an audit entry.
+
+    Use when the user asks what to do next, or when coverage suggests advancing the artifact chain.
+    Read-only and non-interrupting.
+    """
     return await _recommend_next_workflow_impl(current_artifact_type, planning_track, state, config, tool_call_id)
 
 
@@ -768,12 +804,16 @@ async def _run_readiness_check_impl(
 
 @tool
 async def run_readiness_check(
-    target: str,
+    target: Annotated[str, "Cosmetic label; the check is coverage-driven."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Assess readiness to advance the planning lifecycle across 10 dimensions; records an audit entry."""
+    """Assess readiness to advance the planning lifecycle across 10 dimensions; records an audit entry.
+
+    Use after at least one critique round to check whether the draft is ready to progress. Read-only
+    and non-interrupting.
+    """
     return await _run_readiness_check_impl(target, state, config, tool_call_id)
 
 
