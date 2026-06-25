@@ -1309,30 +1309,6 @@ def test_feedback_control_block_injects_blockers_and_revision_plan():
     assert "revise" in prompt
 
 
-def test_finalize_degrade_reason_uses_feedback_state():
-    from app.graphs.nodes import _degrade_reason
-
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft"
-    state["quality_report"] = {
-        "quality_gate_result": "fail",
-        "blocking_issues": ["Metric chưa kiểm chứng"],
-        "recommended_next_action": "revise",
-    }
-    state["candidate_readiness"] = {
-        "state": "well_structured_but_incomplete",
-        "can_persist": False,
-        "blocking_reasons": ["Thiếu heading bắt buộc"],
-    }
-
-    degrade = _degrade_reason(state, "finalize", "ask_user", {"tools": [{"name": "finalize", "args": {"summary": "Xong"}}]})
-
-    assert degrade is not None
-    assert "quality_gate=fail" in degrade["gated_reason"]
-    assert "candidate_readiness=well_structured_but_incomplete" in degrade["gated_reason"]
-    assert "Metric chưa kiểm chứng" in degrade["message"]
-
-
 def test_proactive_rule_lives_in_instruction_layer_not_payload():
     """T4b: the proactive mode-switch policy is static — it lives in the decision-policy layer (the
     system prompt), not in the per-turn payload. With no mode_hint the payload carries no mode steer."""

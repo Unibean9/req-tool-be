@@ -32,8 +32,8 @@ from app.services.document_service import DocumentService
 # Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 
-# Legacy: tool impls now reject empty required args via a ToolMessage error, so this table only
-# feeds the remaining _missing_required_arg call sites (eval/tests), not the live dispatch path.
+# Tool impls now reject empty required args via a ToolMessage error, so this table no longer drives
+# dispatch; it survives only as the required-arg contract that the intent_gate eval and unit tests assert.
 _TOOL_REQUIRED_ARGS = {
     "write_draft": ["body"],
     "finalize": ["summary"],
@@ -504,18 +504,6 @@ _COERCED_ASK_FALLBACK = (
     "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
 )
 
-# Legacy re-ask prompt for the eval helpers; the live path now surfaces a ToolMessage error instead
-# of an analysis_result.gated_* overlay.
-_MISSING_ARG_PROMPT = (
-    "Mình chưa đủ thông tin để hoàn tất bước này (thiếu '{field}'). "
-    "Bạn bổ sung giúp mình phần đó để mình tiếp tục nhé?"
-)
-
-_GATED_TOOL_PROMPT = (
-    "Bước '{tool}' chưa khả dụng ở thời điểm này — mình cần làm rõ thêm trước đã. "
-    "Bạn chia sẻ thêm thông tin quan trọng còn thiếu giúp mình nhé?"
-)
-
 _RESPOND_FALLBACK = (
     "Dựa trên thông tin hiện có, mình cần phân tích thêm trước khi kết luận. "
     "Bạn bổ sung thêm bối cảnh hoặc xác nhận các điểm chính để mình tiếp tục nhé?"
@@ -929,58 +917,6 @@ def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[di
     return validated
 
 
-def _gate_selected_tool(state: WorkflowState, selected: str | None) -> str | None:
-    """Legacy single-tool gate — kept for backward compatibility with existing call sites.
-
-    Delegates to _gate_selected_tools; always returns a single tool name or None.
-    """
-    if not selected:
-        return None
-    result = _gate_selected_tools(state, [{"name": selected, "args": {}}])
-    return result[0]["name"] if result else None
-
-
-def _missing_required_arg(tool: str | None, analysis_result: dict) -> str | None:
-    """First required arg of `tool` that is empty/blank in the selection, else None.
-
-    Mirrors _TOOL_REQUIRED_ARGS — tools with their own coerced fallback have no required args here.
-    """
-    for arg in _TOOL_REQUIRED_ARGS.get(tool or "", ()):
-        if not str(analysis_result.get(arg) or "").strip():
-            return arg
-    return None
-
-
-def _degrade_reason(
-    state: WorkflowState, requested: str | None, gated_tool: str | None, analysis_result: dict
-) -> dict | None:
-    """Why this pick can't dispatch as-is (fail-loud), or None when it's fine to emit.
-
-    Returns the analysis_result overlay for the degrade: a `gated_tool`/`gated_reason` pair (observable
-    for eval/tests) plus the user-facing re-ask `message`. Two cases:
-    - out-of-menu (Phase 3): the model named a tool `_gate_selected_tool` clamped away.
-    - missing required arg (Phase 2): the picked tool's required arg is empty.
-    """
-    if requested and requested != "ask_user" and gated_tool == "ask_user":
-        feedback_detail = _feedback_degrade_detail(state) if requested == "finalize" else ""
-        gated_reason = f"gated: {requested} not available this turn"
-        if feedback_detail:
-            gated_reason = f"{gated_reason}; {feedback_detail}"
-        return {
-            "gated_tool": requested,
-            "gated_reason": gated_reason,
-            "message": _feedback_degrade_message(state) or _GATED_TOOL_PROMPT.format(tool=requested),
-        }
-    missing = _missing_required_arg(gated_tool, analysis_result)
-    if missing:
-        return {
-            "gated_tool": gated_tool,
-            "gated_reason": f"gated: {gated_tool} missing required arg '{missing}'",
-            "message": _MISSING_ARG_PROMPT.format(field=missing),
-        }
-    return None
-
-
 def _build_tool_selection_prompt(
     state: WorkflowState,
     artifacts: list[dict],
@@ -1074,30 +1010,6 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
     if not parts:
         return ""
     return "\n\nFEEDBACK CONTROL:\n" + "\n".join(parts)
-
-
-def _feedback_degrade_detail(state: WorkflowState) -> str:
-    details: list[str] = []
-    report = state.get("quality_report") or {}
-    if report.get("quality_gate_result"):
-        details.append(f"quality_gate={report['quality_gate_result']}")
-    readiness = state.get("candidate_readiness") or {}
-    if readiness.get("state"):
-        details.append(f"candidate_readiness={readiness['state']}")
-    return "; ".join(details)
-
-
-def _feedback_degrade_message(state: WorkflowState) -> str:
-    report = state.get("quality_report") or {}
-    readiness = state.get("candidate_readiness") or {}
-    blockers = list(report.get("blocking_issues") or [])
-    blockers.extend(readiness.get("blocking_reasons") or [])
-    if not blockers:
-        return ""
-    return (
-        "Chưa thể finalize vì feedback hiện tại còn blocker: "
-        f"{_compact_list(blockers)}. Hãy revise candidate trước."
-    )
 
 
 def _compact_list(values: list[Any], limit: int = 3) -> str:
