@@ -314,12 +314,35 @@ def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     return body
 
 
+def _cold_start_draft_blocked(state: WorkflowState) -> bool:
+    if state.get("decision_nodes"):
+        return False
+    if (state.get("session_elicit_count") or 0) > 0:
+        return False
+    # turn_count resets to 0 on every human resume, so it cannot represent session depth.
+    # user_confirmed=True means confirm_intent ran — at least one round of Q&A happened.
+    if state.get("user_confirmed") is not None:
+        return False
+    return True
+
+
 async def _write_draft_impl(
     title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str
 ):
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
+    if _cold_start_draft_blocked(state):
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="cold_start_requires_elicitation",
+                message=(
+                    "Không thể write_draft ngay ở cold-start còn mỏng; hãy dùng elicit/web_search "
+                    "hoặc tạo decision_node trước để ghi nhận rationale, assumption và open question."
+                ),
+            ),
+            tool_call_id,
+        )
 
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -1521,7 +1544,7 @@ async def elicit_tool(
     """Apply a BMAD elicitation technique to a seed and return a structured frame to reason over and record as nodes.
 
     comparable_products fetches real external knowledge via web_search (falls back to model knowledge).
-    Each successful call increments session_elicit_count, which satisfies the cold-start requirement for write_draft.
+    Mỗi lần gọi thành công tăng session_elicit_count để policy biết cold-start đã được khai phá.
     """
     try:
         result = elicit(technique, seed)

@@ -1,10 +1,12 @@
-"""Cold-start gate removed.
+"""Cold-start không còn gate ở menu.
 
-write_draft is always in the menu; if the model calls it prematurely the tool returns
-feedback directly instead of the menu filtering it out.
+write_draft luôn có trong menu; tool tự trả recoverable feedback nếu model draft ngay khi
+cold-start còn mỏng.
 """
 
-from app.graphs.agent_tools import get_available_tools
+import pytest
+
+from app.graphs.agent_tools import _write_draft_impl, get_available_tools
 
 
 def _base_state(**overrides):
@@ -36,3 +38,14 @@ def test_write_draft_available_when_nodes_exist():
     state = _base_state(decision_nodes={"N1": {"id": "N1"}}, session_elicit_count=0)
 
     assert "write_draft" in _names(state)
+
+
+@pytest.mark.asyncio
+async def test_write_draft_self_rejects_thin_cold_start():
+    # user_confirmed=None: confirm_intent was never called — a true cold-start with no context gathered.
+    state = _base_state(decision_nodes={}, session_elicit_count=0, user_confirmed=None)
+
+    command = await _write_draft_impl("Draft", "Nội dung draft quá sớm", state, {"configurable": {}}, "tc1")
+
+    assert command.update["tool_errors"][0]["code"] == "cold_start_requires_elicitation"
+    assert "elicit" in command.update["messages"][0].content
