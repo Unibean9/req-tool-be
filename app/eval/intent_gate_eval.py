@@ -2,9 +2,9 @@
 
 Proves each behavior from the intent-phase-gate plan:
 confirm_intent schema registration, interrupt kind, user_confirmed update.
-artifact tools hidden before confirm_intent; unlocked after.
-confirm_intent is solo-enforced against note tools.
-full gate → confirm → artifact menu open (schema-level proof).
+artifact tools hidden before confirm_intent; analysis_frame opens the first-draft path.
+confirm_intent is solo-enforced while note tools may ride along.
+full gate → confirm → analysis_frame → draft menu open (schema-level proof).
 """
 
 from __future__ import annotations
@@ -49,19 +49,23 @@ def _confirm_intent_in_schema_enum() -> GateResult:
 
 def _confirm_intent_arg_keys() -> GateResult:
     from app.graphs.agent_tools import confirm_intent
-    from app.graphs.nodes import _build_tool_schemas, _TOOL_REQUIRED_ARGS
+    from app.graphs.nodes import _TOOL_REQUIRED_ARGS, _build_tool_schemas
 
     params = _build_tool_schemas([confirm_intent])[0]["parameters"]
     arg_ok = list(params.get("properties", {}).keys()) == ["summary"]
     req_ok = _TOOL_REQUIRED_ARGS.get("confirm_intent") == ["summary"]
     passed = arg_ok and req_ok
+    reason = (
+        f"params={list(params.get('properties', {}).keys())}, "
+        f"_TOOL_REQUIRED_ARGS={_TOOL_REQUIRED_ARGS.get('confirm_intent')}"
+    )
     return GateResult(
         gate="confirm_intent native arg = ['summary']; summary is required",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"params={list(params.get('properties', {}).keys())}, _TOOL_REQUIRED_ARGS={_TOOL_REQUIRED_ARGS.get('confirm_intent')}",
+        reason=reason,
     )
 
 
@@ -87,7 +91,17 @@ def _confirm_intent_sets_user_confirmed_stream_response() -> GateResult:
 
         call_kwargs: dict[str, Any] = {}
 
-        async def _fake_save(state, config, content, *, run_id, kind="question", mode=None, interrupt_kind="ask_human"):
+        async def _fake_save(
+            _state,
+            _config,
+            _content,
+            *,
+            run_id,
+            kind="question",
+            mode=None,
+            interrupt_kind="ask_human",
+        ):
+            _ = (run_id, mode)
             call_kwargs["interrupt_kind"] = interrupt_kind
             call_kwargs["kind"] = kind
             return "ok"
@@ -139,7 +153,7 @@ def _gate_hides_artifact_tools_before_confirm() -> GateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"hidden tools verified" if passed else f"unexpected tools still available: {hidden & names}",
+        reason="hidden tools verified" if passed else f"unexpected tools still available: {hidden & names}",
     )
 
 
@@ -158,15 +172,46 @@ def _gate_offers_confirm_intent() -> GateResult:
 
 def _gate_unlocks_after_confirm() -> GateResult:
     names_after = _names({"messages": [], "user_confirmed": True})
-    unlocked = {"write_draft"}
-    passed = unlocked.issubset(names_after) and "confirm_intent" not in names_after
+    passed = (
+        "analysis_frame" in names_after
+        and "write_draft" not in names_after
+        and "confirm_intent" not in names_after
+    )
     return GateResult(
-        gate="after user_confirmed=True — write_draft unlocked, confirm_intent gone",
+        gate="after user_confirmed=True — analysis_frame offered, first write_draft still gated",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"write_draft={'write_draft' in names_after}, confirm_intent={'confirm_intent' in names_after}",
+        reason=(
+            f"analysis_frame={'analysis_frame' in names_after}, "
+            f"write_draft={'write_draft' in names_after}, "
+            f"confirm_intent={'confirm_intent' in names_after}"
+        ),
+    )
+
+
+def _ready_analysis_frame() -> dict[str, Any]:
+    return {
+        "interpreted_intent": "Xây công cụ điều phối lịch học nhóm cho sinh viên.",
+        "evidence": ["Sinh viên học nhóm 3-6 người.", "Pain chính là trùng lịch."],
+        "gaps": ["Chưa rõ success metric cụ thể."],
+        "analysis_angles": ["Đối tượng", "Pain", "MVP scope", "Metric"],
+        "assumptions": ["Có thể bắt đầu bằng MVP nhắc lịch và tìm khung giờ chung."],
+        "recommended_next_move": "Draft intent có đánh dấu metric cần xác nhận.",
+    }
+
+
+def _gate_unlocks_write_draft_after_analysis_frame() -> GateResult:
+    names_after = _names({"messages": [], "user_confirmed": True, "analysis_frame": _ready_analysis_frame()})
+    passed = "write_draft" in names_after and "analysis_frame" in names_after
+    return GateResult(
+        gate="after analysis_frame=True — write_draft unlocked",
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        threshold=1.0,
+        critical=True,
+        reason=f"write_draft={'write_draft' in names_after}, tools={sorted(names_after)}",
     )
 
 
@@ -186,10 +231,10 @@ def _gate_confirm_intent_one_shot() -> GateResult:
 
 
 # ---------------------------------------------------------------------------
-# Solo enforcement — confirm_intent is interrupt-bearing; drops companion tools
+# Solo enforcement — confirm_intent is interrupt-bearing; side-effect-free notes may ride along
 # ---------------------------------------------------------------------------
 
-def _solo_confirm_drops_companion_note() -> GateResult:
+def _solo_confirm_keeps_companion_note() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
 
     state = {"messages": [], "user_confirmed": None}
@@ -200,9 +245,9 @@ def _solo_confirm_drops_companion_note() -> GateResult:
             {"name": "confirm_intent", "args": {"summary": "Build Y for A"}},
         ],
     )
-    passed = [g["name"] for g in gated] == ["confirm_intent"]
+    passed = [g["name"] for g in gated] == ["explore_note", "confirm_intent"]
     return GateResult(
-        gate="confirm_intent in composite drops explore_note (interrupt-bearing solo)",
+        gate="confirm_intent in composite keeps side-effect-free explore_note",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
@@ -211,24 +256,24 @@ def _solo_confirm_drops_companion_note() -> GateResult:
     )
 
 
-def _solo_empty_summary_degrades() -> GateResult:
+def _solo_empty_summary_passes_for_tool_feedback() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
 
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "confirm_intent", "args": {"summary": ""}}])
-    passed = len(gated) == 1 and gated[0]["name"] == "ask_user"
+    passed = len(gated) == 1 and gated[0]["name"] == "confirm_intent"
     return GateResult(
-        gate="empty summary on confirm_intent degrades to ask_user (required arg check)",
+        gate="empty summary on confirm_intent passes through for ToolMessage error",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=False,
-        reason=f"degraded to: {gated[0]['name'] if gated else 'none'}",
+        reason=f"dispatched to: {gated[0]['name'] if gated else 'none'}",
     )
 
 
 # ---------------------------------------------------------------------------
-# End-to-end gate flow — write_draft blocked before confirm, allowed after
+# End-to-end gate flow — write_draft self-reject path before confirm, allowed after frame
 # ---------------------------------------------------------------------------
 
 def _flow_blocks_write_draft_before_confirm() -> GateResult:
@@ -239,33 +284,27 @@ def _flow_blocks_write_draft_before_confirm() -> GateResult:
         state,
         [{"name": "write_draft", "args": {"title": "Draft", "body": "Content"}}],
     )
-    passed = len(gated) == 1 and gated[0]["name"] == "ask_user"
+    passed = len(gated) == 1 and gated[0]["name"] == "write_draft"
     return GateResult(
-        gate="write_draft blocked → coerced to ask_user when user_confirmed=None",
+        gate="write_draft before confirm dispatches to tool-level error feedback",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"write_draft coerced to: {gated[0]['name'] if gated else 'none'}",
+        reason=f"write_draft dispatched to: {gated[0]['name'] if gated else 'none'}",
     )
 
 
 def _flow_allows_write_draft_after_confirm() -> GateResult:
-    from app.graphs.nodes import _gate_selected_tools
-
-    state = {"messages": [], "user_confirmed": True, "working_draft": "Draft body"}
-    gated = _gate_selected_tools(
-        state,
-        [{"name": "write_draft", "args": {"title": "Draft", "body": "Content"}}],
-    )
-    passed = len(gated) == 1 and gated[0]["name"] == "write_draft"
+    names_after = _names({"messages": [], "user_confirmed": True, "analysis_frame": _ready_analysis_frame()})
+    passed = "write_draft" in names_after
     return GateResult(
-        gate="write_draft allowed through gate when user_confirmed=True",
+        gate="write_draft available after confirm + analysis_frame",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"dispatched: {gated[0]['name'] if gated else 'none'}",
+        reason=f"write_draft={'write_draft' in names_after}",
     )
 
 
@@ -284,10 +323,11 @@ def run_intent_gate_eval() -> dict[str, Any]:
         _gate_hides_artifact_tools_before_confirm(),
         _gate_offers_confirm_intent(),
         _gate_unlocks_after_confirm(),
+        _gate_unlocks_write_draft_after_analysis_frame(),
         _gate_confirm_intent_one_shot(),
         # solo enforcement
-        _solo_confirm_drops_companion_note(),
-        _solo_empty_summary_degrades(),
+        _solo_confirm_keeps_companion_note(),
+        _solo_empty_summary_passes_for_tool_feedback(),
         # end-to-end flow
         _flow_blocks_write_draft_before_confirm(),
         _flow_allows_write_draft_after_confirm(),
@@ -324,10 +364,13 @@ def _markdown_report(report: dict[str, Any]) -> str:
         "",
         "| Phase | Scenarios |",
         "| --- | --- |",
-        "| confirm_intent tool | schema name enum, arg/required keys, interrupt-bearing registration, user_confirmed+STREAM_RESPONSE |",
-        "| Intent phase gate | artifact tools hidden, confirm_intent offered, post-confirm unlock, one-shot enforcement |",
-        "| Solo enforcement | interrupt-bearing drops note companion, empty summary degrades |",
-        "| End-to-end flow | write_draft blocked before confirm, allowed after confirm |",
+        "| confirm_intent tool | schema name enum, arg/required keys, interrupt-bearing registration, "
+        "user_confirmed+STREAM_RESPONSE |",
+        "| Intent phase gate | artifact tools hidden, confirm_intent offered, post-confirm analysis_frame, "
+        "one-shot enforcement |",
+        "| Solo enforcement | interrupt-bearing keeps side-effect-free note companion, empty summary self-rejects "
+        "by ToolMessage |",
+        "| End-to-end flow | write_draft self-reject path before confirm, allowed after confirm + analysis_frame |",
     ]
     return "\n".join(lines) + "\n"
 

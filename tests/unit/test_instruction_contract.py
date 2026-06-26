@@ -69,7 +69,14 @@ def test_taxonomy_uses_7_sections_not_9_slots():
 
 def test_tool_policy_references_current_tools():
     instruction = _ba()
-    for tool in ("run_critique", "write_draft", "finalize", "recommend_next_workflow", "run_readiness_check"):
+    for tool in (
+        "analysis_frame",
+        "run_critique",
+        "write_draft",
+        "finalize",
+        "recommend_next_workflow",
+        "run_readiness_check",
+    ):
         assert tool in instruction, tool
 
 

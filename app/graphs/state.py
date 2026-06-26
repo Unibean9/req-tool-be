@@ -38,6 +38,16 @@ class KeyFactObject(TypedDict):
     turn: str
 
 
+class AnalysisFrame(TypedDict):
+    """Khung phân tích đã trình cho user trước khi tạo draft đầu tiên."""
+    interpreted_intent: str
+    evidence: list[str]
+    gaps: list[str]
+    analysis_angles: list[str]
+    assumptions: list[str]
+    recommended_next_move: str
+
+
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
     method: str
@@ -140,6 +150,7 @@ class WorkflowState(TypedDict):
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
     # compression — they are the ground truth the analyst builds on.
     key_facts: list[KeyFactObject]
+    analysis_frame: AnalysisFrame | None
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
     # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
@@ -152,13 +163,17 @@ class WorkflowState(TypedDict):
     verification_status: dict[str, Any] | None
     latest_checked_revision: str | None
     # BMAD method layer (addendum §8) — sits above the 7-section engine; analyze_node assigns
-    # workflow_mode / planning_track each turn. Independent of active_mode.
+    # workflow_mode / planning_track each turn.
     method_profile: MethodProfile
     artifact_chain: ArtifactChain
     readiness: Readiness
     # Multi-angle mode steering. A one-shot hint set by the user to switch the
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.
     mode_hint: str | None
+    # Count of successful elicit() calls this session. Drives the cold-start hard gate: a fresh
+    # project must run at least one elicitation before write_draft is offered. Resets per session
+    # (not persisted across resume) — each new session re-explores before drafting.
+    session_elicit_count: int
 
 
 def build_initial_workflow_state(
@@ -197,6 +212,7 @@ def build_initial_workflow_state(
         "risks": [],
         "open_questions": [],
         "key_facts": [],
+        "analysis_frame": None,
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
         "working_draft": None,
@@ -209,4 +225,5 @@ def build_initial_workflow_state(
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
         "mode_hint": mode_hint,
+        "session_elicit_count": 0,
     }

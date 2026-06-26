@@ -59,6 +59,7 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "analysis_frame": None,
         "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
@@ -540,6 +541,7 @@ def test_build_prompt_excludes_static_policy():
     assert "ghi chú phản biện" not in prompt
     # It still names the tools available this turn so the model knows the current menu.
     assert "Công cụ khả dụng" in prompt
+    assert "ANALYSIS FRAME BẮT BUỘC TRƯỚC DRAFT ĐẦU TIÊN" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
@@ -1206,17 +1208,12 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
 
 
 # ---------------------------------------------------------------------------
-# Multi-angle: active_mode + mode_hint + proactive directive
+# Multi-angle: no active_mode lock + mode_hint + proactive directive
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_active_mode_passes_through_analyze_node(client, db_session):
-    """T2: `active_mode` is derived from the gated primary tool and persisted into analysis_result.
-
-    `active_mode` lives inside analysis_result (no new state channel), so the eval layer
-    can mine it from AgentRun.analysis_result. It is derived (critique_note → critique), not
-    self-reported by the LLM.
-    """
+async def test_analysis_result_has_no_active_mode(client, db_session):
+    """The single-mode-per-turn lock is gone: analysis_result carries no active_mode label."""
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -1236,7 +1233,7 @@ async def test_active_mode_passes_through_analyze_node(client, db_session):
 
     result = await analyze_node(state, config)
 
-    assert result["analysis_result"]["active_mode"] == "critique"
+    assert "active_mode" not in result["analysis_result"]
 
 
 @pytest.mark.asyncio

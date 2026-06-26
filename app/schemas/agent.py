@@ -54,7 +54,7 @@ class AgentSessionCreateResponse(BaseModel):
 class AgentMessageCreate(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
     # Optional one-shot steer: switch the agent's angle for this turn only.
-    # Constrained to the active_mode enum so user input can never be injected into the prompt.
+    # Constrained to a fixed enum so user input can never be injected into the prompt.
     mode_hint: Literal["qa", "critique", "explore", "draft"] | None = None
 
 

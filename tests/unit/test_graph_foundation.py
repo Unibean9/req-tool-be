@@ -123,6 +123,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "analysis_frame": None,
         "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
@@ -158,6 +159,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "risks",
         "open_questions",
         "key_facts",
+        "analysis_frame",
         "focused_artifact_id",
         "draft_body",
         "method_profile",
@@ -170,6 +172,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "latest_checked_revision",
         "tool_errors",
         "feedback_summary",
+        "session_elicit_count",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

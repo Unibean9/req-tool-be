@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, patch
 
 from langchain_core.messages import AIMessage
 
-
 # ---------------------------------------------------------------------------
 # Gate result — same shape as runtime_harness.py
 # ---------------------------------------------------------------------------
@@ -135,7 +134,17 @@ def _interrupt_ask_user_uses_stream_response() -> GateResult:
 
     called_with: dict[str, Any] = {}
 
-    async def _fake_save(state, config, content, *, run_id, kind="question", mode=None, interrupt_kind="ask_human"):
+    async def _fake_save(
+        _state,
+        _config,
+        _content,
+        *,
+        run_id,
+        kind="question",
+        mode=None,
+        interrupt_kind="ask_human",
+    ):
+        _ = (run_id, mode)
         called_with["interrupt_kind"] = interrupt_kind
         called_with["kind"] = kind
         return "ok"
@@ -267,7 +276,7 @@ def _dispatch_gate_passes_two_tools() -> GateResult:
     )
 
 
-def _dispatch_interrupt_drops_companion() -> GateResult:
+def _dispatch_interrupt_keeps_note_companion() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
     from tests.integration.test_graph_nodes import _state
 
@@ -278,9 +287,9 @@ def _dispatch_interrupt_drops_companion() -> GateResult:
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
-    passed = len(result) == 1 and result[0]["name"] == "ask_user"
+    passed = [r["name"] for r in result] == ["ask_user", "explore_note"]
     return GateResult(
-        gate="interrupt-bearing ask_user drops companion explore_note",
+        gate="interrupt-bearing ask_user keeps side-effect-free explore_note",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
@@ -289,7 +298,7 @@ def _dispatch_interrupt_drops_companion() -> GateResult:
     )
 
 
-def _dispatch_gate_coerces_unavailable() -> GateResult:
+def _dispatch_gate_keeps_unavailable_tool_for_feedback() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
     from tests.integration.test_graph_nodes import _state
 
@@ -298,14 +307,14 @@ def _dispatch_gate_coerces_unavailable() -> GateResult:
     state["user_confirmed"] = None
     requested = [{"name": "write_draft", "args": {"title": "t", "body": "b"}}]
     result = _gate_selected_tools(state, requested)
-    passed = len(result) == 1 and result[0]["name"] == "ask_user"
+    passed = len(result) == 1 and result[0]["name"] == "write_draft"
     return GateResult(
-        gate="gate coerces unavailable write_draft (intent gate) → ask_user",
+        gate="gate keeps unavailable write_draft for tool feedback",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"coerced to: {result[0]['name'] if result else 'none'}",
+        reason=f"dispatched to: {result[0]['name'] if result else 'none'}",
     )
 
 
@@ -315,9 +324,10 @@ def _dispatch_analyze_node_emits_two_calls() -> GateResult:
 
     async def run() -> tuple[bool, str]:
         from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-        from app.models.base import Base
-        from app.models.agent import AgentSession, AgentSessionStatus
+
         from app.graphs.nodes import analyze_node
+        from app.models.agent import AgentSession, AgentSessionStatus
+        from app.models.base import Base
         from tests.integration.test_graph_nodes import _state
 
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -344,13 +354,16 @@ def _dispatch_analyze_node_emits_two_calls() -> GateResult:
                 yield db
 
         mock_llm = AsyncMock()
-        mock_llm.generate = AsyncMock(return_value=({
-            "tools": [
-                {"name": "critique_note", "args": {"content": "Note A"}},
-                {"name": "explore_note", "args": {"content": "Note B"}},
-            ],
-            "active_mode": "critique",
-        }, None))
+        mock_llm.generate = AsyncMock(return_value=(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"id": "eval:0", "name": "critique_note", "args": {"content": "Note A"}},
+                    {"id": "eval:1", "name": "explore_note", "args": {"content": "Note B"}},
+                ],
+            ),
+            None,
+        ))
 
         state = _state()
         state["user_confirmed"] = True
@@ -410,8 +423,8 @@ def run_fluency_eval() -> dict[str, Any]:
         # composite dispatch
         _dispatch_schema_uses_tools_array(),
         _dispatch_gate_passes_two_tools(),
-        _dispatch_interrupt_drops_companion(),
-        _dispatch_gate_coerces_unavailable(),
+        _dispatch_interrupt_keeps_note_companion(),
+        _dispatch_gate_keeps_unavailable_tool_for_feedback(),
         _dispatch_analyze_node_emits_two_calls(),
     ]
     rows = [asdict(g) for g in gates]
@@ -449,7 +462,8 @@ def _markdown_report(report: dict[str, Any]) -> str:
         "| Key Facts State | note_parser tag parsing, optional fields, prompt injection, empty guard |",
         "| Interrupt Semantics | STREAM_RESPONSE enum, ask_user interrupt kind |",
         "| Contextual Layers | has_draft=False skips 08/09/10, distinct cache keys |",
-        "| Composite Dispatch | tools array schema, gate pass-through, interrupt drop, coerce, analyze_node 2-tool emit |",
+        "| Composite Dispatch | tools array schema, gate pass-through, note companion, tool feedback path, "
+        "analyze_node 2-tool emit |",
     ]
     return "\n".join(lines) + "\n"
 

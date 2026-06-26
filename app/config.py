@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     bedrock_notation_model: str = "google.gemma-3-4b-it"
 
+    # External web search for elicitation (comparable_products). "" disables it (graceful fallback to
+    # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
+    search_provider: str = ""
+
     app_env: str = "development"
     app_debug: bool = False
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]

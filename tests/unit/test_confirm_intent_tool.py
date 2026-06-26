@@ -4,15 +4,21 @@ The intent phase (user_confirmed is None) restricts the menu to exploration + co
 confirm_intent flips user_confirmed=True and unlocks the artifact menu (one-shot, no reset path).
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from langchain_core.messages import AIMessage
 
-from app.graphs.agent_tools import _confirm_intent_impl, _write_draft_impl, get_available_tools, NOTE_STEP_LIMIT
+from app.graphs.agent_tools import (
+    NOTE_STEP_LIMIT,
+    _analysis_frame_impl,
+    _confirm_intent_impl,
+    _write_draft_impl,
+    get_available_tools,
+)
 from app.graphs.nodes import (
-    _TOOL_REQUIRED_ARGS,
     _INTERRUPT_BEARING_TOOLS,
+    _TOOL_REQUIRED_ARGS,
     _build_tool_schemas,
     _gate_selected_tools,
 )
@@ -26,6 +32,17 @@ def _note_turn(call_id: str):
     return AIMessage(
         content="", tool_calls=[{"id": call_id, "name": "explore_note", "args": {"content": "x"}}]
     )
+
+
+def _ready_analysis_frame():
+    return {
+        "interpreted_intent": "Xây công cụ điều phối lịch học nhóm cho sinh viên.",
+        "evidence": ["Sinh viên học nhóm 3-6 người.", "Pain chính là trùng lịch."],
+        "gaps": ["Chưa rõ success metric cụ thể."],
+        "analysis_angles": ["Đối tượng", "Pain", "MVP scope", "Metric"],
+        "assumptions": ["Có thể bắt đầu bằng MVP nhắc lịch và tìm khung giờ chung."],
+        "recommended_next_move": "Draft intent có đánh dấu metric cần xác nhận.",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -56,13 +73,30 @@ def test_intent_phase_hides_artifact_tools():
 
 
 def test_intent_phase_offers_confirm_intent():
-    assert "confirm_intent" in _names({"messages": [], "user_confirmed": None})
+    names = _names({"messages": [], "user_confirmed": None})
+    assert "confirm_intent" in names
+    assert "analysis_frame" in names
 
 
-def test_artifact_phase_hides_confirm_intent():
+def test_artifact_phase_hides_confirm_intent_and_waits_for_analysis_frame():
     # One-shot: confirm_intent disappears once user_confirmed=True.
     names = _names({"messages": [], "user_confirmed": True})
     assert "confirm_intent" not in names
+    assert "analysis_frame" in names
+    assert "write_draft" not in names
+
+
+def test_artifact_phase_unlocks_write_draft_after_analysis_frame():
+    # Cold-start hard gate (Phase 02): an analysis_frame plus at least one elicit run unlocks the
+    # first draft — exploration must precede drafting.
+    names = _names(
+        {
+            "messages": [],
+            "user_confirmed": True,
+            "analysis_frame": _ready_analysis_frame(),
+            "session_elicit_count": 1,
+        }
+    )
     assert "write_draft" in names
 
 
@@ -127,6 +161,62 @@ def test_confirm_intent_keeps_note_alongside():
         ],
     )
     assert [g["name"] for g in gated] == ["explore_note", "confirm_intent"]
+
+
+def test_analysis_frame_is_interrupt_bearing():
+    assert "analysis_frame" in _INTERRUPT_BEARING_TOOLS
+
+
+@pytest.mark.asyncio
+async def test_analysis_frame_sets_state_and_streams_response():
+    state = {"messages": [], "user_confirmed": True, "last_agent_run_id": "00000000-0000-0000-0000-000000000004"}
+    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
+    frame = _ready_analysis_frame()
+
+    with (
+        patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new_callable=AsyncMock) as mock_save,
+        patch("app.graphs.agent_tools._audit_interaction_tool_call", new_callable=AsyncMock) as mock_audit,
+    ):
+        mock_save.return_value = "ok"
+        command = await _analysis_frame_impl(
+            frame["interpreted_intent"],
+            frame["evidence"],
+            frame["gaps"],
+            frame["analysis_angles"],
+            frame["assumptions"],
+            frame["recommended_next_move"],
+            state,
+            config,
+            "tc-frame",
+        )
+
+    assert command.update["analysis_frame"] == frame
+    assert command.update["tool_errors"] == []
+    assert mock_save.call_args.kwargs["kind"] == "assessment"
+    assert mock_save.call_args.kwargs["mode"] == "analysis_frame"
+    assert mock_save.call_args.kwargs["interrupt_kind"] == "stream_response"
+    mock_audit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_analysis_frame_requires_all_frame_sections():
+    state = {"messages": [], "user_confirmed": True}
+    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
+
+    command = await _analysis_frame_impl(
+        "Xây công cụ điều phối lịch.",
+        [],
+        [],
+        ["Phạm vi MVP"],
+        [],
+        "Trình frame cho user.",
+        state,
+        config,
+        "tc-frame-empty",
+    )
+
+    assert command.update["tool_errors"][0]["code"] == "analysis_frame_incomplete"
+    assert command.update["messages"][0].status == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +298,7 @@ def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
 
 
 def test_write_draft_in_artifact_phase_not_coerced():
-    # Once user_confirmed=True, write_draft is available and should pass through unchanged.
+    # Solo gate không đổi tool; availability/depth gate do chính write_draft trả ToolMessage lỗi.
     state = {"messages": [], "user_confirmed": True}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "T", "body": "B"}}])
     assert gated[0]["name"] == "write_draft"
@@ -224,6 +314,18 @@ async def test_write_draft_in_intent_phase_returns_tool_error():
     msg = command.update["messages"][0]
     assert msg.status == "error"
     assert "confirm_intent" in msg.content
+
+
+@pytest.mark.asyncio
+async def test_write_draft_without_analysis_frame_returns_tool_error():
+    state = {"messages": [], "user_confirmed": True}
+    body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in. " * 12)
+    command = await _write_draft_impl("Vision", body, state, {"configurable": {}}, "tc-write")
+
+    assert command.update["tool_errors"][0]["code"] == "analysis_frame_required"
+    msg = command.update["messages"][0]
+    assert msg.status == "error"
+    assert "analysis_frame" in msg.content
 
 
 @pytest.mark.asyncio

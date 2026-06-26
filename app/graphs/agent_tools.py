@@ -12,9 +12,10 @@ status update — so it needs no key.
 """
 
 import hashlib
+import json
 import logging
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -298,6 +299,136 @@ async def confirm_intent(
 
 
 # ---------------------------------------------------------------------------
+# analysis_frame — khung phân tích hiển thị cho user trước draft đầu tiên
+# ---------------------------------------------------------------------------
+
+def _normalize_text_list(values: list[str] | None) -> list[str]:
+    return [str(value).strip() for value in (values or []) if str(value).strip()]
+
+
+def _analysis_frame_ready(state: WorkflowState) -> bool:
+    frame = state.get("analysis_frame")
+    if not isinstance(frame, dict):
+        return False
+    required_text = ("interpreted_intent", "recommended_next_move")
+    required_lists = ("evidence", "gaps", "analysis_angles", "assumptions")
+    return all(str(frame.get(key) or "").strip() for key in required_text) and all(
+        _normalize_text_list(frame.get(key)) for key in required_lists
+    )
+
+
+def _render_analysis_frame_message(frame: dict[str, Any]) -> str:
+    def bullets(key: str) -> str:
+        values = _normalize_text_list(frame.get(key))
+        return "\n".join(f"- {value}" for value in values) if values else "- (chưa có)"
+
+    return (
+        "Tôi sẽ chốt khung phân tích trước khi viết draft:\n\n"
+        f"**Tôi hiểu ý định là:** {str(frame.get('interpreted_intent') or '').strip()}\n\n"
+        f"**Evidence đã nghe được:**\n{bullets('evidence')}\n\n"
+        f"**Khoảng trống cần để ý:**\n{bullets('gaps')}\n\n"
+        f"**Hướng phân tích đề xuất:**\n{bullets('analysis_angles')}\n\n"
+        f"**Assumption tạm dùng:**\n{bullets('assumptions')}\n\n"
+        f"**Bước tiếp theo:** {str(frame.get('recommended_next_move') or '').strip()}"
+    )
+
+
+async def _analysis_frame_impl(
+    interpreted_intent: str,
+    evidence: list[str],
+    gaps: list[str],
+    analysis_angles: list[str],
+    assumptions: list[str],
+    recommended_next_move: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+) -> Command:
+    if not str(interpreted_intent or "").strip():
+        return _missing_required_arg_update("analysis_frame", "interpreted_intent", tool_call_id)
+    if not str(recommended_next_move or "").strip():
+        return _missing_required_arg_update("analysis_frame", "recommended_next_move", tool_call_id)
+
+    frame = {
+        "interpreted_intent": str(interpreted_intent).strip(),
+        "evidence": _normalize_text_list(evidence),
+        "gaps": _normalize_text_list(gaps),
+        "analysis_angles": _normalize_text_list(analysis_angles),
+        "assumptions": _normalize_text_list(assumptions),
+        "recommended_next_move": str(recommended_next_move).strip(),
+    }
+    missing_sections = [
+        key
+        for key in ("evidence", "gaps", "analysis_angles", "assumptions")
+        if not frame[key]
+    ]
+    if missing_sections:
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="analysis_frame_incomplete",
+                message=(
+                    "Không thể analysis_frame: thiếu phần "
+                    f"{', '.join(missing_sections)}. Hãy gọi lại với đủ evidence, gaps, "
+                    "analysis_angles và assumptions."
+                ),
+            ),
+            tool_call_id,
+        )
+
+    message = _render_analysis_frame_message(frame)
+    await _audit_interaction_tool_call(state, config, tool_name=f"analysis_frame:{tool_call_id}", message=message)
+    user_content = await nodes._save_and_interrupt_ask(
+        state,
+        config,
+        message,
+        run_id=tool_call_id,
+        kind="assessment",
+        mode="analysis_frame",
+        interrupt_kind="stream_response",
+    )
+    return Command(
+        update={
+            "analysis_frame": frame,
+            "messages": [
+                ToolMessage(content=user_content, tool_call_id=tool_call_id),
+                {"role": "user", "content": user_content},
+            ],
+            "tool_errors": [],
+        }
+    )
+
+
+@tool
+async def analysis_frame(
+    interpreted_intent: Annotated[str, "Cách bạn đang hiểu intent thật của user."],
+    evidence: Annotated[list[str], "Các fact cụ thể đã nghe từ user hoặc artifact."],
+    gaps: Annotated[list[str], "Khoảng trống hoặc phần yếu ảnh hưởng đến draft."],
+    analysis_angles: Annotated[list[str], "Các hướng phân tích hữu ích trước khi draft."],
+    assumptions: Annotated[list[str], "Assumption rõ ràng sẽ dùng nếu draft ngay."],
+    recommended_next_move: Annotated[str, "Bước tiếp theo để user xác nhận, chọn hoặc chỉnh."],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Trình khung phân tích có cấu trúc và dừng chờ user trước draft đầu tiên.
+
+    Dùng trước write_draft để show intent đã hiểu, gaps, analysis angles, assumptions và next move.
+    Đây là exploration hiển thị cho user, không phải scratchpad ẩn.
+    """
+    return await _analysis_frame_impl(
+        interpreted_intent,
+        evidence,
+        gaps,
+        analysis_angles,
+        assumptions,
+        recommended_next_move,
+        state,
+        config,
+        tool_call_id,
+    )
+
+
+# ---------------------------------------------------------------------------
 # write_draft — parity for the `propose` enum branch
 # ---------------------------------------------------------------------------
 
@@ -310,6 +441,18 @@ async def _write_draft_impl(
         return _tool_not_available_update(
             "write_draft",
             "artifact phase chưa mở; hãy gọi confirm_intent với summary cụ thể trước khi viết draft.",
+            tool_call_id,
+        )
+    if not _cached_draft_body(state).strip() and not _analysis_frame_ready(state):
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="analysis_frame_required",
+                message=(
+                    "Không thể write_draft: cần trình analysis_frame trước draft đầu tiên. "
+                    "Hãy nêu lại intent, evidence, gaps, analysis_angles, assumptions và "
+                    "recommended_next_move để user xác nhận/chỉnh."
+                ),
+            ),
             tool_call_id,
         )
 
@@ -514,12 +657,12 @@ async def finalize(
 
 
 # ---------------------------------------------------------------------------
-# critique_note / explore_note — mode-bearing scratchpad notes
+# critique_note / explore_note — scratchpad notes
 # (no interrupt, no DB, no approval)
 # ---------------------------------------------------------------------------
 # Splitting the former single write_note into two named angles makes the analytical move a
-# first-class menu choice and lets analyze_node derive `active_mode` from the tool picked, so
-# proactive S1 coverage no longer depends on the model self-reporting active_mode.
+# first-class menu choice, so the analyst can record a critique and an exploration angle in the
+# same turn rather than committing to one operating mode.
 
 async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str, tool_name: str):
     if not str(content or "").strip():
@@ -566,7 +709,6 @@ async def explore_note(
     """Exploration note — silent scratchpad, no user interrupt and no approval.
 
     Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
-    Its active_mode maps to 'structuring' via _TOOL_ACTIVE_MODE in nodes.py.
     """
     return await _write_note_impl(content, state, tool_call_id, "explore_note")
 
@@ -989,11 +1131,205 @@ NOTE_TOOL_NAMES = ("critique_note", "explore_note")
 CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
 
+# ---------------------------------------------------------------------------
+# Elicitation surface (Phase 02) — BMAD technique scaffolds + external knowledge
+# ---------------------------------------------------------------------------
+
+ELICIT_TECHNIQUES = ("5_whys", "reverse", "moscow", "first_principles", "comparable_products")
+
+
+def _duckduckgo_search(query: str) -> list[dict]:
+    """Keyless DuckDuckGo HTML scrape. Best-effort; web_search wraps this in graceful fallback."""
+    import re
+
+    import httpx
+
+    resp = httpx.get(
+        "https://html.duckduckgo.com/html/",
+        params={"q": query},
+        headers={"User-Agent": "Mozilla/5.0"},
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    results = []
+    for match in re.finditer(r'result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>', resp.text):
+        title = re.sub(r"<[^>]+>", "", match.group(2)).strip()
+        results.append({"title": title, "snippet": title, "url": match.group(1)})
+    return results[:8]
+
+
+def _default_search_client():
+    """Resolve the configured search client, or None when search is disabled (CI default)."""
+    if settings.search_provider == "duckduckgo":
+        return _duckduckgo_search
+    return None
+
+
+def web_search(query: str, *, client=None) -> dict:
+    """Run a web search, degrading gracefully when no provider is available.
+
+    Returns {"results": [...], "source": "web_search"} on success, or
+    {"results": [], "error": "search_unavailable"} when no client is configured or the call fails —
+    never raises, so elicit() can fall back to model knowledge. Each result is {title, snippet, url}.
+    """
+    search = client or _default_search_client()
+    if search is None:
+        return {"results": [], "error": "search_unavailable"}
+    try:
+        raw = search(query)
+    except Exception:
+        return {"results": [], "error": "search_unavailable"}
+    return {"results": list(raw), "source": "web_search"}
+
+
+def _elicit_5_whys(seed: str) -> dict:
+    chain = [{"depth": 1, "prompt": f"Tại sao '{seed}' xảy ra?"}] + [
+        {"depth": d, "prompt": "Tại sao nguyên nhân ở tầng trên tồn tại?"} for d in range(2, 6)
+    ]
+    return {
+        "technique": "5_whys",
+        "seed": seed,
+        "chain": chain,
+        "root_cause": "Lần theo chuỗi 'tại sao' tới tầng cuối để chốt nguyên nhân gốc rồi ghi thành node.",
+    }
+
+
+def _elicit_reverse(seed: str) -> dict:
+    failure_modes = [
+        {
+            "mode": f"Cách nhanh nhất khiến '{seed}' thất bại hoàn toàn",
+            "mitigation_hint": "Đảo ngược thành điều kiện thành công bắt buộc.",
+        },
+        {
+            "mode": "Giả định ngầm bị phá vỡ trong thực tế",
+            "mitigation_hint": "Liệt kê giả định, gắn mỗi cái với một kiểm chứng.",
+        },
+        {
+            "mode": "Phụ thuộc bên ngoài không sẵn sàng đúng lúc",
+            "mitigation_hint": "Xác định fallback hoặc giảm phụ thuộc.",
+        },
+    ]
+    return {"technique": "reverse", "seed": seed, "failure_modes": failure_modes}
+
+
+def _elicit_moscow(seed: str) -> dict:
+    return {
+        "technique": "moscow",
+        "seed": seed,
+        "must": [f"(Bắt buộc cho v1) hạng mục cốt lõi của: {seed}"],
+        "should": [],
+        "could": [],
+        "wont": [f"(Loại khỏi v1) hạng mục hoãn lại của: {seed}"],
+    }
+
+
+def _elicit_first_principles(seed: str) -> dict:
+    return {
+        "technique": "first_principles",
+        "seed": seed,
+        "fundamentals": [
+            f"Sự thật nền tảng không thể chối cãi về '{seed}'",
+            "Ràng buộc vật lý/kinh tế thực sự (không phải quy ước kế thừa)",
+        ],
+        "rebuilt_approach": "Từ các nguyên lý nền, dựng lại giải pháp tối giản bỏ giả định kế thừa.",
+    }
+
+
+def _elicit_comparable_products(seed: str, search_client) -> dict:
+    res = web_search(f"phần mềm quản lý {seed}", client=search_client)
+    results = res.get("results") or []
+    if res.get("error") or not results:
+        return {
+            "technique": "comparable_products",
+            "seed": seed,
+            "products": [
+                {
+                    "name": f"(Sản phẩm tương tự với {seed})",
+                    "model": "Mô hình tham chiếu cần kiểm chứng",
+                    "relevance": "Điền khi có dữ liệu thực.",
+                }
+            ],
+            "source": "model_knowledge",
+        }
+    products = [
+        {"name": r.get("title", ""), "model": r.get("snippet", ""), "relevance": f"Liên quan đến: {seed}"}
+        for r in results
+    ]
+    return {"technique": "comparable_products", "seed": seed, "products": products, "source": "web_search"}
+
+
+def elicit(technique: str, seed: str, *, search_client=None) -> dict:
+    """Apply a BMAD elicitation technique to a seed, returning a structured frame.
+
+    Reasoning techniques (5_whys/reverse/moscow/first_principles) return a deterministic frame for
+    the agent to fill; comparable_products pulls real external knowledge via web_search and falls
+    back to model knowledge when search is unavailable.
+    """
+    if technique not in ELICIT_TECHNIQUES:
+        raise ValueError(f"unknown elicit technique {technique!r}; expected one of {ELICIT_TECHNIQUES}")
+    if technique == "5_whys":
+        return _elicit_5_whys(seed)
+    if technique == "reverse":
+        return _elicit_reverse(seed)
+    if technique == "moscow":
+        return _elicit_moscow(seed)
+    if technique == "first_principles":
+        return _elicit_first_principles(seed)
+    return _elicit_comparable_products(seed, search_client)
+
+
+@tool("web_search")
+async def web_search_tool(
+    query: Annotated[str, "Truy vấn tìm kiếm tri thức ngoài."],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Tìm kiếm web cho tri thức ngoài (sản phẩm tương tự, chuẩn ngành). Trả kết quả có cấu trúc.
+
+    Khi chưa cấu hình provider hoặc gọi lỗi → trả kết quả rỗng kèm error, không làm gián đoạn loop.
+    """
+    result = web_search(query)
+    return Command(
+        update={"messages": [ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tool_call_id)]}
+    )
+
+
+@tool("elicit")
+async def elicit_tool(
+    technique: Annotated[
+        Literal["5_whys", "reverse", "moscow", "first_principles", "comparable_products"],
+        "Kỹ thuật khai phá BMAD áp lên seed.",
+    ],
+    seed: Annotated[str, "Hạt giống/chủ đề để áp kỹ thuật."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Áp một kỹ thuật khai phá BMAD lên seed, trả khung có cấu trúc để bạn lập luận và ghi node.
+
+    comparable_products lấy tri thức ngoài thực qua web_search (fallback model knowledge). Mỗi lần
+    gọi thành công tăng session_elicit_count — mở cold-start gate cho write_draft.
+    """
+    try:
+        result = elicit(technique, seed)
+    except ValueError as exc:
+        return _recoverable_tool_update(
+            RecoverableToolError(code="elicit_unknown_technique", message=str(exc), user_fixable=True),
+            tool_call_id,
+        )
+    count = (state.get("session_elicit_count") or 0) + 1
+    return Command(
+        update={
+            "session_elicit_count": count,
+            "messages": [ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tool_call_id)],
+        }
+    )
+
+
 def get_all_analyzer_tools() -> list:
     """Full tool registry for the ToolNode and the analyze schema; availability lives in the prompt + tool guards."""
     return [
         ask_user,
         respond,
+        analysis_frame,
         write_draft,
         finalize,
         critique_note,
@@ -1003,6 +1339,8 @@ def get_all_analyzer_tools() -> list:
         recommend_next_workflow,
         run_readiness_check,
         confirm_intent,
+        elicit_tool,
+        web_search_tool,
     ]
 
 
@@ -1043,7 +1381,7 @@ def _consecutive_note_turns(messages: list) -> int:
         names = _tool_call_names(message)
         if not names:
             continue
-        if any(name in ("ask_user", "write_draft", "respond") for name in names):
+        if any(name in ("ask_user", "write_draft", "respond", "analysis_frame") for name in names):
             break
         if any(name in NOTE_TOOL_NAMES for name in names):
             count += 1
@@ -1063,21 +1401,45 @@ def get_available_tools(state: WorkflowState) -> list:
     - `run_readiness_check` needs an artifact (working_draft or DB-loaded draft_body) AND at least
       one critique round to assess.
     - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
-    - ask_user / write_draft are ALWAYS present (stall-escape), regardless of any cap.
+    - `write_draft` is hidden from the menu for the first draft until an analysis_frame exists.
+      The tool still self-rejects with a recoverable ToolMessage if a model calls it out of turn.
 
     Intent phase (user_confirmed is None) restricts the menu to exploration + confirmation:
-    write_draft / finalize / run_critique are absent until confirm_intent flips user_confirmed=True.
+    finalize / run_critique are absent until confirm_intent flips user_confirmed=True; write_draft
+    also needs a ready analysis_frame for the first draft.
     """
     if state.get("user_confirmed") is None:
         # read_artifact is offered in the intent phase too: reading the parent BRD to ground an intent
         # summary is exploration, and it is side-effect-free so it does not widen the gate's risk.
-        intent_tools = [ask_user, respond, explore_note, critique_note, confirm_intent, read_artifact]
+        intent_tools = [
+            ask_user,
+            respond,
+            analysis_frame,
+            explore_note,
+            critique_note,
+            confirm_intent,
+            read_artifact,
+            elicit_tool,
+            web_search_tool,
+        ]
         if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
             intent_tools = [t for t in intent_tools if t.name not in NOTE_TOOL_NAMES]
         return intent_tools
 
-    tools = [ask_user, respond, write_draft, critique_note, explore_note, read_artifact]
+    tools = [
+        ask_user,
+        respond,
+        analysis_frame,
+        critique_note,
+        explore_note,
+        read_artifact,
+        elicit_tool,
+        web_search_tool,
+    ]
     has_draft = bool(_cached_draft_body(state).strip())
+    has_analysis_frame = _analysis_frame_ready(state)
+    if has_draft or has_analysis_frame:
+        tools.insert(2, write_draft)
     critique_rounds = state.get("critique_rounds") or 0
     if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
@@ -1096,4 +1458,9 @@ def get_available_tools(state: WorkflowState) -> list:
         tools.append(run_readiness_check)
     if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
         tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
+    # Cold-start hard gate: a fresh project (no decision_nodes) must run at least one elicit before
+    # the first draft — exploration precedes drafting. A resumed project (nodes exist) bypasses this.
+    decision_nodes = state.get("decision_nodes") or {}
+    if not decision_nodes and (state.get("session_elicit_count") or 0) == 0:
+        tools = [t for t in tools if t.name != "write_draft"]
     return tools

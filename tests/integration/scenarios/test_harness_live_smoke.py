@@ -29,14 +29,42 @@ _TURNS = [
     ("ambiguous", "Mình muốn xây một công cụ gì đó cho sinh viên, ý tưởng còn mơ hồ lắm."),
     ("context-1", "Đối tượng là sinh viên học nhóm 3–6 người; pain lớn nhất là trùng lịch và quên buổi, gần như mỗi tuần."),
     ("context-2", "Phạm vi MVP: nhắc lịch + tìm khung giờ chung. Ngân sách nhỏ, làm trong 1 tháng."),
-    ("finalize-push", "Ổn rồi, nộp thôi, finalize đi bạn."),
+    ("draft-push", "Tôi xác nhận intent và frame. Hãy viết draft đầu tiên; phần nào chưa rõ thì đánh dấu cần xác nhận."),
 ]
 
 
+async def _ensure_vision_item(client, headers, project_id: str) -> str:
+    container = await client.post(
+        f"{BASE}/projects/{project_id}/documents/brd",
+        headers=headers,
+    )
+    assert container.status_code in {200, 201, 409}, container.text
+
+    existing = await client.get(
+        f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
+        headers=headers,
+    )
+    if existing.status_code == 200:
+        return existing.json()["data"]["artifact_id"]
+
+    created = await client.post(
+        f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
+        json={
+            "title": "Vision Objectives",
+            "body": "Chưa có nội dung.",
+            "status": "draft",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["data"]["artifact_id"]
+
+
 async def _create_session(client, headers, project_id: str) -> uuid.UUID:
+    focused_artifact_id = await _ensure_vision_item(client, headers, project_id)
     resp = await client.post(
         f"{BASE}/projects/{project_id}/agent-sessions",
-        json={"artifact_type": "intent"},
+        json={"artifact_type": "vision_objectives", "focused_artifact_id": focused_artifact_id},
         headers=headers,
     )
     assert resp.status_code == 201, resp.text
@@ -83,7 +111,7 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
             "tool_errors": [e.get("code") for e in (errors or [])] if isinstance(errors, list) else errors,
         })
 
-    print("\n=== LIVE SMOKE TRAJECTORY (model=%s) ===" % judge_settings.judge_model)
+    print(f"\n=== LIVE SMOKE TRAJECTORY (model={judge_settings.judge_model}) ===")
     for row in trajectory:
         print(
             f"  [{row['turn']:>13}] tools={row['tools']!s:<26} mode={row['active_mode']!s:<12} "
@@ -96,4 +124,20 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
     )
     assert "finalize" not in greeting["tools"], (
         f"greeting must not finalize; got tools={greeting['tools']}"
+    )
+    assert any("analysis_frame" in row["tools"] for row in trajectory), (
+        f"live analyst must present analysis_frame before drafting; trajectory={trajectory}"
+    )
+    first_draft_idx = next(
+        (idx for idx, row in enumerate(trajectory) if "write_draft" in row["tools"]),
+        None,
+    )
+    assert first_draft_idx is not None, (
+        f"live analyst must reach write_draft to prove the pre-draft flow; trajectory={trajectory}"
+    )
+    assert any("analysis_frame" in row["tools"] for row in trajectory[:first_draft_idx]), (
+        f"write_draft must be preceded by analysis_frame; trajectory={trajectory}"
+    )
+    assert all("analysis_frame_required" not in (row["tool_errors"] or []) for row in trajectory), (
+        f"model tried to bypass analysis_frame gate; trajectory={trajectory}"
     )

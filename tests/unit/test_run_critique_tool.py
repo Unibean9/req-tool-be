@@ -70,6 +70,7 @@ def test_write_draft_always_available_regardless_of_critique_cap():
     state = _state(artifact_type="goal")
     state["working_draft"] = "draft"
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
+    state["session_elicit_count"] = 1  # past cold-start; this test isolates the critique-cap path
     assert "write_draft" in _tool_names(state)
 
 

@@ -27,7 +27,7 @@ from app.services.document_service import DocumentService
 
 # Native tool calling replaces the old JSON tool-selection schema: analyze_node binds the available
 # tool schemas to the provider API (see _build_tool_schemas) and the model returns native tool_calls.
-# Analytic fields (active_mode, locale, workflow_mode) are derived from the picked tool + state.
+# Analytic fields (locale, workflow_mode) are derived from the picked tool + state.
 
 # Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
@@ -35,27 +35,11 @@ _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 # Tool impls now reject empty required args via a ToolMessage error, so this table no longer drives
 # dispatch; it survives only as the required-arg contract that the intent_gate eval and unit tests assert.
 _TOOL_REQUIRED_ARGS = {
+    "analysis_frame": ["interpreted_intent", "recommended_next_move"],
     "write_draft": ["body"],
     "finalize": ["summary"],
     "run_critique": ["mode"],
     "confirm_intent": ["summary"],
-}
-
-# analyze_node derives active_mode from the picked (primary) tool, so the operating angle no longer
-# depends on the model self-reporting it (the JSON-shim era field). Values are in the spec §7.1
-# vocabulary (explore_note -> structuring, not discovery). respond falls back to critique; the
-# discovery baseline covers any tool not listed.
-_TOOL_ACTIVE_MODE: dict[str, str] = {
-    "critique_note": "critique",
-    "explore_note": "structuring",
-    "ask_user": "discovery",
-    "confirm_intent": "discovery",
-    "write_draft": "structuring",
-    "finalize": "finalization",
-    "run_critique": "critique",
-    "respond": "critique",
-    "run_readiness_check": "finalization",
-    "recommend_next_workflow": "finalization",
 }
 
 # Injected tool params are runtime wiring (LangGraph fills them), never LLM-visible args — strip
@@ -336,6 +320,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                 "quality_report": None,
                 "last_critiqued_draft_hash": None,
                 "candidate_readiness": None,
+                "analysis_frame": None,
                 "feedback_summary": None,
                 "verification_status": None,
                 "latest_checked_revision": None,
@@ -415,11 +400,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     ]
     gated_tools = _gate_selected_tools(effective_state, raw_tools)
 
-    # Analytic fields are derived from the gated primary tool + state, not self-reported by the LLM:
-    # active_mode from the tool's operating angle, locale sticky-from-state (default vi), and the
-    # draft_update captured from any text the model emitted alongside its tool calls.
-    primary_tool = gated_tools[0]["name"] if gated_tools else None
-    active_mode = _TOOL_ACTIVE_MODE.get(primary_tool or "", "discovery")
+    # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
+    # (default vi), and the draft_update captured from any text the model emitted alongside its calls.
     locale = effective_state.get("locale") or "vi"
     # When the model picks tools it may emit chain-of-thought as content alongside tool_use blocks;
     # that reasoning text is NOT a draft (OQ2: capturing it poisoned working_draft).
@@ -430,7 +412,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
 
     analysis_result: dict[str, Any] = {
         "tools": gated_tools,
-        "active_mode": active_mode,
         "locale": locale,
         "draft_update": draft_update,
         "coverage_complete": coverage["coverage_complete"],
@@ -490,7 +471,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             if tool == "respond":
                 if _response_message_incomplete(args.get("message")):
                     args["message"] = _RESPOND_FALLBACK
-                args["mode"] = args.get("mode") or active_mode or "critique"
+                args["mode"] = args.get("mode") or "critique"
             tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
         result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
     else:
@@ -822,7 +803,7 @@ def _log_tool_error(code: str, tool_name: str, message: str) -> None:
 # DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
 # be paired with another tool in the same turn to preserve idempotency invariants.
 _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
-    "ask_user", "respond", "write_draft", "finalize", "confirm_intent",
+    "ask_user", "respond", "analysis_frame", "write_draft", "finalize", "confirm_intent",
 })
 
 # Silent scratchpad notes: no interrupt, no DB write, pure state append (assumptions/risks/
@@ -923,6 +904,8 @@ def _build_tool_selection_prompt(
     contract_block = _build_output_contract_block(state)
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
+    current_draft = draft_body or state.get("draft_body") or state.get("working_draft") or ""
+    analysis_frame_block = _build_analysis_frame_block(state, bool(current_draft.strip()))
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
@@ -934,11 +917,35 @@ def _build_tool_selection_prompt(
         f"{_build_section_coverage_hint(state)}"
         f"{contract_block}"
         f"{key_facts_block}"
+        f"{analysis_frame_block}"
         f"{feedback_block}"
         f"{draft_block}"
         f"{working_draft_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
+    )
+
+
+def _build_analysis_frame_block(state: WorkflowState, has_draft: bool) -> str:
+    frame = state.get("analysis_frame")
+    if isinstance(frame, dict) and frame.get("interpreted_intent"):
+        parts = [
+            f"- intent: {frame.get('interpreted_intent')}",
+            f"- gaps: {_compact_list(frame.get('gaps') or [])}",
+            f"- analysis_angles: {_compact_list(frame.get('analysis_angles') or [])}",
+            f"- assumptions: {_compact_list(frame.get('assumptions') or [])}",
+            f"- next: {frame.get('recommended_next_move')}",
+        ]
+        return "\n\nANALYSIS FRAME ĐÃ TRÌNH USER:\n" + "\n".join(parts)
+    if has_draft:
+        return ""
+    return (
+        "\n\nANALYSIS FRAME BẮT BUỘC TRƯỚC DRAFT ĐẦU TIÊN:\n"
+        "- Trước khi dùng write_draft, hãy dùng analysis_frame để trình bày: interpreted_intent, "
+        "evidence, gaps, analysis_angles, assumptions, recommended_next_move.\n"
+        "- Nếu còn thiếu blocker thật sự, dùng ask_user sau frame hoặc thay vì frame; nếu đủ để đi tiếp, "
+        "frame phải cho user cơ hội xác nhận/chỉnh trước khi draft.\n"
+        "- Không nhảy thẳng từ confirm_intent sang write_draft khi chưa có analysis_frame."
     )
 
 
@@ -1038,7 +1045,7 @@ def _build_mode_hint_directive(state: WorkflowState) -> str:
         return ""
     return (
         f"\n\nYÊU CẦU MODE: người dùng muốn chuyển sang chế độ '{mode_hint}'. Hãy chuyển ngay "
-        f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
+        f"trong lượt này và phản hồi đúng theo chế độ đó."
     )
 
 

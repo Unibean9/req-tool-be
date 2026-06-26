@@ -6,10 +6,9 @@ Covers: gate precedence, multi-tool_calls, backward-compat negative test.
 import pytest
 from langchain_core.messages import AIMessage
 
-from app.graphs.nodes import _gate_selected_tools, _INTERRUPT_BEARING_TOOLS
+from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
 from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 from tests.unit.test_tool_parity import _project
-
 
 # ---------------------------------------------------------------------------
 # _gate_selected_tools unit tests
@@ -80,7 +79,7 @@ def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
 
 
 def test_gate_interrupt_tools_set_is_complete():
-    for tool in ("ask_user", "respond", "write_draft", "finalize"):
+    for tool in ("ask_user", "respond", "analysis_frame", "write_draft", "finalize"):
         assert tool in _INTERRUPT_BEARING_TOOLS
 
 
@@ -126,8 +125,9 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
 @pytest.mark.asyncio
 async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session):
     """ask_user + explore_note → gate keeps BOTH (the note rides along) and records no drop."""
-    from app.graphs.nodes import analyze_node
     from unittest.mock import AsyncMock
+
+    from app.graphs.nodes import analyze_node
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -146,4 +146,3 @@ async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session)
     tool_calls = out["messages"][-1].tool_calls
     assert [tc["name"] for tc in tool_calls] == ["ask_user", "explore_note"]
     assert "gated_tool" not in out["analysis_result"]
-
