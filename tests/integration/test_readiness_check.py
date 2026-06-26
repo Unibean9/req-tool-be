@@ -98,6 +98,7 @@ async def test_readiness_state_updated_after_check(client, db_session):
 
 def test_run_readiness_check_in_available_tools_with_draft():
     state = _state(artifact_type="intent")
+    state["user_confirmed"] = True
     state["working_draft"] = "một bản nháp"
     state["critique_rounds"] = 1  # readiness now requires at least one critique round (Phase 3)
     names = {t.name for t in get_available_tools(state)}

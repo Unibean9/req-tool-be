@@ -1,10 +1,14 @@
-"""Tests for the layered instruction contract (Phase 7B; spec §5, §6, §13, addendum §9)."""
+"""Tests for the layered instruction contract (Phase 7B; spec §5, §6, §13, addendum §9).
+
+Also covers D5 contextual layers: has_draft filtering and cache isolation.
+"""
 
 from pathlib import Path
 
 import pytest
 
-from app.instructions import get_instruction, load_instructions, role_overlay
+import app.instructions as instr_module
+from app.instructions import _assembled_cache, get_instruction, load_instructions, role_overlay
 
 _SHARED_MARKERS = (
     "Requirements Taxonomy",
@@ -47,16 +51,20 @@ def test_no_shared_layer_duplicated_across_roles():
     assert ba_shared == pm_shared
 
 
-def test_taxonomy_layer_uses_7_sections_not_9_slots():
-    instruction = _ba()
+def test_taxonomy_uses_7_sections_not_9_slots():
+    """The taxonomy catalog moved out of the static prompt into the per-turn chain block
+    (memory/context holds evidence); the registry remains the 7-section source of truth."""
+    from app.documents.registry import all_item_types
+
+    types = all_item_types()
     for section in (
         "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
         "business_rules", "constraints_assumptions", "risks_issues",
     ):
-        assert section in instruction, section
-    # No legacy 9-slot key or legacy mode-list phrasing.
-    assert "why_now" not in instruction
-    assert "qa | critique | explore | draft" not in instruction
+        assert section in types, section
+    assert "why_now" not in types
+    # The static prompt no longer dumps the full catalog or legacy mode phrasing.
+    assert "qa | critique | explore | draft" not in _ba()
 
 
 def test_tool_policy_references_current_tools():
@@ -109,3 +117,44 @@ def test_output_contract_carries_content_depth_rule():
     assert "evidence and context" in instruction
     assert "Do not paste the full transcript" in instruction
     assert "(agent suy diễn, cần xác nhận)" in instruction
+
+
+# ---------------------------------------------------------------------------
+# D5 — Contextual layers (has_draft filtering)
+# ---------------------------------------------------------------------------
+
+def test_has_draft_false_omits_critique_policy():
+    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
+    if not layer_path.exists():
+        pytest.skip("layer 08 not present in this env")
+    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    assert result is not None
+    assert marker not in result
+
+
+def test_has_draft_true_includes_critique_policy():
+    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
+    if not layer_path.exists():
+        pytest.skip("layer 08 not present in this env")
+    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    assert result is not None
+    assert marker in result
+
+
+def test_context_none_behaves_same_as_has_draft_true():
+    """context=None backward-compat: same full instruction as has_draft=True."""
+    r_none = get_instruction("brd", "product_analysis", None, context=None)
+    r_true = get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    assert r_none == r_true
+
+
+def test_cache_entries_for_false_and_true_are_distinct():
+    _assembled_cache.clear()
+    get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    get_instruction("brd", "product_analysis", None, context={"has_draft": True})
+    role = "business_analyst"
+    assert (role, False) in _assembled_cache
+    assert (role, True) in _assembled_cache
+    assert _assembled_cache[(role, False)] != _assembled_cache[(role, True)]

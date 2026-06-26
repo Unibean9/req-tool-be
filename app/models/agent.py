@@ -22,6 +22,7 @@ class AgentSessionStatus(enum.StrEnum):
 class AgentSessionInterruptType(enum.StrEnum):
     ASK_HUMAN = "ask_human"
     PROPOSE_ARTIFACTS = "propose_artifacts"
+    STREAM_RESPONSE = "stream_response"
 
 
 class AgentMessageRole(enum.StrEnum):

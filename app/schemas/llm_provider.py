@@ -52,3 +52,4 @@ class LLMProviderHealthCheckResult(BaseModel):
     config: LLMProviderConfigRead
     response_time_ms: int
     provider_reply: str | None = None
+    tool_calling_supported: bool | None = None

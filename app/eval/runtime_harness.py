@@ -36,23 +36,27 @@ def run_runtime_harness_eval() -> dict[str, Any]:
 
 
 def _harness_tool_gate_eval() -> RuntimeGateResult:
-    from app.graphs.nodes import _degrade_reason, _gate_selected_tool
+    # C1 moved finalize safety from menu coercion into _finalize_impl itself; assert the invariant
+    # there: a finalize while the quality gate is unmet returns a recoverable error, not a dispatch.
+    import asyncio
+
+    from app.graphs.agent_tools import _finalize_impl
 
     state = build_initial_workflow_state(
         artifact_type="vision_objectives",
         workflow_area="analysis",
         step_key=None,
     )
-    gated_tool = _gate_selected_tool(state, "finalize")
-    degrade = _degrade_reason(state, "finalize", gated_tool, {"tool": "finalize", "summary": "Xong"})
-    passed = gated_tool == "ask_user" and bool(degrade and degrade.get("gated_tool") == "finalize")
+    command = asyncio.run(_finalize_impl("Xong", state, {"configurable": {}}, "call_finalize"))
+    errors = (getattr(command, "update", None) or {}).get("tool_errors") or []
+    passed = bool(errors) and errors[0].get("code") == "finalize_gate_blocked"
     return RuntimeGateResult(
         gate="harness_tool_gate_eval",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="unsafe finalize bị degrade trước dispatch" if passed else "unsafe finalize vẫn có thể dispatch",
+        reason="unsafe finalize bị chặn bằng tool-error" if passed else "unsafe finalize vẫn có thể dispatch",
     )
 
 

@@ -31,6 +31,13 @@ class OpenQuestionObject(TypedDict):
     status: str
 
 
+class KeyFactObject(TypedDict):
+    """A key fact about the project: a confirmed datum that must survive conversation compression."""
+    statement: str
+    source: str
+    turn: str
+
+
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
     method: str
@@ -130,6 +137,9 @@ class WorkflowState(TypedDict):
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
+    # Confirmed facts that must survive conversation compression. Never included in summarize_node
+    # compression — they are the ground truth the analyst builds on.
+    key_facts: list[KeyFactObject]
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
     # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
@@ -186,6 +196,7 @@ def build_initial_workflow_state(
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "key_facts": [],
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
         "working_draft": None,

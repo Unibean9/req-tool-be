@@ -59,17 +59,21 @@ async def read_current_body(
     *,
     db: AsyncSession,
     project_id: uuid.UUID,
-    artifact_type: str,
+    artifact_type: str | None = None,
     artifact_id: uuid.UUID | None = None,
 ) -> dict | None:
-    """Return the current version body of an artifact of this type, or None.
+    """Return the current version body of an artifact (by id, or latest of a type), or None.
 
     Title-only read_artifacts is not enough for M7: analyze_node needs the draft
     content so it does not re-ask what is already recorded. Plain async (no @governed)
     because this is an internal context-load that analyze_node calls directly like a
     repository query, not an LLM-exposed tool.
+
+    Two read modes share one query. By id (read_artifact tool): artifact_type is irrelevant,
+    so it is not required. By type (analyze_node context-load): the type is the only filter and
+    must be known.
     """
-    if not _is_known_artifact_type(artifact_type):
+    if artifact_id is None and not _is_known_artifact_type(artifact_type or ""):
         return None
     query = (
         select(Artifact)

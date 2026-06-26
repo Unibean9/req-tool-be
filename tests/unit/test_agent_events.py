@@ -15,7 +15,7 @@ from app.models.agent import (
 )
 from app.models.organization import OrgMember
 from app.services.agent_event_service import AgentEventService, _ui_status
-from tests.conftest import BASE
+from tests.conftest import BASE, TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -89,6 +89,37 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
 
 
 @pytest.mark.asyncio
+async def test_agent_event_snapshot_refreshes_status_committed_by_graph_session(client, db_session):
+    project_id = await _project_id(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    service = AgentEventService(db_session)
+    first = await service.build_snapshot(project_id=project_id, session_id=session.id, user_id=owner_id)
+
+    async with TestSessionFactory() as graph_db:
+        row = await graph_db.get(AgentSession, session.id)
+        row.status = AgentSessionStatus.ACTIVE
+        row.interrupt_type = AgentSessionInterruptType.STREAM_RESPONSE
+        await graph_db.commit()
+
+    second = await service.build_snapshot(project_id=project_id, session_id=session.id, user_id=owner_id)
+
+    assert first["session"]["ui_status"] == "processing"
+    assert second["session"]["interrupt_type"] == AgentSessionInterruptType.STREAM_RESPONSE
+    assert second["session"]["ui_status"] == "waiting_input"
+
+
+@pytest.mark.asyncio
 async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_session):
     project_id = await _project_id(client)
     owner_id = uuid.uuid4()
@@ -137,6 +168,7 @@ async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_s
 
 def test_ui_status_function_unit():
     assert _ui_status(AgentSessionStatus.ACTIVE, None) == "processing"
+    assert _ui_status(AgentSessionStatus.ACTIVE, AgentSessionInterruptType.STREAM_RESPONSE) == "waiting_input"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.PROPOSE_ARTIFACTS) == "waiting_approval"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.ASK_HUMAN) == "waiting_input"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, None) == "waiting_input"
@@ -167,6 +199,17 @@ async def test_ui_status_active(client, db_session):
     project_id = await _project_id(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.ACTIVE)
     assert snapshot["session"]["ui_status"] == "processing"
+
+
+@pytest.mark.asyncio
+async def test_ui_status_stream_response(client, db_session):
+    project_id = await _project_id(client)
+    snapshot = await _snapshot_for(
+        db_session, project_id,
+        status=AgentSessionStatus.ACTIVE,
+        interrupt_type=AgentSessionInterruptType.STREAM_RESPONSE,
+    )
+    assert snapshot["session"]["ui_status"] == "waiting_input"
 
 
 @pytest.mark.asyncio

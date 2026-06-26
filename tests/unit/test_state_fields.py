@@ -26,6 +26,7 @@ def test_workflow_state_accepts_document_focus_fields():
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "key_facts": [],
         "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": None,
         "working_draft": None,
@@ -59,6 +60,17 @@ def test_workflow_state_accepts_document_focus_fields():
     assert state["section_coverage"] is None
     assert state["coverage_complete"] is None
     assert state["focused_artifact_id"] is not None
+
+
+def test_state_has_key_facts_field():
+    assert "key_facts" in WorkflowState.__annotations__
+
+
+def test_initial_state_seeds_key_facts_as_empty_list():
+    state = build_initial_workflow_state(
+        artifact_type="brd", workflow_area="analysis", step_key=None
+    )
+    assert state["key_facts"] == []
 
 
 def test_state_has_section_coverage_field():

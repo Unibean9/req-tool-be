@@ -1,12 +1,8 @@
 """Document coverage contract after the parent-child migration."""
 
-from app.graphs.nodes import TOOL_SELECTION_SCHEMA, _build_tool_selection_prompt
+from app.graphs.nodes import _build_tool_selection_prompt
 from app.instructions import get_instruction, load_instructions
 from tests.integration.test_graph_nodes import _state
-
-
-def test_llm_schema_no_longer_accepts_section_assessment():
-    assert "section_assessment" not in TOOL_SELECTION_SCHEMA["properties"]
 
 
 def test_taxonomy_contract_uses_database_coverage():
