@@ -247,15 +247,20 @@ class AgentService:
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
         # A queued message carries only its content; a mode_hint on it is intentionally not
         # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
+        #
+        # Exception: ACTIVE + STREAM_RESPONSE means the graph halted via interrupt() while keeping
+        # status=ACTIVE (conversational Q&A). This is not a "busy" session — it is waiting for a
+        # reply. Fall through to the resume path below rather than queuing.
         if session.status == AgentSessionStatus.ACTIVE:
-            return await self._queue_message(session.id, content)
+            if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
+                return await self._queue_message(session.id, content)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
             raise HTTPException(400, detail="Session đã kết thúc, không thể nhận thêm message")
-        # status == WAITING_FOR_HUMAN below.
+        # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
             return await self._queue_message(session.id, content)
-        if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, None):
+        if session.interrupt_type not in (AgentSessionInterruptType.ASK_HUMAN, AgentSessionInterruptType.STREAM_RESPONSE, None):
             raise HTTPException(400, detail="Session không ở trạng thái chờ user message")
 
         is_first_message = session.interrupt_type is None
@@ -692,14 +697,30 @@ class AgentService:
                 )
                 result = await asyncio.wait_for(self.graph.ainvoke(state, config), timeout=timeout)
 
-            # The graph paused iff its final state carries an __interrupt__. When it instead reached
-            # END, a WAITING_FOR_HUMAN left behind by a tool re-running on resume (tool-loop: the tool
-            # re-sets WAITING before its interrupt() returns the resume value) is stale → COMPLETED.
+            # Only END (no __interrupt__) means the turn truly finished. A status left behind by a
+            # paused tool is stale and must not be promoted: WAITING_FOR_HUMAN re-set by a tool
+            # re-running on resume, or ACTIVE+STREAM_RESPONSE while halted on a conversational ask (D4).
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
+            # A graph that ENDs while its last message still carries tool_calls did not finish: it hit
+            # the per-request turn cap in route_node before the pending interrupt-bearing tool (e.g.
+            # ask_user) could run, so no __interrupt__ surfaced. Since turn_count resets each human turn,
+            # tripping the cap means the model looped silently within one request without ever
+            # interacting — a genuine runaway, not a long conversation. Fail it loudly (mirroring the
+            # timeout branch) rather than mislabel it COMPLETED.
+            turn_limit_hit = graph_ended and _result_has_pending_tool_calls(result)
             async with self.session_factory() as db:
                 row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-                if row.status == AgentSessionStatus.ACTIVE or (
-                    graph_ended and row.status == AgentSessionStatus.WAITING_FOR_HUMAN
+                if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
+                    row.status = AgentSessionStatus.FAILED
+                    db.add(
+                        AgentMessage(
+                            session_id=session_id,
+                            role=AgentMessageRole.AGENT,
+                            content=_agent_turn_limit_message(),
+                        )
+                    )
+                elif graph_ended and row.status in (
+                    AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN
                 ):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
@@ -844,11 +865,11 @@ class AgentService:
     ) -> Command:
         interrupt_ids = self._pending_interrupt_ids(session)
         resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
-        # state_update lets a resuming turn seed state (e.g. a one-shot mode_hint) before the
+        # A resume is a human-in-the-loop boundary (reply or approval), so the silent-loop circuit
+        # breaker resets here: turn_count counts internal steps per request, not across the session.
+        # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        if state_update:
-            return Command(resume=resume, update=state_update)
-        return Command(resume=resume)
+        return Command(resume=resume, update={"turn_count": 0, **(state_update or {})})
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -920,6 +941,25 @@ class AgentService:
         return default_client, strong_client
 
 
+def _result_has_pending_tool_calls(result: Any) -> bool:
+    """Whether the graph's final state ends on a message that still carries undispatched tool_calls.
+
+    True only when route_node returned END (turn cap) while analyze_node had emitted an
+    interrupt-bearing tool that never ran — the signature of a force-terminated, non-resumable turn.
+    """
+    if not isinstance(result, dict):
+        return False
+    messages = result.get("messages") or []
+    return bool(messages) and bool(getattr(messages[-1], "tool_calls", None))
+
+
+def _agent_turn_limit_message() -> str:
+    return (
+        "Phiên làm việc đã đạt giới hạn số lượt phân tích nên được dừng lại trước khi hoàn tất. "
+        "Bạn vui lòng tạo phiên mới để tiếp tục nhé."
+    )
+
+
 def _agent_timeout_message(timeout: float) -> str:
     return (
         f"Agent mất quá nhiều thời gian để phản hồi (quá {int(timeout)}s) nên lượt này đã được dừng. "
@@ -938,6 +978,8 @@ def _session_ui_status(status: Any, interrupt_type: Any) -> str:
     status_val = getattr(status, "value", status)
     interrupt_val = getattr(interrupt_type, "value", interrupt_type)
     if status_val == AgentSessionStatus.ACTIVE.value:
+        if interrupt_val == AgentSessionInterruptType.STREAM_RESPONSE.value:
+            return "waiting_input"
         return "processing"
     if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:

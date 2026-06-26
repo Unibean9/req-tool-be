@@ -7,6 +7,7 @@ scenario through analyze_node or the pure BMAD helpers.
 import uuid
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.graphs.agent_tools import (
     _compute_recommendation,
@@ -28,7 +29,11 @@ class _LLM:
         self._payload = payload
 
     async def generate(self, **kwargs):
-        return dict(self._payload), None
+        tool_calls = [
+            {"id": f"scripted:{i}", "name": item["name"], "args": item.get("args") or {}}
+            for i, item in enumerate(self._payload.get("tools") or [])
+        ]
+        return AIMessage(content=self._payload.get("draft_update", ""), tool_calls=tool_calls), None
 
 
 async def _project_id(client):
@@ -54,21 +59,23 @@ async def _analyze(client, db_session, payload, artifact_type="intent", state_mu
 @pytest.mark.asyncio
 async def test_scenario1_vague_idea(client, db_session):
     """Vague idea: no workflow_mode reported, sparse coverage -> brainstorm/brief on the quick track."""
-    result, _, _ = await _analyze(client, db_session, {"tool": "ask_user", "message": "?"})
+    result, _, _ = await _analyze(client, db_session, {"tools": [{"name": "ask_user", "args": {"message": "?"}}]})
     assert result["method_profile"]["current_workflow"] in {"brainstorm", "brief"}
     assert result["method_profile"]["planning_track"] == "quick"
 
 
 @pytest.mark.asyncio
 async def test_scenario2_clear_direction_records_assumptions_and_risks(client, db_session):
-    """Clear direction: workflow_mode brief/prd, and notes feed structured assumptions + risks."""
-    result, _, _ = await _analyze(client, db_session, {"tool": "ask_user", "message": "?", "workflow_mode": "brief"})
-    assert result["method_profile"]["current_workflow"] in {"brief", "prd"}
+    """Clear direction: notes feed structured assumptions + risks.
 
+    workflow_mode is no longer LLM-reported (it is inferred from DB coverage), so this scenario no
+    longer asserts an echoed brief/prd value; the surviving behavior is the structured note parsing.
+    """
     note = await _write_note_impl(
         "ASSUMPTION: users have phones | confidence: high\nRISK: vendor lock-in | likelihood: medium",
         _state(artifact_type="intent"),
         "call_1",
+        "explore_note",
     )
     assert note.update["assumptions"]
     assert note.update["risks"]
@@ -109,11 +116,14 @@ def test_scenario5_small_mvp_quick_track_ceiling():
 
 @pytest.mark.asyncio
 async def test_active_mode_and_workflow_mode_coexist_end_to_end(client, db_session):
-    """active_mode and method_profile.current_workflow are written to distinct state locations."""
+    """active_mode and method_profile.current_workflow are written to distinct state locations.
+
+    Both are now derived (not LLM-echoed): active_mode from the gated primary tool (ask_user →
+    discovery), current_workflow from coverage. They still live in distinct state locations."""
     result, _, _ = await _analyze(
         client, db_session,
-        {"tool": "ask_user", "message": "?", "active_mode": "structuring", "workflow_mode": "prd"},
+        {"tools": [{"name": "ask_user", "args": {"message": "?"}}]},
     )
-    assert result["analysis_result"]["active_mode"] == "structuring"
-    assert result["method_profile"]["current_workflow"] == "prd"
+    assert result["analysis_result"]["active_mode"] == "discovery"
+    assert result["method_profile"]["current_workflow"] in {"brainstorm", "brief"}
     assert "current_workflow" not in result["analysis_result"]

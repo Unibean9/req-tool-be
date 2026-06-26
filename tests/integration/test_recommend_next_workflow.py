@@ -64,6 +64,7 @@ def test_confidence_low_when_many_sections_missing():
 
 def test_recommend_in_available_tools_with_signal():
     state = _state(artifact_type="intent")
+    state["user_confirmed"] = True
     state["section_coverage"] = _coverage(vision_objectives="partial", problem_statement="partial")
     names = {t.name for t in get_available_tools(state)}
     assert "recommend_next_workflow" in names
@@ -71,6 +72,7 @@ def test_recommend_in_available_tools_with_signal():
 
 def test_recommend_not_available_when_no_signal():
     state = _state(artifact_type="intent")
+    state["user_confirmed"] = True
     names = {t.name for t in get_available_tools(state)}
     assert "recommend_next_workflow" not in names
 

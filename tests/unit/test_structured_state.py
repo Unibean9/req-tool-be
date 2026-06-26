@@ -86,7 +86,7 @@ def test_extract_open_question_from_note_content():
 def test_note_without_prefix_returns_empty_lists():
     result = extract_structured_objects("Just a free-form thought about the project, no tags here.")
 
-    assert result == {"assumptions": [], "risks": [], "open_questions": []}
+    assert result == {"assumptions": [], "risks": [], "open_questions": [], "key_facts": []}
 
 
 def test_extract_handles_missing_optional_fields():

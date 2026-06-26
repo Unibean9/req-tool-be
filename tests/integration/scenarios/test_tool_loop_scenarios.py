@@ -40,6 +40,9 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
 
     llm = ScriptedLLM(tool_brain=[
         tool_select("ask_user", message="Đối tượng người dùng chính là ai?", active_mode="discovery"),
+        tool_select("confirm_intent",
+                    summary="Đặt mục tiêu đo lường được cho công cụ điều phối lịch học nhóm của sinh viên.",
+                    active_mode="discovery"),
         tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -49,6 +52,7 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
         actions=[
             {"type": "send", "content": "Tôi muốn đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
             {"type": "send", "content": "Chủ yếu là sinh viên đại học học theo nhóm."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -73,6 +77,9 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     project_id = uuid.UUID(project["id"])
 
     llm = ScriptedLLM(tool_brain=[
+        tool_select("confirm_intent",
+                    summary="Đặt mục tiêu cho công cụ điều phối lịch học nhóm của sinh viên.",
+                    active_mode="discovery"),
         tool_select("write_draft", title="Mục tiêu (bản nháp)", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -81,6 +88,7 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
         llm=llm,
         actions=[
             {"type": "send", "content": "Đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
             {"type": "reject_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 0},
@@ -90,3 +98,74 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
 
     assert recorder.summary["final_status"] == "completed"
     assert len(await driver.executed_artifacts()) == 0
+
+
+async def test_tool_loop_composite_two_note_tools(client, scenario_env, scenario_project):
+    """Composite dispatch: brain returns [explore_note, critique_note] in one turn.
+
+    Proves that a single analyze_node cycle emits an AIMessage with 2 tool_calls and
+    the ToolNode dispatches both — resulting in 2 ToolMessages in the checkpoint before
+    the next turn. The session must stay ACTIVE after both notes execute (no interrupt).
+    """
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    headers, project = scenario_project
+    project_id = uuid.UUID(project["id"])
+
+    llm = ScriptedLLM(tool_brain=[
+        # Turn 1: composite — two non-interrupt note tools in the same turn.
+        {
+            "tools": [
+                {"name": "explore_note", "args": {"content": "Người dùng chính là sinh viên nhóm 4-6 người."}},
+                {"name": "critique_note", "args": {"content": "Cần đo lường: tỉ lệ tham gia buổi nhóm."}},
+            ],
+            "active_mode": "discovery",
+        },
+        # Turn 2: confirm intent after notes.
+        tool_select("confirm_intent",
+                    summary="Điều phối lịch học nhóm cho sinh viên, đo bằng tỉ lệ tham gia.",
+                    active_mode="discovery"),
+        # Turn 3: write draft.
+        tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY,
+                    active_mode="structuring"),
+    ])
+    scenario = Scenario(
+        name="tool-loop-composite-notes",
+        artifact_type="goal",
+        llm=llm,
+        actions=[
+            {"type": "send", "content": "Tôi muốn đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục."},
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
+    recorder = await driver.run()
+
+    assert recorder.summary["final_status"] == "completed"
+    assert len(await driver.executed_artifacts()) >= 1
+
+    # Verify composite dispatch in checkpoint: find the AIMessage that carried 2 tool_calls.
+    raw_msgs = await scenario_env.get_checkpoint_field(driver.session_id, "messages")
+    ai_msgs_with_two_calls = [
+        m for m in (raw_msgs or [])
+        if isinstance(m, AIMessage) and len(getattr(m, "tool_calls", [])) == 2
+    ]
+    assert ai_msgs_with_two_calls, "No AIMessage with 2 tool_calls found — composite dispatch did not fire"
+
+    composite_ai = ai_msgs_with_two_calls[0]
+    dispatched_names = [tc["name"] for tc in composite_ai.tool_calls]
+    assert set(dispatched_names) == {"explore_note", "critique_note"}, (
+        f"unexpected composite tools: {dispatched_names}"
+    )
+
+    # Both ToolMessages must follow the composite AIMessage.
+    call_ids = {tc["id"] for tc in composite_ai.tool_calls}
+    tool_msgs = [
+        m for m in (raw_msgs or [])
+        if isinstance(m, ToolMessage) and m.tool_call_id in call_ids
+    ]
+    assert len(tool_msgs) == 2, (
+        f"expected 2 ToolMessages for composite dispatch, got {len(tool_msgs)}"
+    )

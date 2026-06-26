@@ -19,8 +19,8 @@ tasks:
   docker:reset:
     desc: Reset Docker services and database state
     cmds:
-      - docker compose -f docker/docker-compose.dev.yml --env-file docker/.env down -v
-      - docker compose -f docker/docker-compose.dev.yml --env-file docker/.env up -d
+      - docker compose -f docker/docker-compose.dev.yml --env-file .env down -v
+      - docker compose -f docker/docker-compose.dev.yml --env-file .env up -d
 
   dev:
     desc: Run FastAPI development server

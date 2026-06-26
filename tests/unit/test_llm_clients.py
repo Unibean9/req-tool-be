@@ -2,6 +2,7 @@ import json
 
 import httpx
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.models.llm_provider import ProviderType
 from app.services.llm_clients import (
@@ -173,6 +174,15 @@ def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
         _parse_generate_text(json.dumps(payload, ensure_ascii=False), response_format)
 
 
+def test_parse_generate_text_accepts_tool_args_prompt_alias():
+    payload = {"tools": [{"name": "ask_user", "args": {"prompt": "Bạn muốn phân tích phần nào?"}}]}
+    schema = {"type": "object", "properties": {"tools": {"type": "array"}}, "required": ["tools"]}
+
+    result = _parse_generate_text(json.dumps(payload, ensure_ascii=False), schema)
+
+    assert result == payload
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("client_class", "provider_payload"),
@@ -283,6 +293,231 @@ def _install_httpx_recorder(monkeypatch, payload):
     recorder = _HttpxRecorder(payload)
     monkeypatch.setattr(httpx, "AsyncClient", recorder.client_class)
     return recorder
+
+
+# ---------------------------------------------------------------------------
+# Native tool calling — generate(tools=...) returns an AIMessage(tool_calls=[...])
+# Deterministic parser coverage; per-provider LIVE smoke tests are a separate exit gate.
+# ---------------------------------------------------------------------------
+
+_ASK_TOOL = {
+    "name": "ask_user",
+    "description": "Ask the user a question.",
+    "parameters": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
+}
+
+_TOOL_RESPONSE_BY_PROVIDER = {
+    OpenAILLMClient: {
+        "output": [
+            {"type": "function_call", "call_id": "c1", "name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+            {"type": "message", "content": [{"type": "output_text", "text": "draft text"}]},
+        ]
+    },
+    AnthropicLLMClient: {
+        "content": [
+            {"type": "text", "text": "draft text"},
+            {"type": "tool_use", "id": "tu1", "name": "ask_user", "input": {"message": "hi"}},
+        ]
+    },
+    GoogleLLMClient: {
+        "candidates": [
+            {"content": {"parts": [{"text": "draft text"}, {"functionCall": {"name": "ask_user", "args": {"message": "hi"}}}]}}
+        ]
+    },
+    BedrockLLMClient: {
+        "output": {"message": {"content": [
+            {"text": "draft text"},
+            {"toolUse": {"toolUseId": "b1", "name": "ask_user", "input": {"message": "hi"}}},
+        ]}}
+    },
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", list(_TOOL_RESPONSE_BY_PROVIDER))
+async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
+    # Bedrock api-key path (no secret_key) uses httpx — the recorder covers it.
+    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    # Call exactly like analyze_node does: tools set, response_format OMITTED. Guards the regression
+    # where the real clients declared response_format without a default and raised TypeError.
+    result, _ = await client.generate(
+        messages=[{"role": "user", "content": "Phân tích"}],
+        system="Bạn là BA.",
+        max_tokens=256,
+        tools=[_ASK_TOOL],
+    )
+
+    assert isinstance(result, AIMessage)
+    assert [tc["name"] for tc in result.tool_calls] == ["ask_user"]
+    assert result.tool_calls[0]["args"] == {"message": "hi"}
+    assert result.content == "draft text"  # client surfaces the text verbatim; analyze_node treats it as reasoning, not a draft
+    # The request carried the tool config (so a real provider would force the call).
+    assert "ask_user" in str(recorder.requests[0]["json"])
+
+
+_THREAD_WITH_TOOL_BLOCKS = [
+    {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."},
+    {
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Tôi sẽ ghi nhận dữ kiện trước."},
+            {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "explore_note",
+                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+            },
+        ],
+    },
+    {
+        "role": "user",
+        "content": [
+            {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "name": "explore_note",
+                "content": "Đã ghi nhận key fact.",
+            },
+            {"type": "text", "text": "Tiếp tục phân tích từ dữ kiện đó."},
+        ],
+    },
+]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", list(_TOOL_RESPONSE_BY_PROVIDER))
+async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
+    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    await client.generate(
+        messages=_THREAD_WITH_TOOL_BLOCKS,
+        system="Bạn là BA.",
+        max_tokens=256,
+        tools=[_ASK_TOOL],
+    )
+
+    body = recorder.requests[0]["json"]
+    if client_class is OpenAILLMClient:
+        assert {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "explore_note",
+            "arguments": "{\"content\": \"Người dùng chính là sinh viên học nhóm.\"}",
+        } in body["input"]
+        assert {"type": "function_call_output", "call_id": "call_1", "output": "Đã ghi nhận key fact."} in body["input"]
+    elif client_class is AnthropicLLMClient:
+        assert body["messages"][1]["content"][1] == {
+            "type": "tool_use",
+            "id": "call_1",
+            "name": "explore_note",
+            "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+        }
+        assert body["messages"][2]["content"][0] == {
+            "type": "tool_result",
+            "tool_use_id": "call_1",
+            "content": "Đã ghi nhận key fact.",
+        }
+    elif client_class is GoogleLLMClient:
+        assert body["contents"][1]["parts"][1] == {
+            "functionCall": {
+                "name": "explore_note",
+                "args": {"content": "Người dùng chính là sinh viên học nhóm."},
+            }
+        }
+        assert body["contents"][2]["parts"][0] == {
+            "functionResponse": {"name": "explore_note", "response": {"content": "Đã ghi nhận key fact."}}
+        }
+    else:
+        assert body["messages"][1]["content"][1] == {
+            "toolUse": {
+                "toolUseId": "call_1",
+                "name": "explore_note",
+                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+            }
+        }
+        assert body["messages"][2]["content"][0] == {
+            "toolResult": {"toolUseId": "call_1", "content": [{"text": "Đã ghi nhận key fact."}]}
+        }
+
+
+# ---------------------------------------------------------------------------
+# tool_choice wire format — verify "auto" (default) and "required" (rollback) reach each provider
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_openai_tool_choice_auto_sends_auto(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[OpenAILLMClient])
+    client = OpenAILLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="auto")
+    assert recorder.requests[0]["json"]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_openai_tool_choice_required_sends_required(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[OpenAILLMClient])
+    client = OpenAILLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="required")
+    assert recorder.requests[0]["json"]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_tool_choice_auto_sends_type_auto(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[AnthropicLLMClient])
+    client = AnthropicLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="auto")
+    assert recorder.requests[0]["json"]["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_anthropic_tool_choice_required_sends_type_any(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[AnthropicLLMClient])
+    client = AnthropicLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="required")
+    assert recorder.requests[0]["json"]["tool_choice"] == {"type": "any"}
+
+
+@pytest.mark.asyncio
+async def test_google_tool_choice_auto_sends_mode_auto(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[GoogleLLMClient])
+    client = GoogleLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="auto")
+    assert recorder.requests[0]["json"]["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
+
+
+@pytest.mark.asyncio
+async def test_google_tool_choice_required_sends_mode_any(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[GoogleLLMClient])
+    client = GoogleLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="required")
+    assert recorder.requests[0]["json"]["toolConfig"]["functionCallingConfig"]["mode"] == "ANY"
+
+
+@pytest.mark.asyncio
+async def test_bedrock_tool_choice_auto_omits_tool_choice_field(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
+    client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="auto")
+    assert "toolChoice" not in recorder.requests[0]["json"]["toolConfig"]
+
+
+@pytest.mark.asyncio
+async def test_bedrock_tool_choice_required_sends_any(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
+    client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16, tools=[_ASK_TOOL], tool_choice="required")
+    assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
+
+
+@pytest.mark.asyncio
+async def test_bedrock_ping_tool_calling_forces_any_tool_choice(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
+    client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    assert await client.ping_tool_calling() is True
+    assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
 
 
 class _HttpxRecorder:

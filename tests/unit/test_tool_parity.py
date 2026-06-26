@@ -116,9 +116,10 @@ async def test_ask_user_tool_uses_shared_helper(client, db_session):
     config["configurable"]["session_factory"] = _session_factory()
 
     with patch.object(nodes, "_save_and_interrupt_ask", new=AsyncMock(return_value="ok")) as helper:
-        await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_1")
+        command = await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_1")
 
     helper.assert_awaited_once()
+    assert command.update["messages"][0].content == "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +143,7 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives", analysis_result={"next_action": "propose"})
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     config = _config(str(agent_session.id), str(project_id))
@@ -178,6 +180,7 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(analysis_result={"next_action": "propose"})
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused_a.id)
     config = _config(str(agent_session.id), str(project_id))
@@ -228,6 +231,7 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["assumptions"] = [{"statement": "Metric retention đã được user xác nhận", "source": "user", "status": "confirmed"}]
@@ -259,6 +263,7 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
@@ -293,6 +298,7 @@ async def test_write_draft_missing_focus_returns_recoverable_observation(client,
     run = await _make_agent_run(db_session, agent_session)
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
@@ -431,8 +437,9 @@ async def test_ask_user_tool_call_scenario(client, db_session):
         session_row = (
             await db.execute(select(AgentSession).where(AgentSession.id == agent_session.id))
         ).scalar_one()
-        assert session_row.status == AgentSessionStatus.WAITING_FOR_HUMAN
-        assert session_row.interrupt_type == AgentSessionInterruptType.ASK_HUMAN
+        # D4: ask_user keeps session ACTIVE (conversational Q&A) with STREAM_RESPONSE interrupt type.
+        assert session_row.status == AgentSessionStatus.ACTIVE
+        assert session_row.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
 
     # Resume round-trip: a second invoke with the user's reply must complete, no crash.
     resumed = await graph.ainvoke(Command(resume={"content": "Một app lịch nhóm"}), config)
@@ -454,6 +461,7 @@ async def test_write_draft_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
+    state["user_confirmed"] = True  # artifact phase mở: write_draft mới dispatch thay vì self-reject
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
     state["messages"] = [_ai_tool_call("write_draft", {"title": "Mục tiêu", "body": "Nội dung"})]
@@ -503,3 +511,102 @@ async def test_finalize_tool_call_scenario(client, db_session):
 
     resumed = await graph.ainvoke(Command(resume={"content": "ok"}), config)
     assert "__interrupt__" not in resumed
+
+
+# ---------------------------------------------------------------------------
+# M2 — read_artifact: side-effect-free body read by id
+# ---------------------------------------------------------------------------
+
+async def _artifact_with_body(db_session, project_id: uuid.UUID, body: str, title: str = "Vision"):
+    from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
+
+    artifact = Artifact(
+        project_id=project_id,
+        type=ArtifactType.VISION_OBJECTIVES,
+        status=ArtifactStatus.DRAFT,
+        title=title,
+        extra_metadata={},
+    )
+    db_session.add(artifact)
+    await db_session.flush()
+    version = ArtifactVersion(
+        artifact_id=artifact.id,
+        version_number=1,
+        title=title,
+        body=body,
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(version)
+    await db_session.flush()
+    artifact.current_version_id = version.id
+    await db_session.commit()
+    return artifact
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_returns_current_body(client, db_session):
+    from app.graphs.agent_tools import _read_artifact_impl
+
+    project_id = await _project(client)
+    artifact = await _artifact_with_body(db_session, project_id, "## Vision\nNội dung gốc.")
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_artifact_impl(str(artifact.id), config, "call_1")
+
+    msg = command.update["messages"][0]
+    assert "Nội dung gốc" in msg.content
+    assert msg.tool_call_id == "call_1"
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_not_found_returns_observation(client):
+    from app.graphs.agent_tools import _read_artifact_impl
+
+    project_id = await _project(client)
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_artifact_impl(str(uuid.uuid4()), config, "call_1")
+
+    assert "không tìm thấy" in command.update["messages"][0].content
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_invalid_id_returns_observation(client):
+    from app.graphs.agent_tools import _read_artifact_impl
+
+    project_id = await _project(client)
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_artifact_impl("not-a-uuid", config, "call_1")
+
+    assert "không hợp lệ" in command.update["messages"][0].content
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_truncates_large_body(client, db_session):
+    from app.graphs.agent_tools import READ_ARTIFACT_MAX_CHARS, _read_artifact_impl
+
+    project_id = await _project(client)
+    artifact = await _artifact_with_body(db_session, project_id, "x" * (READ_ARTIFACT_MAX_CHARS + 500))
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_artifact_impl(str(artifact.id), config, "call_1")
+
+    assert "đã cắt bớt" in command.update["messages"][0].content
+
+
+@pytest.mark.asyncio
+async def test_read_artifact_scoped_to_project(client, db_session):
+    """An artifact in another project is invisible — the project_id filter is the scope boundary."""
+    from app.graphs.agent_tools import _read_artifact_impl
+
+    project_a = await _project(client)
+    project_b = await _project(client)
+    artifact = await _artifact_with_body(db_session, project_b, "body bí mật")
+    config = _config(str(uuid.uuid4()), str(project_a))
+
+    command = await _read_artifact_impl(str(artifact.id), config, "call_1")
+
+    assert "không tìm thấy" in command.update["messages"][0].content

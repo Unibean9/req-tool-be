@@ -14,8 +14,6 @@ engine. Files live inside the app so they ship and version with the code, loaded
 """
 from pathlib import Path
 
-from app.documents.registry import all_item_types, get_config
-
 # Default role when nothing else resolves — guarantees get_instruction never returns None, so the
 # system prompt always carries the policy contract regardless of artifact_type / workflow_area.
 _DEFAULT_ROLE = "business_analyst"
@@ -76,32 +74,21 @@ _SHARED_LAYERS_AFTER_ROLE = (
 
 _layer_cache: dict[str, str] = {}
 _overlay_cache: dict[str, str] = {}
-_assembled_cache: dict[str, str] = {}
-
-
-def _render_taxonomy_sections() -> str:
-    """Document item list, sourced from the registry so it never drifts from the engine."""
-    return "\n".join(
-        f"- {item_type}: {get_config(item_type).description}"
-        for item_type in all_item_types()
-    )
+# Cache key: (role, has_draft). has_draft=None means context was not passed (full instruction set).
+_assembled_cache: dict[tuple[str, bool | None], str] = {}
 
 
 def load_instructions(base_path: Path | None = None) -> None:
     """Load and cache the shared layers and role overlays. Called once at startup."""
     _layer_cache.clear()
     _overlay_cache.clear()
-    _assembled_cache.clear()
+    _assembled_cache.clear()  # type: ignore[attr-defined]
     base = base_path or Path(__file__).parent
 
     for filename in (_LAYER_01, *_SHARED_LAYERS_AFTER_ROLE):
         path = base / "layers" / filename
         if path.exists():
-            text = path.read_text(encoding="utf-8").strip()
-            # Layer 3 carries the item list rendered from the document registry.
-            if filename == "03-taxonomy-contract.md":
-                text = f"{text}\n{_render_taxonomy_sections()}"
-            _layer_cache[filename] = text
+            _layer_cache[filename] = path.read_text(encoding="utf-8").strip()
 
     for role, filename in _ROLE_OVERLAY_FILE.items():
         path = base / "roles" / filename
@@ -114,11 +101,24 @@ def role_overlay(role: str) -> str | None:
     return _overlay_cache.get(role)
 
 
-def _assemble(role: str) -> str | None:
+_DRAFT_SKIP_LAYERS: frozenset[str] = frozenset({
+    "08-critique-policy.md",
+    "09-governance-policy.md",
+    "10-output-contract.md",
+})
+
+
+def _assemble(role: str, context: dict | None = None) -> str | None:
     overlay = _overlay_cache.get(role)
     if overlay is None:
         return None
-    parts = [_layer_cache[_LAYER_01], overlay, *(_layer_cache[f] for f in _SHARED_LAYERS_AFTER_ROLE)]
+    has_draft: bool | None = context.get("has_draft") if context is not None else None
+    skip = _DRAFT_SKIP_LAYERS if has_draft is False else frozenset()
+    layers_after_role = [
+        _layer_cache[f] for f in _SHARED_LAYERS_AFTER_ROLE
+        if f not in skip and f in _layer_cache
+    ]
+    parts = [_layer_cache[_LAYER_01], overlay, *layers_after_role]
     return "\n\n".join(parts)
 
 
@@ -126,12 +126,17 @@ def get_instruction(
     artifact_type: str,
     workflow_area: str,
     agent_role: str | None,
+    context: dict | None = None,
 ) -> str | None:
     """Return the assembled instruction for the resolved role.
 
     Priority: explicit agent_role > artifact_type map > workflow_area fallback > default role. Never
     returns None for a known role: the analyst always receives the policy contract, even for an
     artifact_type or workflow_area that is not explicitly mapped.
+
+    context: optional dict; when context={"has_draft": False}, layers 08/09/10 are skipped
+    (no critique/governance/output-contract policy needed before a draft exists). context=None
+    or has_draft=True keeps all layers. Cache key is (role, has_draft) to prevent collision.
     """
     role = (
         agent_role
@@ -139,14 +144,16 @@ def get_instruction(
         or _WORKFLOW_AREA_MAP.get(workflow_area)
         or _DEFAULT_ROLE
     )
-    if role not in _assembled_cache:
+    has_draft: bool | None = context.get("has_draft") if context is not None else None
+    cache_key = (role, has_draft)
+    if cache_key not in _assembled_cache:
         # An explicit agent_role with no overlay file falls back to the default role rather than
-        # leaving the analyst with no contract.
-        assembled = _assemble(role) or _assemble(_DEFAULT_ROLE)
+        # leaving the analyst with no contract. Both calls must receive context for consistent filtering.
+        assembled = _assemble(role, context) or _assemble(_DEFAULT_ROLE, context)
         if assembled is None:
             return None
-        _assembled_cache[role] = assembled
-    return _assembled_cache[role]
+        _assembled_cache[cache_key] = assembled
+    return _assembled_cache[cache_key]
 
 
 def loaded_roles() -> list[str]:

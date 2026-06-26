@@ -80,7 +80,7 @@ class AgentEventService:
                     AgentSession.id == session_id,
                     AgentSession.project_id == project_id,
                     AgentSession.created_by_id == user_id,
-                )
+                ).execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if not session:
@@ -91,6 +91,7 @@ class AgentEventService:
                 select(AgentMessage)
                 .where(AgentMessage.session_id == session_id)
                 .order_by(AgentMessage.created_at)
+                .execution_options(populate_existing=True)
             )
         ).scalars().all()
         tool_calls = (
@@ -100,6 +101,7 @@ class AgentEventService:
                 .where(AgentRun.session_id == session_id)
                 .where(public_tool_call_filter())
                 .order_by(AgentToolCall.created_at)
+                .execution_options(populate_existing=True)
             )
         ).scalars().all()
         document = await self._document_for_session(session, project_id)
@@ -182,6 +184,8 @@ def _ui_status(status: Any, interrupt_type: Any) -> str:
     status_val = getattr(status, "value", status)
     interrupt_val = getattr(interrupt_type, "value", interrupt_type)
     if status_val == AgentSessionStatus.ACTIVE.value:
+        if interrupt_val == AgentSessionInterruptType.STREAM_RESPONSE.value:
+            return "waiting_input"
         return "processing"
     if status_val == AgentSessionStatus.WAITING_FOR_HUMAN.value:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:

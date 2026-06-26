@@ -303,7 +303,7 @@ async def test_health_check_api_key_success(client, db_session, monkeypatch):
 
     async def fake_ping(config):
         assert config.id == row.id
-        return "pong"
+        return "pong", True
 
     times = iter([10.0, 10.123])
     monkeypatch.setattr("app.services.llm_provider_service._ping_provider", fake_ping)
@@ -328,7 +328,7 @@ async def test_health_check_non_default_provider_api_key_success(client, db_sess
         user_id=user_id,
         body={"provider_type": "bedrock", "api_key": "bedrock-api-key"},
     )
-    monkeypatch.setattr("app.services.llm_provider_service._ping_provider", lambda _config: _async_reply("pong"))
+    monkeypatch.setattr("app.services.llm_provider_service._ping_provider", lambda _config: _async_reply(("pong", True)))
 
     checked = await service.health_check(user_id=user_id, config_id=row.id)
 
@@ -351,7 +351,7 @@ async def test_health_check_api_key_with_secret_key_success(client, db_session, 
             "region": "ap-southeast-1",
         },
     )
-    monkeypatch.setattr("app.services.llm_provider_service._ping_provider", lambda _config: _async_reply("pong"))
+    monkeypatch.setattr("app.services.llm_provider_service._ping_provider", lambda _config: _async_reply(("pong", True)))
     checked = await service.health_check(user_id=user_id, config_id=row.id)
 
     assert checked.config.status == LLMProviderStatus.ACTIVE

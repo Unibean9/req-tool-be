@@ -31,6 +31,7 @@ def _passing_state(draft: str = "Một bản nháp", critique_rounds: int = 1) -
     """A state where every finalize-gate condition is satisfied (pass gate + fresh hash + sufficient readiness)."""
     return {
         "messages": [],
+        "user_confirmed": True,
         "working_draft": draft,
         "critique_rounds": critique_rounds,
         "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
@@ -60,6 +61,7 @@ def test_finalize_available_for_db_draft_without_working_draft():
     draft = "Bản nháp tải từ DB"
     state = {
         "messages": [],
+        "user_confirmed": True,
         "working_draft": None,
         "draft_body": draft,
         "critique_rounds": 1,
@@ -155,6 +157,8 @@ async def test_finalize_hard_blocks_when_gate_fails():
 
     mock_interrupt.assert_not_called()
     msg = command.update["messages"][0]
+    assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
+    assert msg.status == "error"
     assert "Không thể finalize" in msg.content
     assert "thiếu tiêu chí đo lường" in msg.content
 
@@ -172,6 +176,7 @@ async def test_finalize_hard_blocks_without_current_draft_body():
         command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
 
     mock_interrupt.assert_not_called()
+    assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
     assert "Không thể finalize" in command.update["messages"][0].content
 
 
