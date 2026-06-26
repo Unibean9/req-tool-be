@@ -355,7 +355,11 @@ class ArtifactService:
         source_artifact_id: uuid.UUID,
         target_artifact_id: uuid.UUID,
     ) -> bool:
-        """True nếu đã có đường target -> ... -> source; thêm source -> target sẽ tạo cycle."""
+        """True if a path target -> ... -> source already exists; adding source -> target would cycle.
+
+        Best-effort: read-then-insert with no lock, so two complementary concurrent inserts can both
+        pass. The agent creates links sequentially within a turn, so the real-world race risk is low.
+        """
         rows = (
             await self.db.execute(
                 select(ArtifactLink.source_artifact_id, ArtifactLink.target_artifact_id)

@@ -84,6 +84,23 @@ def test_supersede_ripple_does_not_affect_unrelated_nodes(decision_graph_factory
     assert result["N5"]["status"] == "confirmed"
 
 
+def test_supersede_does_not_revive_already_superseded_dependent(decision_graph_factory):
+    # N5 was already superseded by N5b in an earlier edit; both still depend_on the root N1.
+    # Superseding N1 must ripple N5b but leave N5 frozen — reviving it would rewrite history.
+    nodes = decision_graph_factory(
+        {"id": "N1", "kind": "decision", "status": "confirmed"},
+        {"id": "N5", "depends_on": ["N1"], "status": "superseded", "superseded_by": "N5b"},
+        {"id": "N5b", "depends_on": ["N1"], "status": "confirmed", "supersedes": "N5"},
+    )
+    origin = {"turn": 8, "by": "user", "technique": None, "source": None}
+
+    result = supersede_node(nodes, "N1", "Đảo hướng", origin, cascade_mode="abandon")
+
+    assert result["N5"]["status"] == "superseded"
+    assert result["N5"]["superseded_by"] == "N5b"
+    assert result["N5b"]["status"] == "parked"
+
+
 def test_supersede_cycle_guard_raises_error(decision_graph_factory):
     nodes = decision_graph_factory(
         {"id": "N1", "depends_on": ["N2"]},

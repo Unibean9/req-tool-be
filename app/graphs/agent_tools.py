@@ -33,6 +33,7 @@ from app.graphs.decision_graph import (
     create_node,
     get_dependents,
     impact,
+    infer_cascade_mode,
     render_view,
     supersede_node,
     update_node,
@@ -294,125 +295,6 @@ async def confirm_intent(
     ask_user) and not for presenting a full draft (use write_draft).
     """
     return await _confirm_intent_impl(summary, state, config, tool_call_id)
-
-
-# ---------------------------------------------------------------------------
-# analysis_frame — surface structured analysis to the user before the first draft
-# ---------------------------------------------------------------------------
-
-def _normalize_text_list(values: list[str] | None) -> list[str]:
-    return [str(value).strip() for value in (values or []) if str(value).strip()]
-
-
-def _render_analysis_frame_message(frame: dict[str, Any]) -> str:
-    def bullets(key: str) -> str:
-        values = _normalize_text_list(frame.get(key))
-        return "\n".join(f"- {value}" for value in values) if values else "- (chưa có)"
-
-    return (
-        "Tôi sẽ chốt khung phân tích trước khi viết draft:\n\n"
-        f"**Tôi hiểu ý định là:** {str(frame.get('interpreted_intent') or '').strip()}\n\n"
-        f"**Evidence đã nghe được:**\n{bullets('evidence')}\n\n"
-        f"**Khoảng trống cần để ý:**\n{bullets('gaps')}\n\n"
-        f"**Hướng phân tích đề xuất:**\n{bullets('analysis_angles')}\n\n"
-        f"**Assumption tạm dùng:**\n{bullets('assumptions')}\n\n"
-        f"**Bước tiếp theo:** {str(frame.get('recommended_next_move') or '').strip()}"
-    )
-
-
-async def _analysis_frame_impl(
-    interpreted_intent: str,
-    evidence: list[str],
-    gaps: list[str],
-    analysis_angles: list[str],
-    assumptions: list[str],
-    recommended_next_move: str,
-    state: WorkflowState,
-    config: RunnableConfig,
-    tool_call_id: str,
-) -> Command:
-    if not str(interpreted_intent or "").strip():
-        return _missing_required_arg_update("analysis_frame", "interpreted_intent", tool_call_id)
-    if not str(recommended_next_move or "").strip():
-        return _missing_required_arg_update("analysis_frame", "recommended_next_move", tool_call_id)
-
-    frame = {
-        "interpreted_intent": str(interpreted_intent).strip(),
-        "evidence": _normalize_text_list(evidence),
-        "gaps": _normalize_text_list(gaps),
-        "analysis_angles": _normalize_text_list(analysis_angles),
-        "assumptions": _normalize_text_list(assumptions),
-        "recommended_next_move": str(recommended_next_move).strip(),
-    }
-    missing_sections = [
-        key
-        for key in ("evidence", "gaps", "analysis_angles", "assumptions")
-        if not frame[key]
-    ]
-    if missing_sections:
-        return _recoverable_tool_update(
-            RecoverableToolError(
-                code="analysis_frame_incomplete",
-                message=(
-                    "Không thể analysis_frame: thiếu phần "
-                    f"{', '.join(missing_sections)}. Hãy gọi lại với đủ evidence, gaps, "
-                    "analysis_angles và assumptions."
-                ),
-            ),
-            tool_call_id,
-        )
-
-    message = _render_analysis_frame_message(frame)
-    await _audit_interaction_tool_call(state, config, tool_name=f"analysis_frame:{tool_call_id}", message=message)
-    user_content = await nodes._save_and_interrupt_ask(
-        state,
-        config,
-        message,
-        run_id=tool_call_id,
-        kind="assessment",
-        mode="analysis_frame",
-        interrupt_kind="stream_response",
-    )
-    return Command(
-        update={
-            "analysis_frame": frame,
-            "messages": [
-                ToolMessage(content=user_content, tool_call_id=tool_call_id),
-                {"role": "user", "content": user_content},
-            ],
-            "tool_errors": [],
-        }
-    )
-
-
-@tool
-async def analysis_frame(
-    interpreted_intent: Annotated[str, "Cách bạn đang hiểu intent thật của user."],
-    evidence: Annotated[list[str], "Các fact cụ thể đã nghe từ user hoặc artifact."],
-    gaps: Annotated[list[str], "Khoảng trống hoặc phần yếu ảnh hưởng đến draft."],
-    analysis_angles: Annotated[list[str], "Các hướng phân tích hữu ích trước khi draft."],
-    assumptions: Annotated[list[str], "Assumption rõ ràng sẽ dùng nếu draft ngay."],
-    recommended_next_move: Annotated[str, "Bước tiếp theo để user xác nhận, chọn hoặc chỉnh."],
-    state: Annotated[dict, InjectedState],
-    config: RunnableConfig,
-    tool_call_id: Annotated[str, InjectedToolCallId],
-) -> Command:
-    """Surface a structured analysis frame to the user and pause before the first draft.
-
-    Call before write_draft to show interpreted intent, gaps, analysis angles, assumptions, and next move.
-    This is a user-visible exploration step, not a hidden scratchpad.
-    """
-    return await _analysis_frame_impl(
-        interpreted_intent,
-        evidence,
-        gaps,
-        analysis_angles,
-        assumptions,
-        recommended_next_move,
-        state,
-        config,
-        tool_call_id,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +622,11 @@ async def _create_decision_node_impl(
         )
 
     nodes_state = state.get("decision_nodes") or {}
+    unknown = [dep for dep in (depends_on or []) if dep not in nodes_state]
+    if unknown:
+        return _tool_not_available_update(
+            "create_decision_node", f"depends_on trỏ tới node không tồn tại: {unknown}", tool_call_id
+        )
     node = create_node(
         kind=kind, statement=statement, origin=_node_origin(state, technique),
         depends_on=depends_on, node_id=node_id, status=status or "proposed", blocks=blocks,
@@ -805,11 +692,11 @@ async def _supersede_decision_node_impl(
             "supersede_decision_node", f"cascade_mode không hợp lệ '{cascade_mode}'", tool_call_id
         )
 
-    dependents = get_dependents(nodes_state, node_id)
-    updated = supersede_node(nodes_state, node_id, new_statement, _node_origin(state, None), cascade_mode)
+    resolved_mode = cascade_mode or infer_cascade_mode(nodes_state, node_id)
+    rippled = [d for d in get_dependents(nodes_state, node_id) if nodes_state[d].get("status") != "superseded"]
+    updated = supersede_node(nodes_state, node_id, new_statement, _node_origin(state, None), resolved_mode)
     new_id = updated[node_id]["superseded_by"]
-    applied_mode = "abandon" if any(updated[d]["status"] == "parked" for d in dependents) else "reconfirm"
-    summary = f"superseded {node_id} → {new_id}; cascade={applied_mode}; dependents={dependents or 'none'}"
+    summary = f"superseded {node_id} → {new_id}; cascade={resolved_mode}; dependents={rippled or 'none'}"
     return Command(
         update={
             "decision_nodes": updated,
@@ -965,8 +852,11 @@ async def _create_artifact_link_impl(
                 created_by_id=created_by_id,
             )
             await db.commit()
-    except Exception as exc:  # noqa: BLE001
+    except ValueError as exc:
         return _tool_not_available_update("create_artifact_link", str(exc), tool_call_id)
+    except Exception:
+        logger.exception("create_artifact_link failed")
+        return _tool_not_available_update("create_artifact_link", "lỗi nội bộ khi tạo artifact link", tool_call_id)
     return Command(
         update={
             "messages": [
@@ -1654,7 +1544,6 @@ def get_all_analyzer_tools() -> list:
     return [
         ask_user,
         respond,
-        analysis_frame,
         write_draft,
         finalize,
         critique_note,
@@ -1704,7 +1593,6 @@ def get_available_tools(state: WorkflowState) -> list:
     tools = [
         ask_user,
         respond,
-        analysis_frame,
         write_draft,
         critique_note,
         explore_note,

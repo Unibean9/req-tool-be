@@ -61,7 +61,6 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "risks": [],
         "open_questions": [],
         "key_facts": [],
-        "analysis_frame": None,
         "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
@@ -544,7 +543,6 @@ def test_build_prompt_excludes_static_policy():
     assert "ghi chú phản biện" not in prompt
     # It still names the tools available this turn so the model knows the current menu.
     assert "Công cụ khả dụng" in prompt
-    assert "ANALYSIS FRAME TÙY CHỌN" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():

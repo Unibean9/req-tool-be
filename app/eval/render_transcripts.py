@@ -214,18 +214,18 @@ def main() -> None:
         output_path=Path("plans/harness-conversation-fluency/conversation-trace.md"),
     )
 
-    # intent-phase-gate: intent-propose-approve (D6 confirm_intent → analysis_frame → write_draft)
+    # intent-phase-gate: intent-propose-approve (D6 confirm_intent → write_draft)
     # + multi-turn-qna (D6 multi-turn flow).
     render_conversation_file(
         transcript_names=["intent-propose-approve", "multi-turn-qna"],
         title="Conversation Trace: Intent Phase Gate (D6)",
         plan_notes=(
             "Kịch bản chứng minh D6 intent gate: `confirm_intent` mở artifact phase, "
-            "`analysis_frame` trình khung phân tích, rồi mới unblock `write_draft`.\n"
+            "rồi unblock `write_draft`.\n"
             "Session giữ `ACTIVE` sau `confirm_intent` (STREAM_RESPONSE interrupt);\n"
-            "`write_draft` chỉ xuất hiện sau khi intent đã confirm và frame đã được trình.\n\n"
+            "`write_draft` chỉ xuất hiện sau khi intent đã confirm.\n\n"
             "**Claim D6:** `confirm_intent` → `interrupt_type=STREAM_RESPONSE`, session `ACTIVE`.\n"
-            "**Claim D6-flow:** Sau confirm + analysis_frame, `write_draft` propose thành công → artifact."
+            "**Claim D6-flow:** Sau confirm, `write_draft` propose thành công → artifact."
         ),
         output_path=Path("plans/intent-phase-gate/conversation-trace.md"),
     )

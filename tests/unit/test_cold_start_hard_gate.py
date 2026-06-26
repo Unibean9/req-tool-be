@@ -7,22 +7,10 @@ feedback directly instead of the menu filtering it out.
 from app.graphs.agent_tools import get_available_tools
 
 
-def _ready_analysis_frame():
-    return {
-        "interpreted_intent": "Xây app quản lý quán cà phê.",
-        "evidence": ["Chủ quán muốn giảm thất thoát."],
-        "gaps": ["Chưa rõ quy mô."],
-        "analysis_angles": ["Pain", "Scope", "Metric"],
-        "assumptions": ["Bắt đầu từ POS cơ bản."],
-        "recommended_next_move": "Khai phá trước khi draft.",
-    }
-
-
 def _base_state(**overrides):
     state = {
         "messages": [],
         "user_confirmed": True,
-        "analysis_frame": _ready_analysis_frame(),
     }
     state.update(overrides)
     return state

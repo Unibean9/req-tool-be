@@ -57,16 +57,6 @@ class DecisionNode(TypedDict):
     answer: str | None
 
 
-class AnalysisFrame(TypedDict):
-    """Structured analysis frame surfaced to the user before the first draft is written."""
-    interpreted_intent: str
-    evidence: list[str]
-    gaps: list[str]
-    analysis_angles: list[str]
-    assumptions: list[str]
-    recommended_next_move: str
-
-
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
     method: str
@@ -169,7 +159,6 @@ class WorkflowState(TypedDict):
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
     # compression — they are the ground truth the analyst builds on.
     key_facts: list[KeyFactObject]
-    analysis_frame: AnalysisFrame | None
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
     # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
@@ -233,7 +222,6 @@ def build_initial_workflow_state(
         "risks": [],
         "open_questions": [],
         "key_facts": [],
-        "analysis_frame": None,
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
         "candidate_readiness": None,

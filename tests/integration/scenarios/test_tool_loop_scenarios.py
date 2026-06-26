@@ -29,28 +29,12 @@ _GOAL_BODY = (
 )
 
 
-def _analysis_frame_turn():
-    return tool_select(
-        "analysis_frame",
-        interpreted_intent="Đặt mục tiêu cho công cụ điều phối lịch học nhóm của sinh viên.",
-        evidence=[
-            "Đối tượng chính là sinh viên đại học học theo nhóm.",
-            "Pain chính là trùng lịch và quên buổi học nhóm.",
-        ],
-        gaps=["Chưa có target định lượng cho success metric."],
-        analysis_angles=["Đối tượng", "Pain", "MVP scope", "Success metric"],
-        assumptions=["Có thể draft mục tiêu với metric cần xác nhận."],
-        recommended_next_move="Tạo draft mục tiêu và đánh dấu metric cần user xác nhận.",
-        active_mode="structuring",
-    )
-
-
 # ---------------------------------------------------------------------------
 # T5 — HITL round-trip + artifact creation through the tool-loop
 # ---------------------------------------------------------------------------
 
 async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_project):
-    """ask_user → confirm_intent → analysis_frame → write_draft approval → completed."""
+    """ask_user → confirm_intent → write_draft approval → completed."""
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])
 
@@ -59,7 +43,6 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
         tool_select("confirm_intent",
                     summary="Đặt mục tiêu đo lường được cho công cụ điều phối lịch học nhóm của sinh viên.",
                     active_mode="discovery"),
-        _analysis_frame_turn(),
         tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -70,7 +53,6 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
             {"type": "send", "content": "Tôi muốn đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
             {"type": "send", "content": "Chủ yếu là sinh viên đại học học theo nhóm."},
             {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
-            {"type": "send", "content": "Frame ổn, draft đi."},
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -98,7 +80,6 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
         tool_select("confirm_intent",
                     summary="Đặt mục tiêu cho công cụ điều phối lịch học nhóm của sinh viên.",
                     active_mode="discovery"),
-        _analysis_frame_turn(),
         tool_select("write_draft", title="Mục tiêu (bản nháp)", body=_GOAL_BODY, active_mode="structuring"),
     ])
     scenario = Scenario(
@@ -108,7 +89,6 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
         actions=[
             {"type": "send", "content": "Đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
             {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."},
-            {"type": "send", "content": "Frame ổn, gửi draft."},
             {"type": "reject_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 0},
@@ -145,8 +125,7 @@ async def test_tool_loop_composite_two_note_tools(client, scenario_env, scenario
         tool_select("confirm_intent",
                     summary="Điều phối lịch học nhóm cho sinh viên, đo bằng tỉ lệ tham gia.",
                     active_mode="discovery"),
-        # Turn 3: visible analysis frame, then draft.
-        _analysis_frame_turn(),
+        # Turn 3: draft after intent confirmed.
         tool_select("write_draft", title="Mục tiêu: điều phối lịch học nhóm", body=_GOAL_BODY,
                     active_mode="structuring"),
     ])
@@ -157,7 +136,6 @@ async def test_tool_loop_composite_two_note_tools(client, scenario_env, scenario
         actions=[
             {"type": "send", "content": "Tôi muốn đặt mục tiêu cho sản phẩm điều phối lịch học nhóm."},
             {"type": "send", "content": "Đúng rồi, tiếp tục."},
-            {"type": "send", "content": "Frame đúng, viết draft."},
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},

@@ -2,9 +2,8 @@
 
 Proves each behavior from the intent-phase-gate plan:
 confirm_intent schema registration, interrupt kind, user_confirmed update.
-artifact tools hidden before confirm_intent; analysis_frame opens the first-draft path.
 confirm_intent is solo-enforced while note tools may ride along.
-full gate → confirm → analysis_frame → draft menu open (schema-level proof).
+full gate → confirm → draft menu open (schema-level proof).
 """
 
 from __future__ import annotations
@@ -172,46 +171,17 @@ def _gate_offers_confirm_intent() -> GateResult:
 
 def _gate_unlocks_after_confirm() -> GateResult:
     names_after = _names({"messages": [], "user_confirmed": True})
-    passed = (
-        "analysis_frame" in names_after
-        and "write_draft" not in names_after
-        and "confirm_intent" not in names_after
-    )
+    passed = "write_draft" in names_after and "confirm_intent" not in names_after
     return GateResult(
-        gate="after user_confirmed=True — analysis_frame offered, first write_draft still gated",
+        gate="after user_confirmed=True — write_draft offered, confirm_intent retired",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
         reason=(
-            f"analysis_frame={'analysis_frame' in names_after}, "
             f"write_draft={'write_draft' in names_after}, "
             f"confirm_intent={'confirm_intent' in names_after}"
         ),
-    )
-
-
-def _ready_analysis_frame() -> dict[str, Any]:
-    return {
-        "interpreted_intent": "Xây công cụ điều phối lịch học nhóm cho sinh viên.",
-        "evidence": ["Sinh viên học nhóm 3-6 người.", "Pain chính là trùng lịch."],
-        "gaps": ["Chưa rõ success metric cụ thể."],
-        "analysis_angles": ["Đối tượng", "Pain", "MVP scope", "Metric"],
-        "assumptions": ["Có thể bắt đầu bằng MVP nhắc lịch và tìm khung giờ chung."],
-        "recommended_next_move": "Draft intent có đánh dấu metric cần xác nhận.",
-    }
-
-
-def _gate_unlocks_write_draft_after_analysis_frame() -> GateResult:
-    names_after = _names({"messages": [], "user_confirmed": True, "analysis_frame": _ready_analysis_frame()})
-    passed = "write_draft" in names_after and "analysis_frame" in names_after
-    return GateResult(
-        gate="after analysis_frame=True — write_draft unlocked",
-        passed=passed,
-        score=1.0 if passed else 0.0,
-        threshold=1.0,
-        critical=True,
-        reason=f"write_draft={'write_draft' in names_after}, tools={sorted(names_after)}",
     )
 
 
@@ -296,10 +266,10 @@ def _flow_blocks_write_draft_before_confirm() -> GateResult:
 
 
 def _flow_allows_write_draft_after_confirm() -> GateResult:
-    names_after = _names({"messages": [], "user_confirmed": True, "analysis_frame": _ready_analysis_frame()})
+    names_after = _names({"messages": [], "user_confirmed": True})
     passed = "write_draft" in names_after
     return GateResult(
-        gate="write_draft available after confirm + analysis_frame",
+        gate="write_draft available after confirm",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
@@ -323,7 +293,6 @@ def run_intent_gate_eval() -> dict[str, Any]:
         _gate_hides_artifact_tools_before_confirm(),
         _gate_offers_confirm_intent(),
         _gate_unlocks_after_confirm(),
-        _gate_unlocks_write_draft_after_analysis_frame(),
         _gate_confirm_intent_one_shot(),
         # solo enforcement
         _solo_confirm_keeps_companion_note(),
@@ -366,11 +335,11 @@ def _markdown_report(report: dict[str, Any]) -> str:
         "| --- | --- |",
         "| confirm_intent tool | schema name enum, arg/required keys, interrupt-bearing registration, "
         "user_confirmed+STREAM_RESPONSE |",
-        "| Intent phase gate | artifact tools hidden, confirm_intent offered, post-confirm analysis_frame, "
+        "| Intent phase gate | artifact tools hidden, confirm_intent offered, post-confirm write_draft, "
         "one-shot enforcement |",
         "| Solo enforcement | interrupt-bearing keeps side-effect-free note companion, empty summary self-rejects "
         "by ToolMessage |",
-        "| End-to-end flow | write_draft self-reject path before confirm, allowed after confirm + analysis_frame |",
+        "| End-to-end flow | write_draft self-reject path before confirm, allowed after confirm |",
     ]
     return "\n".join(lines) + "\n"
 

@@ -149,6 +149,10 @@ def supersede_node(
 
     dependent_status = "parked" if cascade_mode == "abandon" else "needs_confirmation"
     for dependent_id in dependents:
+        # A superseded dependent is frozen history; rippling it would resurrect a dead node and
+        # rewrite history (Invariant 1). update_node guards the same case; impact() skips it too.
+        if result[dependent_id]["status"] == "superseded":
+            continue
         result[dependent_id]["status"] = dependent_status
     return result
 
@@ -197,9 +201,11 @@ _PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
     ("actor", "Actor: xác định khách hàng và nhân viên thao tác trong luồng."),
     ("flow", "Luồng chính: mô tả từng bước xử lý từ đầu đến cuối."),
     ("rule", "Business rule: chốt quy tắc tích điểm và điều kiện tính điểm."),
-    ("edge_case", "Edge-case: khách quên SĐT lúc mua → cộng bù sau được không?"),
-    ("edge_case", "Edge-case: khách đổi SĐT → gộp lịch sử thế nào?"),
-    ("edge_case", "Edge-case: phiếu free hết hạn không?"),
+    # Each edge-case keys on its own distinctive phrase, not a shared "edge_case" marker, so coverage
+    # of one does not suppress the others (they map to separate PRD checklist items).
+    ("cộng bù", "Edge-case: khách quên SĐT lúc mua → cộng bù sau được không?"),
+    ("gộp lịch sử", "Edge-case: khách đổi SĐT → gộp lịch sử thế nào?"),
+    ("hết hạn", "Edge-case: phiếu free hết hạn không?"),
 )
 
 

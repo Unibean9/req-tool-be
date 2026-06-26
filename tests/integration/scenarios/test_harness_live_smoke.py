@@ -125,19 +125,10 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
     assert "finalize" not in greeting["tools"], (
         f"greeting must not finalize; got tools={greeting['tools']}"
     )
-    assert any("analysis_frame" in row["tools"] for row in trajectory), (
-        f"live analyst must present analysis_frame before drafting; trajectory={trajectory}"
-    )
     first_draft_idx = next(
         (idx for idx, row in enumerate(trajectory) if "write_draft" in row["tools"]),
         None,
     )
     assert first_draft_idx is not None, (
         f"live analyst must reach write_draft to prove the pre-draft flow; trajectory={trajectory}"
-    )
-    assert any("analysis_frame" in row["tools"] for row in trajectory[:first_draft_idx]), (
-        f"write_draft must be preceded by analysis_frame; trajectory={trajectory}"
-    )
-    assert all("analysis_frame_required" not in (row["tool_errors"] or []) for row in trajectory), (
-        f"model tried to bypass analysis_frame gate; trajectory={trajectory}"
     )

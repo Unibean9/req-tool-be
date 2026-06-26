@@ -51,12 +51,11 @@ def test_only_safety_gates_remain_without_intent_or_note_filter(decision_graph_f
     assert "finalize" not in names
 
 
-def test_write_draft_available_without_analysis_frame_or_elicit():
+def test_write_draft_available_without_elicit():
     names = _names(
         {
             "messages": [],
             "user_confirmed": True,
-            "analysis_frame": None,
             "decision_nodes": {},
             "session_elicit_count": 0,
         }

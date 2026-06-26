@@ -9,7 +9,6 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.graphs.agent_tools import (
-    _analysis_frame_impl,
     _confirm_intent_impl,
     _write_draft_impl,
     get_available_tools,
@@ -30,17 +29,6 @@ def _note_turn(call_id: str):
     return AIMessage(
         content="", tool_calls=[{"id": call_id, "name": "explore_note", "args": {"content": "x"}}]
     )
-
-
-def _ready_analysis_frame():
-    return {
-        "interpreted_intent": "Xây công cụ điều phối lịch học nhóm cho sinh viên.",
-        "evidence": ["Sinh viên học nhóm 3-6 người.", "Pain chính là trùng lịch."],
-        "gaps": ["Chưa rõ success metric cụ thể."],
-        "analysis_angles": ["Đối tượng", "Pain", "MVP scope", "Metric"],
-        "assumptions": ["Có thể bắt đầu bằng MVP nhắc lịch và tìm khung giờ chung."],
-        "recommended_next_move": "Draft intent có đánh dấu metric cần xác nhận.",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -73,23 +61,20 @@ def test_intent_phase_keeps_broad_tool_menu():
 def test_intent_phase_offers_confirm_intent():
     names = _names({"messages": [], "user_confirmed": None})
     assert "confirm_intent" in names
-    assert "analysis_frame" in names
 
 
 def test_artifact_phase_keeps_confirm_intent_and_write_draft_available():
     # confirm_intent tự reject nếu gọi lại; menu không còn one-shot gate.
     names = _names({"messages": [], "user_confirmed": True})
     assert "confirm_intent" in names
-    assert "analysis_frame" in names
     assert "write_draft" in names
 
 
-def test_write_draft_available_without_analysis_frame_or_elicit():
+def test_write_draft_available_without_elicit():
     names = _names(
         {
             "messages": [],
             "user_confirmed": True,
-            "analysis_frame": None,
             "session_elicit_count": 0,
         }
     )
@@ -157,62 +142,6 @@ def test_confirm_intent_keeps_note_alongside():
         ],
     )
     assert [g["name"] for g in gated] == ["explore_note", "confirm_intent"]
-
-
-def test_analysis_frame_is_interrupt_bearing():
-    assert "analysis_frame" in _INTERRUPT_BEARING_TOOLS
-
-
-@pytest.mark.asyncio
-async def test_analysis_frame_sets_state_and_streams_response():
-    state = {"messages": [], "user_confirmed": True, "last_agent_run_id": "00000000-0000-0000-0000-000000000004"}
-    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
-    frame = _ready_analysis_frame()
-
-    with (
-        patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new_callable=AsyncMock) as mock_save,
-        patch("app.graphs.agent_tools._audit_interaction_tool_call", new_callable=AsyncMock) as mock_audit,
-    ):
-        mock_save.return_value = "ok"
-        command = await _analysis_frame_impl(
-            frame["interpreted_intent"],
-            frame["evidence"],
-            frame["gaps"],
-            frame["analysis_angles"],
-            frame["assumptions"],
-            frame["recommended_next_move"],
-            state,
-            config,
-            "tc-frame",
-        )
-
-    assert command.update["analysis_frame"] == frame
-    assert command.update["tool_errors"] == []
-    assert mock_save.call_args.kwargs["kind"] == "assessment"
-    assert mock_save.call_args.kwargs["mode"] == "analysis_frame"
-    assert mock_save.call_args.kwargs["interrupt_kind"] == "stream_response"
-    mock_audit.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_analysis_frame_requires_all_frame_sections():
-    state = {"messages": [], "user_confirmed": True}
-    config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
-
-    command = await _analysis_frame_impl(
-        "Xây công cụ điều phối lịch.",
-        [],
-        [],
-        ["Phạm vi MVP"],
-        [],
-        "Trình frame cho user.",
-        state,
-        config,
-        "tc-frame-empty",
-    )
-
-    assert command.update["tool_errors"][0]["code"] == "analysis_frame_incomplete"
-    assert command.update["messages"][0].status == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -302,10 +231,6 @@ def test_write_draft_in_artifact_phase_not_coerced():
 
 def test_write_draft_available_before_confirm_intent():
     assert "write_draft" in _names({"messages": [], "user_confirmed": None})
-
-
-def test_write_draft_available_without_analysis_frame():
-    assert "write_draft" in _names({"messages": [], "user_confirmed": True, "analysis_frame": None})
 
 
 @pytest.mark.asyncio

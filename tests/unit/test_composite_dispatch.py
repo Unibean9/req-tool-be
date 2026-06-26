@@ -79,7 +79,7 @@ def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
 
 
 def test_gate_interrupt_tools_set_is_complete():
-    for tool in ("ask_user", "respond", "analysis_frame", "write_draft", "finalize"):
+    for tool in ("ask_user", "respond", "write_draft", "finalize"):
         assert tool in _INTERRUPT_BEARING_TOOLS
 
 

@@ -41,7 +41,6 @@ _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 # Tool impls now reject empty required args via a ToolMessage error, so this table no longer drives
 # dispatch; it survives only as the required-arg contract that the intent_gate eval and unit tests assert.
 _TOOL_REQUIRED_ARGS = {
-    "analysis_frame": ["interpreted_intent", "recommended_next_move"],
     "write_draft": ["body"],
     "finalize": ["summary"],
     "run_critique": ["mode"],
@@ -373,7 +372,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                 "quality_report": None,
                 "last_critiqued_draft_hash": None,
                 "candidate_readiness": None,
-                "analysis_frame": None,
                 "feedback_summary": None,
                 "verification_status": None,
                 "latest_checked_revision": None,
@@ -850,7 +848,7 @@ def _log_tool_error(code: str, tool_name: str, message: str) -> None:
 # DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
 # be paired with another tool in the same turn to preserve idempotency invariants.
 _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
-    "ask_user", "respond", "analysis_frame", "write_draft", "finalize", "confirm_intent",
+    "ask_user", "respond", "write_draft", "finalize", "confirm_intent",
 })
 
 # Silent scratchpad notes: no interrupt, no DB write, pure state append (assumptions/risks/
@@ -957,7 +955,6 @@ def _build_tool_selection_prompt(
         from app.graphs.decision_graph import render_view
 
         current_draft = render_view(decision_nodes, state.get("artifact_type") or "brd")
-    analysis_frame_block = _build_analysis_frame_block(state, bool(current_draft.strip()))
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
@@ -969,33 +966,11 @@ def _build_tool_selection_prompt(
         f"{_build_section_coverage_hint(state)}"
         f"{contract_block}"
         f"{key_facts_block}"
-        f"{analysis_frame_block}"
         f"{feedback_block}"
         f"{draft_block}"
         f"{decision_view_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
-    )
-
-
-def _build_analysis_frame_block(state: WorkflowState, has_draft: bool) -> str:
-    frame = state.get("analysis_frame")
-    if isinstance(frame, dict) and frame.get("interpreted_intent"):
-        parts = [
-            f"- intent: {frame.get('interpreted_intent')}",
-            f"- gaps: {_compact_list(frame.get('gaps') or [])}",
-            f"- analysis_angles: {_compact_list(frame.get('analysis_angles') or [])}",
-            f"- assumptions: {_compact_list(frame.get('assumptions') or [])}",
-            f"- next: {frame.get('recommended_next_move')}",
-        ]
-        return "\n\nANALYSIS FRAME ĐÃ TRÌNH USER:\n" + "\n".join(parts)
-    if has_draft:
-        return ""
-    return (
-        "\n\nANALYSIS FRAME TÙY CHỌN:\n"
-        "- Có thể dùng analysis_frame để trình bày intent, evidence, gaps, analysis_angles, "
-        "assumptions và recommended_next_move khi nó giúp user chỉnh hướng.\n"
-        "- Nếu thiếu blocker thật sự, dùng ask_user; nếu đã đủ dữ kiện, có thể write_draft trực tiếp."
     )
 
 
