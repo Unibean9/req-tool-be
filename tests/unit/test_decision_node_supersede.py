@@ -1,8 +1,8 @@
-"""Golden TDD — supersession & ripple invariants (made green in Phase 04).
+"""Supersession & ripple invariants for the decision graph.
 
-Until app.graphs.decision_graph ships, the module-level xfail condition is active and
-these run as expected-failures (CI stays green). Once the module imports, the condition
-flips False and the assertions run for real.
+The module-level xfail guards the window before app.graphs.decision_graph exists: while it
+is absent these run as expected-failures so the suite stays green; once it imports, the
+condition flips False and the assertions run for real.
 """
 
 import pytest
@@ -11,13 +11,13 @@ try:
     from app.graphs.decision_graph import get_dependents, supersede_node
 
     _PENDING = None
-except ImportError as exc:  # pragma: no cover - resolves once Phase 04 lands
+except ImportError as exc:  # pragma: no cover - resolves once the module exists
     get_dependents = supersede_node = None
     _PENDING = str(exc)
 
 pytestmark = pytest.mark.xfail(
     _PENDING is not None,
-    reason=f"decision_graph pending (Phase 04): {_PENDING}",
+    reason=f"decision_graph not yet available: {_PENDING}",
     strict=False,
 )
 

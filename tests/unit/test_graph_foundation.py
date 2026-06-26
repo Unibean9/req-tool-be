@@ -131,6 +131,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "readiness": dict(DEFAULT_READINESS),
         "working_draft": None,
         "mode_hint": None,
+        "decision_nodes": {},
     }
 
     assert state["turn_count"] == 0
@@ -173,6 +174,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "tool_errors",
         "feedback_summary",
         "session_elicit_count",
+        "decision_nodes",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

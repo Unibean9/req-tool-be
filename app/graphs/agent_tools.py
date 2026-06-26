@@ -27,6 +27,15 @@ from sqlalchemy import exists, func, select
 from app.config import settings
 from app.documents.registry import children_of, status_score
 from app.graphs import nodes
+from app.graphs.decision_graph import (
+    VALID_KINDS,
+    VALID_STATUSES,
+    create_node,
+    get_dependents,
+    render_view,
+    supersede_node,
+    update_node,
+)
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import QualityReport, WorkflowState
@@ -116,7 +125,13 @@ async def current_draft_body(
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
     through here. Divergence between any two sites (one using only working_draft) permanently locks
     DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
+
+    The decision graph is the source of truth: when it has nodes, the rendered view wins over any
+    stored body so a stale DB draft can never shadow the live graph (Invariant 4).
     """
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
+        return render_view(decision_nodes, state.get("artifact_type") or "brd")
     focused_artifact_id = state.get("focused_artifact_id")
     if focused_artifact_id and config is not None:
         session_factory = (config.get("configurable") or {}).get("session_factory")
@@ -136,7 +151,13 @@ async def current_draft_body(
 
 
 def _cached_draft_body(state: WorkflowState) -> str:
-    """Draft already loaded by analyze_node, used by synchronous menu construction."""
+    """Draft already loaded by analyze_node, used by synchronous menu construction.
+
+    Mirrors current_draft_body precedence: the rendered graph view wins when nodes exist.
+    """
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
+        return render_view(decision_nodes, state.get("artifact_type") or "brd")
     return state.get("draft_body") or state.get("working_draft") or ""
 
 
@@ -432,9 +453,23 @@ async def analysis_frame(
 # write_draft — parity for the `propose` enum branch
 # ---------------------------------------------------------------------------
 
+def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
+    """Body write_draft proposes for approval.
+
+    With the decision graph as source of truth (nodes present) the proposal is the rendered view, not
+    the model-supplied string — write_draft is the propose/approval gate, mutation lives in the
+    create/update/supersede tools. Empty graph → the model's body (backward compat).
+    """
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
+        return render_view(decision_nodes, state.get("artifact_type") or "brd")
+    return body
+
+
 async def _write_draft_impl(
     title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str
 ):
+    body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
     if state.get("user_confirmed") is None:
@@ -554,7 +589,8 @@ async def write_draft(
     body: Annotated[
         str,
         "Full draft body in Markdown following the artifact's output contract (required headings); "
-        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump.",
+        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump. "
+        "Ignored once decision nodes exist — the proposal is rendered from the graph.",
     ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -563,8 +599,9 @@ async def write_draft(
     """Propose an artifact draft and pause for the user to review it.
 
     Use once enough confirmed information exists to produce a structured draft. Available only in the
-    artifact phase (after confirm_intent). The body grows incrementally across turns — never rewrite
-    it from scratch or invent content the user has not provided.
+    artifact phase (after confirm_intent). This is the propose/approval gate: when decision nodes
+    exist the proposal is the view rendered from the graph (record content via the decision-node tools,
+    not here). Without a graph, supply the body — it grows incrementally, never rewritten from scratch.
     """
     return await _write_draft_impl(title, body, state, config, tool_call_id)
 
@@ -711,6 +748,175 @@ async def explore_note(
     Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
     """
     return await _write_note_impl(content, state, tool_call_id, "explore_note")
+
+
+# ---------------------------------------------------------------------------
+# decision graph — create / update / supersede nodes (flag-gated)
+# ---------------------------------------------------------------------------
+# The decision graph is the source of truth that replaces the flat working_draft string. These three
+# tools mutate decision_nodes in state (no DB, no interrupt) via Command.update — the whole dict is
+# replaced each call because LangGraph does not merge nested state. All writes are behind
+# DECISION_GRAPH_ENABLED so an in-progress graph model never leaks into a persisted checkpoint.
+_TOOL_EDITABLE_STATUSES = VALID_STATUSES - {"superseded"}
+
+
+def _decision_graph_off_update(tool_name: str, tool_call_id: str) -> Command:
+    logger.warning("tool=%s skipped: DECISION_GRAPH_ENABLED is off", tool_name)
+    return _tool_not_available_update(
+        tool_name, "decision graph đang tắt (DECISION_GRAPH_ENABLED=false)", tool_call_id
+    )
+
+
+def _node_origin(state: WorkflowState, technique: str | None) -> dict[str, Any]:
+    return {"turn": state.get("turn_count") or 0, "by": "agent", "technique": technique, "source": None}
+
+
+async def _create_decision_node_impl(
+    kind: str, statement: str, depends_on: list[str] | None, technique: str | None,
+    state: WorkflowState, tool_call_id: str, node_id: str | None = None,
+) -> Command:
+    if not settings.decision_graph_enabled:
+        return _decision_graph_off_update("create_decision_node", tool_call_id)
+    if kind not in VALID_KINDS:
+        return _tool_not_available_update(
+            "create_decision_node", f"kind không hợp lệ '{kind}'; chọn một trong {sorted(VALID_KINDS)}", tool_call_id
+        )
+    if not str(statement or "").strip():
+        return _missing_required_arg_update("create_decision_node", "statement", tool_call_id)
+
+    nodes_state = state.get("decision_nodes") or {}
+    node = create_node(
+        kind=kind, statement=statement, origin=_node_origin(state, technique),
+        depends_on=depends_on, node_id=node_id,
+    )
+    if node["id"] in nodes_state:
+        return _tool_not_available_update(
+            "create_decision_node", f"node_id '{node['id']}' đã tồn tại; dùng update/supersede thay vì ghi đè",
+            tool_call_id,
+        )
+    updated = {**nodes_state, node["id"]: node}
+    return Command(
+        update={
+            "decision_nodes": updated,
+            "messages": [ToolMessage(content=f"node {node['id']} ({kind})", tool_call_id=tool_call_id)],
+        }
+    )
+
+
+async def _update_decision_node_impl(
+    node_id: str, status: str | None, statement: str | None, state: WorkflowState, tool_call_id: str,
+) -> Command:
+    if not settings.decision_graph_enabled:
+        return _decision_graph_off_update("update_decision_node", tool_call_id)
+    nodes_state = state.get("decision_nodes") or {}
+    if node_id not in nodes_state:
+        return _tool_not_available_update("update_decision_node", f"node '{node_id}' không tồn tại", tool_call_id)
+    if nodes_state[node_id].get("status") == "superseded":
+        return _tool_not_available_update(
+            "update_decision_node", f"node '{node_id}' đã superseded; dùng node thay thế để chỉnh tiếp",
+            tool_call_id,
+        )
+    if status is not None and status not in _TOOL_EDITABLE_STATUSES:
+        return _tool_not_available_update(
+            "update_decision_node",
+            f"status không hợp lệ '{status}'; chọn một trong {sorted(_TOOL_EDITABLE_STATUSES)}",
+            tool_call_id,
+        )
+
+    updates = {k: v for k, v in {"status": status, "statement": statement}.items() if v is not None}
+    if not updates:
+        return _missing_required_arg_update("update_decision_node", "status hoặc statement", tool_call_id)
+    updated = update_node(nodes_state, node_id, **updates)
+    return Command(
+        update={
+            "decision_nodes": updated,
+            "messages": [ToolMessage(content=f"node {node_id} updated", tool_call_id=tool_call_id)],
+        }
+    )
+
+
+async def _supersede_decision_node_impl(
+    node_id: str, new_statement: str, cascade_mode: str | None, state: WorkflowState, tool_call_id: str,
+) -> Command:
+    if not settings.decision_graph_enabled:
+        return _decision_graph_off_update("supersede_decision_node", tool_call_id)
+    nodes_state = state.get("decision_nodes") or {}
+    if node_id not in nodes_state:
+        return _tool_not_available_update("supersede_decision_node", f"node '{node_id}' không tồn tại", tool_call_id)
+    if not str(new_statement or "").strip():
+        return _missing_required_arg_update("supersede_decision_node", "new_statement", tool_call_id)
+    if cascade_mode is not None and cascade_mode not in {"reconfirm", "abandon"}:
+        return _tool_not_available_update(
+            "supersede_decision_node", f"cascade_mode không hợp lệ '{cascade_mode}'", tool_call_id
+        )
+
+    dependents = get_dependents(nodes_state, node_id)
+    updated = supersede_node(nodes_state, node_id, new_statement, _node_origin(state, None), cascade_mode)
+    new_id = updated[node_id]["superseded_by"]
+    applied_mode = "abandon" if any(updated[d]["status"] == "parked" for d in dependents) else "reconfirm"
+    summary = f"superseded {node_id} → {new_id}; cascade={applied_mode}; dependents={dependents or 'none'}"
+    return Command(
+        update={
+            "decision_nodes": updated,
+            "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def create_decision_node(
+    kind: Annotated[str, "objective | scope | assumption | decision | risk | open_question | fact"],
+    statement: Annotated[str, "The decision/objective/etc. as a single clear statement, in the user's locale."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    depends_on: Annotated[list[str] | None, "ids of nodes this one builds on; [] for a root."] = None,
+    technique: Annotated[str | None, "Elicitation technique that produced this node, for provenance."] = None,
+    node_id: Annotated[str | None, "Optional stable short id (e.g. N1); auto-generated if omitted."] = None,
+) -> Command:
+    """Record a new decision-graph node (objective, decision, risk, ...) with provenance.
+
+    Use to capture a piece of analysis as durable state instead of prose in a draft. Each node keeps
+    why it exists (origin) and what it builds on (depends_on) so later reversals can ripple correctly.
+    """
+    return await _create_decision_node_impl(kind, statement, depends_on, technique, state, tool_call_id, node_id)
+
+
+@tool
+async def update_decision_node(
+    node_id: Annotated[str, "id of the node to update."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    status: Annotated[str | None, "New status: proposed|confirmed|inferred|needs_confirmation|parked."] = None,
+    statement: Annotated[str | None, "Revised statement (a local edit, NOT a reversal)."] = None,
+) -> Command:
+    """Update a node's status or statement in place — a local edit that does not rewrite history.
+
+    Use to confirm a proposed node or refine its wording. To reverse a decision (keep history + ripple
+    to dependents) use supersede_decision_node instead.
+    """
+    return await _update_decision_node_impl(node_id, status, statement, state, tool_call_id)
+
+
+@tool
+async def supersede_decision_node(
+    node_id: Annotated[str, "id of the node being reversed."],
+    new_statement: Annotated[str, "The replacement decision/objective, in the user's locale."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    cascade_mode: Annotated[
+        str | None,
+        "How dependents ripple: 'reconfirm' (local edit, dependents need re-confirm) or 'abandon' "
+        "(direction reversal, dependents parked). Omit to infer: a root decision node or one with "
+        "many dependents → abandon; otherwise reconfirm. Pass explicitly when you know the intent.",
+    ] = None,
+) -> Command:
+    """Reverse a decision without destroying history and ripple the change to dependents.
+
+    Creates a new node that supersedes the old one (old → superseded, kept for provenance) and marks
+    every dependent stale (reconfirm) or parked (abandon). Use for a genuine change of direction; use
+    update_decision_node for a local wording/status edit.
+    """
+    return await _supersede_decision_node_impl(node_id, new_statement, cascade_mode, state, tool_call_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1338,7 @@ CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
 
 # ---------------------------------------------------------------------------
-# Elicitation surface (Phase 02) — BMAD technique scaffolds + external knowledge
+# Elicitation surface — BMAD technique scaffolds + external knowledge
 # ---------------------------------------------------------------------------
 
 ELICIT_TECHNIQUES = ("5_whys", "reverse", "moscow", "first_principles", "comparable_products")
@@ -1341,6 +1547,9 @@ def get_all_analyzer_tools() -> list:
         confirm_intent,
         elicit_tool,
         web_search_tool,
+        create_decision_node,
+        update_decision_node,
+        supersede_decision_node,
     ]
 
 
@@ -1422,6 +1631,8 @@ def get_available_tools(state: WorkflowState) -> list:
             elicit_tool,
             web_search_tool,
         ]
+        # Nodes are recorded during cold-start exploration, before confirm_intent opens the artifact.
+        intent_tools.extend(_decision_graph_menu(state))
         if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
             intent_tools = [t for t in intent_tools if t.name not in NOTE_TOOL_NAMES]
         return intent_tools
@@ -1463,4 +1674,19 @@ def get_available_tools(state: WorkflowState) -> list:
     decision_nodes = state.get("decision_nodes") or {}
     if not decision_nodes and (state.get("session_elicit_count") or 0) == 0:
         tools = [t for t in tools if t.name != "write_draft"]
+    tools.extend(_decision_graph_menu(state))
     return tools
+
+
+def _decision_graph_menu(state: WorkflowState) -> list:
+    """Decision-graph tools available this turn — empty when the feature flag is off.
+
+    create is always offered (nodes can be created from a fresh graph); update/supersede only once at
+    least one node exists.
+    """
+    if not settings.decision_graph_enabled:
+        return []
+    menu = [create_decision_node]
+    if state.get("decision_nodes"):
+        menu.extend([update_decision_node, supersede_decision_node])
+    return menu

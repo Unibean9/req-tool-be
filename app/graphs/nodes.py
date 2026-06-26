@@ -769,8 +769,17 @@ def _build_key_facts_block(state: WorkflowState) -> str:
 
 def _build_working_draft_block(state: WorkflowState) -> str:
     """Running-draft block (C1): the in-session draft accumulated across turns, newer than the
-    persisted body, so the model treats it as the live target."""
-    working_draft = (state.get("working_draft") or "").strip()
+    persisted body, so the model treats it as the live target.
+
+    When the decision graph has nodes it is the source of truth — render the view from it rather than
+    the legacy working_draft string, which survives only as a fallback for graph-less sessions."""
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
+        from app.graphs.decision_graph import render_view
+
+        working_draft = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
+    else:
+        working_draft = (state.get("working_draft") or "").strip()
     if not working_draft:
         return ""
     return (

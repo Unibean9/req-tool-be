@@ -1,9 +1,8 @@
-"""Pure builders for DecisionNode test fixtures (golden TDD harness).
+"""Pure builders for DecisionNode test fixtures.
 
-Build plain dicts matching the DecisionNode schema in
-plans/harness-refactor/golden-conversation.md (Phần 0). Deliberately do NOT import
-from app.graphs.decision_graph: that module ships in Phase 04, and the harness must
-collect and fail red before it exists.
+Build plain dicts matching the DecisionNode schema. Deliberately do NOT import from
+app.graphs.decision_graph so the fixtures stay usable as a red-test harness before that
+module exists and never couple the test data to the implementation under test.
 """
 
 from itertools import count

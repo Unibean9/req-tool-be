@@ -38,6 +38,24 @@ class KeyFactObject(TypedDict):
     turn: str
 
 
+class DecisionNode(TypedDict):
+    """Một nút trong đồ thị quyết định — đơn vị sự thật thay cho working_draft phẳng.
+
+    Vòng đời giữ lịch sử: đổi quyết định = tạo node mới supersedes node cũ, không xóa. Cạnh depends_on
+    cho phép ripple ngược khi một node bị supersede. View (BRD/PRD) là dẫn xuất, render từ các node active.
+    """
+    id: str
+    kind: str  # objective | scope | assumption | decision | risk | open_question | fact
+    statement: str
+    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded
+    origin: dict[str, Any]  # {turn, by, technique, source} — vì sao node này tồn tại
+    depends_on: list[str]
+    supersedes: str | None
+    superseded_by: str | None
+    blocks: list[str]
+    answer: str | None
+
+
 class AnalysisFrame(TypedDict):
     """Khung phân tích đã trình cho user trước khi tạo draft đầu tiên."""
     interpreted_intent: str
@@ -174,6 +192,9 @@ class WorkflowState(TypedDict):
     # project must run at least one elicitation before write_draft is offered. Resets per session
     # (not persisted across resume) — each new session re-explores before drafting.
     session_elicit_count: int
+    # Đồ thị quyết định, keyed by node id — nguồn sự thật cho artifact; working_draft vẫn chạy song
+    # song cho tới khi được retire. Session cũ thiếu key này → default {} (không migration, không crash).
+    decision_nodes: dict[str, DecisionNode]
 
 
 def build_initial_workflow_state(
@@ -226,4 +247,5 @@ def build_initial_workflow_state(
         "readiness": dict(DEFAULT_READINESS),
         "mode_hint": mode_hint,
         "session_elicit_count": 0,
+        "decision_nodes": {},
     }
