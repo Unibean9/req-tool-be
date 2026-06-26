@@ -34,6 +34,7 @@ pythonpath = ["."]
 markers = [
     "integration: Test requires JUDGE_API_KEY because it makes real API calls",
     "eval: Requires JUDGE_API_KEY; calls real LLM judge — run with pytest tests/eval/",
+    "live: Subset of integration tests that call a real LLM analyst (not ScriptedLLM)",
 ]
 
 [tool.coverage.run]

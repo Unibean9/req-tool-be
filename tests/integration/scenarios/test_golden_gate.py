@@ -218,3 +218,55 @@ async def test_moscow_pushes_out_of_scope_to_parked(client, scenario_env, scenar
 
     assert nodes["O1"]["status"] == "parked"
     assert nodes["M1"]["status"] != "parked"
+
+
+# ---------------------------------------------------------------------------
+# R7 — Multi-role within a single user turn (harness capability, ScriptedLLM)
+# ---------------------------------------------------------------------------
+
+async def test_multi_role_tools_within_single_user_turn(
+    client, scenario_env, scenario_project, graph_flag_on
+):
+    """R7: harness must support ≥4 distinct roles in one user-turn (explore→write→update→critique→ask).
+
+    Uses ScriptedLLM to drive the sequence deterministically; the assertion is about
+    harness capability (can all these tools dispatch between two user messages?), not
+    model judgment.
+    """
+    headers, project = scenario_project
+    project_id = uuid.UUID(project["id"])
+
+    multi_role_brain = ScriptedLLM(tool_brain=[
+        # All 5 calls happen BEFORE the second user message (single drain).
+        # respond is interrupt-bearing so it cannot precede ask_user in the same drain;
+        # use critique_note (non-interrupt) for the phản-biện role instead.
+        tool_select("elicit_tool", technique="5_whys", seed="hụt nguyên liệu"),       # khai phá
+        tool_select("create_decision_node", node_id="N1", kind="decision",             # ghi
+                    statement="vận hành-first", technique="5_whys"),
+        tool_select("update_decision_node", node_id="N1", status="confirmed"),         # cập nhật
+        tool_select("critique_note", content="Rủi ro: nhân viên ngại nhập liệu."),    # phản biện
+        tool_select("ask_user", message="Bạn đồng ý hướng vận hành-first không?"),    # điều phối
+    ])
+    scenario = Scenario(
+        name="r7-multi-role",
+        artifact_type="intent",
+        llm=multi_role_brain,
+        actions=[{"type": "send", "content": "Tôi muốn làm app quản lý quán cà phê."}],
+        expect={},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
+    await driver.run()
+
+    raw_messages = await scenario_env.get_checkpoint_field(driver.session_id, "messages")
+    tool_names_used: set[str] = set()
+    for msg in raw_messages or []:
+        for tc in getattr(msg, "tool_calls", []):
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            if name:
+                tool_names_used.add(name)
+
+    assert "elicit_tool" in tool_names_used, "Explore role not exercised within single turn"
+    assert "create_decision_node" in tool_names_used, "Write role not exercised"
+    assert "update_decision_node" in tool_names_used, "Update role not exercised"
+    assert "critique_note" in tool_names_used, "Critique role not exercised"
+    assert "ask_user" in tool_names_used, "Orchestrate role not exercised"

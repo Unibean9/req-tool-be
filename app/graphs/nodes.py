@@ -60,11 +60,7 @@ def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
-    """Convert LangGraph tool objects to the provider-agnostic schema list for generate(tools=...).
-
-    analyze_node binds the full registry so an out-of-turn tool self-rejects via a tool_result error
-    rather than being swapped out by the graph; the per-state menu is surfaced in the prompt instead.
-    """
+    """Chuyển tool hợp lệ theo state thành schema provider-agnostic cho generate(tools=...)."""
     schemas: list[dict[str, Any]] = []
     for t in tools:
         raw = t.args_schema.model_json_schema() if t.args_schema else {"type": "object", "properties": {}}
@@ -297,7 +293,7 @@ def _should_run_completeness_sweep(state: WorkflowState) -> bool:
 async def orchestrator_node(
     state: WorkflowState, config: RunnableConfig | None = None
 ) -> dict[str, Any]:
-    """Pre-agent orchestrator: resurface parked blockers and run triggered completeness sweep."""
+    """Điều phối trước analyst: resurface parked blocker và chạy completeness sweep khi được kích hoạt."""
     _ = config
     decision_nodes = state.get("decision_nodes") or {}
     feedback = dict(state.get("feedback_summary") or {})
@@ -430,9 +426,13 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         agent_role=cfg.get("agent_role"),
         context={"has_draft": draft_body is not None},
     )
-    from app.graphs.agent_tools import get_all_analyzer_tools
+    # Artifact-type shape (taxonomy chain + section-coverage contract) belongs with the static policy
+    # in L1, not the per-turn payload — appended last so the static prefix stays cache-friendly.
+    system_prompt = (system_prompt or "") + _build_artifact_contract_block(effective_state)
+    from app.graphs.agent_tools import get_available_tools
 
-    tool_schemas = _build_tool_schemas(get_all_analyzer_tools())
+    available_tools = get_available_tools(effective_state)
+    tool_schemas = _build_tool_schemas(available_tools)
     started_at = time.monotonic()
     ai_message, usage = await llm_client.generate(
         messages=_build_analyzer_messages(effective_state, prompt),
@@ -443,8 +443,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
 
-    # Post-call gate now keeps only the solo-enforcement invariant; availability and field errors
-    # round-trip through tool_result so the model self-corrects next turn.
+    # Gate sau LLM chỉ giữ invariant solo; availability đã được enforce bằng tool surface theo state.
     raw_tools = [
         {"name": tc.get("name") or "", "args": dict(tc.get("args") or {})}
         for tc in (getattr(ai_message, "tool_calls", None) or [])
@@ -682,7 +681,13 @@ def _msg_role_content(m) -> tuple[str, str]:
 
 
 def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str, Any]]:
-    """Build the real message thread for the LLM: conversation history + tool_use/tool_result + this turn's analysis payload."""
+    """Dựng message thread thật cho LLM, đặt workspace payload đúng chỗ theo recency.
+
+    Câu mới nhất của user phải là message cuối model đọc — primacy/recency được trọng số cao hơn
+    hẳn vùng giữa (lost-in-the-middle). Vì vậy khối workspace động được chèn NGAY TRƯỚC lượt user
+    cuối, để câu user là chốt. Chỉ khi đang giữa tool-loop (message cuối là tool_result, không phải
+    lượt người) thì workspace mới nối ở cuối như cũ — lúc đó recency nên thuộc về tool context.
+    """
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
     for raw in state.get("messages") or []:
@@ -690,7 +695,54 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
         if message is not None:
             _append_client_message(messages, message)
     _append_analyzer_prompt(messages, prompt)
+    _append_latest_user_emphasis(messages, _latest_human_text(state))
     return messages
+
+
+def _is_human_turn(message: Any) -> bool:
+    """A genuine human turn — a plain user message, not a tool_result/tool output or assistant turn.
+
+    On resume the harness records the human reply as a plain ``{"role": "user", ...}`` dict (or a
+    HumanMessage); tool outputs arrive as ToolMessages (role/type ``tool`` or carrying a
+    tool_call_id). This distinction is what lets us re-surface the human's words without mistaking a
+    mid-loop tool result for user input.
+    """
+    if isinstance(message, dict):
+        if message.get("tool_call_id") or message.get("tool_calls"):
+            return False
+        return str(message.get("role") or "") in {"user", "human"}
+    if getattr(message, "tool_call_id", None) or getattr(message, "tool_calls", None):
+        return False
+    return getattr(message, "type", "") in {"user", "human"}
+
+
+def _latest_human_text(state: WorkflowState) -> str:
+    """Text of the most recent genuine human turn, for recency re-surfacing (empty if none)."""
+    for raw in reversed(state.get("messages") or []):
+        if _is_human_turn(raw):
+            _role, content = _msg_role_content(raw)
+            text = str(content or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _append_latest_user_emphasis(messages: list[dict[str, Any]], human_text: str) -> None:
+    """Make the human's latest message the FINAL text block the model reads.
+
+    The conversation, not the rules, must own the recency slot: a long static/workspace payload in
+    the middle is undervalued (lost-in-the-middle), so the user's actual ask is restated last. Works
+    for every case — a tool_result-bearing resume turn buries the reply inside a tool_result block,
+    so re-stating it as a trailing text block is the only way to keep it last.
+    """
+    if not human_text or not messages:
+        return
+    block = {"type": "text", "text": f"— Lượt mới nhất của người dùng (ưu tiên phản hồi trúng ý này): {human_text}"}
+    last = messages[-1]
+    if last.get("role") == "user":
+        last["content"] = [*_content_blocks(last.get("content")), block]
+    else:
+        messages.append({"role": "user", "content": [block]})
 
 
 def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -> dict[str, Any] | None:
@@ -946,25 +998,17 @@ def _build_tool_selection_prompt(
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
     draft_block = _build_draft_block(state, draft_body)
     decision_view_block = _build_decision_view_block(state)
-    contract_block = _build_output_contract_block(state)
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
-    decision_nodes = state.get("decision_nodes") or {}
-    current_draft = draft_body or state.get("draft_body") or ""
-    if decision_nodes:
-        from app.graphs.decision_graph import render_view
-
-        current_draft = render_view(decision_nodes, state.get("artifact_type") or "brd")
-
+    # Taxonomy chain + section-coverage contract are no longer here — they moved to the system prompt
+    # (see _build_artifact_contract_block) so the per-turn payload stays small next to the conversation.
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
-        f"Context hiện tại:\n{artifact_context}"
-        f"{_build_taxonomy_chain_block(state)}\n\n"
+        f"Context hiện tại:\n{artifact_context}\n\n"
         f"{summary_block}"
         f"Công cụ khả dụng lượt này: {tool_menu}.\n"
         "Chọn 1–3 công cụ phù hợp và điền các field của từng công cụ theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
-        f"{contract_block}"
         f"{key_facts_block}"
         f"{feedback_block}"
         f"{draft_block}"
@@ -1015,7 +1059,11 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
 
     if not parts:
         return ""
-    return "\n\nFEEDBACK CONTROL:\n" + "\n".join(parts)
+    return (
+        "\n\nFEEDBACK CONTROL:\n"
+        "- các tín hiệu dưới đây là ưu tiên điều phối; tự chọn tool và thứ tự phù hợp, không bỏ qua.\n"
+        + "\n".join(parts)
+    )
 
 
 def _compact_list(values: list[Any], limit: int = 3) -> str:
@@ -1023,6 +1071,16 @@ def _compact_list(values: list[Any], limit: int = 3) -> str:
     if len(values) > limit:
         rendered.append(f"... (+{len(values) - limit})")
     return "; ".join(rendered)
+
+
+def _build_artifact_contract_block(state: WorkflowState) -> str:
+    """Artifact-type shape appended to the SYSTEM prompt (L1), not the per-turn payload.
+
+    The taxonomy chain and the section-coverage contract depend only on artifact_type (stable per
+    session), so they belong with the static policy — kept out of the per-turn user payload so they
+    do not compete with the live conversation for the recency slot.
+    """
+    return _build_taxonomy_chain_block(state) + _build_output_contract_block(state)
 
 
 def _build_taxonomy_chain_block(state: WorkflowState) -> str:
@@ -1052,6 +1110,18 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(không bắt buộc table)"
+    # Graph-first: the artifact view renders from decision nodes, so the contract is a coverage target
+    # for the nodes to fill — not a Markdown body to hand-write. Only the flag-off rollback path still
+    # authors a body directly, so keep the body-shape contract for that case.
+    if settings.decision_graph_enabled:
+        # Chỉ giữ phần artifact-specific (section + table) ở per-turn; policy ghi-node/status/đừng-bịa
+        # đã nằm trong system prompt (layer 05/10) nên không lặp lại ở đây (giảm context rot).
+        return (
+            "\n\nSECTION CẦN PHỦ (view render từ decision graph — tạo node lấp vào, KHÔNG tự viết body Markdown):\n"
+            f"{headings}\n"
+            f"Table columns khi dùng table: {columns}\n"
+            "Ưu tiên current/accepted artifact version và predecessor đã accepted hơn chat history."
+        )
     return (
         "\n\nOUTPUT CONTRACT BẮT BUỘC:\n"
         f"- Artifact type: {artifact_type}\n"

@@ -146,6 +146,37 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
 
 @pytest.mark.asyncio
+async def test_analyze_node_binds_only_available_tool_schemas(client, db_session, monkeypatch):
+    """Schema tool gửi cho LLM phải khớp menu theo state, không bind registry đầy đủ."""
+    from app.graphs.nodes import analyze_node
+
+    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[]), None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+
+    tool_names = {tool["name"] for tool in mock_llm.generate.call_args.kwargs["tools"]}
+    assert "create_decision_node" in tool_names
+    assert "update_decision_node" not in tool_names
+    assert "supersede_decision_node" not in tool_names
+    assert "run_critique" not in tool_names
+    assert "run_readiness_check" not in tool_names
+    assert "finalize" not in tool_names
+
+
+@pytest.mark.asyncio
 async def test_analyze_node_resets_critique_state_when_db_focused_artifact_changes(client, db_session):
     from app.graphs.nodes import analyze_node
     from app.models.artifact import Artifact
@@ -251,15 +282,16 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     assert brd_title in prompt, "Predecessor BRD title must appear in the analyst prompt context"
 
 
-def test_output_contract_block_requires_candidate_gap_markers():
+def test_output_contract_block_lists_sections_for_graph_view():
     from app.graphs.nodes import _build_output_contract_block
 
     block = _build_output_contract_block(_state(artifact_type="vision_objectives"))
 
-    assert "inferred" in block
-    assert "missing" in block
-    assert "needs_confirmation" in block
-    assert "phần thiếu" in block
+    # Graph-first per-turn block carries only artifact-specific sections + framing; the
+    # recording/status/no-fabrication policy lives in the system prompt (layers 05/10), not here.
+    assert "decision graph" in block
+    assert "KHÔNG tự viết body" in block
+    assert "## Vision" in block
 
 
 @pytest.mark.asyncio
@@ -1378,16 +1410,55 @@ def test_build_graph_returns_compiled_graph_without_error():
     assert graph is not None
 
 
-def test_tool_selection_prompt_includes_artifact_output_contract():
-    from app.graphs.nodes import _build_tool_selection_prompt
+def test_artifact_contract_block_carries_sections_and_taxonomy():
+    """Artifact shape (section-coverage contract + taxonomy chain) now lives in the SYSTEM prompt
+    via _build_artifact_contract_block, not the per-turn payload."""
+    from app.graphs.nodes import _build_artifact_contract_block, _build_tool_selection_prompt
 
+    block = _build_artifact_contract_block(_state(artifact_type="vision_objectives"))
+    assert "SECTION CẦN PHỦ" in block
+    assert "## Vision" in block
+    assert "## Objectives" in block
+    assert "render từ decision graph" in block
+    assert "LOẠI ARTIFACT" in block  # taxonomy chain moved here too
+
+    # And it is no longer duplicated in the per-turn payload.
     prompt = _build_tool_selection_prompt(_state(artifact_type="vision_objectives"), [])
+    assert "SECTION CẦN PHỦ" not in prompt
 
-    assert "OUTPUT CONTRACT BẮT BUỘC" in prompt
-    assert "## Vision" in prompt
-    assert "## Objectives" in prompt
-    assert "không copy nguyên transcript" in prompt
-    assert "(agent suy diễn, cần xác nhận)" in prompt
+
+def _final_block_text(message: dict) -> str:
+    content = message["content"]
+    if isinstance(content, list):
+        return str(content[-1].get("text", ""))
+    return str(content)
+
+
+def test_analyzer_messages_keep_user_latest_as_final_block():
+    """Recency: the human's latest message must be the final text block, not the workspace payload."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from app.graphs.nodes import _build_analyzer_messages
+
+    # Plain-user turn (turn 1)
+    st = _state(artifact_type="vision_objectives")
+    st["messages"] = [{"role": "user", "content": "Tôi muốn làm app quán cà phê"}]
+    msgs = _build_analyzer_messages(st, "WORKSPACE-PAYLOAD")
+    assert "Tôi muốn làm app quán cà phê" in _final_block_text(msgs[-1])
+
+    # Tool_result-resume turn: the human reply arrives inside a tool_result block
+    st2 = _state(artifact_type="vision_objectives")
+    st2["messages"] = [
+        {"role": "user", "content": "Tôi muốn làm app quán cà phê"},
+        AIMessage(content="", tool_calls=[{"id": "r:0", "name": "ask_user", "args": {"message": "Pain chính?"}}]),
+        ToolMessage(content="Hụt nguyên liệu", tool_call_id="r:0"),
+        {"role": "user", "content": "Hụt nguyên liệu"},
+    ]
+    msgs2 = _build_analyzer_messages(st2, "WORKSPACE-PAYLOAD")
+    final2 = _final_block_text(msgs2[-1])
+    assert msgs2[-1]["role"] == "user"
+    assert "Hụt nguyên liệu" in final2
+    assert "WORKSPACE-PAYLOAD" not in final2
 
 
 @pytest.mark.asyncio

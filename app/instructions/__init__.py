@@ -3,14 +3,19 @@
 An *instruction* steers the model's policy (which mode/tool to pick, when to finalize), not the
 per-turn payload. The harness owns schema and state; these files own judgment.
 
-The contract is split into 10 responsibility layers (spec §5, §6, §13; addendum §9). Nine are shared
-(role-agnostic); only Layer 2 is a per-role overlay. ``get_instruction`` assembles a single string —
-the call site in ``analyze_node`` is unchanged:
+The contract is assembled into 4 top-level sections the model sees as ``##`` headers (kept few on
+purpose: a short, high-signal system prompt beats a long one — long contexts dilute attention and
+let policy crowd out the conversation). Three are shared (role-agnostic); the Role section is a
+per-role overlay. ``get_instruction`` assembles a single string — the call site in ``analyze_node``
+is unchanged:
 
-    [01 system] + [layer 2 = role overlay] + [03 taxonomy .. 10 output]
+    [## Contract] + [## Role = overlay] + [## Decision & tools] + [## Output]
 
-Layer 3 (taxonomy) is rendered from the document registry so the item list never drifts from the
-engine. Files live inside the app so they ship and version with the code, loaded once at startup.
+Each former responsibility layer survives as a ``###`` subsection inside one of these so the content
+is unchanged, only regrouped. The ``## Output`` section (critique/governance/output) is dropped
+before a draft exists (see ``_DRAFT_SKIP_LAYERS``). Artifact-type-specific shape (the taxonomy chain
+and the section-coverage contract) is rendered by ``analyze_node`` and appended to the system prompt
+there, not carried in the per-turn payload. Files ship inside the app, loaded once at startup.
 """
 from pathlib import Path
 
@@ -60,16 +65,10 @@ _ROLE_OVERLAY_FILE: dict[str, str] = {
 
 # Shared layers in assembly order. Layer 1 leads; the role overlay is inserted after it; layers
 # 03–10 follow. (Layer 2 is the role overlay, not a file here.)
-_LAYER_01 = "01-system-contract.md"
+_LAYER_01 = "01-contract.md"
 _SHARED_LAYERS_AFTER_ROLE = (
-    "03-taxonomy-contract.md",
-    "04-bmad-method.md",
-    "05-decision-policy.md",
-    "06-question-policy.md",
-    "07-tool-policy.md",
-    "08-critique-policy.md",
-    "09-governance-policy.md",
-    "10-output-contract.md",
+    "02-decision-tools.md",
+    "03-output.md",
 )
 
 _layer_cache: dict[str, str] = {}
@@ -102,9 +101,7 @@ def role_overlay(role: str) -> str | None:
 
 
 _DRAFT_SKIP_LAYERS: frozenset[str] = frozenset({
-    "08-critique-policy.md",
-    "09-governance-policy.md",
-    "10-output-contract.md",
+    "03-output.md",
 })
 
 

@@ -3,11 +3,8 @@
 Also covers D5 contextual layers: has_draft filtering and cache isolation.
 """
 
-from pathlib import Path
-
 import pytest
 
-import app.instructions as instr_module
 from app.instructions import _assembled_cache, get_instruction, load_instructions, role_overlay
 
 _SHARED_MARKERS = (
@@ -88,9 +85,11 @@ def test_output_contract_does_not_restate_json_schema():
 
 
 def test_bmad_method_layer_present_and_bounded():
-    assert "BMAD Method" in _ba()
-    bmad = Path("app/instructions/layers/04-bmad-method.md").read_text(encoding="utf-8")
-    assert len(bmad.split()) < 200
+    instruction = _ba()
+    assert "BMAD Method" in instruction
+    assert "brainstorm → brief → prd" in instruction
+    # The whole static contract stays high-signal/short — a guard against re-bloating the system prompt.
+    assert len(instruction.split()) < 1700
 
 
 def test_get_instruction_falls_back_to_workflow_area():
@@ -120,33 +119,30 @@ def test_output_contract_carries_content_depth_rule():
     instruction = _ba()
     assert "Content depth" in instruction
     assert "fabricate" in instruction
-    assert "evidence and context" in instruction
-    assert "Do not paste the full transcript" in instruction
-    assert "(agent suy diễn, cần xác nhận)" in instruction
+    assert "evidence" in instruction
+    assert "never paste the transcript" in instruction
+    assert "needs_confirmation" in instruction
 
 
 # ---------------------------------------------------------------------------
 # D5 — Contextual layers (has_draft filtering)
 # ---------------------------------------------------------------------------
 
-def test_has_draft_false_omits_critique_policy():
-    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
-    if not layer_path.exists():
-        pytest.skip("layer 08 not present in this env")
-    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+def test_has_draft_false_omits_output_section():
+    """Pre-draft, the whole ## Output section (critique/governance/output) is dropped to save tokens."""
     result = get_instruction("brd", "product_analysis", None, context={"has_draft": False})
     assert result is not None
-    assert marker not in result
+    assert "## Output" not in result
+    assert "Governance Policy" not in result
+    assert "Critique and Validation Policy" not in result
 
 
-def test_has_draft_true_includes_critique_policy():
-    layer_path = Path(instr_module.__file__).parent / "layers" / "08-critique-policy.md"
-    if not layer_path.exists():
-        pytest.skip("layer 08 not present in this env")
-    marker = layer_path.read_text(encoding="utf-8").strip()[:60]
+def test_has_draft_true_includes_output_section():
     result = get_instruction("brd", "product_analysis", None, context={"has_draft": True})
     assert result is not None
-    assert marker in result
+    assert "## Output" in result
+    assert "Governance Policy" in result
+    assert "Critique and Validation Policy" in result
 
 
 def test_context_none_behaves_same_as_has_draft_true():
