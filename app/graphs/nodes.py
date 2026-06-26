@@ -11,6 +11,12 @@ from sqlalchemy import exists, select
 
 from app.config import settings
 from app.documents.registry import children_of, get_config, output_contract, status_score
+from app.graphs.decision_graph import (
+    add_parked_questions_for_gaps,
+    completeness_sweep,
+    is_brd_stable,
+    scan_parked_questions,
+)
 from app.graphs.policy import ancestor_types
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -76,7 +82,7 @@ def _normalize_planning_track(track: Any) -> str:
 def _derive_artifact_chain(section_coverage: dict[str, str] | None) -> dict[str, str]:
     """BMAD artifact-chain status (missing/partial/complete) derived from 7-section coverage.
 
-    Sole source is section_coverage (Phase 1–2 engine) mapped to 0.0–1.0 scores — no 9-slot data.
+    Sole source is section_coverage mapped to 0.0–1.0 scores — no 9-slot data.
     brief tracks the first four sections; prd tracks all seven.
     """
     cov = section_coverage or {}
@@ -278,6 +284,53 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
     }
 
 
+def _should_run_completeness_sweep(state: WorkflowState) -> bool:
+    feedback = state.get("feedback_summary") or {}
+    if state.get("completeness_sweep_requested") or state.get("user_requested_prd_descent"):
+        return True
+    if state.get("artifact_type") != "prd":
+        return False
+    if feedback.get("brd_stable_sweep_done"):
+        return False
+    return is_brd_stable(state.get("decision_nodes") or {})
+
+
+async def orchestrator_node(
+    state: WorkflowState, config: RunnableConfig | None = None
+) -> dict[str, Any]:
+    """Pre-agent orchestrator: resurface parked blockers and run triggered completeness sweep."""
+    _ = config
+    decision_nodes = state.get("decision_nodes") or {}
+    feedback = dict(state.get("feedback_summary") or {})
+    resurfaced = scan_parked_questions(decision_nodes)
+    if resurfaced:
+        feedback["resurfaced_questions"] = [
+            {"id": node["id"], "statement": node["statement"], "blocks": list(node.get("blocks") or [])}
+            for node in resurfaced
+        ]
+    else:
+        feedback.pop("resurfaced_questions", None)
+
+    update: dict[str, Any] = {"feedback_summary": feedback}
+    if _should_run_completeness_sweep(state):
+        gaps = completeness_sweep(decision_nodes, state.get("artifact_type") or "brd")
+        updated_nodes, created = add_parked_questions_for_gaps(
+            decision_nodes,
+            gaps,
+            {"turn": state.get("turn_count") or 0, "by": "agent", "technique": "completeness_sweep", "source": None},
+        )
+        feedback["brd_stable_sweep_done"] = True
+        feedback["depth_signal"] = "BRD stable -> có thể descend PRD"
+        feedback["sweep_gaps"] = list(gaps)
+        feedback["created_parked_questions"] = [
+            {"id": node["id"], "statement": node["statement"]} for node in created
+        ]
+        update["feedback_summary"] = feedback
+        if created:
+            update["decision_nodes"] = updated_nodes
+    return update
+
+
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -401,19 +454,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     gated_tools = _gate_selected_tools(effective_state, raw_tools)
 
     # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
-    # (default vi), and the draft_update captured from any text the model emitted alongside its calls.
+    # (default vi). Drafts of record flow through decision_nodes and write_draft.
     locale = effective_state.get("locale") or "vi"
-    # When the model picks tools it may emit chain-of-thought as content alongside tool_use blocks;
-    # that reasoning text is NOT a draft (OQ2: capturing it poisoned working_draft).
-    # Only treat content as a draft_update on a terminal turn (no tool_calls), where it is the
-    # model's deliberate final message — drafts of record flow through write_draft (→ draft_body).
-    has_tool_calls = bool(getattr(ai_message, "tool_calls", None))
-    draft_update = None if has_tool_calls else ((getattr(ai_message, "content", None) or "").strip() or None)
 
     analysis_result: dict[str, Any] = {
         "tools": gated_tools,
         "locale": locale,
-        "draft_update": draft_update,
         "coverage_complete": coverage["coverage_complete"],
     }
 
@@ -442,9 +488,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "locale": locale,
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
-        # Incremental write (C1): carry the running draft forward. A turn with no draft_update keeps
-        # the prior draft; the draft only grows (the model is never allowed to reset it mid-session).
-        "working_draft": draft_update or effective_state.get("working_draft"),
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
@@ -641,7 +684,7 @@ def _msg_role_content(m) -> tuple[str, str]:
 
 
 def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str, Any]]:
-    """Dựng thread thật cho LLM: hội thoại + tool_use/tool_result + payload phân tích lượt này."""
+    """Build the real message thread for the LLM: conversation history + tool_use/tool_result + this turn's analysis payload."""
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
     for raw in state.get("messages") or []:
@@ -767,24 +810,19 @@ def _build_key_facts_block(state: WorkflowState) -> str:
     return f"\n\nKEY FACTS đã xác nhận (không hỏi lại):\n{lines}"
 
 
-def _build_working_draft_block(state: WorkflowState) -> str:
-    """Running-draft block (C1): the in-session draft accumulated across turns, newer than the
-    persisted body, so the model treats it as the live target.
-
-    When the decision graph has nodes it is the source of truth — render the view from it rather than
-    the legacy working_draft string, which survives only as a fallback for graph-less sessions."""
+def _build_decision_view_block(state: WorkflowState) -> str:
+    """Rendered decision-graph view shown as the live draft target."""
     decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        from app.graphs.decision_graph import render_view
+    if not decision_nodes:
+        return ""
+    from app.graphs.decision_graph import render_view
 
-        working_draft = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
-    else:
-        working_draft = (state.get("working_draft") or "").strip()
-    if not working_draft:
+    view = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
+    if not view:
         return ""
     return (
         "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
-        f"{working_draft}"
+        f"{view}"
     )
 
 
@@ -909,11 +947,16 @@ def _build_tool_selection_prompt(
 
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
     draft_block = _build_draft_block(state, draft_body)
-    working_draft_block = _build_working_draft_block(state)
+    decision_view_block = _build_decision_view_block(state)
     contract_block = _build_output_contract_block(state)
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
-    current_draft = draft_body or state.get("draft_body") or state.get("working_draft") or ""
+    decision_nodes = state.get("decision_nodes") or {}
+    current_draft = draft_body or state.get("draft_body") or ""
+    if decision_nodes:
+        from app.graphs.decision_graph import render_view
+
+        current_draft = render_view(decision_nodes, state.get("artifact_type") or "brd")
     analysis_frame_block = _build_analysis_frame_block(state, bool(current_draft.strip()))
 
     return (
@@ -929,7 +972,7 @@ def _build_tool_selection_prompt(
         f"{analysis_frame_block}"
         f"{feedback_block}"
         f"{draft_block}"
-        f"{working_draft_block}"
+        f"{decision_view_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
     )
@@ -949,12 +992,10 @@ def _build_analysis_frame_block(state: WorkflowState, has_draft: bool) -> str:
     if has_draft:
         return ""
     return (
-        "\n\nANALYSIS FRAME BẮT BUỘC TRƯỚC DRAFT ĐẦU TIÊN:\n"
-        "- Trước khi dùng write_draft, hãy dùng analysis_frame để trình bày: interpreted_intent, "
-        "evidence, gaps, analysis_angles, assumptions, recommended_next_move.\n"
-        "- Nếu còn thiếu blocker thật sự, dùng ask_user sau frame hoặc thay vì frame; nếu đủ để đi tiếp, "
-        "frame phải cho user cơ hội xác nhận/chỉnh trước khi draft.\n"
-        "- Không nhảy thẳng từ confirm_intent sang write_draft khi chưa có analysis_frame."
+        "\n\nANALYSIS FRAME TÙY CHỌN:\n"
+        "- Có thể dùng analysis_frame để trình bày intent, evidence, gaps, analysis_angles, "
+        "assumptions và recommended_next_move khi nó giúp user chỉnh hướng.\n"
+        "- Nếu thiếu blocker thật sự, dùng ask_user; nếu đã đủ dữ kiện, có thể write_draft trực tiếp."
     )
 
 
@@ -981,6 +1022,19 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
                 parts.append(f"- {key}: {_compact_list(values)}")
 
     feedback_summary = state.get("feedback_summary") or {}
+    resurfaced = feedback_summary.get("resurfaced_questions") or []
+    if resurfaced:
+        rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in resurfaced[:3])
+        parts.append(f"- resurfaced_questions: {rendered}")
+    if feedback_summary.get("depth_signal"):
+        parts.append(f"- depth_signal: {feedback_summary['depth_signal']}")
+    sweep_gaps = feedback_summary.get("sweep_gaps") or []
+    if sweep_gaps:
+        parts.append(f"- sweep_gaps: {_compact_list(sweep_gaps)}")
+    created_parked = feedback_summary.get("created_parked_questions") or []
+    if created_parked:
+        rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in created_parked[:3])
+        parts.append(f"- created_parked_questions: {rendered}")
     if feedback_summary.get("stale_warning"):
         parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
 
@@ -1043,7 +1097,7 @@ def _build_output_contract_block(state: WorkflowState) -> str:
 
 
 def _build_mode_hint_directive(state: WorkflowState) -> str:
-    """Inject a user-supplied `mode_hint` — an explicit "cướp lái" to switch operating angle now.
+    """Inject a user-supplied `mode_hint` — an explicit override to switch operating angle this turn.
 
     Dynamic per-turn payload only. The proactive-mode policy (when to leave plain Q&A, prefer
     respond over burying an assessment in a question) is static and lives in the decision-policy

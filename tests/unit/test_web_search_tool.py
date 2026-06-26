@@ -1,4 +1,4 @@
-"""Phase 02 — web_search tool: registration, structured results, graceful unavailability.
+"""web_search tool: registration, structured results, graceful unavailability.
 
 The plain `web_search(query, *, client=None)` is the importable callable; the registry exposes a
 `@tool` whose `.name == "web_search"`. With no provider configured (settings default) and no client

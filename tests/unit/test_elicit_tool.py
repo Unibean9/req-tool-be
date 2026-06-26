@@ -1,4 +1,4 @@
-"""Phase 02 — elicit tool: deterministic technique scaffolds + real external knowledge.
+"""elicit tool: deterministic technique scaffolds and external knowledge integration.
 
 elicit returns the technique FRAME (deterministic) for the agent to reason over and record as
 nodes; comparable_products pulls real data via web_search and falls back to model knowledge when

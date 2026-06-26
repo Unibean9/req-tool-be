@@ -335,6 +335,8 @@ class ArtifactService:
         )
         if duplicate.scalar_one_or_none() is not None:
             raise ValueError("Artifact link đã tồn tại")
+        if await self._has_link_path(project_id, source_artifact_id, target_artifact_id):
+            raise ValueError("Artifact link tạo cycle")
 
         link = ArtifactLink(
             project_id=project_id,
@@ -346,6 +348,34 @@ class ArtifactService:
         self.db.add(link)
         await self.db.flush()
         return link
+
+    async def _has_link_path(
+        self,
+        project_id: uuid.UUID,
+        source_artifact_id: uuid.UUID,
+        target_artifact_id: uuid.UUID,
+    ) -> bool:
+        """True nếu đã có đường target -> ... -> source; thêm source -> target sẽ tạo cycle."""
+        rows = (
+            await self.db.execute(
+                select(ArtifactLink.source_artifact_id, ArtifactLink.target_artifact_id)
+                .where(ArtifactLink.project_id == project_id)
+            )
+        ).all()
+        adjacency: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for source_id, target_id in rows:
+            adjacency.setdefault(source_id, []).append(target_id)
+        visited: set[uuid.UUID] = set()
+        queue = [target_artifact_id]
+        while queue:
+            current = queue.pop(0)
+            if current == source_artifact_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            queue.extend(adjacency.get(current, []))
+        return False
 
     def link_to_response(self, link: ArtifactLink) -> ArtifactLinkResponse:
         return ArtifactLinkResponse(

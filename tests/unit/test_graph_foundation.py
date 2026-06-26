@@ -129,7 +129,6 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
-        "working_draft": None,
         "mode_hint": None,
         "decision_nodes": {},
     }
@@ -166,7 +165,6 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "method_profile",
         "artifact_chain",
         "readiness",
-        "working_draft",
         "mode_hint",
         "candidate_readiness",
         "verification_status",

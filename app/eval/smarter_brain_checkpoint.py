@@ -1,4 +1,4 @@
-"""Checkpoint for Phase 3 Smarter Brain.
+"""Smarter Brain quality checkpoint.
 
 This module does not assume the candidate agent is better. It receives baseline
 and candidate measurements, then evaluates two hard gates:
@@ -173,7 +173,7 @@ def _configure_cli_streams() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_cli_streams()
-    parser = argparse.ArgumentParser(description="Đo checkpoint Phase 3 Smarter Brain từ JSON report.")
+    parser = argparse.ArgumentParser(description="Đo checkpoint Smarter Brain từ JSON report.")
     parser.add_argument("report", type=Path, help="Đường dẫn JSON gồm baseline/candidate token_usage và eval rows.")
     args = parser.parse_args(argv)
 

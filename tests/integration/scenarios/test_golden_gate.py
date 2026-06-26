@@ -1,9 +1,7 @@
-"""Phase 06 Decision Gate — drive golden Phần 1-3 end-to-end on vision_objectives.
+"""Decision gate — golden P1-P3 end-to-end on vision_objectives.
 
-Runs the full cold-start → co-creation → reversal sequence through the real graph + HTTP driver +
-checkpointer with DECISION_GRAPH_ENABLED on, then asserts the decision_nodes transition and the
-rendered view. This is the GO/NO-GO gate: if supersede + abandon cascade + render compose here, R1
-is sound and Slice 2 can begin.
+Runs cold-start → co-creation → reversal through the real graph + HTTP driver + checkpointer with
+DECISION_GRAPH_ENABLED on, then asserts the decision_nodes transition and the rendered view.
 """
 
 import uuid

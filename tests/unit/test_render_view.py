@@ -1,4 +1,4 @@
-"""Phase 05 — render_view pure projection from the decision graph to markdown.
+"""render_view pure projection from the decision graph to markdown.
 
 The view is derived, never the source: superseded hidden, parked folded into its own section,
 active nodes (confirmed/inferred/needs_confirmation) shown. brd and prd use distinct templates.

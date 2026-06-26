@@ -260,7 +260,7 @@ async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_ses
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 — payload exposed in snapshot (S6, S7)
+# payload exposed in snapshot (S6, S7)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio

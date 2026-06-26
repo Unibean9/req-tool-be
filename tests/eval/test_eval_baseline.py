@@ -24,8 +24,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _load_fixtures() -> list[dict]:
-    # Exclude *_weak.json — those are low-quality fixtures for the quality-gate eval
-    # (Phase 5) and are not part of the baseline golden set.
+    # Exclude *_weak.json — low-quality fixtures used by the quality-gate eval, not the baseline.
     paths = [p for p in sorted(_FIXTURES_DIR.glob("*.json")) if not p.stem.endswith("_weak")]
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 

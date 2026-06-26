@@ -1,4 +1,4 @@
-"""D1 — Composite Dispatch tests (Phase 4 evaluation step).
+"""D1 — Composite Dispatch tests.
 
 Covers: gate precedence, multi-tool_calls, backward-compat negative test.
 """

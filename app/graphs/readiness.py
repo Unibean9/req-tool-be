@@ -3,8 +3,8 @@
 Distinct from rubric.py (artifact *quality*): this assesses readiness to advance the planning
 lifecycle from document-registry item coverage.
 
-Scope Stability reads the `out_of_scope` sub-dimension of scope_capabilities (added in Phase 1):
-when section_coverage carries a granular dict for that section and out_of_scope is absent, the
+Scope Stability reads the `out_of_scope` sub-dimension of scope_capabilities: when
+section_coverage carries a granular dict for that section and out_of_scope is absent, the
 dimension scores 0 and "scope_stability" is flagged.
 """
 

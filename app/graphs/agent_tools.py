@@ -32,6 +32,7 @@ from app.graphs.decision_graph import (
     VALID_STATUSES,
     create_node,
     get_dependents,
+    impact,
     render_view,
     supersede_node,
     update_node,
@@ -47,12 +48,14 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
-from app.models.artifact import Artifact, ArtifactStatus
+from app.models.artifact import Artifact, ArtifactLink, ArtifactStatus, RelationType
+from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
     evaluate_candidate_readiness,
 )
+from app.services.artifact_service import ArtifactLinkService
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -123,42 +126,16 @@ async def current_draft_body(
     """Canonical draft body for the whole tool-loop.
 
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
-    through here. Divergence between any two sites (one using only working_draft) permanently locks
-    DB-draft sessions out of finalize (the reflection-feedback-gate MEDIUM risk).
-
-    The decision graph is the source of truth: when it has nodes, the rendered view wins over any
-    stored body so a stale DB draft can never shadow the live graph (Invariant 4).
+    through here. The decision graph is the source of truth; DB-loaded draft text is context, not
+    the live editable artifact view.
     """
-    decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        return render_view(decision_nodes, state.get("artifact_type") or "brd")
-    focused_artifact_id = state.get("focused_artifact_id")
-    if focused_artifact_id and config is not None:
-        session_factory = (config.get("configurable") or {}).get("session_factory")
-        if session_factory is not None:
-            async with session_factory() as db:
-                project_id = (config.get("configurable") or {}).get("project_id")
-                try:
-                    body = await DocumentService(db).get_current_item_body(
-                        artifact_id=uuid.UUID(str(focused_artifact_id)),
-                        project_id=uuid.UUID(str(project_id)) if project_id is not None else None,
-                    )
-                    if body:
-                        return body
-                except ValueError:
-                    pass
-    return state.get("draft_body") or state.get("working_draft") or ""
+    _ = config
+    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
 
 
 def _cached_draft_body(state: WorkflowState) -> str:
-    """Draft already loaded by analyze_node, used by synchronous menu construction.
-
-    Mirrors current_draft_body precedence: the rendered graph view wins when nodes exist.
-    """
-    decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        return render_view(decision_nodes, state.get("artifact_type") or "brd")
-    return state.get("draft_body") or state.get("working_draft") or ""
+    """Synchronous draft view used by menu construction and finalize hashing."""
+    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
 
 
 async def artifact_stage(
@@ -320,22 +297,11 @@ async def confirm_intent(
 
 
 # ---------------------------------------------------------------------------
-# analysis_frame — khung phân tích hiển thị cho user trước draft đầu tiên
+# analysis_frame — surface structured analysis to the user before the first draft
 # ---------------------------------------------------------------------------
 
 def _normalize_text_list(values: list[str] | None) -> list[str]:
     return [str(value).strip() for value in (values or []) if str(value).strip()]
-
-
-def _analysis_frame_ready(state: WorkflowState) -> bool:
-    frame = state.get("analysis_frame")
-    if not isinstance(frame, dict):
-        return False
-    required_text = ("interpreted_intent", "recommended_next_move")
-    required_lists = ("evidence", "gaps", "analysis_angles", "assumptions")
-    return all(str(frame.get(key) or "").strip() for key in required_text) and all(
-        _normalize_text_list(frame.get(key)) for key in required_lists
-    )
 
 
 def _render_analysis_frame_message(frame: dict[str, Any]) -> str:
@@ -431,10 +397,10 @@ async def analysis_frame(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Trình khung phân tích có cấu trúc và dừng chờ user trước draft đầu tiên.
+    """Surface a structured analysis frame to the user and pause before the first draft.
 
-    Dùng trước write_draft để show intent đã hiểu, gaps, analysis angles, assumptions và next move.
-    Đây là exploration hiển thị cho user, không phải scratchpad ẩn.
+    Call before write_draft to show interpreted intent, gaps, analysis angles, assumptions, and next move.
+    This is a user-visible exploration step, not a hidden scratchpad.
     """
     return await _analysis_frame_impl(
         interpreted_intent,
@@ -456,9 +422,9 @@ async def analysis_frame(
 def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     """Body write_draft proposes for approval.
 
-    With the decision graph as source of truth (nodes present) the proposal is the rendered view, not
-    the model-supplied string — write_draft is the propose/approval gate, mutation lives in the
-    create/update/supersede tools. Empty graph → the model's body (backward compat).
+    With the decision graph as source of truth the proposal is the rendered view, not the
+    model-supplied string. Empty graph falls back to the tool body so the user can still draft before
+    any nodes exist.
     """
     decision_nodes = state.get("decision_nodes") or {}
     if decision_nodes:
@@ -472,24 +438,6 @@ async def _write_draft_impl(
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
-    if state.get("user_confirmed") is None:
-        return _tool_not_available_update(
-            "write_draft",
-            "artifact phase chưa mở; hãy gọi confirm_intent với summary cụ thể trước khi viết draft.",
-            tool_call_id,
-        )
-    if not _cached_draft_body(state).strip() and not _analysis_frame_ready(state):
-        return _recoverable_tool_update(
-            RecoverableToolError(
-                code="analysis_frame_required",
-                message=(
-                    "Không thể write_draft: cần trình analysis_frame trước draft đầu tiên. "
-                    "Hãy nêu lại intent, evidence, gaps, analysis_angles, assumptions và "
-                    "recommended_next_move để user xác nhận/chỉnh."
-                ),
-            ),
-            tool_call_id,
-        )
 
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -753,7 +701,7 @@ async def explore_note(
 # ---------------------------------------------------------------------------
 # decision graph — create / update / supersede nodes (flag-gated)
 # ---------------------------------------------------------------------------
-# The decision graph is the source of truth that replaces the flat working_draft string. These three
+# The decision graph is the source of truth for the artifact view. These three
 # tools mutate decision_nodes in state (no DB, no interrupt) via Command.update — the whole dict is
 # replaced each call because LangGraph does not merge nested state. All writes are behind
 # DECISION_GRAPH_ENABLED so an in-progress graph model never leaks into a persisted checkpoint.
@@ -774,6 +722,7 @@ def _node_origin(state: WorkflowState, technique: str | None) -> dict[str, Any]:
 async def _create_decision_node_impl(
     kind: str, statement: str, depends_on: list[str] | None, technique: str | None,
     state: WorkflowState, tool_call_id: str, node_id: str | None = None,
+    status: str | None = None, blocks: list[str] | None = None,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("create_decision_node", tool_call_id)
@@ -783,11 +732,17 @@ async def _create_decision_node_impl(
         )
     if not str(statement or "").strip():
         return _missing_required_arg_update("create_decision_node", "statement", tool_call_id)
+    if status is not None and status not in _TOOL_EDITABLE_STATUSES:
+        return _tool_not_available_update(
+            "create_decision_node",
+            f"status không hợp lệ '{status}'; chọn một trong {sorted(_TOOL_EDITABLE_STATUSES)}",
+            tool_call_id,
+        )
 
     nodes_state = state.get("decision_nodes") or {}
     node = create_node(
         kind=kind, statement=statement, origin=_node_origin(state, technique),
-        depends_on=depends_on, node_id=node_id,
+        depends_on=depends_on, node_id=node_id, status=status or "proposed", blocks=blocks,
     )
     if node["id"] in nodes_state:
         return _tool_not_available_update(
@@ -872,13 +827,23 @@ async def create_decision_node(
     depends_on: Annotated[list[str] | None, "ids of nodes this one builds on; [] for a root."] = None,
     technique: Annotated[str | None, "Elicitation technique that produced this node, for provenance."] = None,
     node_id: Annotated[str | None, "Optional stable short id (e.g. N1); auto-generated if omitted."] = None,
+    status: Annotated[
+        str | None,
+        "Optional initial status: proposed|confirmed|inferred|needs_confirmation|parked. Defaults to proposed.",
+    ] = None,
+    blocks: Annotated[
+        list[str] | None,
+        "For parked open_question nodes: ids currently blocked by this question.",
+    ] = None,
 ) -> Command:
     """Record a new decision-graph node (objective, decision, risk, ...) with provenance.
 
     Use to capture a piece of analysis as durable state instead of prose in a draft. Each node keeps
     why it exists (origin) and what it builds on (depends_on) so later reversals can ripple correctly.
     """
-    return await _create_decision_node_impl(kind, statement, depends_on, technique, state, tool_call_id, node_id)
+    return await _create_decision_node_impl(
+        kind, statement, depends_on, technique, state, tool_call_id, node_id, status, blocks
+    )
 
 
 @tool
@@ -917,6 +882,167 @@ async def supersede_decision_node(
     update_decision_node for a local wording/status edit.
     """
     return await _supersede_decision_node_impl(node_id, new_statement, cascade_mode, state, tool_call_id)
+
+
+def _config_ids(config: RunnableConfig) -> tuple[uuid.UUID | None, uuid.UUID | None, Any]:
+    cfg = config.get("configurable") or {}
+    project_raw = cfg.get("project_id")
+    thread_raw = cfg.get("thread_id")
+    project_id = uuid.UUID(str(project_raw)) if project_raw is not None else None
+    session_id = uuid.UUID(str(thread_raw)) if thread_raw is not None else None
+    return project_id, session_id, cfg.get("session_factory")
+
+
+async def _session_user_id(session_factory, session_id: uuid.UUID | None) -> uuid.UUID | None:
+    if session_factory is None or session_id is None:
+        return None
+    async with session_factory() as db:
+        return await db.scalar(select(AgentSession.created_by_id).where(AgentSession.id == session_id))
+
+
+async def _load_artifact_links(config: RunnableConfig) -> list[dict[str, str]]:
+    project_id, _session_id, session_factory = _config_ids(config)
+    if project_id is None or session_factory is None:
+        return []
+    async with session_factory() as db:
+        rows = (
+            await db.execute(
+                select(ArtifactLink)
+                .where(ArtifactLink.project_id == project_id)
+                .order_by(ArtifactLink.created_at)
+            )
+        ).scalars().all()
+    return [
+        {
+            "source_id": str(row.source_artifact_id),
+            "target_id": str(row.target_artifact_id),
+            "relation_type": row.relation_type.value,
+        }
+        for row in rows
+    ]
+
+
+async def _read_artifact_graph_impl(config: RunnableConfig, tool_call_id: str) -> Command:
+    links = await _load_artifact_links(config)
+    return Command(
+        update={"messages": [ToolMessage(content=json.dumps({"links": links}), tool_call_id=tool_call_id)]}
+    )
+
+
+@tool("read_artifact_graph")
+async def read_artifact_graph_tool(
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Read artifact-link graph for the current project. Read-only, non-interrupting."""
+    return await _read_artifact_graph_impl(config, tool_call_id)
+
+
+async def _create_artifact_link_impl(
+    source_artifact_id: str,
+    target_artifact_id: str,
+    relation_type: str,
+    config: RunnableConfig,
+    tool_call_id: str,
+) -> Command:
+    project_id, session_id, session_factory = _config_ids(config)
+    if project_id is None or session_factory is None:
+        return _tool_not_available_update("create_artifact_link", "thiếu project/session context", tool_call_id)
+    try:
+        body = ArtifactLinkCreateRequest(
+            source_artifact_id=uuid.UUID(str(source_artifact_id)),
+            target_artifact_id=uuid.UUID(str(target_artifact_id)),
+            relation_type=RelationType(str(relation_type)),
+        )
+    except (ValueError, TypeError) as exc:
+        return _tool_not_available_update("create_artifact_link", f"input không hợp lệ: {exc}", tool_call_id)
+    created_by_id = await _session_user_id(session_factory, session_id)
+    try:
+        async with session_factory() as db:
+            link = await ArtifactLinkService(db).create(
+                project_id=project_id,
+                body=body,
+                created_by_id=created_by_id,
+            )
+            await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        return _tool_not_available_update("create_artifact_link", str(exc), tool_call_id)
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(link.model_dump(mode="json"), ensure_ascii=False),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        }
+    )
+
+
+@tool("create_artifact_link")
+async def create_artifact_link_tool(
+    source_artifact_id: Annotated[str, "Source artifact UUID."],
+    target_artifact_id: Annotated[str, "Target artifact UUID."],
+    relation_type: Annotated[str, "RelationType value, e.g. derives_from, depends_on, satisfies."],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Create an artifact dependency link, rejecting duplicates and graph cycles."""
+    return await _create_artifact_link_impl(source_artifact_id, target_artifact_id, relation_type, config, tool_call_id)
+
+
+async def _run_impact_analysis_impl(
+    change_description: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    changed_artifact_id: str | None = None,
+) -> Command:
+    if not str(change_description or "").strip():
+        return _missing_required_arg_update("run_impact_analysis", "change_description", tool_call_id)
+    nodes_state = state.get("decision_nodes") or {}
+    links = await _load_artifact_links(config)
+    result = impact(change_description, nodes_state, links, changed_artifact_id=changed_artifact_id)
+    affected = result["affected_node_ids"]
+    feedback = dict(state.get("feedback_summary") or {})
+    if affected:
+        feedback["stale_warning"] = (
+            f"{len(affected)} node cần xác nhận lại do thay đổi: {', '.join(affected)}"
+        )
+        feedback["impact_result"] = {
+            "affected_node_ids": affected,
+            "stale_artifact_ids": result["stale_artifact_ids"],
+        }
+    return Command(
+        update={
+            "decision_nodes": result["decision_nodes"],
+            "feedback_summary": feedback,
+            "messages": [
+                ToolMessage(
+                    content=json.dumps(
+                        {
+                            "affected_node_ids": affected,
+                            "stale_artifact_ids": result["stale_artifact_ids"],
+                        },
+                        ensure_ascii=False,
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ],
+        }
+    )
+
+
+@tool("run_impact_analysis")
+async def run_impact_analysis(
+    change_description: Annotated[str, "User-described change that may affect existing nodes."],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    changed_artifact_id: Annotated[str | None, "Artifact UUID where the change originated, if known."] = None,
+) -> Command:
+    """Mark exactly affected decision nodes stale; do not rewrite them silently."""
+    return await _run_impact_analysis_impl(change_description, state, config, tool_call_id, changed_artifact_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1323,14 +1449,6 @@ async def read_artifact(
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
 
-# After this many consecutive note turns the loop must ask_user/write_draft instead of
-# noting again — the only guard against an infinite note loop (S4). Tune via T8 once the loop is
-# wired (Phase 5); start at 3.
-NOTE_STEP_LIMIT = 3
-
-# The scratchpad note tools, gated together as one family against the step-limit.
-NOTE_TOOL_NAMES = ("critique_note", "explore_note")
-
 # After this many run_critique calls the formal judge is gated off the menu so the loop cannot
 # spin on critique forever (spec §5.5). write_draft / ask_user stay available regardless.
 # Sourced from config (max_critique_rounds) so the reflection-round cap is a single tunable.
@@ -1489,9 +1607,10 @@ async def web_search_tool(
     query: Annotated[str, "Truy vấn tìm kiếm tri thức ngoài."],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Tìm kiếm web cho tri thức ngoài (sản phẩm tương tự, chuẩn ngành). Trả kết quả có cấu trúc.
+    """Search the web for external knowledge (comparable products, industry standards). Returns structured results.
 
-    Khi chưa cấu hình provider hoặc gọi lỗi → trả kết quả rỗng kèm error, không làm gián đoạn loop.
+    When no provider is configured or the call fails, returns an empty result with an error field — never
+    interrupts the tool loop.
     """
     result = web_search(query)
     return Command(
@@ -1509,10 +1628,10 @@ async def elicit_tool(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Áp một kỹ thuật khai phá BMAD lên seed, trả khung có cấu trúc để bạn lập luận và ghi node.
+    """Apply a BMAD elicitation technique to a seed and return a structured frame to reason over and record as nodes.
 
-    comparable_products lấy tri thức ngoài thực qua web_search (fallback model knowledge). Mỗi lần
-    gọi thành công tăng session_elicit_count — mở cold-start gate cho write_draft.
+    comparable_products fetches real external knowledge via web_search (falls back to model knowledge).
+    Each successful call increments session_elicit_count, which satisfies the cold-start requirement for write_draft.
     """
     try:
         result = elicit(technique, seed)
@@ -1550,13 +1669,10 @@ def get_all_analyzer_tools() -> list:
         create_decision_node,
         update_decision_node,
         supersede_decision_node,
+        run_impact_analysis,
+        read_artifact_graph_tool,
+        create_artifact_link_tool,
     ]
-
-
-def _tool_call_names(message) -> list[str]:
-    """Tool names an AIMessage selected this turn; [] for any other message."""
-    tool_calls = getattr(message, "tool_calls", None) or []
-    return [tc["name"] for tc in tool_calls if isinstance(tc, dict) and tc.get("name")]
 
 
 def _finalize_gate_open(state: WorkflowState) -> bool:
@@ -1579,78 +1695,28 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     return current_hash == state.get("last_critiqued_draft_hash")
 
 
-def _consecutive_note_turns(messages: list) -> int:
-    """Count note turns since the last ask_user/write_draft — derived from history (N2).
-
-    Counts per turn (per AIMessage), not per call: the limit is "N consecutive note turns", so a
-    turn that batches two note calls is still one turn against the step-limit.
-    """
-    count = 0
-    for message in reversed(messages or []):
-        names = _tool_call_names(message)
-        if not names:
-            continue
-        if any(name in ("ask_user", "write_draft", "respond", "analysis_frame") for name in names):
-            break
-        if any(name in NOTE_TOOL_NAMES for name in names):
-            count += 1
-    return count
-
-
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    - `finalize` only once a draft body exists (working_draft or DB-loaded draft_body) AND
-      critique_rounds > 0 AND the quality gate passed AND the scored draft is still current (hash
-      matches) OR the rounds cap is reached (escape hatch). Human confirmation in _finalize_impl is
-      the approval step (spec §15.1).
-    - `run_critique` only once a draft body exists (working_draft or DB-loaded draft_body) AND
-      critique_rounds < CRITIQUE_ROUNDS_MAX. It is NOT a NOTE_TOOL, so the note step-limit never
-      gates it.
-    - `run_readiness_check` needs an artifact (working_draft or DB-loaded draft_body) AND at least
-      one critique round to assess.
-    - the note tools are dropped after NOTE_STEP_LIMIT consecutive notes.
-    - `write_draft` is hidden from the menu for the first draft until an analysis_frame exists.
-      The tool still self-rejects with a recoverable ToolMessage if a model calls it out of turn.
-
-    Intent phase (user_confirmed is None) restricts the menu to exploration + confirmation:
-    finalize / run_critique are absent until confirm_intent flips user_confirmed=True; write_draft
-    also needs a ready analysis_frame for the first draft.
+    The menu is intentionally broad. The only hard safety gates left here are draft/quality gates:
+    `finalize` needs a passing current critique, and critique/readiness tools need a rendered draft.
     """
-    if state.get("user_confirmed") is None:
-        # read_artifact is offered in the intent phase too: reading the parent BRD to ground an intent
-        # summary is exploration, and it is side-effect-free so it does not widen the gate's risk.
-        intent_tools = [
-            ask_user,
-            respond,
-            analysis_frame,
-            explore_note,
-            critique_note,
-            confirm_intent,
-            read_artifact,
-            elicit_tool,
-            web_search_tool,
-        ]
-        # Nodes are recorded during cold-start exploration, before confirm_intent opens the artifact.
-        intent_tools.extend(_decision_graph_menu(state))
-        if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
-            intent_tools = [t for t in intent_tools if t.name not in NOTE_TOOL_NAMES]
-        return intent_tools
-
     tools = [
         ask_user,
         respond,
         analysis_frame,
+        write_draft,
         critique_note,
         explore_note,
+        confirm_intent,
         read_artifact,
+        read_artifact_graph_tool,
+        create_artifact_link_tool,
+        run_impact_analysis,
         elicit_tool,
         web_search_tool,
     ]
     has_draft = bool(_cached_draft_body(state).strip())
-    has_analysis_frame = _analysis_frame_ready(state)
-    if has_draft or has_analysis_frame:
-        tools.insert(2, write_draft)
     critique_rounds = state.get("critique_rounds") or 0
     if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
         tools.append(finalize)
@@ -1667,13 +1733,6 @@ def get_available_tools(state: WorkflowState) -> list:
     # draft qualifies, same as finalize.
     if has_draft and critique_rounds > 0:
         tools.append(run_readiness_check)
-    if _consecutive_note_turns(state.get("messages")) >= NOTE_STEP_LIMIT:
-        tools = [t for t in tools if t.name not in NOTE_TOOL_NAMES]
-    # Cold-start hard gate: a fresh project (no decision_nodes) must run at least one elicit before
-    # the first draft — exploration precedes drafting. A resumed project (nodes exist) bypasses this.
-    decision_nodes = state.get("decision_nodes") or {}
-    if not decision_nodes and (state.get("session_elicit_count") or 0) == 0:
-        tools = [t for t in tools if t.name != "write_draft"]
     tools.extend(_decision_graph_menu(state))
     return tools
 

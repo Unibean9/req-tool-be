@@ -1,4 +1,4 @@
-"""Phase 5 Slice B — tool-loop scenarios end-to-end through the HTTP driver (flag on).
+"""Tool-loop scenarios end-to-end through the HTTP driver (flag on).
 
 Proves the shim runs a full conversation: analyze emits tool_calls, the ToolNode dispatches, the
 HITL interrupt/resume round-trips, an approved write_draft becomes an artifact, and an exhausted

@@ -1,11 +1,13 @@
-"""Đồ thị quyết định — các hàm thuần thao tác trên dict[str, DecisionNode].
+"""Decision graph — pure functions over dict[str, DecisionNode].
 
-Hai bất biến cốt lõi:
-- Không destructive: đổi quyết định = tạo node mới supersedes node cũ; node cũ chuyển superseded, không xóa.
-- Ripple bắt buộc: supersede một node → các node phụ thuộc bị đánh dấu stale (reconfirm) hoặc treo (abandon).
+Two core invariants:
+- Non-destructive: changing a decision creates a new node that supersedes the old one; the old node
+  transitions to superseded and is never deleted (full history preserved).
+- Mandatory ripple: superseding a node marks all transitive dependents stale (reconfirm) or parked (abandon).
 
-Mọi hàm mutate trả về dict mới (immutable) vì LangGraph Command.update thay nguyên decision_nodes,
-không merge nested. get_dependents dùng visited-set guard nên graph có cycle vẫn kết thúc hữu hạn.
+All mutating functions return a new dict because LangGraph Command.update replaces decision_nodes
+entirely — it does not merge nested dicts. get_dependents uses a visited-set guard so cyclic graphs
+always terminate.
 """
 
 from __future__ import annotations
@@ -15,13 +17,17 @@ from typing import Any
 
 from app.graphs.state import DecisionNode
 
-# Số dependent tối thiểu để coi một node decision là "định hướng" và suy ra cascade abandon.
+# Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
 ABANDON_THRESHOLD = 2
+MAX_SWEEP_QUESTIONS = 5
 
 VALID_KINDS = {"objective", "scope", "assumption", "decision", "risk", "open_question", "fact"}
 VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded"}
 
 _VALID_CASCADE_MODES = {"reconfirm", "abandon"}
+_RESOLVED_BLOCKER_STATUSES = {"confirmed", "inferred"}
+_BRD_STABLE_STATUSES = {"confirmed", "inferred"}
+_INACTIVE_STATUSES = {"parked", "superseded"}
 
 
 def create_node(
@@ -35,12 +41,12 @@ def create_node(
     supersedes: str | None = None,
     node_id: str | None = None,
 ) -> DecisionNode:
-    """Tạo một DecisionNode hoàn chỉnh; mặc định status=proposed.
+    """Build a complete DecisionNode; status defaults to proposed.
 
-    node_id cho phép caller đặt id ổn định, ngắn gọn để tham chiếu sau này; bỏ trống → sinh uuid.
+    node_id lets the caller assign a stable short id for later cross-references; omit to auto-generate uuid.
     """
     if status not in VALID_STATUSES:
-        raise ValueError(f"status không hợp lệ: {status!r}")
+        raise ValueError(f"invalid status: {status!r}")
     return {
         "id": node_id or uuid.uuid4().hex,
         "kind": kind,
@@ -56,18 +62,18 @@ def create_node(
 
 
 def _clone(nodes: dict[str, DecisionNode]) -> dict[str, DecisionNode]:
-    """Deep-enough copy: mỗi node được sao riêng để mutation không rò ngược lên input."""
+    """Shallow-copy each node so mutations in the returned dict cannot leak back into the caller's input."""
     return {node_id: dict(node) for node_id, node in nodes.items()}
 
 
 def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) -> dict[str, DecisionNode]:
-    """Cập nhật tại chỗ status/statement/... của một node; không tạo node mới, không supersede."""
+    """Patch status/statement/... on an existing node in-place; does not create a new node or supersede."""
     if node_id not in nodes:
-        raise KeyError(f"node {node_id!r} không tồn tại")
+        raise KeyError(f"node {node_id!r} not found")
     if nodes[node_id].get("status") == "superseded":
-        raise ValueError(f"node {node_id!r} đã superseded; không được sửa lịch sử")
+        raise ValueError(f"node {node_id!r} is superseded; history must not be rewritten")
     if "status" in updates and updates["status"] not in VALID_STATUSES:
-        raise ValueError(f"status không hợp lệ: {updates['status']!r}")
+        raise ValueError(f"invalid status: {updates['status']!r}")
     result = _clone(nodes)
     result[node_id].update(updates)
     return result
@@ -76,9 +82,9 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
 def get_dependents(
     nodes: dict[str, DecisionNode], node_id: str, visited: set[str] | None = None
 ) -> list[str]:
-    """Trả về các node phụ thuộc (transitive) vào node_id, đi ngược cạnh depends_on.
+    """Return all nodes that transitively depend on node_id by following depends_on edges.
 
-    visited-set guard chống cycle: một node chỉ được duyệt một lần nên graph có vòng vẫn kết thúc.
+    visited-set prevents infinite loops: each node is visited at most once even in cyclic graphs.
     """
     if visited is None:
         visited = set()
@@ -95,10 +101,10 @@ def get_dependents(
 
 
 def infer_cascade_mode(nodes: dict[str, DecisionNode], node_id: str) -> str:
-    """Suy ra cascade mode khi agent không truyền tường minh.
+    """Infer cascade mode when the agent does not supply it explicitly.
 
-    abandon nếu node là quyết định định hướng (kind=decision và là root hoặc nhiều dependent);
-    còn lại reconfirm (chỉnh sửa cục bộ, nhánh cũ vẫn valid nhưng cần re-confirm).
+    abandon when the node is a direction-setting decision (kind=decision, root or >= ABANDON_THRESHOLD
+    dependents); reconfirm otherwise (local edit — the branch is still valid but must be re-confirmed).
     """
     node = nodes[node_id]
     dependent_count = len(get_dependents(nodes, node_id))
@@ -115,18 +121,18 @@ def supersede_node(
     origin: dict[str, Any],
     cascade_mode: str | None = None,
 ) -> dict[str, DecisionNode]:
-    """Đảo một quyết định không destructive + ripple xuống dependent.
+    """Reverse a decision non-destructively and ripple the change to dependents.
 
-    Tạo node mới supersedes old_id; old_id → superseded. cascade_mode khi None được suy ra từ
-    infer_cascade_mode (agent override được bằng cách truyền tường minh): reconfirm → dependent thành
-    needs_confirmation (stale), abandon → dependent thành parked (nhánh treo, recoverable).
+    Creates a new node that supersedes old_id; old_id transitions to superseded. cascade_mode defaults
+    to the result of infer_cascade_mode (agent can override by passing explicitly): reconfirm marks
+    dependents needs_confirmation (stale but recoverable); abandon marks them parked (branch suspended).
     """
     if old_id not in nodes:
-        raise KeyError(f"node {old_id!r} không tồn tại")
+        raise KeyError(f"node {old_id!r} not found")
     if cascade_mode is None:
         cascade_mode = infer_cascade_mode(nodes, old_id)
     if cascade_mode not in _VALID_CASCADE_MODES:
-        raise ValueError(f"cascade_mode không hợp lệ: {cascade_mode!r}")
+        raise ValueError(f"invalid cascade_mode: {cascade_mode!r}")
 
     dependents = get_dependents(nodes, old_id, visited=set())
     result = _clone(nodes)
@@ -145,6 +151,240 @@ def supersede_node(
     for dependent_id in dependents:
         result[dependent_id]["status"] = dependent_status
     return result
+
+
+def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[DecisionNode]:
+    """Return parked open_questions whose every blocker has been resolved.
+
+    A blocker is resolved when its status is confirmed or inferred. A parked question with no blocks
+    never resurfaces automatically — there is no objective condition for the orchestrator to check.
+    """
+    resurfaced: list[DecisionNode] = []
+    for node in decision_nodes.values():
+        blocks = list(node.get("blocks") or [])
+        if node.get("kind") != "open_question" or node.get("status") != "parked" or not blocks:
+            continue
+        if all(
+            (decision_nodes.get(blocker_id) or {}).get("status") in _RESOLVED_BLOCKER_STATUSES
+            for blocker_id in blocks
+        ):
+            resurfaced.append(node)
+    return resurfaced
+
+
+def is_brd_stable(decision_nodes: dict[str, DecisionNode]) -> bool:
+    """BRD is stable when every active node is confirmed or inferred; parked and superseded do not count."""
+    active = [
+        node
+        for node in decision_nodes.values()
+        if node.get("status") not in _INACTIVE_STATUSES
+    ]
+    return bool(active) and all(node.get("status") in _BRD_STABLE_STATUSES for node in active)
+
+
+def _normalize_statement(value: str) -> str:
+    return " ".join(str(value or "").lower().strip().split())
+
+
+_BRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
+    ("objective", "Cần chốt mục tiêu đo được cho BRD."),
+    ("scope", "Cần chốt phạm vi v1 cho BRD."),
+    ("assumption", "Cần ghi rõ giả định chính của BRD."),
+    ("risk", "Cần ghi rủi ro chính của BRD."),
+)
+
+_PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
+    ("actor", "Actor: xác định khách hàng và nhân viên thao tác trong luồng."),
+    ("flow", "Luồng chính: mô tả từng bước xử lý từ đầu đến cuối."),
+    ("rule", "Business rule: chốt quy tắc tích điểm và điều kiện tính điểm."),
+    ("edge_case", "Edge-case: khách quên SĐT lúc mua → cộng bù sau được không?"),
+    ("edge_case", "Edge-case: khách đổi SĐT → gộp lịch sử thế nào?"),
+    ("edge_case", "Edge-case: phiếu free hết hạn không?"),
+)
+
+
+def _gap_present(decision_nodes: dict[str, DecisionNode], marker: str) -> bool:
+    active_nodes = [
+        node for node in decision_nodes.values()
+        if node.get("status") not in {"parked", "superseded"}
+    ]
+    if marker in VALID_KINDS:
+        return any(node.get("kind") == marker for node in active_nodes)
+    marker_text = marker.replace("_", " ")
+    return any(marker_text in _normalize_statement(node.get("statement", "")) for node in active_nodes)
+
+
+def completeness_sweep(
+    decision_nodes: dict[str, DecisionNode],
+    artifact_type: str,
+    max_questions: int = MAX_SWEEP_QUESTIONS,
+) -> list[str]:
+    """Check the minimum coverage checklist and return gap descriptions, deduplicated by exact statement.
+
+    Only produces descriptions; the caller decides whether to create parked nodes or inject into the
+    prompt. Dedup is exact (normalized statement match), not LLM similarity.
+    """
+    template = _PRD_SWEEP_GAPS if artifact_type == "prd" else _BRD_SWEEP_GAPS
+    existing_questions = {
+        _normalize_statement(node.get("statement", ""))
+        for node in decision_nodes.values()
+        if node.get("kind") == "open_question"
+    }
+    gaps: list[str] = []
+    for marker, question in template:
+        normalized = _normalize_statement(question)
+        if normalized in existing_questions:
+            continue
+        if _gap_present(decision_nodes, marker):
+            continue
+        gaps.append(question)
+        if len(gaps) >= max_questions:
+            break
+    return gaps
+
+
+def add_parked_questions_for_gaps(
+    decision_nodes: dict[str, DecisionNode],
+    gaps: list[str],
+    origin: dict[str, Any],
+) -> tuple[dict[str, DecisionNode], list[DecisionNode]]:
+    """Create parked open_question nodes from completeness_sweep gaps without blocking the main flow."""
+    result = _clone(decision_nodes)
+    created: list[DecisionNode] = []
+    existing = {
+        _normalize_statement(node.get("statement", ""))
+        for node in result.values()
+        if node.get("kind") == "open_question"
+    }
+    for gap in gaps:
+        normalized = _normalize_statement(gap)
+        if normalized in existing:
+            continue
+        node = create_node(
+            kind="open_question",
+            statement=gap,
+            origin=origin,
+            status="parked",
+            blocks=[],
+        )
+        result[node["id"]] = node
+        created.append(node)
+        existing.add(normalized)
+    return result, created
+
+
+def _link_value(link: Any, *names: str) -> str | None:
+    for name in names:
+        if isinstance(link, dict) and link.get(name) is not None:
+            return str(link[name])
+        value = getattr(link, name, None)
+        if value is not None:
+            return str(value)
+    return None
+
+
+def _reachable_artifacts(artifact_links: list[Any], changed_artifact_id: str | None) -> tuple[list[str], list[str]]:
+    if not artifact_links:
+        return [], []
+    start = str(changed_artifact_id) if changed_artifact_id else _link_value(
+        artifact_links[0], "source_id", "source_artifact_id"
+    )
+    if not start:
+        return [], []
+    visited = {start}
+    stale: list[str] = []
+    queue = [start]
+    while queue:
+        current = queue.pop(0)
+        for link in artifact_links:
+            source = _link_value(link, "source_id", "source_artifact_id")
+            target = _link_value(link, "target_id", "target_artifact_id")
+            if source != current or not target or target in visited:
+                continue
+            visited.add(target)
+            stale.append(target)
+            queue.append(target)
+    return stale, list(visited)
+
+
+def _default_impact_selector(change_description: str, decision_nodes: dict[str, DecisionNode]) -> list[str]:
+    normalized_change = _normalize_statement(change_description)
+    tokens = {token for token in normalized_change.split() if len(token) >= 4}
+    affected: list[str] = []
+    for node_id, node in decision_nodes.items():
+        statement = _normalize_statement(node.get("statement", ""))
+        if tokens and any(token in statement for token in tokens):
+            affected.append(node_id)
+            continue
+        if any(token in normalized_change for token in ("giao", "kênh", "kenh", "delivery", "đa kênh")) and any(
+            token in statement for token in ("thu ngân", "tai quay", "tại quầy", "khách/ngày", "1 ghé")
+        ):
+            affected.append(node_id)
+    return affected
+
+
+def _llm_selected_ids(
+    llm: Any,
+    change_description: str,
+    decision_nodes: dict[str, DecisionNode],
+    stale_artifact_ids: list[str],
+) -> list[str] | None:
+    if llm is None:
+        return None
+    result = llm(change_description, decision_nodes, stale_artifact_ids) if callable(llm) else None
+    if isinstance(result, dict):
+        result = result.get("affected_node_ids") or result.get("node_ids")
+    if result is None:
+        return None
+    return [str(item) for item in result]
+
+
+def impact(
+    change_description: str,
+    decision_nodes: dict[str, DecisionNode],
+    artifact_links: list[Any],
+    llm: Any = None,
+    changed_artifact_id: str | None = None,
+) -> dict[str, Any]:
+    """Mark nodes affected by a cross-artifact change as needs_confirmation.
+
+    The LLM/callable only selects affected ids; this function enforces the invariants: no statement
+    rewrite, no touching nodes outside the list, artifact-link traversal uses a visited-set guard.
+    """
+    stale_artifact_ids, visited_artifact_ids = _reachable_artifacts(artifact_links, changed_artifact_id)
+    selected = _llm_selected_ids(llm, change_description, decision_nodes, stale_artifact_ids)
+    affected_ids = selected if selected is not None else _default_impact_selector(change_description, decision_nodes)
+    affected_ids = [
+        node_id for node_id in dict.fromkeys(affected_ids)
+        if node_id in decision_nodes and decision_nodes[node_id].get("status") != "superseded"
+    ]
+    updated = _clone(decision_nodes)
+    for node_id in affected_ids:
+        updated[node_id]["status"] = "needs_confirmation"
+    return {
+        "decision_nodes": updated,
+        "affected_node_ids": affected_ids,
+        "stale_artifact_ids": stale_artifact_ids,
+        "visited_artifact_ids": visited_artifact_ids,
+    }
+
+
+def park_sync_debt(
+    decision_nodes: dict[str, DecisionNode],
+    question: str,
+    affected_node_ids: list[str],
+    origin: dict[str, Any],
+) -> tuple[dict[str, DecisionNode], DecisionNode]:
+    """Record a sync debt as a parked open_question whose blocks point to the stale nodes."""
+    node = create_node(
+        kind="open_question",
+        statement=question,
+        origin=origin,
+        status="parked",
+        blocks=[node_id for node_id in affected_node_ids if node_id in decision_nodes],
+    )
+    updated = {**_clone(decision_nodes), node["id"]: node}
+    return updated, node
 
 
 # Status sets driving the projection: superseded never renders; parked folds into its own section;

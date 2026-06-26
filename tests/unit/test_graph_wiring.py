@@ -23,7 +23,7 @@ def test_graph_compiles():
 
 def test_graph_has_tool_loop_nodes():
     names = _node_names()
-    assert {"triage", "converse", "analyze", "summarize", "tools"} <= names
+    assert {"triage", "converse", "orchestrator", "analyze", "summarize", "tools"} <= names
 
 
 def test_removed_nodes_absent():
@@ -40,14 +40,16 @@ def test_entry_point_is_triage():
     assert ("__start__", "triage") in {(e.source, e.target) for e in g.edges}
 
 
-def test_triage_branches_to_converse_and_analyze():
+def test_triage_branches_to_converse_and_orchestrator():
     pairs = _edge_pairs()
     assert ("triage", "converse") in pairs
-    assert ("triage", "analyze") in pairs
+    assert ("triage", "orchestrator") in pairs
 
 
-def test_converse_flows_to_analyze():
-    assert ("converse", "analyze") in _edge_pairs()
+def test_converse_flows_to_orchestrator_before_analyze():
+    pairs = _edge_pairs()
+    assert ("converse", "orchestrator") in pairs
+    assert ("orchestrator", "analyze") in pairs
 
 
 def test_analyze_branches_to_tools_and_end():
@@ -59,8 +61,8 @@ def test_analyze_branches_to_tools_and_end():
 def test_tools_loops_back_through_summarize_and_analyze():
     pairs = _edge_pairs()
     assert ("tools", "summarize") in pairs
-    assert ("tools", "analyze") in pairs
-    assert ("summarize", "analyze") in pairs
+    assert ("tools", "orchestrator") in pairs
+    assert ("summarize", "orchestrator") in pairs
 
 
 # --- Group 3: route_node dispatch ---

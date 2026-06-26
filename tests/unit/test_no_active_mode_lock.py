@@ -1,4 +1,4 @@
-"""Phase 03 — active_mode lock removed.
+"""active_mode lock removed.
 
 The per-turn single-mode derivation (_TOOL_ACTIVE_MODE → analysis_result["active_mode"]) is gone:
 the analyst may exercise multiple roles in one turn, and tool availability never depends on a mode

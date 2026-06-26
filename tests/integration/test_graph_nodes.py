@@ -6,6 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from sqlalchemy import select
 
+from app.graphs.decision_graph import create_node
 from app.graphs.policy import GovernanceDenied
 from app.graphs.state import (
     DEFAULT_ARTIFACT_CHAIN,
@@ -59,19 +60,21 @@ def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=Non
         "assumptions": [],
         "risks": [],
         "open_questions": [],
+        "key_facts": [],
         "analysis_frame": None,
         "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
-        "working_draft": None,
         "candidate_readiness": None,
         "tool_errors": [],
         "feedback_summary": None,
         "verification_status": None,
         "latest_checked_revision": None,
         "mode_hint": None,
+        "session_elicit_count": 0,
+        "decision_nodes": {},
     }
 
 
@@ -541,7 +544,7 @@ def test_build_prompt_excludes_static_policy():
     assert "ghi chú phản biện" not in prompt
     # It still names the tools available this turn so the model knows the current menu.
     assert "Công cụ khả dụng" in prompt
-    assert "ANALYSIS FRAME BẮT BUỘC TRƯỚC DRAFT ĐẦU TIÊN" in prompt
+    assert "ANALYSIS FRAME TÙY CHỌN" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
@@ -879,7 +882,7 @@ async def test_greeting_turn_skips_full_analysis(client, db_session):
 
 
 # ---------------------------------------------------------------------------
-# Phase 6 — One-question Rhythm (S8)
+# One-question Rhythm (S8)
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -965,7 +968,7 @@ async def test_read_current_body_returns_one_when_multiple(client, db_session):
     """Multiple drafts of the same type: returns exactly one (no crash).
 
     Picking the *right* target for a deliberate update is the authoritative
-    target_artifact_id problem of Phase 4 — A1 only surfaces a single draft as context.
+    target_artifact_id problem — A1 only surfaces a single draft as context.
     """
     from app.graphs.tools import read_current_body
 
@@ -1061,31 +1064,37 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
 
 
 # ---------------------------------------------------------------------------
-# Phase A2 (C1): incremental running draft (working_draft)
+# Decision graph as live draft source
 # ---------------------------------------------------------------------------
 
-def test_build_prompt_includes_working_draft_block_when_present():
+def test_build_prompt_includes_decision_view_block_when_nodes_present():
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
-    state["working_draft"] = "## Vấn đề\n- Sinh viên trùng lịch học nhóm với giờ làm thêm."
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="fact",
+            statement="Sinh viên trùng lịch học nhóm với giờ làm thêm.",
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
 
     prompt = _build_tool_selection_prompt(state, [])
 
     assert "DRAFT ĐANG XÂY DỰNG" in prompt
-    assert state["working_draft"] in prompt
+    assert "Sinh viên trùng lịch học nhóm với giờ làm thêm." in prompt
     # The running draft must precede the language lock (kept last by contract).
     assert prompt.index("DRAFT ĐANG XÂY DỰNG") < prompt.index("ngôn ngữ 'vi'")
 
 
-def test_build_prompt_no_working_draft_block_when_absent():
-    """Regression guard: prompt unchanged when no running draft exists."""
+def test_build_prompt_no_decision_view_block_when_nodes_absent():
+    """Không có graph thì prompt không dựng draft live từ checkpoint cũ."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     baseline = _build_tool_selection_prompt(state, [])
-    state["working_draft"] = None
 
     assert "DRAFT ĐANG XÂY DỰNG" not in _build_tool_selection_prompt(state, [])
     assert _build_tool_selection_prompt(state, []) == baseline
@@ -1095,8 +1104,7 @@ def test_build_prompt_no_working_draft_block_when_absent():
 async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_session):
     """Under forced tool_choice, content emitted alongside tool_calls is reasoning, not a draft.
 
-    Capturing it poisoned working_draft (OQ2 realized). The prior turn's draft must survive untouched;
-    drafts of record flow through write_draft (-> draft_body), never through AIMessage content.
+    Drafts of record flow through decision_nodes/write_draft, never through AIMessage content.
     """
     from app.graphs.nodes import analyze_node
 
@@ -1106,7 +1114,6 @@ async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_s
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    prior = "## Mục tiêu\n- Đã ghi nhận từ lượt trước."
     thinking_text = "Người dùng vừa nói X, mình nên hỏi thêm ràng buộc trước khi viết."
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content=thinking_text, tool_calls=[
@@ -1114,13 +1121,13 @@ async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_s
     ]), None))
 
     state = _state(artifact_type="goal")
-    state["working_draft"] = prior
     config = _config(str(agent_session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 
     result = await analyze_node(state, config)
 
-    assert result["working_draft"] == prior
+    assert "draft_update" not in result["analysis_result"]
+    assert "working_draft" not in result
 
 
 @pytest.mark.asyncio
@@ -1178,8 +1185,8 @@ async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_preserves_working_draft_when_no_update(client, db_session):
-    """A turn with no draft_update must keep the prior draft, not None it out."""
+async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, db_session):
+    """Terminal text không được ghi vào state legacy; graph/write_draft mới là nguồn draft."""
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -1188,7 +1195,6 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    prior = "## Mục tiêu\n- Đã ghi nhận từ lượt trước."
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=({
         "next_action": "ask",
@@ -1198,13 +1204,13 @@ async def test_analyze_node_preserves_working_draft_when_no_update(client, db_se
     }, None))
 
     state = _state(artifact_type="goal")
-    state["working_draft"] = prior
     config = _config(str(agent_session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 
     result = await analyze_node(state, config)
 
-    assert result["working_draft"] == prior
+    assert "working_draft" not in result
+    assert "draft_update" not in result["analysis_result"]
 
 
 # ---------------------------------------------------------------------------

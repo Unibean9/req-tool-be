@@ -39,10 +39,11 @@ class KeyFactObject(TypedDict):
 
 
 class DecisionNode(TypedDict):
-    """Một nút trong đồ thị quyết định — đơn vị sự thật thay cho working_draft phẳng.
+    """A node in the decision graph — the unit of truth for an artifact.
 
-    Vòng đời giữ lịch sử: đổi quyết định = tạo node mới supersedes node cũ, không xóa. Cạnh depends_on
-    cho phép ripple ngược khi một node bị supersede. View (BRD/PRD) là dẫn xuất, render từ các node active.
+    Lifecycle preserves history: changing a decision creates a new node that supersedes the old one
+    (never deleted). depends_on edges enable backward ripple when a node is superseded. The artifact
+    view (BRD/PRD) is a derived projection rendered from active nodes, never the source.
     """
     id: str
     kind: str  # objective | scope | assumption | decision | risk | open_question | fact
@@ -57,7 +58,7 @@ class DecisionNode(TypedDict):
 
 
 class AnalysisFrame(TypedDict):
-    """Khung phân tích đã trình cho user trước khi tạo draft đầu tiên."""
+    """Structured analysis frame surfaced to the user before the first draft is written."""
     interpreted_intent: str
     evidence: list[str]
     gaps: list[str]
@@ -161,7 +162,7 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser, queried by validators (Phase 5) and the finalize gate.
+    # populated by the note parser, queried by validators and the finalize gate.
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
@@ -171,10 +172,9 @@ class WorkflowState(TypedDict):
     analysis_frame: AnalysisFrame | None
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
-    # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
-    # confirmed artifact even when no in-session working_draft exists yet.
+    # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
+    # draft view; this field stays as DB context for document workflows.
     draft_body: str | None
-    working_draft: str | None
     candidate_readiness: dict[str, Any] | None
     tool_errors: list[dict[str, Any]]
     feedback_summary: dict[str, Any] | None
@@ -192,8 +192,8 @@ class WorkflowState(TypedDict):
     # project must run at least one elicitation before write_draft is offered. Resets per session
     # (not persisted across resume) — each new session re-explores before drafting.
     session_elicit_count: int
-    # Đồ thị quyết định, keyed by node id — nguồn sự thật cho artifact; working_draft vẫn chạy song
-    # song cho tới khi được retire. Session cũ thiếu key này → default {} (không migration, không crash).
+    # Decision graph keyed by node id — source of truth for the artifact. Old sessions missing this key
+    # default to {} on load without migration or crash.
     decision_nodes: dict[str, DecisionNode]
 
 
@@ -207,7 +207,7 @@ def build_initial_workflow_state(
     focused_artifact_id: Any = None,
     mode_hint: str | None = None,
 ) -> WorkflowState:
-    """Tạo state khởi tạo duy nhất cho mọi đường vào graph."""
+    """Build the canonical initial state for every graph entry point."""
     return {
         "artifact_type": artifact_type,
         "workflow_area": workflow_area,
@@ -236,7 +236,6 @@ def build_initial_workflow_state(
         "analysis_frame": None,
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
-        "working_draft": None,
         "candidate_readiness": None,
         "tool_errors": [],
         "feedback_summary": None,

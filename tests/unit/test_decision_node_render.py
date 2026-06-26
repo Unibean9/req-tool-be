@@ -1,4 +1,4 @@
-"""Golden TDD — render-as-view projection (made green in Phase 05).
+"""render_view projection contract.
 
 render_view projects the decision graph to markdown: superseded hidden, parked folded
 into a separate section, active nodes shown. The view is derived, never the source.
@@ -10,13 +10,13 @@ try:
     from app.graphs.decision_graph import render_view
 
     _PENDING = None
-except ImportError as exc:  # pragma: no cover - resolves once Phase 05 lands
+except ImportError as exc:  # pragma: no cover - resolves once decision_graph lands
     render_view = None
     _PENDING = str(exc)
 
 pytestmark = pytest.mark.xfail(
     _PENDING is not None,
-    reason=f"render_view pending (Phase 05): {_PENDING}",
+    reason=f"render_view not yet available: {_PENDING}",
     strict=False,
 )
 

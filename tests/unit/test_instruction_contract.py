@@ -1,4 +1,4 @@
-"""Tests for the layered instruction contract (Phase 7B; spec §5, §6, §13, addendum §9).
+"""Tests for the layered instruction contract (spec §5, §6, §13, addendum §9).
 
 Also covers D5 contextual layers: has_draft filtering and cache isolation.
 """

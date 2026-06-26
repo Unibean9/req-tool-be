@@ -1,4 +1,4 @@
-"""Phase 05 step 3 — write_draft is the propose/approval gate, not a graph mutator.
+"""write_draft is the propose/approval gate, not a graph mutator.
 
 When decision nodes exist the proposed body is the rendered view (the model's body arg is ignored);
 mutation lives in the create/update/supersede tools. Without a graph, the model's body still drives.

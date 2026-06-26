@@ -1,7 +1,6 @@
-"""D6 — confirm_intent tool, schema registration, and the intent phase gate.
+"""D6 — confirm_intent tool, schema registration, and self-validation.
 
-The intent phase (user_confirmed is None) restricts the menu to exploration + confirmation tools;
-confirm_intent flips user_confirmed=True and unlocks the artifact menu (one-shot, no reset path).
+Intent menu gate removed; confirm_intent still self-rejects when intent is already confirmed.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -10,7 +9,6 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.graphs.agent_tools import (
-    NOTE_STEP_LIMIT,
     _analysis_frame_impl,
     _confirm_intent_impl,
     _write_draft_impl,
@@ -62,12 +60,12 @@ def test_confirm_intent_is_interrupt_bearing():
 
 
 # ---------------------------------------------------------------------------
-# Intent phase gate (user_confirmed is None)
+# Menu không còn intent gate
 # ---------------------------------------------------------------------------
 
-def test_intent_phase_hides_artifact_tools():
+def test_intent_phase_keeps_broad_tool_menu():
     names = _names({"messages": [], "user_confirmed": None})
-    assert "write_draft" not in names
+    assert "write_draft" in names
     assert "finalize" not in names
     assert "run_critique" not in names
 
@@ -78,34 +76,32 @@ def test_intent_phase_offers_confirm_intent():
     assert "analysis_frame" in names
 
 
-def test_artifact_phase_hides_confirm_intent_and_waits_for_analysis_frame():
-    # One-shot: confirm_intent disappears once user_confirmed=True.
+def test_artifact_phase_keeps_confirm_intent_and_write_draft_available():
+    # confirm_intent tự reject nếu gọi lại; menu không còn one-shot gate.
     names = _names({"messages": [], "user_confirmed": True})
-    assert "confirm_intent" not in names
+    assert "confirm_intent" in names
     assert "analysis_frame" in names
-    assert "write_draft" not in names
+    assert "write_draft" in names
 
 
-def test_artifact_phase_unlocks_write_draft_after_analysis_frame():
-    # Cold-start hard gate (Phase 02): an analysis_frame plus at least one elicit run unlocks the
-    # first draft — exploration must precede drafting.
+def test_write_draft_available_without_analysis_frame_or_elicit():
     names = _names(
         {
             "messages": [],
             "user_confirmed": True,
-            "analysis_frame": _ready_analysis_frame(),
-            "session_elicit_count": 1,
+            "analysis_frame": None,
+            "session_elicit_count": 0,
         }
     )
     assert "write_draft" in names
 
 
-def test_note_step_limit_applies_in_intent_phase():
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
+def test_note_tools_remain_available_in_intent_phase_after_many_notes():
+    messages = [_note_turn(f"c{i}") for i in range(5)]
     names = _names({"messages": messages, "user_confirmed": None})
-    assert "explore_note" not in names
-    assert "critique_note" not in names
-    assert "confirm_intent" in names  # confirmation survives the note step-limit
+    assert "explore_note" in names
+    assert "critique_note" in names
+    assert "confirm_intent" in names
 
 
 # ---------------------------------------------------------------------------
@@ -304,28 +300,12 @@ def test_write_draft_in_artifact_phase_not_coerced():
     assert gated[0]["name"] == "write_draft"
 
 
-@pytest.mark.asyncio
-async def test_write_draft_in_intent_phase_returns_tool_error():
-    state = {"messages": [], "user_confirmed": None}
-    body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in cho người tham gia. " * 12)
-    command = await _write_draft_impl("Vision", body, state, {"configurable": {}}, "tc-write")
-
-    assert command.update["tool_errors"][0]["code"] == "tool_not_available"
-    msg = command.update["messages"][0]
-    assert msg.status == "error"
-    assert "confirm_intent" in msg.content
+def test_write_draft_available_before_confirm_intent():
+    assert "write_draft" in _names({"messages": [], "user_confirmed": None})
 
 
-@pytest.mark.asyncio
-async def test_write_draft_without_analysis_frame_returns_tool_error():
-    state = {"messages": [], "user_confirmed": True}
-    body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in. " * 12)
-    command = await _write_draft_impl("Vision", body, state, {"configurable": {}}, "tc-write")
-
-    assert command.update["tool_errors"][0]["code"] == "analysis_frame_required"
-    msg = command.update["messages"][0]
-    assert msg.status == "error"
-    assert "analysis_frame" in msg.content
+def test_write_draft_available_without_analysis_frame():
+    assert "write_draft" in _names({"messages": [], "user_confirmed": True, "analysis_frame": None})
 
 
 @pytest.mark.asyncio

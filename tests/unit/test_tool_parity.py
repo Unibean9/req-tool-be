@@ -6,8 +6,8 @@ HTTP-resume) and R3 (idempotency-key collision) risks.
 
 Unit tests (T1–T5) call the tool impls directly with `interrupt` patched. T6 exercises the
 real ToolNode dispatch + interrupt/resume through a minimal compiled graph (analyze_node
-cannot emit native tool_calls until Phase 4's bind_tools, so the HTTP driver path cannot
-reach the tools yet — a seeded AIMessage is the Phase-2 precedent for tool-path coverage).
+cannot emit native tool_calls without bind_tools, so the HTTP driver path cannot
+reach the tools yet — a seeded AIMessage seeds tool-path coverage).
 """
 
 import hashlib
@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from app.graphs.decision_graph import create_node, render_view
 from app.models.agent import (
     AgentMessage,
     AgentSession,
@@ -34,6 +35,19 @@ from tests.integration.test_graph_nodes import (
     _session_factory,
     _state,
 )
+
+
+def _set_graph_draft(state: dict, statement: str = "draft") -> str:
+    state["artifact_type"] = "brd"
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement=statement,
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    return render_view(state["decision_nodes"], state["artifact_type"])
 
 
 async def _project(client) -> uuid.UUID:
@@ -339,9 +353,9 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     state = _state(artifact_type="brd")
-    state["working_draft"] = "draft"
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
     config = _config(str(agent_session.id), str(project_id))
@@ -360,10 +374,10 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
 def test_finalize_not_available_when_candidate_readiness_is_not_sufficient():
     from app.graphs.agent_tools import get_available_tools
 
-    state = _state(artifact_type="vision_objectives")
-    state["working_draft"] = "draft"
+    state = _state(artifact_type="brd")
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}
     state["candidate_readiness"] = {
         "state": "well_structured_but_incomplete",
@@ -511,9 +525,9 @@ async def test_finalize_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
-    state["working_draft"] = "draft"
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
     state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]

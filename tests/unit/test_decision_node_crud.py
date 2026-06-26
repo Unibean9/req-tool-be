@@ -1,7 +1,7 @@
-"""Golden TDD — DecisionNode CRUD + cascade inference (made green in Phase 04).
+"""DecisionNode CRUD and cascade inference contract.
 
-Mirrors the xfail-until-module-exists pattern of the Phase 01 scaffold so CI stays
-green before app.graphs.decision_graph ships; once it imports the assertions run real.
+Uses xfail-until-module-exists so CI stays green before decision_graph ships;
+once the import resolves, every assertion runs real.
 """
 
 import pytest
@@ -16,13 +16,13 @@ try:
     )
 
     _PENDING = None
-except ImportError as exc:  # pragma: no cover - resolves once Phase 04 lands
+except ImportError as exc:  # pragma: no cover - resolves once decision_graph lands
     create_node = update_node = supersede_node = get_dependents = infer_cascade_mode = None
     _PENDING = str(exc)
 
 pytestmark = pytest.mark.xfail(
     _PENDING is not None,
-    reason=f"decision_graph pending (Phase 04): {_PENDING}",
+    reason=f"decision_graph not yet available: {_PENDING}",
     strict=False,
 )
 

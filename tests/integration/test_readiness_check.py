@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.graphs.agent_tools import _run_readiness_check_impl, get_available_tools
+from app.graphs.decision_graph import create_node
 from app.graphs.readiness import compute_readiness_score
 from app.models.agent import AgentToolCall
 from tests.conftest import TestSessionFactory
@@ -97,10 +98,17 @@ async def test_readiness_state_updated_after_check(client, db_session):
 
 
 def test_run_readiness_check_in_available_tools_with_draft():
-    state = _state(artifact_type="intent")
+    state = _state(artifact_type="brd")
     state["user_confirmed"] = True
-    state["working_draft"] = "một bản nháp"
-    state["critique_rounds"] = 1  # readiness now requires at least one critique round (Phase 3)
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement="Một bản nháp",
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    state["critique_rounds"] = 1  # readiness requires at least one critique round
     names = {t.name for t in get_available_tools(state)}
     assert "run_readiness_check" in names
 

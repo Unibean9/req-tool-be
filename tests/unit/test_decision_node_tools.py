@@ -1,4 +1,4 @@
-"""Phase 04 — decision-graph tool wrappers: flag gating + state write via Command.update.
+"""Decision-graph tool wrappers: flag gating + state write via Command.update.
 
 The pure graph functions are covered in test_decision_node_crud/supersede; these assert the tool
 layer wires them into decision_nodes state and that DECISION_GRAPH_ENABLED gates every write.
@@ -10,6 +10,7 @@ from app.graphs.agent_tools import (
     _create_decision_node_impl,
     _supersede_decision_node_impl,
     _update_decision_node_impl,
+    get_all_analyzer_tools,
     get_available_tools,
 )
 
@@ -71,6 +72,27 @@ async def test_create_rejects_duplicate_node_id(graph_on, decision_graph_factory
 
     assert "decision_nodes" not in command.update
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"
+
+
+@pytest.mark.asyncio
+async def test_create_can_record_parked_question_blocks(graph_on):
+    state = {"messages": [], "turn_count": 4, "decision_nodes": {}}
+
+    command = await _create_decision_node_impl(
+        "open_question",
+        "Định nghĩa tích điểm đa kênh",
+        [],
+        None,
+        state,
+        "tc1",
+        node_id="Q8",
+        status="parked",
+        blocks=["R1", "S1"],
+    )
+
+    node = command.update["decision_nodes"]["Q8"]
+    assert node["status"] == "parked"
+    assert node["blocks"] == ["R1", "S1"]
 
 
 @pytest.mark.asyncio
@@ -148,3 +170,9 @@ def test_menu_offers_supersede_once_nodes_exist(graph_on, decision_graph_factory
     }
     names = _names(state)
     assert {"create_decision_node", "update_decision_node", "supersede_decision_node"} <= names
+
+
+def test_cross_artifact_tools_in_registry():
+    names = {tool.name for tool in get_all_analyzer_tools()}
+
+    assert {"run_impact_analysis", "read_artifact_graph", "create_artifact_link"} <= names

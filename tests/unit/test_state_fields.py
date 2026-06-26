@@ -30,7 +30,6 @@ def test_workflow_state_accepts_document_focus_fields():
         "analysis_frame": None,
         "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": None,
-        "working_draft": None,
         "candidate_readiness": None,
         "tool_errors": [],
         "feedback_summary": None,
@@ -91,6 +90,7 @@ def test_state_has_section_coverage_field():
     assert "verification_status" in WorkflowState.__annotations__
     assert "latest_checked_revision" in WorkflowState.__annotations__
     assert "analysis_frame" in WorkflowState.__annotations__
+    assert "working_draft" not in WorkflowState.__annotations__
     assert "section_assessment" not in WorkflowState.__annotations__
     assert "coverage_ratio" not in WorkflowState.__annotations__
     assert "sections_body" not in WorkflowState.__annotations__
@@ -123,6 +123,7 @@ def test_initial_workflow_state_seeds_governance_fields():
     assert state["last_critiqued_draft_hash"] is None
     assert state["candidate_readiness"] is None
     assert state["analysis_frame"] is None
+    assert "working_draft" not in state
     assert state["tool_errors"] == []
     assert state["feedback_summary"] is None
     assert state["verification_status"] is None
