@@ -14,8 +14,6 @@ engine. Files live inside the app so they ship and version with the code, loaded
 """
 from pathlib import Path
 
-from app.documents.registry import all_item_types, get_config
-
 # Default role when nothing else resolves — guarantees get_instruction never returns None, so the
 # system prompt always carries the policy contract regardless of artifact_type / workflow_area.
 _DEFAULT_ROLE = "business_analyst"
@@ -80,14 +78,6 @@ _overlay_cache: dict[str, str] = {}
 _assembled_cache: dict[tuple[str, bool | None], str] = {}
 
 
-def _render_taxonomy_sections() -> str:
-    """Document item list, sourced from the registry so it never drifts from the engine."""
-    return "\n".join(
-        f"- {item_type}: {get_config(item_type).description}"
-        for item_type in all_item_types()
-    )
-
-
 def load_instructions(base_path: Path | None = None) -> None:
     """Load and cache the shared layers and role overlays. Called once at startup."""
     _layer_cache.clear()
@@ -98,11 +88,7 @@ def load_instructions(base_path: Path | None = None) -> None:
     for filename in (_LAYER_01, *_SHARED_LAYERS_AFTER_ROLE):
         path = base / "layers" / filename
         if path.exists():
-            text = path.read_text(encoding="utf-8").strip()
-            # Layer 3 carries the item list rendered from the document registry.
-            if filename == "03-taxonomy-contract.md":
-                text = f"{text}\n{_render_taxonomy_sections()}"
-            _layer_cache[filename] = text
+            _layer_cache[filename] = path.read_text(encoding="utf-8").strip()
 
     for role, filename in _ROLE_OVERLAY_FILE.items():
         path = base / "roles" / filename

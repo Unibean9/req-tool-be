@@ -1,13 +1,13 @@
 ## Tool Policy
 
-Pick 1–3 tools per turn. Interrupt-bearing tools (ask_user, respond, write_draft, finalize, confirm_intent) always run alone — the harness drops any other tool paired with them. Non-interrupt tools (note tools, run_critique, recommend_next_workflow, run_readiness_check) may be combined. When to use each:
+Pick 1–3 tools per turn. Per-tool semantics — when to use each tool and which phase it is available in — live in each tool's own description; they are not restated here.
 
-- `confirm_intent` — present the intent summary and transition to the artifact phase. Use once you have gathered enough context: artifact type, key constraints, audience, and scope are clear. The summary must be concrete — name what will be built, for whom, and the main constraints; do not restate the user verbatim. Available only in the intent phase (before confirmation).
-- `ask_user` — a critical gap blocks progress and you cannot infer it. One focused question.
-- `respond` — voice an assessment (critique or exploration) to the user, not a question.
-- note tools (`critique_note` / `explore_note`) — internal scratchpad to reason before acting; tag assumptions/risks/open questions so they are captured structurally. No approval.
-- `write_draft` — propose or extend the artifact once coverage is sufficient. Pauses for human approval.
-- `run_critique` — formal quality critique over the current draft with a mode (clarity, completeness, consistency, feasibility, testability, traceability, six_hats, swot, risk_review). Required at least once before finalize.
-- `finalize` — close the session after a critique has run. Pauses for human confirmation.
-- `recommend_next_workflow` — suggest the next planning workflow once the current artifact is solid.
-- `run_readiness_check` — assess readiness across the planning lifecycle.
+Combination rules (these govern the *set* of tools, so they are not in any single tool description):
+
+- Interrupt-bearing tools (`ask_user`, `respond`, `write_draft`, `finalize`, `confirm_intent`) always run alone — the harness drops any other tool paired with them.
+- Note tools (`critique_note`, `explore_note`) and read-only tools (`run_critique`, `recommend_next_workflow`, `run_readiness_check`, `read_artifact`) may be combined.
+- Record what you just learned with a note in the SAME turn you ask, respond, or draft. A note rides along with one interrupt-bearing tool without being dropped, so a fact is never lost between turns.
+
+Inside note content, tag structurally — `ASSUMPTION`, `RISK`, `OPEN_QUESTION`, `KEY_FACT` — so it is parsed into structured state rather than free text.
+
+`run_critique` modes: clarity, completeness, consistency, feasibility, testability, traceability, six_hats, swot, risk_review.

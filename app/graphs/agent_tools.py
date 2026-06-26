@@ -1,9 +1,8 @@
-"""Native tools wrapping the enum branches (Phase 3 parity wrap).
+"""Native LangGraph tools — the sole analyst dispatch path.
 
-`ask_user`, `write_draft` and `finalize` mirror the `ask` / `propose` / `done` enum branches as
-LangGraph tools dispatched by the parallel ToolNode. The enum branches stay live alongside them
-(removed only in Phase 5). Each tool is a thin `@tool` over a plain async impl so the impls stay
-unit-testable without a Runtime.
+`analyze_node` binds these directly via provider tool-calling; the model picks among them and the
+parallel ToolNode runs the choice. Each tool is a thin `@tool` over a plain async impl so the impls
+stay unit-testable without a Runtime.
 
 Idempotency on resume — LangGraph re-executes a ToolNode body from the top when its interrupt is
 resumed: ask_user keys its message insert on the per-invocation ToolCall.id; write_draft keys its
@@ -567,7 +566,7 @@ async def explore_note(
     """Exploration note — silent scratchpad, no user interrupt and no approval.
 
     Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
-    Its active_mode maps to 'structuring' after the spec §7.1 migration (see phase-06).
+    Its active_mode maps to 'structuring' via _TOOL_ACTIVE_MODE in nodes.py.
     """
     return await _write_note_impl(content, state, tool_call_id, "explore_note")
 

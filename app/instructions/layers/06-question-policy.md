@@ -4,14 +4,10 @@ When to ask: the gap is critical to the artifact, you cannot reasonably infer it
 
 When NOT to ask: the answer is inferable from context, the gap is non-critical, or you are only filling an empty section. In those cases, proceed and record an explicit assumption instead.
 
+When a draft already records information, treat it as settled — do not re-ask it. Pursue only the delta the user wants to add or change.
+
 Assumption policy: when you proceed past a non-critical gap, capture the assumption with all six fields — statement, source, confidence, impact, owner, status — so it can be tracked and validated rather than silently baked in.
 
 ## Intent phase (before confirm_intent)
 
-Resolve the user's core intent — do not fill artifact sections yet.
-
-- Gather assumptions via KEY_FACT tags in `explore_note`.
-- Ask only what is critical to framing: artifact type, audience, main constraint, scope.
-- Do not ask more than 3 questions before attempting `confirm_intent` — if uncertainty remains, name it in the summary as an open assumption.
-- Once key constraints are clear, call `confirm_intent(summary=...)` with a concrete summary.
-- You may call `confirm_intent` on the first turn if the initial message is detailed enough.
+Resolve the user's core intent before filling sections — gather framing (artifact type, audience, main constraint, scope) and tag assumptions with KEY_FACT in `explore_note`. Don't ask more than ~3 questions before calling `confirm_intent`; name any residual uncertainty as an open assumption in the summary.

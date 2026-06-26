@@ -435,7 +435,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "draft_update": draft_update,
         "coverage_complete": coverage["coverage_complete"],
     }
-    _record_gate_observability(analysis_result, raw_tools, gated_tools, effective_state)
 
     async with session_factory() as db:
         run = AgentRun(
@@ -771,12 +770,7 @@ def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     """Persisted-draft block: tell the analyst the body already on record, so it mines the delta."""
     if not draft_body:
         return ""
-    return (
-        f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}\n\n"
-        "QUAN TRỌNG: nội dung trên ĐÃ được ghi nhận. TUYỆT ĐỐI không hỏi lại thông tin đã "
-        "có trong draft. Chỉ hỏi/khai thác phần user muốn bổ sung hoặc thay đổi (delta). "
-        "Nếu user chỉ muốn cập nhật, tập trung vào điểm cần sửa, không khởi tạo lại từ đầu."
-    )
+    return f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}"
 
 
 def _build_key_facts_block(state: WorkflowState) -> str:
@@ -800,10 +794,7 @@ def _build_working_draft_block(state: WorkflowState) -> str:
         return ""
     return (
         "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
-        f"{working_draft}\n\n"
-        "Với mỗi ý mới user vừa nêu, cập nhật draft trên bằng tool write_draft (bồi đắp, "
-        "không viết lại từ đầu, không bịa nội dung chưa có). KHÔNG hỏi lại nội dung đã có "
-        "trong draft."
+        f"{working_draft}"
     )
 
 
@@ -813,30 +804,6 @@ def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     if not messages:
         return False
     return bool(getattr(messages[-1], "tool_calls", None))
-
-
-def _record_gate_observability(
-    analysis_result: dict, raw_tools: list[dict], gated_tools: list[dict], state: WorkflowState
-) -> None:
-    """Log the tools solo enforcement dropped — the only control decision the gate still makes.
-
-    Reduced to logging: tool-level rejects now write their own ToolMessage + tool_errors, so the
-    gated_* overlay is gone. A drop here is a forced control decision, so it stays traceable in logs.
-    """
-    _ = analysis_result, state
-    if len(gated_tools) >= len(raw_tools):
-        return
-    gated_names = [item.get("name") for item in gated_tools]
-    for item in raw_tools:
-        name = item.get("name")
-        if name in gated_names:
-            gated_names.remove(name)
-        else:
-            _log_tool_error(
-                "dropped_by_solo_enforcement",
-                str(name or ""),
-                "tool dropped from dispatch by solo enforcement",
-            )
 
 
 def _log_tool_error(code: str, tool_name: str, message: str) -> None:
@@ -866,25 +833,20 @@ _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
 _SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
 
 
-def _coerce_and_validate_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
-    """Normalize tool_calls to a stable shape without substituting the model's chosen tool.
-
-    Availability and required-arg errors are returned by the tools themselves via ToolMessage; this
-    only preserves a consistent shape for solo enforcement and the legacy call sites.
-    """
-    return [
-        {"name": item.get("name") or "", "args": dict(item.get("args") or {})}
-        for item in requested
-    ]
-
-
-def _gate_selected_tools(state: WorkflowState, requested: list[dict]) -> list[dict]:
+def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
     """Enforce the ToolNode safety invariant without picking a tool on the model's behalf.
 
     The remaining gate is solo enforcement for interrupt-bearing tools: keep the first interrupt plus
     side-effect-free notes, drop the rest. Tools decide unavailable/missing-arg via a tool_result error.
+
+    ``_state`` is part of the gate contract (callers pass it) but the current solo-enforcement rule
+    needs only the requested set; it is intentionally unused.
     """
-    validated = _coerce_and_validate_tools(state, requested)
+    # Normalize to a stable {name, args} shape; the model's chosen tools are never substituted.
+    validated = [
+        {"name": item.get("name") or "", "args": dict(item.get("args") or {})}
+        for item in requested
+    ]
 
     # Solo enforcement: at most one interrupt-bearing tool per turn (two interrupts in a node is
     # unsafe). When one is present, keep it plus any side-effect-free notes (so their structured facts
@@ -924,11 +886,13 @@ def _build_tool_selection_prompt(
 ) -> str:
     """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
-    This is dynamic payload only — artifact context, the conversation window, the tools available
-    this turn, and state-dependent hints (coverage gaps, the running/persisted draft, a one-shot
-    mode_hint, the locale lock). All static policy — tool semantics, the section grading rubric, the
-    proactive-mode and content-depth rules — lives in the instruction layers (the system prompt), so
-    it is never restated here. analyze_node converts the returned dict into an AIMessage(tool_calls).
+    This is dynamic payload only — artifact context, the tools available this turn, and
+    state-dependent hints (coverage gaps, the running/persisted draft, a one-shot mode_hint, the
+    locale lock). The conversation itself is NOT restated here: the analyst receives it as a real
+    message thread (_build_analyzer_messages), so only a running summary of older turns is carried.
+    All static policy — tool semantics, the section grading rubric, the proactive-mode and
+    content-depth rules — lives in the instruction layers (the system prompt), so it is never
+    restated here. analyze_node converts the returned dict into an AIMessage(tool_calls).
     """
     from app.graphs.agent_tools import get_available_tools
 
@@ -936,19 +900,15 @@ def _build_tool_selection_prompt(
         f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
     ) or "(chưa có artifact nào)"
 
+    # The analyst already receives the full conversation as a real message thread
+    # (_build_analyzer_messages), so restating it here would double every recent turn. The payload
+    # carries only the running summary — a deliberate compaction of older turns — when one exists.
     conversation_summary = (state.get("conversation_summary") or "").strip()
-    message_window = (state.get("messages") or [])[-3:] if conversation_summary else (state.get("messages") or [])[-5:]
-    messages_summary = "\n".join(
-        f"{role}: {content}"
-        for role, content in (_msg_role_content(m) for m in message_window)
-    ) or "(chưa có hội thoại)"
-    if conversation_summary:
-        messages_summary = (
-            "Tóm tắt hội thoại đã tích lũy:\n"
-            f"{conversation_summary}\n\n"
-            "Ba tin nhắn gần nhất:\n"
-            f"{messages_summary}"
-        )
+    summary_block = (
+        f"Tóm tắt hội thoại đã tích lũy:\n{conversation_summary}\n\n"
+        if conversation_summary
+        else ""
+    )
 
     locale = (state.get("locale") or "").strip()
     language_lock = (
@@ -966,8 +926,9 @@ def _build_tool_selection_prompt(
 
     return (
         f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
-        f"Context hiện tại:\n{artifact_context}\n\n"
-        f"Hội thoại gần đây:\n{messages_summary}\n\n"
+        f"Context hiện tại:\n{artifact_context}"
+        f"{_build_taxonomy_chain_block(state)}\n\n"
+        f"{summary_block}"
         f"Công cụ khả dụng lượt này: {tool_menu}.\n"
         "Chọn 1–3 công cụ phù hợp và điền các field của từng công cụ theo policy trong system prompt."
         f"{_build_section_coverage_hint(state)}"
@@ -1017,6 +978,25 @@ def _compact_list(values: list[Any], limit: int = 3) -> str:
     if len(values) > limit:
         rendered.append(f"... (+{len(values) - limit})")
     return "; ".join(rendered)
+
+
+def _build_taxonomy_chain_block(state: WorkflowState) -> str:
+    """Per-turn provenance: the focused artifact type plus its ancestry, each with the registry
+    description. Replaces the full static taxonomy catalog — the model needs only the chain it
+    derives from this turn, not every type in the engine (memory/context holds the evidence)."""
+    artifact_type = state["artifact_type"]
+    chain = [*reversed(ancestor_types(artifact_type)), artifact_type]
+    lines = []
+    for item_type in chain:
+        try:
+            desc = get_config(item_type).description
+        except (KeyError, ValueError):
+            continue
+        marker = " (đang làm)" if item_type == artifact_type else ""
+        lines.append(f"- {item_type}{marker}: {desc}")
+    if not lines:
+        return ""
+    return "\n\nLOẠI ARTIFACT & nguồn gốc (chain):\n" + "\n".join(lines)
 
 
 def _build_output_contract_block(state: WorkflowState) -> str:

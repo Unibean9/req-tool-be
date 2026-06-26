@@ -499,7 +499,9 @@ async def test_summarize_node_uses_default_client(monkeypatch):
     strong_llm.generate.assert_not_called()
 
 
-def test_build_prompt_uses_summary_when_present():
+def test_build_prompt_carries_summary_not_raw_turns():
+    """The payload carries only the compacted summary; raw turns live in the message thread, so the
+    payload must not restate them (no double representation)."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
@@ -510,11 +512,11 @@ def test_build_prompt_uses_summary_when_present():
 
     assert "Tóm tắt hội thoại đã tích lũy" in prompt
     assert "Ngân sách tối đa 50 triệu" in prompt
-    assert "Tin nhắn 1" not in prompt
-    assert "Tin nhắn 2" in prompt
+    assert not any(f"Tin nhắn {i}" in prompt for i in range(5))
 
 
-def test_build_prompt_falls_back_to_5_messages_when_empty():
+def test_build_prompt_omits_conversation_when_no_summary():
+    """No summary → no conversation block at all; the thread is the sole carrier of the dialogue."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
@@ -523,8 +525,7 @@ def test_build_prompt_falls_back_to_5_messages_when_empty():
     prompt = _build_tool_selection_prompt(state, [])
 
     assert "Tóm tắt hội thoại đã tích lũy" not in prompt
-    assert "Tin nhắn 0" not in prompt
-    assert "Tin nhắn 1" in prompt
+    assert not any(f"Tin nhắn {i}" in prompt for i in range(6))
 
 
 def test_build_prompt_excludes_static_policy():
@@ -938,7 +939,9 @@ def test_build_prompt_includes_draft_body_block_when_present():
 
     assert "DRAFT ĐANG CÓ" in prompt
     assert body in prompt
-    assert "không hỏi lại" in prompt.lower()
+    # The anti-re-ask / mine-the-delta policy is static (question-policy layer), so the per-turn
+    # payload carries the draft as data without restating the imperative.
+    assert "không hỏi lại" not in prompt.lower()
     # draft block must precede the language lock (kept last by contract)
     assert prompt.index("DRAFT ĐANG CÓ") < prompt.index("ngôn ngữ 'vi'")
 
