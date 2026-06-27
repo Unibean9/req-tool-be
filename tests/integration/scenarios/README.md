@@ -55,5 +55,5 @@ Add function to `ALL_SCENARIOS` to be parametrized automatically.
 ## Cham bang judge that
 
 `eval_support.mock_judge()` la default. De scores bang LLM that, thay bang client
-created from `tests/eval/config.py` (needs `JUDGE_API_KEY` in `.env.test`) — xem
+created from `tests/eval/config.py` (needs `LLM_API_KEY` in `.env.test`) — xem
 `tests/eval/test_eval_baseline.py` cho mau marker `integration`.

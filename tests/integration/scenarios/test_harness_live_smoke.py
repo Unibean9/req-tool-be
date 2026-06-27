@@ -13,7 +13,7 @@ So this smoke drives a real analyst through the judgment arc and records the per
 trajectory. It hard-asserts only the model-independent structural fact (a greeting never drafts);
 the trajectory itself is the signal a human reads to confirm the thinned prompt behaves.
 
-Integration-only: needs a real LLM (reuses the judge credentials from .env.test). Skipped by the
+Integration-only: needs a real LLM (reuses shared credentials from .env.test). Skipped by the
 default suite; run with `pytest -m integration -s tests/integration/scenarios/test_harness_live_smoke.py`.
 """
 
@@ -74,18 +74,18 @@ async def _create_session(client, headers, project_id: str) -> uuid.UUID:
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, scenario_project):
-    if not judge_settings.judge_api_key:
-        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real analyst LLM")
+    if not judge_settings.llm_api_key:
+        pytest.skip("LLM_API_KEY is required in .env.test to run the real analyst LLM")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
 
     analyst = LLMClientFactory.create(
-        provider_type=ProviderType(judge_settings.judge_provider),
-        api_key=judge_settings.judge_api_key,
-        model=judge_settings.judge_model,
-        region=judge_settings.judge_region,
-        secret_key=judge_settings.judge_secret_key or None,
+        provider_type=ProviderType(judge_settings.llm_provider_type),
+        api_key=judge_settings.llm_api_key,
+        model=judge_settings.llm_model_name,
+        region=judge_settings.llm_region,
+        secret_key=judge_settings.llm_secret_key or None,
     )
     scenario_env.set_llm(analyst)
 
@@ -111,7 +111,7 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
             "tool_errors": [e.get("code") for e in (errors or [])] if isinstance(errors, list) else errors,
         })
 
-    print(f"\n=== LIVE SMOKE TRAJECTORY (model={judge_settings.judge_model}) ===")
+    print(f"\n=== LIVE SMOKE TRAJECTORY (model={judge_settings.llm_model_name}) ===")
     for row in trajectory:
         print(
             f"  [{row['turn']:>13}] tools={row['tools']!s:<26} mode={row['active_mode']!s:<12} "

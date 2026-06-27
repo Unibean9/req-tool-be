@@ -7,7 +7,7 @@ from tests.integration.scenarios.test_scenarios import _judge_client
 
 
 def test_behavior_scenario_judge_defaults_to_mock(monkeypatch):
-    monkeypatch.setenv("JUDGE_API_KEY", "real-key-present")
+    monkeypatch.setenv("LLM_API_KEY", "real-key-present")
     monkeypatch.delenv("SCENARIO_USE_REAL_JUDGE", raising=False)
 
     client = _judge_client()

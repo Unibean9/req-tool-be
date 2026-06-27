@@ -3,7 +3,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     database_url: str = "postgresql+asyncpg://postgres:password@localhost:5432/reqflow"
 
@@ -36,12 +36,6 @@ class Settings(BaseSettings):
     github_app_private_key: str = ""
     github_app_slug: str = ""
     github_app_redirect_uri: str = ""
-
-    # AWS Bedrock — notation auto-detection
-    aws_access_key_id: str = ""
-    aws_secret_access_key: str = ""
-    aws_region: str = "us-east-1"
-    bedrock_notation_model: str = "google.gemma-3-4b-it"
 
     # External web search for elicitation (comparable_products). "" disables it (graceful fallback to
     # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
