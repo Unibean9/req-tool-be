@@ -35,7 +35,7 @@ def _quality_pass(body: str) -> dict:
 
 def test_only_safety_gates_remain_without_intent_or_note_filter(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "N1", "kind": "objective", "statement": "Giảm thời gian xử lý", "status": "confirmed"},
+        {"id": "N1", "kind": "objective", "statement": "Reduce processing time", "status": "confirmed"},
     )
     state = {
         "messages": [_note_turn(f"n{i}") for i in range(5)],
@@ -66,7 +66,7 @@ def test_write_draft_available_without_elicit():
 
 def test_finalize_quality_gate_still_active(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "N1", "kind": "objective", "statement": "Giảm thời gian xử lý", "status": "confirmed"},
+        {"id": "N1", "kind": "objective", "statement": "Reduce processing time", "status": "confirmed"},
     )
     body = render_view(nodes, "brd")
     blocked = {
@@ -101,13 +101,13 @@ def test_working_draft_field_removed_from_state():
 @pytest.mark.asyncio
 async def test_render_view_is_sole_source_for_draft_body(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "N1", "kind": "objective", "statement": "Nguồn từ graph", "status": "confirmed"},
+        {"id": "N1", "kind": "objective", "statement": "Source tu graph", "status": "confirmed"},
     )
     state = {
         "decision_nodes": nodes,
         "artifact_type": "brd",
-        "draft_body": "DB cũ",
-        "working_draft": "checkpoint cũ",
+        "draft_body": "DB cu",
+        "working_draft": "checkpoint cu",
     }
 
     assert await current_draft_body(state) == render_view(nodes, "brd")
@@ -116,7 +116,7 @@ async def test_render_view_is_sole_source_for_draft_body(decision_graph_factory)
 
 @pytest.mark.asyncio
 async def test_legacy_checkpoint_working_draft_is_ignored():
-    state = {"decision_nodes": {}, "artifact_type": "brd", "working_draft": "checkpoint cũ"}
+    state = {"decision_nodes": {}, "artifact_type": "brd", "working_draft": "checkpoint cu"}
 
     assert await current_draft_body(state) == ""
     assert _cached_draft_body(state) == ""

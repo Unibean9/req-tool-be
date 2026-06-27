@@ -17,6 +17,7 @@ before a draft exists (see ``_DRAFT_SKIP_LAYERS``). Artifact-type-specific shape
 and the section-coverage contract) is rendered by ``analyze_node`` and appended to the system prompt
 there, not carried in the per-turn payload. Files ship inside the app, loaded once at startup.
 """
+
 from pathlib import Path
 
 # Default role when nothing else resolves — guarantees get_instruction never returns None, so the
@@ -36,31 +37,31 @@ ARTIFACT_ROLE_MAP: dict[str, str] = {
     "constraints_assumptions": "business_analyst",
     "risks_issues": "business_analyst",
     # Product Manager — prioritized, testable requirements and delivery breakdown
-    "prd":                        "product_manager",
-    "functional_requirement":     "product_manager",
+    "prd": "product_manager",
+    "functional_requirement": "product_manager",
     "non_functional_requirement": "product_manager",
-    "use_case":                   "product_manager",
-    "acceptance_criteria":        "product_manager",
+    "use_case": "product_manager",
+    "acceptance_criteria": "product_manager",
     # Architecture items currently reuse the product-manager overlay until a dedicated role lands.
-    "sad":            "product_manager",
-    "domain_entity":  "product_manager",
-    "component":      "product_manager",
-    "interface":      "product_manager",
-    "tech_decision":  "product_manager",
-    "epic":           "product_manager",
-    "story":          "product_manager",
+    "sad": "product_manager",
+    "domain_entity": "product_manager",
+    "component": "product_manager",
+    "interface": "product_manager",
+    "tech_decision": "product_manager",
+    "epic": "product_manager",
+    "story": "product_manager",
 }
 
 # workflow_area fallback
 _WORKFLOW_AREA_MAP: dict[str, str] = {
     "product_analysis": "business_analyst",
-    "prd":              "product_manager",
+    "prd": "product_manager",
 }
 
 # role key → overlay filename inside roles/
 _ROLE_OVERLAY_FILE: dict[str, str] = {
     "business_analyst": "business-analyst.md",
-    "product_manager":  "product-manager.md",
+    "product_manager": "product-manager.md",
 }
 
 # Shared layers in assembly order. Layer 1 leads; the role overlay is inserted after it; layers
@@ -100,9 +101,11 @@ def role_overlay(role: str) -> str | None:
     return _overlay_cache.get(role)
 
 
-_DRAFT_SKIP_LAYERS: frozenset[str] = frozenset({
-    "03-output.md",
-})
+_DRAFT_SKIP_LAYERS: frozenset[str] = frozenset(
+    {
+        "03-output.md",
+    }
+)
 
 
 def _assemble(role: str, context: dict | None = None) -> str | None:
@@ -111,10 +114,7 @@ def _assemble(role: str, context: dict | None = None) -> str | None:
         return None
     has_draft: bool | None = context.get("has_draft") if context is not None else None
     skip = _DRAFT_SKIP_LAYERS if has_draft is False else frozenset()
-    layers_after_role = [
-        _layer_cache[f] for f in _SHARED_LAYERS_AFTER_ROLE
-        if f not in skip and f in _layer_cache
-    ]
+    layers_after_role = [_layer_cache[f] for f in _SHARED_LAYERS_AFTER_ROLE if f not in skip and f in _layer_cache]
     parts = [_layer_cache[_LAYER_01], overlay, *layers_after_role]
     return "\n\n".join(parts)
 
@@ -135,12 +135,7 @@ def get_instruction(
     (no critique/governance/output-contract policy needed before a draft exists). context=None
     or has_draft=True keeps all layers. Cache key is (role, has_draft) to prevent collision.
     """
-    role = (
-        agent_role
-        or ARTIFACT_ROLE_MAP.get(artifact_type)
-        or _WORKFLOW_AREA_MAP.get(workflow_area)
-        or _DEFAULT_ROLE
-    )
+    role = agent_role or ARTIFACT_ROLE_MAP.get(artifact_type) or _WORKFLOW_AREA_MAP.get(workflow_area) or _DEFAULT_ROLE
     has_draft: bool | None = context.get("has_draft") if context is not None else None
     cache_key = (role, has_draft)
     if cache_key not in _assembled_cache:

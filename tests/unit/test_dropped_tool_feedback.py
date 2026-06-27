@@ -21,7 +21,7 @@ def test_no_drop_yields_empty():
 def test_feedback_block_renders_dropped_tools():
     block = _build_feedback_control_block({"feedback_summary": {"dropped_tools": ["run_critique"]}})
     assert "run_critique" in block
-    assert "bị bỏ qua" in block
+    assert "bi bo qua" in block
 
 
 def test_feedback_block_empty_without_dropped():

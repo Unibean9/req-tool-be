@@ -176,18 +176,14 @@ class WorkflowRun(AuditMixin, Base):
         UUID(as_uuid=True), ForeignKey("projects.id"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    status: Mapped[WorkflowRunStatus] = enum_column(
-        WorkflowRunStatus, nullable=False, default=WorkflowRunStatus.DRAFT
-    )
+    status: Mapped[WorkflowRunStatus] = enum_column(WorkflowRunStatus, nullable=False, default=WorkflowRunStatus.DRAFT)
     current_step_key: Mapped[WorkflowStepKey | None] = enum_column(WorkflowStepKey, nullable=True)
     extra_metadata: Mapped[Any] = jsonb_column("metadata", nullable=False, default=dict)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id"), nullable=True, index=True
     )
 
-    steps: Mapped[list["WorkflowStep"]] = relationship(
-        back_populates="workflow_run", cascade="all, delete-orphan"
-    )
+    steps: Mapped[list["WorkflowStep"]] = relationship(back_populates="workflow_run", cascade="all, delete-orphan")
 
 
 class Artifact(AuditMixin, Base):
@@ -274,9 +270,7 @@ class Artifact(AuditMixin, Base):
 
 class ArtifactVersion(AuditMixin, Base):
     __tablename__ = "artifact_versions"
-    __table_args__ = (
-        UniqueConstraint("artifact_id", "version_number", name="uq_artifact_versions_artifact_version"),
-    )
+    __table_args__ = (UniqueConstraint("artifact_id", "version_number", name="uq_artifact_versions_artifact_version"),)
 
     artifact_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("artifacts.id"), nullable=False, index=True
@@ -285,9 +279,7 @@ class ArtifactVersion(AuditMixin, Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     change_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[VersionStatus] = enum_column(
-        VersionStatus, nullable=False, default=VersionStatus.DRAFT
-    )
+    status: Mapped[VersionStatus] = enum_column(VersionStatus, nullable=False, default=VersionStatus.DRAFT)
     change_source: Mapped[ChangeSource] = enum_column(ChangeSource, nullable=False)
     parent_version_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("artifact_versions.id"), nullable=True, index=True
@@ -313,9 +305,7 @@ class ArtifactVersion(AuditMixin, Base):
     model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     extra_metadata: Mapped[Any] = jsonb_column("metadata", nullable=False, default=dict)
 
-    artifact: Mapped[Artifact] = relationship(
-        back_populates="versions", foreign_keys=[artifact_id]
-    )
+    artifact: Mapped[Artifact] = relationship(back_populates="versions", foreign_keys=[artifact_id])
 
 
 class ArtifactLink(AuditMixin, Base):

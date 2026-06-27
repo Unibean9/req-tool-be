@@ -33,9 +33,7 @@ def enum_column(enum_class: type[enum.Enum], **kwargs):
 
 class LLMProviderConfig(AuditMixin, Base):
     __tablename__ = "llm_provider_configs"
-    __table_args__ = (
-        CheckConstraint("encrypted_api_key IS NOT NULL", name="ck_llm_provider_api_key_required"),
-    )
+    __table_args__ = (CheckConstraint("encrypted_api_key IS NOT NULL", name="ck_llm_provider_api_key_required"),)
 
     user_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     provider_type: Mapped[ProviderType] = enum_column(

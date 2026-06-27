@@ -165,7 +165,7 @@ def test_artifact_enum_values_are_constrained():
     for enum_class, expected_values in enum_expectations.items():
         assert {item.value for item in enum_class} == expected_values
         with pytest.raises(ValueError):
-            enum_class("không-hợp-lệ")
+            enum_class("invalid")
 
 
 def test_artifact_model_imports_all_repository_tables():

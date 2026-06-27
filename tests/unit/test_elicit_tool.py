@@ -12,7 +12,7 @@ from app.graphs.agent_tools import elicit, get_all_analyzer_tools
 
 
 def test_elicit_5_whys_returns_structured_chain():
-    out = elicit(technique="5_whys", seed="hụt nguyên liệu")
+    out = elicit(technique="5_whys", seed="inventory shortage")
 
     assert out["technique"] == "5_whys"
     assert isinstance(out["chain"], list)
@@ -21,7 +21,7 @@ def test_elicit_5_whys_returns_structured_chain():
 
 
 def test_elicit_reverse_returns_failure_modes():
-    out = elicit(technique="reverse", seed="app định lượng thất bại vì?")
+    out = elicit(technique="reverse", seed="why does the recipe-quantification app fail?")
 
     assert isinstance(out["failure_modes"], list)
     assert len(out["failure_modes"]) >= 2
@@ -31,7 +31,7 @@ def test_elicit_reverse_returns_failure_modes():
 
 
 def test_elicit_moscow_returns_categorized_items():
-    out = elicit(technique="moscow", seed="scope v1 cho định lượng+trừ kho")
+    out = elicit(technique="moscow", seed="v1 scope for quantification and stock deduction")
 
     for key in ("must", "should", "could", "wont"):
         assert key in out
@@ -45,15 +45,15 @@ def test_elicit_comparable_products_uses_web_search():
     def fake_client(query: str) -> list[dict]:
         calls.append(query)
         return [
-            {"title": "iPOS", "snippet": "quản lý quán", "url": "https://1.example"},
-            {"title": "KiotViet", "snippet": "bán hàng F&B", "url": "https://2.example"},
-            {"title": "Sapo", "snippet": "POS cà phê", "url": "https://3.example"},
+            {"title": "iPOS", "snippet": "store management", "url": "https://1.example"},
+            {"title": "KiotViet", "snippet": "F&B sales", "url": "https://2.example"},
+            {"title": "Sapo", "snippet": "coffee POS", "url": "https://3.example"},
         ]
 
-    out = elicit(technique="comparable_products", seed="app quản lý quán cà phê", search_client=fake_client)
+    out = elicit(technique="comparable_products", seed="coffee shop management app", search_client=fake_client)
 
     assert calls, "web_search client should have been invoked"
-    assert "quán cà phê" in calls[0]
+    assert "coffee shop" in calls[0]
     assert isinstance(out["products"], list)
     assert len(out["products"]) >= 3
     for item in out["products"]:
@@ -65,7 +65,7 @@ def test_elicit_comparable_products_falls_back_to_model_knowledge():
     def failing_client(query: str) -> list[dict]:
         raise RuntimeError("network down")
 
-    out = elicit(technique="comparable_products", seed="app quản lý quán cà phê", search_client=failing_client)
+    out = elicit(technique="comparable_products", seed="coffee shop management app", search_client=failing_client)
 
     assert out["products"]
     assert out["source"] == "model_knowledge"

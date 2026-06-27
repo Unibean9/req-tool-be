@@ -1,5 +1,5 @@
 {
   "artifact_type": "story",
-  "content": "Là một quản trị viên dự án, tôi muốn xuất ma trận truy vết yêu cầu (RTM) ra file CSV để chia sẻ với khách hàng trong buổi nghiệm thu. Tiêu chí chấp nhận: (1) file gồm cột requirement, goal, problem, trạng thái; (2) tải về dưới 3 giây với 500 dòng; (3) chỉ quản trị viên truy cập được.",
-  "expected_quality": "Trung bình–cao — story có actor, giá trị, tiêu chí chấp nhận kiểm thử được (INVEST khá tốt); có thể trừ điểm traceable nếu không liên kết rõ goal cha."
+  "content": "As a project administrator, I want to export the requirements traceability matrix (RTM) as a CSV file to share with customers during acceptance. Acceptance criteria: (1) the file includes requirement, goal, problem, and status columns; (2) downloads in under 3 seconds for 500 rows; (3) only administrators can access it.",
+  "expected_quality": "Medium-high - story has actor, value, testable acceptance criteria (fairly good INVEST); traceability may be reduced if it lacks a clear parent goal link."
 }

@@ -61,7 +61,7 @@ def _valid_result(overall: float = 0.8) -> dict:
             "smart": 0.8,
         },
         "overall": overall,
-        "rationale": "ổn",
+        "rationale": "ok",
     }
 
 
@@ -89,7 +89,7 @@ async def test_baseline_with_real_judge(capsys):
     from tests.eval.config import judge_settings
 
     if not judge_settings.judge_api_key:
-        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy judge thật")
+        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real judge")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory

@@ -45,39 +45,39 @@ class CheckpointResult:
 
 def token_total(usage: dict[str, Any]) -> int:
     if not isinstance(usage, dict):
-        raise ValueError("token_usage phải là object")
+        raise ValueError("token_usage must be an object")
     if usage.get("total") is not None:
         total = int(usage["total"])
     elif usage.get("input") is not None or usage.get("output") is not None:
         total = int(usage.get("input") or 0) + int(usage.get("output") or 0)
     else:
-        raise ValueError("token_usage thiếu total hoặc input/output")
+        raise ValueError("token_usage is missing total or input/output")
     if total <= 0:
-        raise ValueError("token_usage total phải > 0")
+        raise ValueError("token_usage total must be > 0")
     return total
 
 
 def session_token_total(session: dict[str, Any]) -> int:
     usages = session.get("token_usage") or session.get("runs") or []
     if not usages:
-        raise ValueError("session checkpoint thiếu token_usage")
+        raise ValueError("session checkpoint is missing token_usage")
     return sum(token_total(usage) for usage in usages)
 
 
 def average_session_token_total(sessions: Sequence[dict[str, Any]]) -> float:
     if not sessions:
-        raise ValueError("Thiếu session token_usage để tính checkpoint")
+        raise ValueError("Missing session token_usage for checkpoint calculation")
     totals = [session_token_total(session) for session in sessions]
     return sum(totals) / len(totals)
 
 
 def average_overall(eval_rows: Sequence[dict[str, Any]]) -> float:
     if not eval_rows:
-        raise ValueError("Thiếu eval rows để tính checkpoint")
+        raise ValueError("Missing eval rows for checkpoint calculation")
     values: list[float] = []
     for row in eval_rows:
         if "overall" not in row:
-            raise ValueError("eval row thiếu overall")
+            raise ValueError("eval row is missing overall")
         values.append(float(row["overall"]))
     return sum(values) / len(values)
 
@@ -117,7 +117,7 @@ def evaluate_checkpoint(
 
 async def collect_token_sessions(db: AsyncSession, session_ids: Sequence[uuid.UUID]) -> list[dict[str, Any]]:
     if not session_ids:
-        raise ValueError("Thiếu session_ids để query AgentRun.token_usage")
+        raise ValueError("Missing session_ids for querying AgentRun.token_usage")
     rows = (
         await db.execute(
             select(AgentRun.session_id, AgentRun.token_usage)
@@ -173,8 +173,8 @@ def _configure_cli_streams() -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     _configure_cli_streams()
-    parser = argparse.ArgumentParser(description="Đo checkpoint Smarter Brain từ JSON report.")
-    parser.add_argument("report", type=Path, help="Đường dẫn JSON gồm baseline/candidate token_usage và eval rows.")
+    parser = argparse.ArgumentParser(description="Measure Smarter Brain checkpoint from a JSON report.")
+    parser.add_argument("report", type=Path, help="Path to JSON with baseline/candidate token_usage and eval rows.")
     args = parser.parse_args(argv)
 
     try:

@@ -103,7 +103,7 @@ class ScenarioDriver:
             f"{BASE}/projects/{self.project_id}/documents/{document_type}/{item_type}",
             json={
                 "title": item_type.replace("_", " ").title(),
-                "body": "Chưa có nội dung.",
+                "body": "Chua co content.",
                 "status": "draft",
             },
             headers=self.headers,

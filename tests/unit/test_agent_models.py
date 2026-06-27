@@ -81,11 +81,11 @@ async def test_agent_message_and_tool_call_cascade_from_session(client, db_sessi
         workflow_area="analysis",
         status=AgentSessionStatus.ACTIVE,
     )
-    message = AgentMessage(role=AgentMessageRole.AGENT, content="Cần làm rõ phạm vi.")
+    message = AgentMessage(role=AgentMessageRole.AGENT, content="Need to clarify scope.")
     run = AgentRun(analysis_result={"confidence": "high", "next_action": "propose"})
     tool_call = AgentToolCall(
         tool_name="create_artifact",
-        input_snapshot={"artifact_type": "intent", "title": "Tầm nhìn"},
+        input_snapshot={"artifact_type": "intent", "title": "Vision"},
         status=AgentToolCallStatus.PROPOSED,
     )
     run.tool_calls.append(tool_call)

@@ -50,7 +50,7 @@ def test_runtime_harness_cli_returns_nonzero_for_critical_failure(tmp_path):
                         "score": 0.0,
                         "threshold": 1.0,
                         "critical": True,
-                        "reason": "invalid schema vẫn dispatch",
+                        "reason": "invalid schema van dispatch",
                     }
                 ]
             },
@@ -65,7 +65,7 @@ def test_runtime_harness_cli_returns_nonzero_for_critical_failure(tmp_path):
     data = json.loads(json_report.read_text(encoding="utf-8"))
     assert exit_code == 1
     assert data["passed"] is False
-    assert data["gates"][0]["reason"] == "invalid schema vẫn dispatch"
+    assert data["gates"][0]["reason"] == "invalid schema van dispatch"
 
 
 def test_runtime_harness_cli_stdout_survives_cp1252_encoding():

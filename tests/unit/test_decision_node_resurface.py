@@ -85,8 +85,8 @@ def test_brd_not_stable_with_needs_confirmation(decision_graph_factory):
 
 def test_completeness_sweep_identifies_prd_edge_case_gaps(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "R1", "kind": "fact", "statement": "Business rule: 1 ghé / khách / ngày", "status": "confirmed"},
-        {"id": "F1", "kind": "scope", "statement": "Luồng chính: nhập SĐT và cộng điểm", "status": "confirmed"},
+        {"id": "R1", "kind": "fact", "statement": "Business rule: 1 visit / customer / day", "status": "confirmed"},
+        {"id": "F1", "kind": "scope", "statement": "Main flow: enter phone number and add points", "status": "confirmed"},
     )
 
     gaps = completeness_sweep(nodes, artifact_type="prd")
@@ -107,7 +107,7 @@ def test_completeness_sweep_creates_parked_questions(decision_graph_factory):
 
 
 def test_completeness_sweep_deduplicates_existing_gaps(decision_graph_factory):
-    existing = "Edge-case: khách quên SĐT lúc mua → cộng bù sau được không?"
+    existing = "Edge-case: customer forgot phone number at purchase -> can points be added later?"
     nodes = decision_graph_factory(
         {"id": "Q5", "kind": "open_question", "statement": existing, "status": "parked"},
     )

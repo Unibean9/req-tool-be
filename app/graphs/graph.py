@@ -39,20 +39,32 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # goes straight to analyze. converse flows into analyze on resume so the human's real reply is
     # then analyzed. On resume LangGraph re-enters the interrupted node, so triage does not re-run.
     builder.set_entry_point("triage")
-    builder.add_conditional_edges("triage", route_after_triage, {
-        "converse": "converse",
-        "analyze": "orchestrator",
-    })
+    builder.add_conditional_edges(
+        "triage",
+        route_after_triage,
+        {
+            "converse": "converse",
+            "analyze": "orchestrator",
+        },
+    )
     builder.add_edge("converse", "orchestrator")
     builder.add_edge("orchestrator", "analyze")
-    builder.add_conditional_edges("analyze", route_node, {
-        "tools": "tools",
-        END: END,
-    })
-    builder.add_conditional_edges("tools", route_before_analyze, {
-        "summarize": "summarize",
-        "analyze": "orchestrator",
-    })
+    builder.add_conditional_edges(
+        "analyze",
+        route_node,
+        {
+            "tools": "tools",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges(
+        "tools",
+        route_before_analyze,
+        {
+            "summarize": "summarize",
+            "analyze": "orchestrator",
+        },
+    )
     builder.add_edge("summarize", "orchestrator")
 
     return builder.compile(checkpointer=checkpointer)

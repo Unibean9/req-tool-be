@@ -1,11 +1,11 @@
 {
   "artifact_type": "story",
-  "content": "Là người dùng, tôi muốn hệ thống chạy nhanh, thân thiện và dễ dùng để làm việc tốt hơn.",
+  "content": "As a user, I want the system to run fast, be friendly, and be easy to use so I can work better.",
   "expected_violations": [],
   "expected_warnings": [
     "weasel: nhanh",
-    "weasel: thân thiện",
-    "weasel: dễ dùng",
-    "INVEST: thiếu tiêu chí kiểm thử (acceptance criteria / given-when-then)"
+    "weasel: friendly",
+    "weasel: easy to use",
+    "INVEST: missing test criteria (acceptance criteria / given-when-then)"
   ]
 }

@@ -15,101 +15,101 @@ from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 # A realistic intent artifact body — gives the judge something substantive to score.
 _INTENT_BODY = (
     "## Vision\n"
-    "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung để giảm xung đột lịch.\n\n"
+    "The product targets student groups that need a shared study scheduling tool to reduce schedule conflicts.\n\n"
     "## Objectives\n"
-    "- Tạo nhóm học và đồng bộ lịch cá nhân.\n"
-    "- Gợi ý khung giờ rảnh chung cho cả nhóm.\n"
-    "- Tăng tỉ lệ tham gia buổi học nhóm.\n\n"
+    "- Create study group va dong bo lich ca nhan.\n"
+    "- Goi y khung gio ranh chung cho ca nhom.\n"
+    "- Tang ti le tham gia buoi hoc nhom.\n\n"
     "## Success Metrics\n"
-    "- Giảm thời gian điều phối từ 30 phút xuống dưới 10 phút mỗi tuần trong 3 tháng."
+    "- Reduce coordination time from 30 minutes to under 10 minutes per week within 3 months."
 )
 
 _PROBLEM_BODY = (
     "## Problem Statement\n"
-    "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi.\n\n"
+    "Sinh vien hien sap study scheduling thu cong qua chat, dan toi trung lich va bo buoi.\n\n"
     "## Affected Users\n"
-    "Nhóm sinh viên 4-6 người và trưởng nhóm chịu trách nhiệm chốt lịch.\n\n"
+    "Student groups of 4-6 people and group leaders responsible for finalizing schedules.\n\n"
     "## Impact\n"
-    "Mỗi tuần mỗi nhóm mất khoảng 30 phút điều phối; tỉ lệ tham gia buổi nhóm dưới 60%.\n\n"
+    "Moi tuan moi nhom mat khoang 30 phut orchestration; ti le tham gia buoi nhom duoi 60%.\n\n"
     "## Root Cause / Contributing Factors\n"
-    "Lịch cá nhân phân tán, thiếu cách tính giao khung giờ rảnh và thiếu xác nhận tập trung."
+    "Personal calendars are fragmented, with no way to compute overlapping free slots and no centralized confirmation."
 )
 
 _STAKEHOLDER_BODY = (
     "## Stakeholders\n"
     "| role | responsibility | decision authority | needs/concerns | involvement |\n"
     "| --- | --- | --- | --- | --- |\n"
-    "| Trưởng nhóm | Tạo nhóm và chốt buổi học | Cao | Cần lịch chung nhanh | Hằng tuần |\n"
-    "| Thành viên | Đồng bộ lịch cá nhân | Trung bình | Chỉ chia sẻ trạng thái rảnh/bận | Hằng tuần |\n"
-    "| Giảng viên | Theo dõi tiến độ nhóm | Thấp | Muốn nhóm duy trì nhịp học | Theo đợt |"
+    "| Truong nhom | Tao nhom va chot buoi hoc | Cao | Can lich chung nhanh | Weekly |\n"
+    "| Member | Sync personal calendar | Medium | Only share free/busy status | Weekly |\n"
+    "| Giang vien | Theo doi tien do nhom | Thap | Muon nhom duy tri nhip hoc | Theo dot |"
 )
 
 # Goal must carry a metric + time-bound to satisfy the SMART validator heuristic.
 _GOAL_BODY = (
     "## Scope\n"
-    "MVP tập trung vào nhóm sinh viên cần tìm khung giờ học chung trong tuần.\n\n"
+    "MVP focuses on student groups that need to find shared study times during the week.\n\n"
     "## Capabilities\n"
     "| capability | priority | rationale | dependency |\n"
     "| --- | --- | --- | --- |\n"
-    "| Tạo nhóm học | Must | Có danh sách thành viên để đối chiếu lịch | Tài khoản người dùng |\n"
-    "| Đồng bộ lịch cá nhân | Must | Xác định khung bận/rảnh | Tích hợp Google Calendar |\n"
-    "| Gợi ý khung giờ chung | Must | Giảm thời gian điều phối từ 30 phút xuống dưới 10 phút | Dữ liệu lịch |\n\n"
+    "| Create study group | Must | Has a member list for calendar comparison | User account |\n"
+    "| Sync personal calendar | Must | Identify busy/free slots | Google Calendar integration |\n"
+    "| Suggest common time slots | Must | Reduce coordination time tu 30 phut xuong duoi 10 phut | Calendar data |\n\n"
     "## Out of Scope\n"
-    "- Thanh toán, quản lý điểm danh nâng cao và phân tích học tập dài hạn."
+    "- Payments, advanced attendance management, and long-term learning analytics."
 )
 
 # Functional requirement — concrete, measurable behavior.
 _FR_BODY = (
     "## Functional Requirement\n"
-    "Hệ thống phải cho phép thành viên kết nối lịch cá nhân và trích xuất các khung giờ bận.\n\n"
+    "The system must allow members to connect personal calendars and extract busy slots.\n\n"
     "## Behavior\n"
-    "Khi trưởng nhóm yêu cầu, hệ thống tính giao các khung rảnh và trả về danh sách khung giờ chung.\n\n"
+    "When the group leader requests it, the system computes overlapping free slots and returns common time slots.\n\n"
     "## Inputs and Outputs\n"
-    "- Input: lịch cá nhân, danh sách thành viên, khoảng thời gian cần tìm.\n"
-    "- Output: khung giờ chung kèm số thành viên rảnh tương ứng.\n\n"
+    "- Input: personal calendars, member list, target time range.\n"
+    "- Output: khung gio chung kem so thanh vien ranh tuong ung.\n\n"
     "## Acceptance Signals\n"
-    "- Kết quả cập nhật trong vòng 5 giây sau khi có thay đổi lịch."
+    "- Ket qua cap nhat trong vong 5 giay sau when co thay doi lich."
 )
 
 # Non-functional requirement — quality attributes with thresholds.
 _NFR_BODY = (
     "## Quality Attribute\n"
-    "Hiệu năng và bảo mật dữ liệu lịch cá nhân.\n\n"
+    "Performance and security for personal calendar data.\n\n"
     "## Requirement\n"
-    "Tính khung giờ chung cho nhóm tối đa 8 thành viên phải phản hồi dưới 2 giây ở p95.\n\n"
+    "Compute common time slots for groups up to 8 members with p95 response under 2 seconds.\n\n"
     "## Measurement\n"
-    "- Load test 500 nhóm hoạt động đồng thời, CPU không vượt 70%.\n"
-    "- Kiểm tra dữ liệu lịch được mã hóa khi lưu.\n\n"
+    "- Load test 500 concurrent active groups with CPU not exceeding 70%.\n"
+    "- Verify calendar data is encrypted at rest.\n\n"
     "## Scope and Tradeoffs\n"
-    "Ưu tiên phản hồi nhanh cho nhóm nhỏ; báo lỗi rõ nếu nhóm vượt giới hạn MVP."
+    "Prioritize fast responses for small groups; return clear errors when a group exceeds MVP limits."
 )
 
 # Epic must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _EPIC_BODY = (
     "## Use Case\n"
-    "Đồng bộ và đối chiếu lịch nhóm để gợi ý buổi học.\n\n"
+    "Dong bo va doi chieu lich nhom de goi y buoi hoc.\n\n"
     "## Actors\n"
-    "- Trưởng nhóm\n"
-    "- Thành viên nhóm\n\n"
+    "- Truong nhom\n"
+    "- Member nhom\n\n"
     "## Preconditions\n"
-    "Các thành viên đã tham gia nhóm và có thể kết nối lịch cá nhân.\n\n"
+    "Members have joined the group and can connect personal calendars.\n\n"
     "## Main Flow\n"
-    "1. Thành viên đồng bộ lịch.\n"
-    "2. Trưởng nhóm yêu cầu tìm khung giờ chung.\n"
-    "3. Hệ thống trả danh sách khung giờ khả dụng.\n"
-    "4. Trưởng nhóm chốt buổi học.\n\n"
+    "1. Member dong bo lich.\n"
+    "2. Group leader requests common time slots.\n"
+    "3. System returns available time slots.\n"
+    "4. Truong nhom chot buoi hoc.\n\n"
     "## Alternate / Exception Flows\n"
-    "- Nếu không có khung giờ chung, hệ thống gợi ý khung gần nhất kèm thành viên vắng.\n\n"
+    "- If there is no common slot, the system suggests the nearest slot with absent members.\n\n"
     "## Postconditions\n"
-    "Buổi học được chốt hoặc có lý do rõ vì sao chưa thể chốt."
+    "The study session is finalized or there is a clear reason why it cannot be finalized."
 )
 
 # Story must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
 _STORY_BODY = (
     "## Acceptance Criteria\n"
-    "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học mà không phải hỏi từng người.\n\n"
-    "- Khi tất cả thành viên đã đồng bộ lịch, thì hệ thống hiển thị tối thiểu 3 khung giờ trùng rảnh trong tuần.\n"
-    "- Khi không có khung giờ chung, thì hệ thống gợi ý khung gần nhất kèm số thành viên vắng."
+    "As a group leader, I want to view common free slots for the whole group so I can finalize a session without asking each person.\n\n"
+    "- When all members sync calendars, then the system shows at least 3 overlapping free slots in the week.\n"
+    "- When there is no common slot, then the system suggests the nearest slot with the number of absent members."
 )
 
 
@@ -118,12 +118,12 @@ _STORY_BODY = (
 def _confirm_turn():
     return tool_select(
         "confirm_intent",
-        summary="Xây công cụ điều phối lịch học nhóm cho sinh viên, ưu tiên tìm khung giờ rảnh chung.",
+        summary="Xay cong cu orchestration study scheduling cho sinh vien, uu tien tim khung gio ranh chung.",
         active_mode="discovery",
     )
 
 
-_CONTINUE = {"type": "send", "content": "Đúng rồi, tiếp tục giúp tôi."}
+_CONTINUE = {"type": "send", "content": "Dung roi, tiep tuc giup toi."}
 
 
 def _scenario(name: str, artifact_type: str, llm: ScriptedLLM, actions, expect) -> Scenario:
@@ -160,9 +160,9 @@ def intent_propose_approve() -> Scenario:
     return _draft_approve(
         "intent-propose-approve",
         "intent",
-        "Intent: Công cụ điều phối lịch học nhóm",
+        "Intent: Cong cu orchestration study scheduling",
         _INTENT_BODY,
-        "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+        "Toi muon xay mot cong cu giup sinh vien orchestration study scheduling.",
     )
 
 
@@ -170,11 +170,11 @@ def multi_turn_qna() -> Scenario:
     """Multi-turn Q&A (one-question rhythm) before drafting."""
     llm = ScriptedLLM(
         tool_brain=[
-            tool_select("ask_user", message="Đối tượng người dùng chính của công cụ là ai?", active_mode="discovery"),
-            tool_select("ask_user", message="Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
-                        active_mode="discovery", acknowledgment="Rõ rồi, là sinh viên."),
+            tool_select("ask_user", message="Who is the primary user of the tool?", active_mode="discovery"),
+            tool_select("ask_user", message="What is their biggest scheduling coordination problem?",
+                        active_mode="discovery", acknowledgment="Ro roi, la sinh vien."),
             _confirm_turn(),
-            tool_select("write_draft", title="Intent: Điều phối lịch học nhóm cho sinh viên",
+            tool_select("write_draft", title="Intent: Dieu phoi study scheduling cho sinh vien",
                         body=_INTENT_BODY, active_mode="structuring"),
         ]
     )
@@ -183,9 +183,9 @@ def multi_turn_qna() -> Scenario:
         "intent",
         llm,
         actions=[
-            {"type": "send", "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm."},
-            {"type": "send", "content": "Chủ yếu là sinh viên đại học học theo nhóm."},
-            {"type": "send", "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm."},
+            {"type": "send", "content": "Toi co mot y tuong product nhung chua ro rang lam."},
+            {"type": "send", "content": "Mainly university students studying in groups."},
+            {"type": "send", "content": "Ho bi trung lich va hay bo buoi hoc nhom."},
             _CONTINUE,
             {"type": "approve_all"},
         ],
@@ -198,10 +198,10 @@ def reject_then_explore() -> Scenario:
     llm = ScriptedLLM(
         tool_brain=[
             _confirm_turn(),
-            tool_select("write_draft", title="Intent (bản nháp)", body=_INTENT_BODY, active_mode="structuring"),
+            tool_select("write_draft", title="Intent (draft)", body=_INTENT_BODY, active_mode="structuring"),
             tool_select("ask_user", active_mode="structuring",
-                        message="Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?"),
-            tool_select("write_draft", title="Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+                        message="Ban muon kham pha them khia canh nao — doi tuong, pham vi hay gia tri mang lai?"),
+            tool_select("write_draft", title="Intent: Dieu phoi study scheduling (da lam ro pham vi)",
                         body=_INTENT_BODY, active_mode="structuring"),
         ]
     )
@@ -210,10 +210,10 @@ def reject_then_explore() -> Scenario:
         "intent",
         llm,
         actions=[
-            {"type": "send", "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm."},
+            {"type": "send", "content": "Toi muon tao intent cho product orchestration study scheduling."},
             _CONTINUE,
             {"type": "reject_all"},
-            {"type": "send", "content": "Hãy làm rõ phạm vi MVP giúp tôi."},
+            {"type": "send", "content": "Hay lam ro pham vi MVP giup toi."},
             {"type": "approve_all"},
         ],
         expect={"final_status": "completed", "min_artifacts": 1},
@@ -225,7 +225,7 @@ def reject_proposal() -> Scenario:
     llm = ScriptedLLM(
         tool_brain=[
             _confirm_turn(),
-            tool_select("write_draft", title="Intent: bản đề xuất", body=_INTENT_BODY, active_mode="structuring"),
+            tool_select("write_draft", title="Intent: proposal", body=_INTENT_BODY, active_mode="structuring"),
         ]
     )
     return _scenario(
@@ -233,7 +233,7 @@ def reject_proposal() -> Scenario:
         "intent",
         llm,
         actions=[
-            {"type": "send", "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch."},
+            {"type": "send", "content": "Toi muon tao intent cho product orchestration lich."},
             _CONTINUE,
             {"type": "reject_all"},
         ],
@@ -248,7 +248,7 @@ def problem_propose_approve() -> Scenario:
             _confirm_turn(),
             tool_select(
                 "write_draft",
-                title="Vấn đề: Điều phối lịch học nhóm thủ công",
+                title="Van de: Dieu phoi study scheduling thu cong",
                 body=_PROBLEM_BODY,
                 active_mode="structuring",
             ),
@@ -259,7 +259,7 @@ def problem_propose_approve() -> Scenario:
         "problem",
         llm,
         actions=[
-            {"type": "send", "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch."},
+            {"type": "send", "content": "Van de la sinh vien sap study scheduling thu cong nen hay trung lich."},
             _CONTINUE,
             {"type": "approve_all"},
         ],
@@ -271,9 +271,9 @@ def stakeholder_propose_approve() -> Scenario:
     return _draft_approve(
         "stakeholder-propose-approve",
         "stakeholder",
-        "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+        "Stakeholders: study group, group leader, lecturer",
         _STAKEHOLDER_BODY,
-        "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+        "List stakeholders for the study scheduling tool.",
     )
 
 
@@ -281,9 +281,9 @@ def goal_propose_approve() -> Scenario:
     return _draft_approve(
         "goal-propose-approve",
         "goal",
-        "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+        "Goal: reduce coordination time and increase attendance rate",
         _GOAL_BODY,
-        "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+        "Set measurable goals for the study scheduling product.",
     )
 
 
@@ -291,9 +291,9 @@ def functional_requirement_propose_approve() -> Scenario:
     return _draft_approve(
         "functional-requirement-propose-approve",
         "functional_requirement",
-        "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+        "Requirement chuc nang: tinh khung gio ranh chung cua nhom",
         _FR_BODY,
-        "Viết yêu cầu chức năng cho tính năng tìm khung giờ rảnh chung.",
+        "Write functional requirements for finding common free slots.",
     )
 
 
@@ -301,9 +301,9 @@ def non_functional_requirement_propose_approve() -> Scenario:
     return _draft_approve(
         "non-functional-requirement-propose-approve",
         "non_functional_requirement",
-        "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+        "Requirement phi chuc nang: hieu nang va bao mat lich nhom",
         _NFR_BODY,
-        "Nêu các yêu cầu phi chức năng về hiệu năng và bảo mật cho hệ thống.",
+        "State non-functional performance and security requirements for the system.",
     )
 
 
@@ -311,9 +311,9 @@ def epic_propose_approve() -> Scenario:
     return _draft_approve(
         "epic-propose-approve",
         "epic",
-        "Epic: Đồng bộ và đối chiếu lịch nhóm",
+        "Epic: Dong bo va doi chieu lich nhom",
         _EPIC_BODY,
-        "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+        "Gom cac tinh nang lich nhom thanh mot epic giup toi.",
     )
 
 
@@ -321,9 +321,9 @@ def story_propose_approve() -> Scenario:
     return _draft_approve(
         "story-propose-approve",
         "story",
-        "Story: trưởng nhóm xem khung giờ rảnh chung",
+        "Story: truong nhom xem khung gio ranh chung",
         _STORY_BODY,
-        "Viết user story cho việc trưởng nhóm xem khung giờ rảnh chung.",
+        "Viet user story cho viec truong nhom xem khung gio ranh chung.",
     )
 
 

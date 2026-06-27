@@ -18,12 +18,12 @@ def test_web_search_tool_registered():
 def test_web_search_returns_structured_results():
     def fake_client(query: str) -> list[dict]:
         return [
-            {"title": "POS A", "snippet": "phần mềm quán cà phê", "url": "https://a.example"},
-            {"title": "POS B", "snippet": "quản lý bán hàng", "url": "https://b.example"},
-            {"title": "POS C", "snippet": "tích điểm khách", "url": "https://c.example"},
+            {"title": "POS A", "snippet": "coffee shop software", "url": "https://a.example"},
+            {"title": "POS B", "snippet": "sales management", "url": "https://b.example"},
+            {"title": "POS C", "snippet": "customer points", "url": "https://c.example"},
         ]
 
-    out = web_search("quản lý quán cà phê phần mềm", client=fake_client)
+    out = web_search("coffee shop management software", client=fake_client)
 
     assert isinstance(out["results"], list)
     assert len(out["results"]) >= 1
@@ -33,6 +33,6 @@ def test_web_search_returns_structured_results():
 
 def test_web_search_handles_unavailable_client():
     # No provider configured (settings default) and no client injected -> graceful empty result.
-    out = web_search("bất kỳ truy vấn nào")
+    out = web_search("bat ky truy van nao")
 
     assert out == {"results": [], "error": "search_unavailable"}

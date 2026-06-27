@@ -28,6 +28,7 @@ _COOKIE_MAX_AGE = 600
 
 # --- State helpers ---
 
+
 def _state_hmac_key() -> bytes:
     if settings.github_state_secret:
         return settings.github_state_secret.encode()
@@ -86,10 +87,11 @@ def _error_html(target_origin: str, error: str, description: str | None = None) 
     return f"""<!doctype html><html><body><script>
 window.opener && window.opener.postMessage({payload}, {json.dumps(target_origin)});
 window.close();
-</script><p>Lỗi xác thực: {html.escape(error)}</p></body></html>"""
+</script><p>Authentication error: {html.escape(error)}</p></body></html>"""
 
 
 # --- Endpoints ---
+
 
 @router.get("")
 async def github_authorize():
@@ -130,12 +132,10 @@ async def github_callback(
         return HTMLResponse(_error_html(target_origin, error, error_description))
 
     if not code:
-        return HTMLResponse(_error_html(target_origin, "missing_code", "GitHub không trả về authorization code"))
+        return HTMLResponse(_error_html(target_origin, "missing_code", "GitHub did not return an authorization code"))
 
     if not oauth_nonce or not _verify_login_state(state, oauth_nonce):
-        return HTMLResponse(
-            _error_html(target_origin, "invalid_state", "OAuth state không hợp lệ — có thể là tấn công CSRF")
-        )
+        return HTMLResponse(_error_html(target_origin, "invalid_state", "Invalid OAuth state - possible CSRF attack"))
     response.delete_cookie(_LOGIN_COOKIE, httponly=True, samesite="lax", secure=_secure)
 
     try:
@@ -143,15 +143,17 @@ async def github_callback(
     except HTTPException as exc:
         return HTMLResponse(_error_html(target_origin, "auth_failed", exc.detail))
 
-    payload = json.dumps({
-        "type": "github_oauth",
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-    })
+    payload = json.dumps(
+        {
+            "type": "github_oauth",
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+    )
     return HTMLResponse(f"""<!doctype html><html><body><script>
 window.opener && window.opener.postMessage({payload}, {json.dumps(target_origin)});
 window.close();
-</script><p>Đang đóng cửa sổ...</p></body></html>""")
+</script><p>Closing window...</p></body></html>""")
 
 
 @router.post("/refresh", response_model=ApiResponse[TokenResponse])

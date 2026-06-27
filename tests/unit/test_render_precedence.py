@@ -13,9 +13,9 @@ from app.graphs.decision_graph import render_view
 @pytest.mark.asyncio
 async def test_current_draft_body_returns_rendered_view_when_nodes_present(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "N3", "kind": "objective", "statement": "Mục tiêu từ graph", "status": "confirmed"},
+        {"id": "N3", "kind": "objective", "statement": "Goal tu graph", "status": "confirmed"},
     )
-    state = {"decision_nodes": nodes, "draft_body": "BODY DB CŨ STALE", "artifact_type": "brd"}
+    state = {"decision_nodes": nodes, "draft_body": "BODY DB CU STALE", "artifact_type": "brd"}
 
     body = await current_draft_body(state)
 
@@ -35,7 +35,7 @@ async def test_current_draft_body_ignores_db_body_when_nodes_empty():
 def test_cached_draft_body_returns_view_when_nodes_present(decision_graph_factory):
     # The finalize-gate hash routes through _cached_draft_body, so it must score the view too.
     nodes = decision_graph_factory(
-        {"id": "N3", "kind": "objective", "statement": "View để chấm", "status": "confirmed"},
+        {"id": "N3", "kind": "objective", "statement": "View de scores", "status": "confirmed"},
     )
     state = {"decision_nodes": nodes, "draft_body": "STALE", "artifact_type": "brd"}
 

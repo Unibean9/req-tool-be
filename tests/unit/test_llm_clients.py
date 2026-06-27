@@ -32,9 +32,9 @@ ANALYSIS_RESULT_SCHEMA = {
 
 
 ANALYSIS_RESULT = {
-    "gaps": ["Thiếu persona chính"],
+    "gaps": ["Thieu persona chinh"],
     "contradictions": [],
-    "risks": ["Scope chưa rõ"],
+    "risks": ["Scope chua ro"],
     "confidence": 0.82,
     "next_action": "ask_human",
 }
@@ -97,8 +97,8 @@ async def test_generate_with_response_format_returns_dict(monkeypatch, client_cl
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
     result, _ = await client.generate(
-        messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
-        system="Bạn là BA.",
+        messages=[{"role": "user", "content": "Analyze requirements"}],
+        system="You are a BA.",
         max_tokens=256,
         response_format={"name": "analysis_result", "schema": {"type": "object"}},
     )
@@ -113,8 +113,8 @@ async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch
     client = OpenAILLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
 
     result, _ = await client.generate(
-        messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
-        system="Bạn là BA.",
+        messages=[{"role": "user", "content": "Analyze requirements"}],
+        system="You are a BA.",
         max_tokens=256,
         response_format={"name": "analysis_result", "schema": {"type": "object"}},
     )
@@ -151,9 +151,9 @@ def test_openai_responses_schema_makes_optional_fields_nullable_and_required():
 @pytest.mark.parametrize(
     "payload",
     [
-        {"message": "Thiếu tool"},
+        {"message": "Thieu tool"},
         {"tool": "finalize", "message": "Sai enum"},
-        {"tool": "ask_user", "message": "ok", "extra": "không hợp lệ"},
+        {"tool": "ask_user", "message": "ok", "extra": "invalid"},
     ],
 )
 def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
@@ -170,12 +170,12 @@ def test_parse_generate_text_rejects_schema_invalid_structured_output(payload):
         },
     }
 
-    with pytest.raises(ValueError, match="không khớp JSON Schema"):
+    with pytest.raises(ValueError, match="does not match JSON Schema"):
         _parse_generate_text(json.dumps(payload, ensure_ascii=False), response_format)
 
 
 def test_parse_generate_text_accepts_tool_args_prompt_alias():
-    payload = {"tools": [{"name": "ask_user", "args": {"prompt": "Bạn muốn phân tích phần nào?"}}]}
+    payload = {"tools": [{"name": "ask_user", "args": {"prompt": "Which part do you want to analyze?"}}]}
     schema = {"type": "object", "properties": {"tools": {"type": "array"}}, "required": ["tools"]}
 
     result = _parse_generate_text(json.dumps(payload, ensure_ascii=False), schema)
@@ -197,10 +197,10 @@ async def test_generate_with_response_format_rejects_invalid_json(monkeypatch, c
     _install_httpx_recorder(monkeypatch, provider_payload)
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
-    with pytest.raises(ValueError, match="Không parse được JSON"):
+    with pytest.raises(ValueError, match="Could not parse JSON"):
         await client.generate(
-            messages=[{"role": "user", "content": "Phân tích yêu cầu"}],
-            system="Bạn là BA.",
+            messages=[{"role": "user", "content": "Analyze requirements"}],
+            system="You are a BA.",
             max_tokens=256,
             response_format={"name": "analysis_result", "schema": {"type": "object"}},
         )
@@ -250,8 +250,8 @@ async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, c
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
     await client.generate(
-        messages=[{"role": "user", "content": "Phân tích"}],
-        system="Bạn là BA.",
+        messages=[{"role": "user", "content": "Analyze"}],
+        system="You are a BA.",
         max_tokens=256,
         response_format={"name": "analysis_result", "schema": ANALYSIS_RESULT_SCHEMA},
     )
@@ -280,8 +280,8 @@ async def test_generate_parses_analysis_result_schema_for_each_provider(monkeypa
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
     result, _ = await client.generate(
-        messages=[{"role": "user", "content": "Phân tích"}],
-        system="Bạn là BA.",
+        messages=[{"role": "user", "content": "Analyze"}],
+        system="You are a BA.",
         max_tokens=512,
         response_format={"name": "analysis_result", "schema": ANALYSIS_RESULT_SCHEMA},
     )
@@ -343,8 +343,8 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
     # Call exactly like analyze_node does: tools set, response_format OMITTED. Guards the regression
     # where the real clients declared response_format without a default and raised TypeError.
     result, _ = await client.generate(
-        messages=[{"role": "user", "content": "Phân tích"}],
-        system="Bạn là BA.",
+        messages=[{"role": "user", "content": "Analyze"}],
+        system="You are a BA.",
         max_tokens=256,
         tools=[_ASK_TOOL],
     )
@@ -358,16 +358,16 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
 
 
 _THREAD_WITH_TOOL_BLOCKS = [
-    {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."},
+    {"role": "user", "content": "I want to set goals for a study group product."},
     {
         "role": "assistant",
         "content": [
-            {"type": "text", "text": "Tôi sẽ ghi nhận dữ kiện trước."},
+            {"type": "text", "text": "Toi will ghi nhan du kien truoc."},
             {
                 "type": "tool_use",
                 "id": "call_1",
                 "name": "explore_note",
-                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+                "input": {"content": "Primary users are study group students."},
             },
         ],
     },
@@ -378,9 +378,9 @@ _THREAD_WITH_TOOL_BLOCKS = [
                 "type": "tool_result",
                 "tool_use_id": "call_1",
                 "name": "explore_note",
-                "content": "Đã ghi nhận key fact.",
+                "content": "Da ghi nhan key fact.",
             },
-            {"type": "text", "text": "Tiếp tục phân tích từ dữ kiện đó."},
+            {"type": "text", "text": "Continue analysis from that fact."},
         ],
     },
 ]
@@ -394,7 +394,7 @@ async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, cl
 
     await client.generate(
         messages=_THREAD_WITH_TOOL_BLOCKS,
-        system="Bạn là BA.",
+        system="You are a BA.",
         max_tokens=256,
         tools=[_ASK_TOOL],
     )
@@ -405,41 +405,41 @@ async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, cl
             "type": "function_call",
             "call_id": "call_1",
             "name": "explore_note",
-            "arguments": "{\"content\": \"Người dùng chính là sinh viên học nhóm.\"}",
+            "arguments": "{\"content\": \"Primary users are study group students.\"}",
         } in body["input"]
-        assert {"type": "function_call_output", "call_id": "call_1", "output": "Đã ghi nhận key fact."} in body["input"]
+        assert {"type": "function_call_output", "call_id": "call_1", "output": "Da ghi nhan key fact."} in body["input"]
     elif client_class is AnthropicLLMClient:
         assert body["messages"][1]["content"][1] == {
             "type": "tool_use",
             "id": "call_1",
             "name": "explore_note",
-            "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+            "input": {"content": "Primary users are study group students."},
         }
         assert body["messages"][2]["content"][0] == {
             "type": "tool_result",
             "tool_use_id": "call_1",
-            "content": "Đã ghi nhận key fact.",
+            "content": "Da ghi nhan key fact.",
         }
     elif client_class is GoogleLLMClient:
         assert body["contents"][1]["parts"][1] == {
             "functionCall": {
                 "name": "explore_note",
-                "args": {"content": "Người dùng chính là sinh viên học nhóm."},
+                "args": {"content": "Primary users are study group students."},
             }
         }
         assert body["contents"][2]["parts"][0] == {
-            "functionResponse": {"name": "explore_note", "response": {"content": "Đã ghi nhận key fact."}}
+            "functionResponse": {"name": "explore_note", "response": {"content": "Da ghi nhan key fact."}}
         }
     else:
         assert body["messages"][1]["content"][1] == {
             "toolUse": {
                 "toolUseId": "call_1",
                 "name": "explore_note",
-                "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+                "input": {"content": "Primary users are study group students."},
             }
         }
         assert body["messages"][2]["content"][0] == {
-            "toolResult": {"toolUseId": "call_1", "content": [{"text": "Đã ghi nhận key fact."}]}
+            "toolResult": {"toolUseId": "call_1", "content": [{"text": "Da ghi nhan key fact."}]}
         }
 
 

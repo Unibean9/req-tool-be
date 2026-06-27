@@ -204,12 +204,14 @@ class OpenAILLMClient:
             "model": self.config.model,
             "input": "ok",
             "max_output_tokens": 20,
-            "tools": [{
-                "type": "function",
-                "name": _TOOL_CALL_PROBE["name"],
-                "description": _TOOL_CALL_PROBE["description"],
-                "parameters": _TOOL_CALL_PROBE["parameters"],
-            }],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": _TOOL_CALL_PROBE["name"],
+                    "description": _TOOL_CALL_PROBE["description"],
+                    "parameters": _TOOL_CALL_PROBE["parameters"],
+                }
+            ],
             "tool_choice": "required",
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -316,13 +318,17 @@ class GoogleLLMClient:
 
         body = {
             "contents": [{"role": "user", "parts": [{"text": "ok"}]}],
-            "tools": [{
-                "functionDeclarations": [{
-                    "name": _TOOL_CALL_PROBE["name"],
-                    "description": _TOOL_CALL_PROBE["description"],
-                    "parameters": _TOOL_CALL_PROBE["parameters"],
-                }]
-            }],
+            "tools": [
+                {
+                    "functionDeclarations": [
+                        {
+                            "name": _TOOL_CALL_PROBE["name"],
+                            "description": _TOOL_CALL_PROBE["description"],
+                            "parameters": _TOOL_CALL_PROBE["parameters"],
+                        }
+                    ]
+                }
+            ],
             "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
             "generationConfig": {"maxOutputTokens": 20},
         }
@@ -438,11 +444,13 @@ class AnthropicLLMClient:
             "model": self.config.model,
             "max_tokens": 20,
             "messages": [{"role": "user", "content": "ok"}],
-            "tools": [{
-                "name": _TOOL_CALL_PROBE["name"],
-                "description": _TOOL_CALL_PROBE["description"],
-                "input_schema": _TOOL_CALL_PROBE["parameters"],
-            }],
+            "tools": [
+                {
+                    "name": _TOOL_CALL_PROBE["name"],
+                    "description": _TOOL_CALL_PROBE["description"],
+                    "input_schema": _TOOL_CALL_PROBE["parameters"],
+                }
+            ],
             "tool_choice": {"type": "any"},
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -801,9 +809,9 @@ def _parse_generate_text(text: str | None, response_format: dict[str, Any] | Non
     try:
         parsed = json.loads(_strip_json_fence(text))
     except json.JSONDecodeError as exc:
-        raise ValueError("Không parse được JSON từ phản hồi LLM") from exc
+        raise ValueError("Could not parse JSON from LLM response") from exc
     if not isinstance(parsed, dict):
-        raise ValueError("Không parse được JSON object từ phản hồi LLM")
+        raise ValueError("Could not parse JSON object from LLM response")
     schema = _parse_validation_schema(response_format)
     if schema:
         _validate_json_schema(parsed, schema)
@@ -913,10 +921,10 @@ def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
 def _validate_json_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
     expected_type = schema.get("type")
     if expected_type is not None and not _matches_json_type(value, expected_type):
-        raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: sai type")
+        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong type")
     enum = schema.get("enum")
     if enum is not None and value not in enum:
-        raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: sai enum")
+        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong enum")
     if value is None:
         return
     if isinstance(value, dict):
@@ -924,11 +932,11 @@ def _validate_json_schema(value: Any, schema: dict[str, Any], path: str = "$") -
         required = schema.get("required") or []
         missing = [key for key in required if key not in value]
         if missing:
-            raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: thiếu {missing[0]}")
+            raise ValueError(f"LLM response does not match JSON Schema at {path}: missing {missing[0]}")
         if schema.get("additionalProperties") is False:
             extra = [key for key in value if key not in properties]
             if extra:
-                raise ValueError(f"Phản hồi LLM không khớp JSON Schema tại {path}: thừa {extra[0]}")
+                raise ValueError(f"LLM response does not match JSON Schema at {path}: extra {extra[0]}")
         for key, child_schema in properties.items():
             if key in value:
                 _validate_json_schema(value[key], child_schema, f"{path}.{key}")
@@ -949,7 +957,7 @@ def _matches_json_type(value: Any, expected_type: str | list[str]) -> bool:
     if expected_type == "string":
         return isinstance(value, str)
     if expected_type == "number":
-        return (isinstance(value, int | float) and not isinstance(value, bool))
+        return isinstance(value, int | float) and not isinstance(value, bool)
     if expected_type == "integer":
         return isinstance(value, int) and not isinstance(value, bool)
     if expected_type == "boolean":
@@ -962,8 +970,8 @@ def _system_with_schema_instruction(system: str | None, response_format: dict[st
         return system
     schema_format = _json_schema_format(response_format)
     instruction = (
-        "Trả lời duy nhất bằng JSON hợp lệ khớp JSON Schema sau. "
-        "Không thêm markdown, giải thích, hoặc văn bản ngoài JSON.\n"
+        "Respond only with valid JSON matching the following JSON Schema. "
+        "Do not add markdown, explanation, or text outside JSON.\n"
         f"JSON Schema:\n{json.dumps(schema_format, ensure_ascii=False)}"
     )
     if system:
@@ -1018,18 +1026,22 @@ def _openai_messages(messages: list[dict[str, Any]], system: str | None) -> list
                 if text:
                     result.append({"role": role, "content": text})
             elif block_type == "tool_use":
-                result.append({
-                    "type": "function_call",
-                    "call_id": _tool_use_id(block),
-                    "name": block.get("name") or "",
-                    "arguments": json.dumps(_tool_input(block), ensure_ascii=False),
-                })
+                result.append(
+                    {
+                        "type": "function_call",
+                        "call_id": _tool_use_id(block),
+                        "name": block.get("name") or "",
+                        "arguments": json.dumps(_tool_input(block), ensure_ascii=False),
+                    }
+                )
             elif block_type == "tool_result":
-                result.append({
-                    "type": "function_call_output",
-                    "call_id": _tool_use_id(block),
-                    "output": _block_text(block),
-                })
+                result.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": _tool_use_id(block),
+                        "output": _block_text(block),
+                    }
+                )
     return result
 
 
@@ -1058,18 +1070,22 @@ def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
             if text:
                 result.append({"type": "text", "text": text})
         elif block_type == "tool_use":
-            result.append({
-                "type": "tool_use",
-                "id": _tool_use_id(block),
-                "name": block.get("name") or "",
-                "input": _tool_input(block),
-            })
+            result.append(
+                {
+                    "type": "tool_use",
+                    "id": _tool_use_id(block),
+                    "name": block.get("name") or "",
+                    "input": _tool_input(block),
+                }
+            )
         elif block_type == "tool_result":
-            result.append({
-                "type": "tool_result",
-                "tool_use_id": _tool_use_id(block),
-                "content": _block_text(block),
-            })
+            result.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": _tool_use_id(block),
+                    "content": _block_text(block),
+                }
+            )
     return result
 
 
@@ -1102,12 +1118,14 @@ def _google_parts(content: Any) -> list[dict[str, Any]]:
         elif block_type == "tool_use":
             result.append({"functionCall": {"name": block.get("name") or "", "args": _tool_input(block)}})
         elif block_type == "tool_result":
-            result.append({
-                "functionResponse": {
-                    "name": _tool_result_name(block),
-                    "response": {"content": _block_text(block)},
+            result.append(
+                {
+                    "functionResponse": {
+                        "name": _tool_result_name(block),
+                        "response": {"content": _block_text(block)},
+                    }
                 }
-            })
+            )
     return result or [{"text": ""}]
 
 
@@ -1137,20 +1155,24 @@ def _bedrock_content(content: Any) -> list[dict[str, Any]]:
             if text:
                 result.append({"text": text})
         elif block_type == "tool_use":
-            result.append({
-                "toolUse": {
-                    "toolUseId": _tool_use_id(block),
-                    "name": block.get("name") or "",
-                    "input": _tool_input(block),
+            result.append(
+                {
+                    "toolUse": {
+                        "toolUseId": _tool_use_id(block),
+                        "name": block.get("name") or "",
+                        "input": _tool_input(block),
+                    }
                 }
-            })
+            )
         elif block_type == "tool_result":
-            result.append({
-                "toolResult": {
-                    "toolUseId": _tool_use_id(block),
-                    "content": [{"text": _block_text(block)}],
+            result.append(
+                {
+                    "toolResult": {
+                        "toolUseId": _tool_use_id(block),
+                        "content": [{"text": _block_text(block)}],
+                    }
                 }
-            })
+            )
     return result or [{"text": ""}]
 
 

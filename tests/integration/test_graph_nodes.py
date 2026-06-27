@@ -131,7 +131,7 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Bạn có thể mô tả thêm về mục tiêu không?"}}
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Can you describe the goal more?"}}
     ]), None))
 
     state = _state(artifact_type="goal")
@@ -147,7 +147,7 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
 
 @pytest.mark.asyncio
 async def test_analyze_node_binds_only_available_tool_schemas(client, db_session, monkeypatch):
-    """Schema tool gửi cho LLM phải khớp menu theo state, không bind registry đầy đủ."""
+    """Tool schema sent to the LLM must match the state menu, not bind the full registry."""
     from app.graphs.nodes import analyze_node
 
     monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
@@ -219,7 +219,7 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "finalize", "args": {"summary": "Hoàn tất"}}
+        {"id": "scripted:0", "name": "finalize", "args": {"summary": "Hoan tat"}}
     ]), None))
 
     state = _state(artifact_type="problem_statement")
@@ -255,7 +255,7 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    brd_title = "BRD: Điều phối lịch học nhóm cho sinh viên"
+    brd_title = "BRD: Dieu phoi study scheduling cho sinh vien"
     db_session.add(
         Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft")
     )
@@ -290,13 +290,13 @@ def test_output_contract_block_lists_sections_for_graph_view():
     # Graph-first per-turn block carries only artifact-specific sections + framing; the
     # recording/status/no-fabrication policy lives in the system prompt (layers 05/10), not here.
     assert "decision graph" in block
-    assert "KHÔNG tự viết body" in block
+    assert "KHONG tu viet body" in block
     assert "## Vision" in block
 
 
 @pytest.mark.asyncio
 async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_session):
-    """Một type sâu phải thấy tiền nhiệm trực tiếp và tổ tiên xa trong prompt."""
+    """Mot type sau must thay tien nhiem truc tiep va to tien xa trong prompt."""
     from app.graphs.nodes import analyze_node
     from app.models.artifact import Artifact
 
@@ -305,9 +305,9 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    brd_title = "BRD: Điều phối lịch học nhóm"
-    domain_title = "Domain entity: Lịch nhóm"
-    component_title = "Component: Bộ điều phối lịch"
+    brd_title = "BRD: Dieu phoi study scheduling"
+    domain_title = "Domain entity: Lich nhom"
+    component_title = "Component: Bo orchestration lich"
     db_session.add(Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="domain_entity", title=domain_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="component", title=component_title, extra_metadata={}, status="draft"))
@@ -331,9 +331,9 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     await analyze_node(state, config)
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
-    assert component_title in prompt, "Tiền nhiệm trực tiếp (component) phải có trong prompt"
-    assert domain_title in prompt, "Tiền nhiệm bắc cầu (domain_entity) phải có trong prompt"
-    assert brd_title in prompt, "Tổ tiên xa (brd) phải có qua transitive closure"
+    assert component_title in prompt, "Tien nhiem truc tiep (component) must co trong prompt"
+    assert domain_title in prompt, "Bridge predecessor (domain_entity) must appear in the prompt"
+    assert brd_title in prompt, "To tien xa (brd) must co qua transitive closure"
 
 
 @pytest.mark.asyncio
@@ -399,14 +399,14 @@ async def test_summarize_triggers_at_threshold(monkeypatch):
 
     monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
     state = _state()
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(7)]
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(7)]
     llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=("Tóm tắt mới", None))
+    llm.generate = AsyncMock(return_value=("Tom tat new", None))
 
     result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
     assert route_before_analyze(state) == "summarize"
-    assert result["conversation_summary"] == "Tóm tắt mới"
+    assert result["conversation_summary"] == "Tom tat new"
     llm.generate.assert_called_once()
 
 
@@ -418,14 +418,14 @@ async def test_summarize_degrades_when_response_not_schema_conformant(monkeypatc
 
     monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
     state = _state()
-    state["conversation_summary"] = "Tóm tắt cũ"
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(7)]
+    state["conversation_summary"] = "Tom tat cu"
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(7)]
     llm = AsyncMock()
-    llm.generate = AsyncMock(side_effect=ValueError("Phản hồi LLM không khớp JSON Schema tại $: thiếu summary"))
+    llm.generate = AsyncMock(side_effect=ValueError("LLM response does not match JSON Schema at $: missing summary"))
 
     result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
-    assert result["conversation_summary"] == "Tóm tắt cũ"
+    assert result["conversation_summary"] == "Tom tat cu"
 
 
 @pytest.mark.asyncio
@@ -434,9 +434,9 @@ async def test_triage_degrades_to_work_turn_when_response_not_schema_conformant(
     from app.graphs.nodes import route_after_triage, triage_node
 
     state = _state()
-    state["messages"] = [{"role": "user", "content": "Xây hệ thống điểm danh"}]
+    state["messages"] = [{"role": "user", "content": "Xay he thong diem danh"}]
     llm = AsyncMock()
-    llm.generate = AsyncMock(side_effect=ValueError("Phản hồi LLM không khớp JSON Schema tại $: thiếu turn_type"))
+    llm.generate = AsyncMock(side_effect=ValueError("LLM response does not match JSON Schema at $: missing turn_type"))
 
     result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
@@ -452,7 +452,7 @@ def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
     routes = {}
     for count in [1, 3, 5, 7, 9, 11, 13]:
         state = _state()
-        state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(count)]
+        state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(count)]
         routes[count] = route_before_analyze(state)
 
     assert routes == {
@@ -472,15 +472,15 @@ async def test_summarize_skipped_below_threshold(monkeypatch):
 
     monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
     state = _state()
-    state["conversation_summary"] = "Tóm tắt cũ"
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(5)]
+    state["conversation_summary"] = "Tom tat cu"
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(5)]
     llm = AsyncMock()
     llm.generate = AsyncMock()
 
     result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
     assert route_before_analyze(state) == "analyze"
-    assert result["conversation_summary"] == "Tóm tắt cũ"
+    assert result["conversation_summary"] == "Tom tat cu"
     llm.generate.assert_not_called()
 
 
@@ -491,23 +491,23 @@ async def test_summary_preserves_constraints_verbatim(monkeypatch):
     monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 2)
     state = _state()
     state["messages"] = [
-        {"role": "user", "content": "Tạo MVP"},
-        {"role": "user", "content": "Ngân sách tối đa 50 triệu"},
-        {"role": "assistant", "content": "Đã ghi nhận"},
+        {"role": "user", "content": "Tao MVP"},
+        {"role": "user", "content": "Ngan sach toi da 50 trieu"},
+        {"role": "assistant", "content": "Da ghi nhan"},
     ]
     summary = (
-        "Yêu cầu đã xác nhận\n- Làm MVP\n"
-        "Ràng buộc — KHÔNG paraphrase\n- Ngân sách tối đa 50 triệu\n"
-        "Khoảng trống chưa rõ\n- Thời hạn\n"
-        "Quyết định đã thống nhất\n- Chưa có"
+        "Confirmed requirements\n- Lam MVP\n"
+        "Rang buoc — KHONG paraphrase\n- Ngan sach toi da 50 trieu\n"
+        "Khoang trong chua ro\n- Thoi han\n"
+        "Quyet dinh da thong nhat\n- Chua co"
     )
     llm = AsyncMock()
     llm.generate = AsyncMock(return_value=(summary, None))
 
     result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
-    assert "Ràng buộc — KHÔNG paraphrase" in result["conversation_summary"]
-    assert "Ngân sách tối đa 50 triệu" in result["conversation_summary"]
+    assert "Rang buoc — KHONG paraphrase" in result["conversation_summary"]
+    assert "Ngan sach toi da 50 trieu" in result["conversation_summary"]
 
 
 @pytest.mark.asyncio
@@ -522,7 +522,7 @@ async def test_summarize_node_uses_default_client(monkeypatch):
         {"role": "user", "content": "C"},
     ]
     default_llm = AsyncMock()
-    default_llm.generate = AsyncMock(return_value=("Tóm tắt", None))
+    default_llm.generate = AsyncMock(return_value=("Tom tat", None))
     strong_llm = AsyncMock()
     strong_llm.generate = AsyncMock()
     config = _config(str(uuid.uuid4()), str(uuid.uuid4()), default_llm)
@@ -540,14 +540,14 @@ def test_build_prompt_carries_summary_not_raw_turns():
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
-    state["conversation_summary"] = "Ràng buộc — KHÔNG paraphrase\n- Ngân sách tối đa 50 triệu"
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(5)]
+    state["conversation_summary"] = "Rang buoc — KHONG paraphrase\n- Ngan sach toi da 50 trieu"
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(5)]
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Tóm tắt hội thoại đã tích lũy" in prompt
-    assert "Ngân sách tối đa 50 triệu" in prompt
-    assert not any(f"Tin nhắn {i}" in prompt for i in range(5))
+    assert "Accumulated conversation summary" in prompt
+    assert "Ngan sach toi da 50 trieu" in prompt
+    assert not any(f"Tin nhan {i}" in prompt for i in range(5))
 
 
 def test_build_prompt_omits_conversation_when_no_summary():
@@ -555,12 +555,12 @@ def test_build_prompt_omits_conversation_when_no_summary():
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state()
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(6)]
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(6)]
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Tóm tắt hội thoại đã tích lũy" not in prompt
-    assert not any(f"Tin nhắn {i}" in prompt for i in range(6))
+    assert "Accumulated conversation summary" not in prompt
+    assert not any(f"Tin nhan {i}" in prompt for i in range(6))
 
 
 def test_build_prompt_excludes_static_policy():
@@ -571,10 +571,10 @@ def test_build_prompt_excludes_static_policy():
     prompt = _build_tool_selection_prompt(_state(), [])
 
     # The old inline synthesis directive and per-tool description block are gone from the payload.
-    assert "ĐỘ SÂU NỘI DUNG" not in prompt
-    assert "ghi chú phản biện" not in prompt
+    assert "DO SAU NOI DUNG" not in prompt
+    assert "critique note" not in prompt
     # It still names the tools available this turn so the model knows the current menu.
-    assert "Công cụ khả dụng" in prompt
+    assert "Available tools" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
@@ -590,12 +590,12 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Độ phủ section" in prompt
+    assert "Do phu section" in prompt
     # Gap-inventory marker — lists weak sections, not a single pinned question.
-    assert "các khía cạnh còn thiếu" in prompt
+    assert "cac khia canh con missing" in prompt
     # Harness voice: advance the artifact, not "ask one main question".
     assert "advance" in prompt
-    assert "một câu hỏi chính" not in prompt
+    assert "one main question" not in prompt
 
 
 def test_no_coverage_hint_when_complete():
@@ -607,7 +607,7 @@ def test_no_coverage_hint_when_complete():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Độ phủ section" not in prompt
+    assert "Do phu section" not in prompt
 
 
 @pytest.mark.asyncio
@@ -616,9 +616,9 @@ async def test_messages_not_truncated_by_summarize(monkeypatch):
 
     monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 3)
     state = _state()
-    state["messages"] = [{"role": "user", "content": f"Tin nhắn {i}"} for i in range(3)]
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(3)]
     llm = AsyncMock()
-    llm.generate = AsyncMock(return_value=("Tóm tắt", None))
+    llm.generate = AsyncMock(return_value=("Tom tat", None))
 
     await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
@@ -744,7 +744,7 @@ def _smart_llm():
         if tools is not None:
             analyze_calls.append(1)
             return AIMessage(content="", tool_calls=[
-                {"id": "scripted:0", "name": "ask_user", "args": {"message": "Bạn cần gì thêm?"}}
+                {"id": "scripted:0", "name": "ask_user", "args": {"message": "What else do you need?"}}
             ]), None
         return {}, None
 
@@ -774,12 +774,12 @@ async def test_resume_from_ask_human_interrupt_continues_loop(client, db_session
     config["configurable"]["session_factory"] = _session_factory()
 
     state = _state()
-    state["messages"] = [{"role": "user", "content": "tôi cần tạo intent"}]
+    state["messages"] = [{"role": "user", "content": "I need to create intent"}]
     await graph.ainvoke(state, config)
     assert len(analyze_calls) == 1
 
     # Resume the ask_human interrupt: the loop continues and analyze runs again.
-    await graph.ainvoke(Command(resume={"content": "thêm chi tiết"}), config)
+    await graph.ainvoke(Command(resume={"content": "them detailed"}), config)
     assert len(analyze_calls) == 2
 
 
@@ -793,16 +793,16 @@ async def test_triage_classifies_converse_and_drafts_reply():
 
     llm = AsyncMock()
     llm.generate = AsyncMock(return_value=(
-        {"turn_type": "converse", "locale": "vi", "reply": "Xin chào, bạn muốn xây gì?"}, None
+        {"turn_type": "converse", "locale": "vi", "reply": "Hello, what do you want to build?"}, None
     ))
     state = _state()
-    state["messages"] = [{"role": "user", "content": "chào bạn"}]
+    state["messages"] = [{"role": "user", "content": "hello"}]
 
     result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
     assert result["turn_type"] == "converse"
     assert result["locale"] == "vi"
-    assert result["triage_reply"] == "Xin chào, bạn muốn xây gì?"
+    assert result["triage_reply"] == "Hello, what do you want to build?"
 
 
 @pytest.mark.asyncio
@@ -830,7 +830,7 @@ async def test_triage_raises_when_llm_client_none():
     config = _config(str(uuid.uuid4()), str(uuid.uuid4()), llm_client=None)
     config["configurable"]["llm_client"] = None
     state = _state()
-    state["messages"] = [{"role": "user", "content": "chào"}]
+    state["messages"] = [{"role": "user", "content": "chao"}]
 
     with pytest.raises(ValueError):
         await triage_node(state, config)
@@ -852,13 +852,13 @@ async def test_converse_node_replies_and_interrupts_without_agent_run(mock_inter
     never ran), and no LLM call inside converse itself (it reuses the triage-drafted reply)."""
     from app.graphs.nodes import converse_node
 
-    mock_interrupt.return_value = {"content": "tôi muốn xây app abc"}
+    mock_interrupt.return_value = {"content": "toi muon xay app abc"}
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     state = _state()
     state["locale"] = "vi"
-    state["triage_reply"] = "Xin chào! Bạn muốn bắt đầu từ đâu?"
+    state["triage_reply"] = "Hello! Ban muon bat dau tu dau?"
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -870,11 +870,11 @@ async def test_converse_node_replies_and_interrupts_without_agent_run(mock_inter
             await db.execute(select(AgentMessage).where(AgentMessage.session_id == agent_session.id))
         ).scalar_one()
         assert msg.payload["kind"] == "greeting"
-        assert msg.content == "Xin chào! Bạn muốn bắt đầu từ đâu?"
+        assert msg.content == "Hello! Ban muon bat dau tu dau?"
         runs = (await db.execute(select(AgentRun).where(AgentRun.session_id == agent_session.id))).scalars().all()
         assert runs == []
     # The human's reply is folded in for analyze to pick up next.
-    assert result["messages"][-1]["content"] == "tôi muốn xây app abc"
+    assert result["messages"][-1]["content"] == "toi muon xay app abc"
 
 
 @pytest.mark.asyncio
@@ -893,7 +893,7 @@ async def test_greeting_turn_skips_full_analysis(client, db_session):
 
     async def _generate(*, messages, system, max_tokens, response_format=None):
         if response_format is TRIAGE_SCHEMA:
-            return {"turn_type": "converse", "locale": "vi", "reply": "Xin chào!"}, None
+            return {"turn_type": "converse", "locale": "vi", "reply": "Hello!"}, None
         return {}, None
 
     llm.generate = _generate
@@ -902,7 +902,7 @@ async def test_greeting_turn_skips_full_analysis(client, db_session):
     config["configurable"]["session_factory"] = _session_factory()
 
     state = _state()
-    state["messages"] = [{"role": "user", "content": "chào bạn"}]
+    state["messages"] = [{"role": "user", "content": "hello"}]
     out = await graph.ainvoke(state, config)
 
     assert "__interrupt__" in out
@@ -969,16 +969,16 @@ def test_build_prompt_includes_draft_body_block_when_present():
 
     state = _state(artifact_type="problem")
     state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
-    body = "Người dùng: sinh viên. Trở ngại: trùng lịch học nhóm."
+    body = "User: student. Obstacle: study group schedule conflict."
     prompt = _build_tool_selection_prompt(state, [], draft_body=body)
 
-    assert "DRAFT ĐANG CÓ" in prompt
+    assert "DRAFT DANG CO" in prompt
     assert body in prompt
     # The anti-re-ask / mine-the-delta policy is static (question-policy layer), so the per-turn
     # payload carries the draft as data without restating the imperative.
-    assert "không hỏi lại" not in prompt.lower()
+    assert "do not ask again" not in prompt.lower()
     # draft block must precede the language lock (kept last by contract)
-    assert prompt.index("DRAFT ĐANG CÓ") < prompt.index("ngôn ngữ 'vi'")
+    assert prompt.index("DRAFT DANG CO") < prompt.index("ngon ngu 'vi'")
 
 
 def test_build_prompt_no_draft_block_when_absent():
@@ -989,7 +989,7 @@ def test_build_prompt_no_draft_block_when_absent():
     baseline = _build_tool_selection_prompt(state, [])
     with_none = _build_tool_selection_prompt(state, [], draft_body=None)
 
-    assert "DRAFT ĐANG CÓ" not in with_none
+    assert "DRAFT DANG CO" not in with_none
     assert with_none == baseline
 
 
@@ -1029,7 +1029,7 @@ async def test_read_current_body_returns_none_without_current_version(client, db
 
     # An artifact with no current_version_id must not surface as a draft.
     db_session.add(
-        Artifact(project_id=project_id, type="functional_requirement", title="Trống", extra_metadata={}, status="draft")
+        Artifact(project_id=project_id, type="functional_requirement", title="Trong", extra_metadata={}, status="draft")
     )
     await db_session.commit()
 
@@ -1049,7 +1049,7 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    draft_body = "Đối tượng: sinh viên năm 2. Trở ngại: lịch học nhóm hay bị trùng giờ làm thêm."
+    draft_body = "Doi tuong: sinh vien nam 2. Tro ngai: study scheduling hay bi trung gio lam them."
     parent = await _add_artifact_with_version(
         db_session,
         project_id,
@@ -1090,7 +1090,7 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert draft_body in prompt, "Existing draft body must be injected as context"
-    assert "DRAFT ĐANG CÓ" in prompt
+    assert "DRAFT DANG CO" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1105,7 +1105,7 @@ def test_build_prompt_includes_decision_view_block_when_nodes_present():
     state["decision_nodes"] = {
         "N1": create_node(
             kind="fact",
-            statement="Sinh viên trùng lịch học nhóm với giờ làm thêm.",
+            statement="Sinh vien trung study scheduling voi gio lam them.",
             origin={"source": "test"},
             status="confirmed",
         )
@@ -1113,20 +1113,20 @@ def test_build_prompt_includes_decision_view_block_when_nodes_present():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "DRAFT ĐANG XÂY DỰNG" in prompt
-    assert "Sinh viên trùng lịch học nhóm với giờ làm thêm." in prompt
+    assert "DRAFT DANG XAY DUNG" in prompt
+    assert "Sinh vien trung study scheduling voi gio lam them." in prompt
     # The running draft must precede the language lock (kept last by contract).
-    assert prompt.index("DRAFT ĐANG XÂY DỰNG") < prompt.index("ngôn ngữ 'vi'")
+    assert prompt.index("DRAFT DANG XAY DUNG") < prompt.index("ngon ngu 'vi'")
 
 
 def test_build_prompt_no_decision_view_block_when_nodes_absent():
-    """Không có graph thì prompt không dựng draft live từ checkpoint cũ."""
+    """Without graph, prompt does not use stale live draft from checkpoint."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="problem")
     baseline = _build_tool_selection_prompt(state, [])
 
-    assert "DRAFT ĐANG XÂY DỰNG" not in _build_tool_selection_prompt(state, [])
+    assert "DRAFT DANG XAY DUNG" not in _build_tool_selection_prompt(state, [])
     assert _build_tool_selection_prompt(state, []) == baseline
 
 
@@ -1144,10 +1144,10 @@ async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_s
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
 
-    thinking_text = "Người dùng vừa nói X, mình nên hỏi thêm ràng buộc trước khi viết."
+    thinking_text = "User just said X; I should ask for constraints before writing."
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content=thinking_text, tool_calls=[
-        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Còn ràng buộc nào không?"}}
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Any other constraints?"}}
     ]), None))
 
     state = _state(artifact_type="goal")
@@ -1162,7 +1162,7 @@ async def test_analyze_node_ignores_content_emitted_with_tool_calls(client, db_s
 
 @pytest.mark.asyncio
 async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
-    """Vòng analyze sau tool-result phải giữ tool_use/tool_result thật, không flatten thành transcript."""
+    """Analyze loop after tool-result must keep real tool_use/tool_result, not flatten into transcript."""
     from langchain_core.messages import ToolMessage
 
     from app.graphs.nodes import analyze_node
@@ -1174,20 +1174,20 @@ async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="Đã đủ dữ kiện.", tool_calls=[]), None))
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="Da du du kien.", tool_calls=[]), None))
 
     state = _state(artifact_type="goal")
     state["messages"] = [
-        {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."},
-        AIMessage(content="Tôi sẽ ghi nhận dữ kiện.", tool_calls=[
+        {"role": "user", "content": "I want to set goals for a study group product."},
+        AIMessage(content="Toi will ghi nhan du kien.", tool_calls=[
             {
                 "id": "prev:0",
                 "name": "explore_note",
-                "args": {"content": "Người dùng chính là sinh viên học nhóm."},
+                "args": {"content": "Primary users are study group students."},
             }
         ]),
-        ToolMessage(content="Đã ghi nhận key fact.", tool_call_id="prev:0"),
-        {"role": "user", "content": "Đã ghi nhận key fact."},
+        ToolMessage(content="Da ghi nhan key fact.", tool_call_id="prev:0"),
+        {"role": "user", "content": "Da ghi nhan key fact."},
     ]
     config = _config(str(agent_session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
@@ -1195,28 +1195,28 @@ async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
     await analyze_node(state, config)
 
     sent_messages = mock_llm.generate.call_args.kwargs["messages"]
-    assert sent_messages[0] == {"role": "user", "content": "Tôi muốn đặt mục tiêu cho sản phẩm học nhóm."}
+    assert sent_messages[0] == {"role": "user", "content": "I want to set goals for a study group product."}
     assert sent_messages[1]["role"] == "assistant"
     assert sent_messages[1]["content"][1] == {
         "type": "tool_use",
         "id": "prev:0",
         "name": "explore_note",
-        "input": {"content": "Người dùng chính là sinh viên học nhóm."},
+        "input": {"content": "Primary users are study group students."},
     }
     assert sent_messages[2]["role"] == "user"
     assert sent_messages[2]["content"][0] == {
         "type": "tool_result",
         "tool_use_id": "prev:0",
         "name": "explore_note",
-        "content": "Đã ghi nhận key fact.",
+        "content": "Da ghi nhan key fact.",
     }
     assert sent_messages[2]["content"][1]["type"] == "text"
-    assert "Bạn là analyst" in sent_messages[2]["content"][1]["text"]
+    assert "Ban la analyst" in sent_messages[2]["content"][1]["text"]
 
 
 @pytest.mark.asyncio
 async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, db_session):
-    """Terminal text không được ghi vào state legacy; graph/write_draft mới là nguồn draft."""
+    """Terminal text must not be written to legacy state; graph/write_draft is the draft source."""
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -1230,7 +1230,7 @@ async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, d
         "next_action": "ask",
         "confidence": 0.3,
         "gaps": [],
-        "message": "Bạn cần gì thêm?",
+        "message": "What else do you need?",
     }, None))
 
     state = _state(artifact_type="goal")
@@ -1260,7 +1260,7 @@ async def test_analysis_result_has_no_active_mode(client, db_session):
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "critique_note", "args": {"content": "Ta thử soi lại nhé?"}}
+        {"id": "scripted:0", "name": "critique_note", "args": {"content": "Ta thu soi lai nhe?"}}
     ]), None))
 
     state = _state(artifact_type="goal")
@@ -1284,7 +1284,7 @@ async def test_respond_colon_terminated_message_uses_fallback(client, db_session
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "respond", "args": {"message": "Dựa trên thông tin hiện có:"}}
+        {"id": "scripted:0", "name": "respond", "args": {"message": "Dua tren thong tin hien co:"}}
     ]), None))
 
     state = _state(artifact_type="goal")
@@ -1318,11 +1318,11 @@ def test_feedback_control_block_injects_blockers_and_revision_plan():
     state["quality_report"] = {
         "mode": "critique",
         "score": 0.41,
-        "findings": ["Metric success chưa đo được"],
-        "suggestions": ["Thêm baseline và target định lượng"],
-        "blocking_issues": ["Metric success chưa đo được"],
+        "findings": ["Success metric is not measurable yet"],
+        "suggestions": ["Add baseline and quantified target"],
+        "blocking_issues": ["Success metric is not measurable yet"],
         "non_blocking_warnings": [],
-        "revision_plan": ["Thêm baseline và target định lượng"],
+        "revision_plan": ["Add baseline and quantified target"],
         "quality_gate_result": "fail",
         "recommended_next_action": "revise",
     }
@@ -1332,14 +1332,14 @@ def test_feedback_control_block_injects_blockers_and_revision_plan():
         "missing": ["Success Metrics"],
         "needs_confirmation": ["Target 15%"],
         "inferred": [],
-        "blocking_reasons": ["Thiếu metric bắt buộc"],
+        "blocking_reasons": ["Thieu metric bat buoc"],
     }
 
     prompt = _build_tool_selection_prompt(state, [])
 
     assert "FEEDBACK CONTROL" in prompt
-    assert "Metric success chưa đo được" in prompt
-    assert "Thêm baseline và target định lượng" in prompt
+    assert "Success metric is not measurable yet" in prompt
+    assert "Add baseline and quantified target" in prompt
     assert "well_structured_but_incomplete" in prompt
     assert "Success Metrics" in prompt
     assert "revise" in prompt
@@ -1358,7 +1358,7 @@ def test_proactive_rule_lives_in_instruction_layer_not_payload():
     state = _state(artifact_type="goal")
     state["mode_hint"] = None
     prompt = _build_tool_selection_prompt(state, [])
-    assert "YÊU CẦU MODE" not in prompt
+    assert "YEU CAU MODE" not in prompt
 
 
 def test_mode_hint_precedes_language_lock():
@@ -1371,7 +1371,7 @@ def test_mode_hint_precedes_language_lock():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert prompt.index("explore") < prompt.index("ngôn ngữ 'vi'")
+    assert prompt.index("explore") < prompt.index("ngon ngu 'vi'")
 
 
 @pytest.mark.asyncio
@@ -1390,7 +1390,7 @@ async def test_mode_hint_cleared_after_single_turn(client, db_session):
         "next_action": "ask",
         "confidence": 0.3,
         "gaps": [],
-        "message": "Bạn cần gì thêm?",
+        "message": "What else do you need?",
     }, None))
 
     state = _state(artifact_type="goal")
@@ -1416,15 +1416,15 @@ def test_artifact_contract_block_carries_sections_and_taxonomy():
     from app.graphs.nodes import _build_artifact_contract_block, _build_tool_selection_prompt
 
     block = _build_artifact_contract_block(_state(artifact_type="vision_objectives"))
-    assert "SECTION CẦN PHỦ" in block
+    assert "SECTION CAN PHU" in block
     assert "## Vision" in block
     assert "## Objectives" in block
-    assert "render từ decision graph" in block
-    assert "LOẠI ARTIFACT" in block  # taxonomy chain moved here too
+    assert "render tu decision graph" in block
+    assert "LOAI ARTIFACT" in block  # taxonomy chain moved here too
 
     # And it is no longer duplicated in the per-turn payload.
     prompt = _build_tool_selection_prompt(_state(artifact_type="vision_objectives"), [])
-    assert "SECTION CẦN PHỦ" not in prompt
+    assert "SECTION CAN PHU" not in prompt
 
 
 def _final_block_text(message: dict) -> str:
@@ -1442,22 +1442,22 @@ def test_analyzer_messages_keep_user_latest_as_final_block():
 
     # Plain-user turn (turn 1)
     st = _state(artifact_type="vision_objectives")
-    st["messages"] = [{"role": "user", "content": "Tôi muốn làm app quán cà phê"}]
+    st["messages"] = [{"role": "user", "content": "Toi muon lam app coffee shop"}]
     msgs = _build_analyzer_messages(st, "WORKSPACE-PAYLOAD")
-    assert "Tôi muốn làm app quán cà phê" in _final_block_text(msgs[-1])
+    assert "Toi muon lam app coffee shop" in _final_block_text(msgs[-1])
 
     # Tool_result-resume turn: the human reply arrives inside a tool_result block
     st2 = _state(artifact_type="vision_objectives")
     st2["messages"] = [
-        {"role": "user", "content": "Tôi muốn làm app quán cà phê"},
-        AIMessage(content="", tool_calls=[{"id": "r:0", "name": "ask_user", "args": {"message": "Pain chính?"}}]),
-        ToolMessage(content="Hụt nguyên liệu", tool_call_id="r:0"),
-        {"role": "user", "content": "Hụt nguyên liệu"},
+        {"role": "user", "content": "Toi muon lam app coffee shop"},
+        AIMessage(content="", tool_calls=[{"id": "r:0", "name": "ask_user", "args": {"message": "Pain chinh?"}}]),
+        ToolMessage(content="Hut nguyen lieu", tool_call_id="r:0"),
+        {"role": "user", "content": "Hut nguyen lieu"},
     ]
     msgs2 = _build_analyzer_messages(st2, "WORKSPACE-PAYLOAD")
     final2 = _final_block_text(msgs2[-1])
     assert msgs2[-1]["role"] == "user"
-    assert "Hụt nguyên liệu" in final2
+    assert "Hut nguyen lieu" in final2
     assert "WORKSPACE-PAYLOAD" not in final2
 
 

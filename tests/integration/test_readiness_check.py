@@ -103,7 +103,7 @@ def test_run_readiness_check_in_available_tools_with_draft():
     state["decision_nodes"] = {
         "N1": create_node(
             kind="objective",
-            statement="Một bản nháp",
+            statement="A draft",
             origin={"source": "test"},
             status="confirmed",
         )

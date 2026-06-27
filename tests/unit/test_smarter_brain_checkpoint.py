@@ -62,7 +62,7 @@ def test_checkpoint_fails_when_eval_delta_is_too_small():
 
 
 def test_checkpoint_rejects_missing_token_usage():
-    with pytest.raises(ValueError, match="Thiếu session token_usage"):
+    with pytest.raises(ValueError, match="Thieu session token_usage"):
         evaluate_checkpoint(
             baseline_sessions=[],
             candidate_sessions=[{"session_id": "c1", "token_usage": [{"total": 100}]}],

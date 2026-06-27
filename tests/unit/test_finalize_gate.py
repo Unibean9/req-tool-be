@@ -18,7 +18,7 @@ def _hash(body: str) -> str:
     return hashlib.md5(body.encode()).hexdigest()[:8]
 
 
-def _state_with_graph(statement: str = "Một bản nháp") -> dict:
+def _state_with_graph(statement: str = "A draft") -> dict:
     return {
         "messages": [],
         "user_confirmed": True,
@@ -38,7 +38,7 @@ def _current_body(state: dict) -> str:
     return render_view(state["decision_nodes"], state["artifact_type"])
 
 
-def _passing_state(draft: str = "Một bản nháp", critique_rounds: int = 1) -> dict:
+def _passing_state(draft: str = "A draft", critique_rounds: int = 1) -> dict:
     """A state where every finalize-gate condition is satisfied (pass gate + fresh hash + sufficient readiness)."""
     state = {
         **_state_with_graph(draft),
@@ -66,7 +66,7 @@ def test_finalize_not_available_without_decision_graph_view():
 
 
 def test_finalize_ignores_db_draft_without_graph_view():
-    draft = "Bản nháp tải từ DB"
+    draft = "Draft tai tu DB"
     state = {
         "messages": [],
         "user_confirmed": True,
@@ -85,7 +85,7 @@ def test_finalize_ignores_db_draft_without_graph_view():
 
 def test_finalize_not_available_when_gate_fails():
     state = _passing_state()
-    state["quality_report"] = {"quality_gate_result": "fail", "blocking_issues": ["thiếu metric"]}
+    state["quality_report"] = {"quality_gate_result": "fail", "blocking_issues": ["missing metric"]}
     assert "finalize" not in _names(state)
 
 
@@ -94,7 +94,7 @@ def test_finalize_not_available_when_draft_edited_after_critique():
     state["decision_nodes"] = {
         "N1": create_node(
             kind="objective",
-            statement="Bản nháp đã sửa sau critique",
+            statement="Draft da sua sau critique",
             origin={"source": "test"},
             status="confirmed",
         )
@@ -149,7 +149,7 @@ async def test_finalize_interrupt_triggers_when_available():
     }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
-        await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+        await _finalize_impl("Session complete.", state, config, "call_1")
 
     mock_interrupt.assert_called_once()
     assert session_row.status is not None
@@ -162,19 +162,19 @@ async def test_finalize_hard_blocks_when_gate_fails():
     state = {
         **_state_with_graph("draft"),
         "critique_rounds": 1,
-        "quality_report": {"quality_gate_result": "fail", "blocking_issues": ["thiếu tiêu chí đo lường"]},
+        "quality_report": {"quality_gate_result": "fail", "blocking_issues": ["missing measurement criteria"]},
         "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
-        command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
 
     mock_interrupt.assert_not_called()
     msg = command.update["messages"][0]
     assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
     assert msg.status == "error"
-    assert "Không thể finalize" in msg.content
-    assert "thiếu tiêu chí đo lường" in msg.content
+    assert "Cannot finalize" in msg.content
+    assert "missing measurement criteria" in msg.content
 
 
 @pytest.mark.asyncio
@@ -187,11 +187,11 @@ async def test_finalize_hard_blocks_without_current_draft_body():
     }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
-        command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
 
     mock_interrupt.assert_not_called()
     assert command.update["tool_errors"][0]["code"] == "finalize_gate_blocked"
-    assert "Không thể finalize" in command.update["messages"][0].content
+    assert "Cannot finalize" in command.update["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -216,9 +216,9 @@ async def test_finalize_hard_blocks_when_focused_artifact_was_not_critiqued():
     }
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
-        command = await _finalize_impl("Hoàn tất phiên.", state, config, "call_1")
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
 
     mock_interrupt.assert_not_called()
     msg = command.update["messages"][0]
-    assert "Không thể finalize" in msg.content
-    assert "bản nháp hiện tại" in msg.content
+    assert "Cannot finalize" in msg.content
+    assert "current draft" in msg.content

@@ -23,29 +23,29 @@ def graph_flag_on(monkeypatch):
 def _full_sequence_brain() -> ScriptedLLM:
     """Cold-start exploration → create graph → pushback → supersede with abandon cascade."""
     return ScriptedLLM(tool_brain=[
-        # Phần 1 — cold-start: explore before drafting, create nodes with technique provenance.
-        tool_select("elicit_tool", technique="5_whys", seed="hụt nguyên liệu"),
+        # Part 1 — cold-start: explore before drafting, create nodes with technique provenance.
+        tool_select("elicit_tool", technique="5_whys", seed="inventory shortage"),
         tool_select("create_decision_node", node_id="N1", kind="decision",
-                    statement="v1 = vận hành-first (định lượng + trừ kho)", technique="5_whys"),
+                    statement="v1 = operations-first (quantification + stock deduction)", technique="5_whys"),
         tool_select("create_decision_node", node_id="N2", kind="risk",
-                    statement="nhân viên ngại nhập công thức → vẫn pha tay", technique="reverse"),
-        # Phần 2 — co-creation: dependents build on N1.
+                    statement="staff avoid entering recipes → still mix manually", technique="reverse"),
+        # Part 2 — co-creation: dependents build on N1.
         tool_select("create_decision_node", node_id="N3", kind="objective",
-                    statement="Giảm thời gian pha chế", depends_on=["N1"]),
+                    statement="Reduce preparation time", depends_on=["N1"]),
         tool_select("create_decision_node", node_id="N4", kind="scope",
-                    statement="Màn hình bếp realtime", depends_on=["N1"]),
+                    statement="Realtime kitchen screen", depends_on=["N1"]),
         tool_select("create_decision_node", node_id="N5", kind="assumption",
-                    statement="Nhân viên dùng tablet tại quầy", depends_on=["N1"]),
+                    statement="Staff use tablets at the counter", depends_on=["N1"]),
         tool_select("update_decision_node", node_id="N1", status="confirmed"),
-        tool_select("ask_user", message="Mình chốt hướng vận hành-first nhé — đúng pain của bạn chứ?"),
-        # Phần 3 — reversal: pushback BEFORE mutating, then supersede with abandon.
+        tool_select("ask_user", message="Let's confirm operations-first - does that match your pain?"),
+        # Part 3 — reversal: pushback BEFORE mutating, then supersede with abandon.
         tool_select("respond",
-                    message="Đảo qua loyalty-first sẽ treo N3/N4/N5 (giảm pha chế, màn bếp, tablet). "
-                            "Đó là đổi hướng gốc, không phải chỉnh nhỏ — chắc chứ?",
+                    message="Switching to loyalty-first will park N3/N4/N5 (prep reduction, kitchen screen, tablet). "
+                            "That is a root direction change, not a small edit - are you sure?",
                     mode="critique"),
         tool_select("supersede_decision_node", node_id="N1",
-                    statement="v1 = loyalty-first (giữ chân khách)",
-                    new_statement="v1 = loyalty-first (giữ chân khách)", cascade_mode="abandon"),
+                    statement="v1 = loyalty-first (customer retention)",
+                    new_statement="v1 = loyalty-first (customer retention)", cascade_mode="abandon"),
     ])
 
 
@@ -57,10 +57,10 @@ async def _run_full_sequence(client, scenario_env, scenario_project):
         artifact_type="intent",
         llm=_full_sequence_brain(),
         actions=[
-            {"type": "send", "content": "Tôi muốn làm app quản lý quán cà phê."},
-            {"type": "send", "content": "Chủ yếu không kiểm soát được nguyên liệu, hay bị hụt."},
-            {"type": "send", "content": "Đổi qua giữ chân khách (loyalty-first) đi."},
-            {"type": "send", "content": "Chắc chắn, đổi giúp tôi."},
+            {"type": "send", "content": "I want to build a coffee shop management app."},
+            {"type": "send", "content": "Mainly cannot control inventory and often runs short."},
+            {"type": "send", "content": "Doi qua customer retention (loyalty-first) di."},
+            {"type": "send", "content": "Yes, change it for me."},
         ],
         expect={},
     )
@@ -93,8 +93,8 @@ async def test_render_after_p3_hides_abandoned_branch(
     active_body = out.split("Parked")[0]
 
     # Superseded root hidden entirely; the abandoned branch is folded into Parked, not the active body.
-    assert "vận hành-first" not in active_body
-    for parked in ("Giảm thời gian pha chế", "Màn hình bếp realtime", "Nhân viên dùng tablet"):
+    assert "operations-first" not in active_body
+    for parked in ("Reduce preparation time", "Realtime kitchen screen", "Staff use tablets"):
         assert parked not in active_body
     assert "Parked" in out
     # The replacement node lives in the graph (supersedes N1) but is `proposed`, so per the render
@@ -113,24 +113,24 @@ async def test_gate_go_condition(client, scenario_env, scenario_project, graph_f
         nodes["N1"]["status"] == "superseded"
         and nodes[new_id]["supersedes"] == "N1"
         and all(nodes[n]["status"] == "parked" for n in ("N3", "N4", "N5"))
-        and "vận hành-first" not in render_view(nodes, "brd").split("Parked")[0]
+        and "operations-first" not in render_view(nodes, "brd").split("Parked")[0]
     )
-    assert go, "DECISION GATE: NO-GO — debug R1/R2 (supersede/cascade/render) trước khi mở rộng"
+    assert go, "DECISION GATE: NO-GO — debug R1/R2 (supersede/cascade/render) truoc when mo rong"
 
 
 # ---------------------------------------------------------------------------
-# Named Phần 1-3 behaviors (golden) — read off the same driven sequence.
+# Named Part 1-3 behaviors (golden) — read off the same driven sequence.
 # ---------------------------------------------------------------------------
 
 async def test_cold_start_explores_before_drafting(client, scenario_env, scenario_project, graph_flag_on):
-    """Phần 1: the agent explores and records nodes; it never proposes a draft on the cold-start turn."""
+    """Part 1: the agent explores and records nodes; it never proposes a draft on the cold-start turn."""
     driver, nodes = await _run_full_sequence(client, scenario_env, scenario_project)
     assert await driver.executed_artifacts() == []  # no write_draft was approved → none executed
     assert nodes, "exploration produced no nodes"
 
 
 async def test_nodes_created_with_technique_provenance(client, scenario_env, scenario_project, graph_flag_on):
-    """Phần 1: each agent-created node records who/what produced it (origin.by + technique)."""
+    """Part 1: each agent-created node records who/what produced it (origin.by + technique)."""
     _, nodes = await _run_full_sequence(client, scenario_env, scenario_project)
     assert nodes["N1"]["origin"]["by"] == "agent"
     assert nodes["N1"]["origin"]["technique"] == "5_whys"
@@ -138,27 +138,27 @@ async def test_nodes_created_with_technique_provenance(client, scenario_env, sce
 
 
 async def test_decision_reversal_supersedes_not_deletes(client, scenario_env, scenario_project, graph_flag_on):
-    """Phần 3: reversing keeps history — old node stays as superseded, nothing is removed."""
+    """Part 3: reversing keeps history — old node stays as superseded, nothing is removed."""
     _, nodes = await _run_full_sequence(client, scenario_env, scenario_project)
     assert nodes["N1"]["status"] == "superseded"
     assert {"N1", "N2", "N3", "N4", "N5"} <= set(nodes)
 
 
 async def test_decision_reversal_uses_abandon_mode(client, scenario_env, scenario_project, graph_flag_on):
-    """Phần 3: a root-direction reversal parks dependents (abandon), not needs_confirmation."""
+    """Part 3: a root-direction reversal parks dependents (abandon), not needs_confirmation."""
     _, nodes = await _run_full_sequence(client, scenario_env, scenario_project)
     assert [nodes[n]["status"] for n in ("N3", "N4", "N5")] == ["parked"] * 3
 
 
 async def test_agent_pushback_and_reads_dependents(client, scenario_env, scenario_project, graph_flag_on):
-    """Phần 3: the agent warns about the branch impact before superseding, and the supersede surfaces
+    """Part 3: the agent warns about the branch impact before superseding, and the supersede surfaces
     the dependents it rippled to."""
     driver, _ = await _run_full_sequence(client, scenario_env, scenario_project)
     # Pushback assessment is surfaced to the user via the message API payload (respond tool).
     import json
 
     blob = json.dumps(await driver._list_messages(), ensure_ascii=False)
-    assert "đổi hướng gốc" in blob, "no pushback before the reversal"
+    assert "doi huong goc" in blob, "no pushback before the reversal"
     # The supersede records which dependents it rippled to (read-before-write) in its ToolMessage.
     raw = await scenario_env.get_checkpoint_field(driver.session_id, "messages")
     texts = [getattr(m, "content", "") or "" for m in (raw or [])]
@@ -166,7 +166,7 @@ async def test_agent_pushback_and_reads_dependents(client, scenario_env, scenari
 
 
 # ---------------------------------------------------------------------------
-# Phần 2 — co-creation: confirmation updates in place; MoSCoW parks out-of-scope.
+# Part 2 — co-creation: confirmation updates in place; MoSCoW parks out-of-scope.
 # ---------------------------------------------------------------------------
 
 async def test_objective_confirmation_updates_node_not_creates_new(
@@ -175,14 +175,14 @@ async def test_objective_confirmation_updates_node_not_creates_new(
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])
     llm = ScriptedLLM(tool_brain=[
-        tool_select("create_decision_node", node_id="N3", kind="objective", statement="Tăng doanh thu Y%"),
-        tool_select("update_decision_node", node_id="N3", status="confirmed", statement="Tăng doanh thu 10%"),
+        tool_select("create_decision_node", node_id="N3", kind="objective", statement="Tang doanh thu Y%"),
+        tool_select("update_decision_node", node_id="N3", status="confirmed", statement="Tang doanh thu 10%"),
     ])
     scenario = Scenario(
         name="golden-p2-confirm",
         artifact_type="intent",
         llm=llm,
-        actions=[{"type": "send", "content": "Mục tiêu chắc tầm tăng doanh thu 10%."}],
+        actions=[{"type": "send", "content": "Goal is probably to increase revenue by 10%."}],
         expect={},
     )
     driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
@@ -199,17 +199,17 @@ async def test_moscow_pushes_out_of_scope_to_parked(client, scenario_env, scenar
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])
     llm = ScriptedLLM(tool_brain=[
-        tool_select("elicit_tool", technique="moscow", seed="phạm vi v1"),
-        tool_select("create_decision_node", node_id="M1", kind="scope", statement="Tính khung giờ chung (Must)"),
+        tool_select("elicit_tool", technique="moscow", seed="pham vi v1"),
+        tool_select("create_decision_node", node_id="M1", kind="scope", statement="Tinh khung gio chung (Must)"),
         tool_select("create_decision_node", node_id="O1", kind="open_question",
-                    statement="Tích hợp thanh toán (Out v1)"),
+                    statement="Tich hop thanh toan (Out v1)"),
         tool_select("update_decision_node", node_id="O1", status="parked"),
     ])
     scenario = Scenario(
         name="golden-p2-moscow",
         artifact_type="intent",
         llm=llm,
-        actions=[{"type": "send", "content": "Phân loại MoSCoW giúp tôi phạm vi v1."}],
+        actions=[{"type": "send", "content": "Phan loai MoSCoW giup toi pham vi v1."}],
         expect={},
     )
     driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
@@ -239,19 +239,19 @@ async def test_multi_role_tools_within_single_user_turn(
     multi_role_brain = ScriptedLLM(tool_brain=[
         # All 5 calls happen BEFORE the second user message (single drain).
         # respond is interrupt-bearing so it cannot precede ask_user in the same drain;
-        # use critique_note (non-interrupt) for the phản-biện role instead.
-        tool_select("elicit_tool", technique="5_whys", seed="hụt nguyên liệu"),       # khai phá
+        # use critique_note (non-interrupt) for the critique role instead.
+        tool_select("elicit_tool", technique="5_whys", seed="inventory shortage"),       # khai pha
         tool_select("create_decision_node", node_id="N1", kind="decision",             # ghi
-                    statement="vận hành-first", technique="5_whys"),
-        tool_select("update_decision_node", node_id="N1", status="confirmed"),         # cập nhật
-        tool_select("critique_note", content="Rủi ro: nhân viên ngại nhập liệu."),    # phản biện
-        tool_select("ask_user", message="Bạn đồng ý hướng vận hành-first không?"),    # điều phối
+                    statement="operations-first", technique="5_whys"),
+        tool_select("update_decision_node", node_id="N1", status="confirmed"),         # cap nhat
+        tool_select("critique_note", content="Risk: staff avoid data entry."),    # critique
+        tool_select("ask_user", message="Do you agree with the operations-first direction?"),    # orchestration
     ])
     scenario = Scenario(
         name="r7-multi-role",
         artifact_type="intent",
         llm=multi_role_brain,
-        actions=[{"type": "send", "content": "Tôi muốn làm app quản lý quán cà phê."}],
+        actions=[{"type": "send", "content": "I want to build a coffee shop management app."}],
         expect={},
     )
     driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)

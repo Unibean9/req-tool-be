@@ -100,13 +100,13 @@ def test_initial_workflow_state_seeds_governance_fields():
         artifact_type="vision_objectives",
         workflow_area="analysis",
         step_key=None,
-        messages=[{"role": "user", "content": "Tạo vision"}],
+        messages=[{"role": "user", "content": "Create vision"}],
         missing_context=["brd"],
         focused_artifact_id="00000000-0000-0000-0000-000000000001",
         mode_hint="critique",
     )
 
-    assert state["messages"] == [{"role": "user", "content": "Tạo vision"}]
+    assert state["messages"] == [{"role": "user", "content": "Create vision"}]
     assert state["missing_context"] == ["brd"]
     assert state["focused_artifact_id"] == "00000000-0000-0000-0000-000000000001"
     assert state["mode_hint"] == "critique"

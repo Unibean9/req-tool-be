@@ -36,19 +36,19 @@ async def test_governed_requires_approval_for_write_tool():
     with pytest.raises(ApprovalRequired) as exc_info:
         await create_artifact(
             artifact_type="goal",
-            title="Mục tiêu",
+            title="Goal",
             context={"workflow_area": "analysis", "allowed_types": ["goal"]},
         )
 
     assert exc_info.value.tool_name == "create_artifact"
-    assert exc_info.value.args_snapshot == {"artifact_type": "goal", "title": "Mục tiêu"}
+    assert exc_info.value.args_snapshot == {"artifact_type": "goal", "title": "Goal"}
 
 
 @pytest.mark.asyncio
 async def test_governed_denies_unknown_tool():
     @governed
     async def unexpected_tool():
-        return "không được gọi"
+        return "must not be called"
 
     with pytest.raises(GovernanceDenied) as exc_info:
         await unexpected_tool(context={"workflow_area": "analysis"})
@@ -60,7 +60,7 @@ async def test_governed_denies_unknown_tool():
 async def test_init_workflow_run_denied_outside_orchestrator():
     @governed
     async def init_workflow_run():
-        return "không được gọi"
+        return "must not be called"
 
     with pytest.raises(GovernanceDenied) as exc_info:
         await init_workflow_run(context={"workflow_area": "analysis"})
@@ -103,7 +103,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "artifact_type": "goal",
         "workflow_area": "analysis",
         "step_key": "intent_vision",
-        "messages": [{"role": "user", "content": "Xin chào"}],
+        "messages": [{"role": "user", "content": "Hello"}],
         "conversation_summary": "",
         "analysis_result": None,
         "pending_tool_call_ids": [],

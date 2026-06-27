@@ -6,6 +6,7 @@ from langgraph.graph import add_messages
 
 class AssumptionObject(TypedDict):
     """A captured assumption (spec §5.4): what is being relied on and how confident we are."""
+
     statement: str
     source: str
     confidence: str
@@ -16,6 +17,7 @@ class AssumptionObject(TypedDict):
 
 class RiskObject(TypedDict):
     """A captured risk: an adverse event with its likelihood and mitigation."""
+
     statement: str
     likelihood: str
     impact: str
@@ -26,6 +28,7 @@ class RiskObject(TypedDict):
 
 class OpenQuestionObject(TypedDict):
     """An unresolved question blocking or informing the requirements."""
+
     question: str
     domain: str
     decision_needed: str
@@ -34,6 +37,7 @@ class OpenQuestionObject(TypedDict):
 
 class KeyFactObject(TypedDict):
     """A key fact about the project: a confirmed datum that must survive conversation compression."""
+
     statement: str
     source: str
     turn: str
@@ -46,11 +50,12 @@ class DecisionNode(TypedDict):
     (never deleted). depends_on edges enable backward ripple when a node is superseded. The artifact
     view (BRD/PRD) is a derived projection rendered from active nodes, never the source.
     """
+
     id: str
     kind: str  # objective | scope | assumption | decision | risk | open_question | fact
     statement: str
     status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded
-    origin: dict[str, Any]  # {turn, by, technique, source} — vì sao node này tồn tại
+    origin: dict[str, Any]  # {turn, by, technique, source} — why this node exists
     depends_on: list[str]
     supersedes: str | None
     superseded_by: str | None
@@ -86,6 +91,7 @@ def merge_decision_nodes(
 
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
+
     method: str
     planning_track: str
     project_type: str
@@ -95,6 +101,7 @@ class MethodProfile(TypedDict):
 
 class ArtifactChain(TypedDict):
     """Status of each BMAD planning artifact stage (addendum §8)."""
+
     brainstorming: str
     product_brief: str
     prd: str
@@ -102,6 +109,7 @@ class ArtifactChain(TypedDict):
 
 class Readiness(TypedDict):
     """Readiness assessment across the planning lifecycle (addendum §8)."""
+
     requirements_ready: bool
     architecture_needed: str
     implementation_ready: bool
@@ -117,6 +125,7 @@ class QualityReport(TypedDict):
     against `settings.critique_score_threshold`, never from whether `blocking_issues` is empty —
     so the no-LLM degraded path (score=0.0, findings=[]) still yields "fail" (fail-safe).
     """
+
     mode: str
     score: float
     findings: list[str]

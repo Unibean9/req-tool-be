@@ -78,26 +78,30 @@ def evaluate_candidate_readiness(
             state=ArtifactReadinessState.POORLY_STRUCTURED,
             missing=missing_headings,
             blocking_reasons=[
-                f"Candidate thiếu heading bắt buộc theo output contract: {', '.join(missing_headings)}"
+                f"Candidate is missing required headings from the output contract: {', '.join(missing_headings)}"
             ],
         )
 
-    inferred = _extract_marked_lines(body, ("agent suy diễn", "suy luận"))
-    marked_confirmations = _extract_marked_lines(body, ("cần xác nhận", "cần user xác nhận", "needs_confirmation"))
+    inferred = _extract_marked_lines(body, ("agent-inferred", "inferred"))
+    marked_confirmations = _extract_marked_lines(
+        body, ("needs confirmation", "needs user confirmation", "needs_confirmation")
+    )
     pending = list(metadata.pending_assumptions)
     if pending and not marked_confirmations:
         return ArtifactCandidateReadiness(
             state=ArtifactReadinessState.WELL_STRUCTURED_BUT_INCOMPLETE,
             needs_confirmation=[],
             inferred=inferred,
-            blocking_reasons=["Candidate có pending assumptions nhưng body chưa đánh dấu phần cần xác nhận."],
+            blocking_reasons=[
+                "Candidate has pending assumptions but the body does not mark content needing confirmation."
+            ],
         )
     if pending:
         return ArtifactCandidateReadiness(
             state=ArtifactReadinessState.NEEDS_CONFIRMATION,
             needs_confirmation=pending,
             inferred=inferred,
-            blocking_reasons=["Candidate còn assumption cần user xác nhận trước khi persist."],
+            blocking_reasons=["Candidate still has assumptions requiring user confirmation before persistence."],
         )
 
     return ArtifactCandidateReadiness(

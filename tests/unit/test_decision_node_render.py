@@ -23,13 +23,13 @@ pytestmark = pytest.mark.xfail(
 
 def test_view_excludes_superseded_nodes(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "N1", "kind": "decision", "statement": "Hướng cũ đã bỏ", "status": "superseded"},
-        {"id": "N3", "kind": "objective", "statement": "Mục tiêu đang chốt", "status": "confirmed"},
-        {"id": "N4", "kind": "scope", "statement": "Phạm vi treo lại", "status": "parked"},
+        {"id": "N1", "kind": "decision", "statement": "Huong cu da bo", "status": "superseded"},
+        {"id": "N3", "kind": "objective", "statement": "Goal being confirmed", "status": "confirmed"},
+        {"id": "N4", "kind": "scope", "statement": "Pham vi treo lai", "status": "parked"},
     )
 
     out = render_view(nodes, "brd")
 
-    assert "Hướng cũ đã bỏ" not in out
-    assert "Mục tiêu đang chốt" in out
-    assert "Phạm vi treo lại" in out
+    assert "Huong cu da bo" not in out
+    assert "Goal being confirmed" in out
+    assert "Pham vi treo lai" in out

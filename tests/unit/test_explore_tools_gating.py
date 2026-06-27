@@ -31,7 +31,7 @@ def _pass_gate(draft: str) -> dict:
     }
 
 
-def _draft_state(statement: str = "Một nội dung draft") -> dict:
+def _draft_state(statement: str = "Mot content draft") -> dict:
     nodes = {
         "N1": create_node(
             kind="objective",
@@ -87,8 +87,8 @@ def test_finalize_hidden_when_gate_fails():
 
 
 def test_finalize_hidden_when_draft_stale():
-    original = _draft_state("Một nội dung draft")
-    edited = _draft_state("Một nội dung draft đã sửa")
+    original = _draft_state("Mot content draft")
+    edited = _draft_state("Mot content draft da sua")
     state = {
         **edited,
         "messages": [],
@@ -167,11 +167,11 @@ def test_note_step_limit_does_not_block_run_critique():
 async def test_write_note_appends_to_messages():
     from app.graphs.agent_tools import _write_note_impl
 
-    command = await _write_note_impl("Giả định X có thể sai vì...", {}, "call_1", "explore_note")
+    command = await _write_note_impl("Assumption X may be wrong because...", {}, "call_1", "explore_note")
 
     appended = command.update["messages"]
     assert len(appended) == 1
     msg = appended[0]
     assert isinstance(msg, ToolMessage)
-    assert "Giả định X" in msg.content
+    assert "Assumption X" in msg.content
     assert msg.tool_call_id == "call_1"

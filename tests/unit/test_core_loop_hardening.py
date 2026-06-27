@@ -12,7 +12,8 @@ from app.graphs.agent_tools import artifact_stage, current_draft_body
 from app.graphs.decision_graph import create_node, render_view
 from tests.integration.test_graph_nodes import _state
 
-def _state_with_node(statement: str = "Giảm thời gian xử lý") -> dict:
+
+def _state_with_node(statement: str = "Reduce processing time") -> dict:
     state = _state(artifact_type="brd")
     state["decision_nodes"] = {
         "N1": create_node(
@@ -27,7 +28,7 @@ def _state_with_node(statement: str = "Giảm thời gian xử lý") -> dict:
 
 @pytest.mark.asyncio
 async def test_current_draft_body_renders_decision_graph():
-    state = _state_with_node("Giảm thời gian xử lý")
+    state = _state_with_node("Reduce processing time")
 
     assert await current_draft_body(state) == render_view(state["decision_nodes"], "brd")
 
@@ -36,7 +37,7 @@ async def test_current_draft_body_renders_decision_graph():
 async def test_current_draft_body_ignores_cached_body_without_nodes():
     state = _state()
     state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
-    state["draft_body"] = "DB draft cũ"
+    state["draft_body"] = "DB draft cu"
 
     assert await current_draft_body(state) == ""
 
@@ -44,7 +45,7 @@ async def test_current_draft_body_ignores_cached_body_without_nodes():
 @pytest.mark.asyncio
 async def test_current_draft_body_ignores_legacy_working_draft():
     state = _state()
-    state["working_draft"] = "checkpoint cũ"
+    state["working_draft"] = "checkpoint cu"
 
     assert await current_draft_body(state) == ""
 
@@ -107,7 +108,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
 
     with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
-            state, config, "Câu hỏi?", run_id="call_1", interrupt_kind="stream_response"
+            state, config, "Cau hoi?", run_id="call_1", interrupt_kind="stream_response"
         )
 
     from tests.conftest import TestSessionFactory
@@ -141,7 +142,7 @@ async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_s
 
     with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
-            state, config, "Câu hỏi?", run_id="call_2"
+            state, config, "Cau hoi?", run_id="call_2"
         )
 
     from tests.conftest import TestSessionFactory
@@ -163,7 +164,7 @@ def test_route_node_ends_on_terminal_text_turn():
     from langchain_core.messages import AIMessage
 
     from app.graphs.nodes import route_node
-    state = {"turn_count": 0, "messages": [AIMessage(content="Phân tích xong, không cần thêm tool.")]}
+    state = {"turn_count": 0, "messages": [AIMessage(content="Analysis complete; no more tool needed.")]}
     assert route_node(state) == "__end__"
 
 

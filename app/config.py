@@ -1,4 +1,3 @@
-
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,9 +11,9 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_database_url(cls, v: str) -> str:
         if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://"):]
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
         if v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
         return v
 
     jwt_secret_key: str = "change-this-in-production"
@@ -88,13 +87,18 @@ class Settings(BaseSettings):
             if not self.password_pepper:
                 raise ValueError("PASSWORD_PEPPER must be set in non-development environments")
             if not self.github_client_id or not self.github_client_secret:
-                raise ValueError("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments")  # noqa: E501 — single message string
+                raise ValueError(
+                    "GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments"
+                )  # noqa: E501 — single message string
             if not self.github_state_secret:
                 raise ValueError("GITHUB_STATE_SECRET must be set in non-development environments")
             if not self.cors_origins:
                 raise ValueError("CORS_ORIGINS must be non-empty in non-development environments")
             if not self.github_app_id or not self.github_app_private_key or not self.github_app_slug:
-                raise ValueError("GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in non-development environments")  # noqa: E501 — single message string
+                raise ValueError(
+                    "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in "
+                    "non-development environments"
+                )
         return self
 
 

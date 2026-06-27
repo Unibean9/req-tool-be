@@ -28,7 +28,7 @@ def mock_judge(overall: float = 0.82) -> AsyncMock:
                     "smart": None,
                 },
                 "overall": overall,
-                "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể.",
+                "rationale": "Artifact is clear, co pham vi va tac dong cu the.",
             },
             None,
         )

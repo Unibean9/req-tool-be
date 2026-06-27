@@ -96,7 +96,7 @@ def _missing_required_arg_update(tool_name: str, arg_name: str, tool_call_id: st
     return _recoverable_tool_update(
         RecoverableToolError(
             code="missing_required_arg",
-            message=f"Không thể {tool_name}: thiếu trường bắt buộc '{arg_name}'. Hãy gọi lại tool với giá trị rõ ràng.",
+            message=f"Cannot {tool_name}: missing required field '{arg_name}'. Call the tool again with a clear value.",
         ),
         tool_call_id,
     )
@@ -106,7 +106,7 @@ def _tool_not_available_update(tool_name: str, message: str, tool_call_id: str) 
     return _recoverable_tool_update(
         RecoverableToolError(
             code="tool_not_available",
-            message=f"Không thể {tool_name}: {message}",
+            message=f"Cannot {tool_name}: {message}",
         ),
         tool_call_id,
     )
@@ -119,6 +119,7 @@ def _tool_is_available(state: WorkflowState, tool_name: str) -> bool:
 # ---------------------------------------------------------------------------
 # Artifact lifecycle — single source for the draft body and a derived stage
 # ---------------------------------------------------------------------------
+
 
 async def current_draft_body(
     state: WorkflowState,
@@ -163,6 +164,7 @@ async def artifact_stage(
 # Shared audit helper for interaction tools (ask_user / respond / confirm_intent)
 # ---------------------------------------------------------------------------
 
+
 async def _audit_interaction_tool_call(
     state: WorkflowState,
     config: RunnableConfig,
@@ -179,10 +181,12 @@ async def _audit_interaction_tool_call(
         async with session_factory() as db:
             already = (
                 await db.execute(
-                    select(exists().where(
-                        AgentToolCall.run_id == uuid.UUID(str(run_id_raw)),
-                        AgentToolCall.tool_name == tool_name,
-                    ))
+                    select(
+                        exists().where(
+                            AgentToolCall.run_id == uuid.UUID(str(run_id_raw)),
+                            AgentToolCall.tool_name == tool_name,
+                        )
+                    )
                 )
             ).scalar()
             if not already:
@@ -202,6 +206,7 @@ async def _audit_interaction_tool_call(
 # ---------------------------------------------------------------------------
 # ask_user — parity for the `ask` enum branch
 # ---------------------------------------------------------------------------
+
 
 async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(message or "").strip():
@@ -245,6 +250,7 @@ async def ask_user(
 # confirm_intent — one-shot intent phase transition
 # ---------------------------------------------------------------------------
 
+
 async def _confirm_intent_impl(
     summary: str,
     state: WorkflowState,
@@ -256,7 +262,7 @@ async def _confirm_intent_impl(
     if state.get("user_confirmed") is not None:
         return _tool_not_available_update(
             "confirm_intent",
-            "intent đã được xác nhận; hãy dùng ask_user/respond/write_draft theo phase hiện tại.",
+            "intent is already confirmed; use ask_user/respond/write_draft for the current phase.",
             tool_call_id,
         )
 
@@ -300,6 +306,7 @@ async def confirm_intent(
 # ---------------------------------------------------------------------------
 # write_draft — parity for the `propose` enum branch
 # ---------------------------------------------------------------------------
+
 
 def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     """Body write_draft proposes for approval.
@@ -362,9 +369,7 @@ def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     return True
 
 
-async def _write_draft_impl(
-    title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str
-):
+async def _write_draft_impl(title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
@@ -373,8 +378,8 @@ async def _write_draft_impl(
             RecoverableToolError(
                 code="cold_start_requires_elicitation",
                 message=(
-                    "Không thể write_draft ngay ở cold-start còn mỏng; hãy dùng elicit/web_search "
-                    "hoặc tạo decision_node trước để ghi nhận rationale, assumption và open question."
+                    "Cannot write_draft immediately from a thin cold start; use elicit/web_search "
+                    "or create a decision_node first to record rationale, assumptions, and open questions."
                 ),
             ),
             tool_call_id,
@@ -392,8 +397,8 @@ async def _write_draft_impl(
             RecoverableToolError(
                 code="missing_focused_artifact",
                 message=(
-                    "Không thể write_draft vì state thiếu focused_artifact_id; "
-                    "hãy chọn document item cần viết trước khi tạo proposal."
+                    "Cannot write_draft because state is missing focused_artifact_id; "
+                    "select the document item to write before creating a proposal."
                 ),
                 user_fixable=True,
             ),
@@ -459,9 +464,7 @@ async def _write_draft_impl(
                     status=AgentToolCallStatus.PROPOSED,
                 )
             )
-        session_row = (
-            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
-        ).scalar_one()
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS
         await db.commit()
@@ -504,6 +507,7 @@ async def write_draft(
 # finalize — parity for the `done` enum branch, with a HITL confirmation gate
 # ---------------------------------------------------------------------------
 
+
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(summary or "").strip():
         return _missing_required_arg_update("finalize", "summary", tool_call_id)
@@ -518,11 +522,11 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
         or not _finalize_gate_open(state)
     ):
         blocking = (report or {}).get("blocking_issues") or []
-        detail = "; ".join(blocking) if blocking else "chưa có critique hợp lệ cho bản nháp hiện tại"
+        detail = "; ".join(blocking) if blocking else "no valid critique for the current draft"
         return _recoverable_tool_update(
             RecoverableToolError(
                 code="finalize_gate_blocked",
-                message=f"Không thể finalize: quality gate chưa pass ({detail}).",
+                message=f"Cannot finalize: quality gate has not passed ({detail}).",
             ),
             tool_call_id,
         )
@@ -554,16 +558,14 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
                     RecoverableToolError(
                         code="finalize_predecessor_blocked",
                         message=(
-                            "Không thể finalize: artifact tiền nhiệm chưa accepted "
+                            "Cannot finalize: predecessor artifact is not accepted yet "
                             f"({', '.join(missing_predecessors)})."
                         ),
                     ),
                     tool_call_id,
                 )
 
-        session_row = (
-            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
-        ).scalar_one()
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
@@ -595,13 +597,14 @@ async def finalize(
 # first-class menu choice, so the analyst can record a critique and an exploration angle in the
 # same turn rather than committing to one operating mode.
 
+
 async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str, tool_name: str):
     if not str(content or "").strip():
         return _missing_required_arg_update(tool_name, "content", tool_call_id)
     if not _tool_is_available(state, tool_name):
         return _tool_not_available_update(
             tool_name,
-            "note step-limit đã đạt; hãy hỏi user, respond, hoặc chuyển sang tool khác thay vì ghi thêm note.",
+            "note step limit reached; ask the user, respond, or switch tools instead of adding more notes.",
             tool_call_id,
         )
 
@@ -619,7 +622,9 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
 
 @tool
 async def critique_note(
-    content: Annotated[str, "The critique. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."],  # noqa: E501
+    content: Annotated[
+        str, "The critique. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."
+    ],  # noqa: E501
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
@@ -633,7 +638,9 @@ async def critique_note(
 
 @tool
 async def explore_note(
-    content: Annotated[str, "The exploration. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."],  # noqa: E501
+    content: Annotated[
+        str, "The exploration. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."
+    ],  # noqa: E501
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
@@ -657,7 +664,7 @@ _TOOL_EDITABLE_STATUSES = VALID_STATUSES - {"superseded"}
 def _decision_graph_off_update(tool_name: str, tool_call_id: str) -> Command:
     logger.warning("tool=%s skipped: DECISION_GRAPH_ENABLED is off", tool_name)
     return _tool_not_available_update(
-        tool_name, "decision graph đang tắt (DECISION_GRAPH_ENABLED=false)", tool_call_id
+        tool_name, "decision graph is disabled (DECISION_GRAPH_ENABLED=false)", tool_call_id
     )
 
 
@@ -666,23 +673,30 @@ def _node_origin(state: WorkflowState, technique: str | None) -> dict[str, Any]:
 
 
 async def _create_decision_node_impl(
-    kind: str, statement: str, depends_on: list[str] | None, technique: str | None,
-    state: WorkflowState, tool_call_id: str, node_id: str | None = None,
-    status: str | None = None, blocks: list[str] | None = None,
-    section: str | None = None, fields: dict[str, str] | None = None,
+    kind: str,
+    statement: str,
+    depends_on: list[str] | None,
+    technique: str | None,
+    state: WorkflowState,
+    tool_call_id: str,
+    node_id: str | None = None,
+    status: str | None = None,
+    blocks: list[str] | None = None,
+    section: str | None = None,
+    fields: dict[str, str] | None = None,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("create_decision_node", tool_call_id)
     if kind not in VALID_KINDS:
         return _tool_not_available_update(
-            "create_decision_node", f"kind không hợp lệ '{kind}'; chọn một trong {sorted(VALID_KINDS)}", tool_call_id
+            "create_decision_node", f"invalid kind '{kind}'; choose one of {sorted(VALID_KINDS)}", tool_call_id
         )
     if not str(statement or "").strip():
         return _missing_required_arg_update("create_decision_node", "statement", tool_call_id)
     if status is not None and status not in _TOOL_EDITABLE_STATUSES:
         return _tool_not_available_update(
             "create_decision_node",
-            f"status không hợp lệ '{status}'; chọn một trong {sorted(_TOOL_EDITABLE_STATUSES)}",
+            f"invalid status '{status}'; choose one of {sorted(_TOOL_EDITABLE_STATUSES)}",
             tool_call_id,
         )
 
@@ -690,16 +704,23 @@ async def _create_decision_node_impl(
     unknown = [dep for dep in (depends_on or []) if dep not in nodes_state]
     if unknown:
         return _tool_not_available_update(
-            "create_decision_node", f"depends_on trỏ tới node không tồn tại: {unknown}", tool_call_id
+            "create_decision_node", f"depends_on points to missing nodes: {unknown}", tool_call_id
         )
     node = create_node(
-        kind=kind, statement=statement, origin=_node_origin(state, technique),
-        depends_on=depends_on, node_id=node_id, status=status or "proposed", blocks=blocks,
-        section=section, fields=fields,
+        kind=kind,
+        statement=statement,
+        origin=_node_origin(state, technique),
+        depends_on=depends_on,
+        node_id=node_id,
+        status=status or "proposed",
+        blocks=blocks,
+        section=section,
+        fields=fields,
     )
     if node["id"] in nodes_state:
         return _tool_not_available_update(
-            "create_decision_node", f"node_id '{node['id']}' đã tồn tại; dùng update/supersede thay vì ghi đè",
+            "create_decision_node",
+            f"node_id '{node['id']}' already exists; use update/supersede instead of overwriting",
             tool_call_id,
         )
     updated = {**nodes_state, node["id"]: node}
@@ -712,23 +733,29 @@ async def _create_decision_node_impl(
 
 
 async def _update_decision_node_impl(
-    node_id: str, status: str | None, statement: str | None, state: WorkflowState, tool_call_id: str,
-    section: str | None = None, fields: dict[str, str] | None = None,
+    node_id: str,
+    status: str | None,
+    statement: str | None,
+    state: WorkflowState,
+    tool_call_id: str,
+    section: str | None = None,
+    fields: dict[str, str] | None = None,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("update_decision_node", tool_call_id)
     nodes_state = state.get("decision_nodes") or {}
     if node_id not in nodes_state:
-        return _tool_not_available_update("update_decision_node", f"node '{node_id}' không tồn tại", tool_call_id)
+        return _tool_not_available_update("update_decision_node", f"node '{node_id}' does not exist", tool_call_id)
     if nodes_state[node_id].get("status") == "superseded":
         return _tool_not_available_update(
-            "update_decision_node", f"node '{node_id}' đã superseded; dùng node thay thế để chỉnh tiếp",
+            "update_decision_node",
+            f"node '{node_id}' is superseded; use the replacement node for further edits",
             tool_call_id,
         )
     if status is not None and status not in _TOOL_EDITABLE_STATUSES:
         return _tool_not_available_update(
             "update_decision_node",
-            f"status không hợp lệ '{status}'; chọn một trong {sorted(_TOOL_EDITABLE_STATUSES)}",
+            f"invalid status '{status}'; choose one of {sorted(_TOOL_EDITABLE_STATUSES)}",
             tool_call_id,
         )
 
@@ -743,7 +770,7 @@ async def _update_decision_node_impl(
         if v is not None
     }
     if not updates:
-        return _missing_required_arg_update("update_decision_node", "status hoặc statement", tool_call_id)
+        return _missing_required_arg_update("update_decision_node", "status or statement", tool_call_id)
     updated = update_node(nodes_state, node_id, **updates)
     return Command(
         update={
@@ -754,18 +781,22 @@ async def _update_decision_node_impl(
 
 
 async def _supersede_decision_node_impl(
-    node_id: str, new_statement: str, cascade_mode: str | None, state: WorkflowState, tool_call_id: str,
+    node_id: str,
+    new_statement: str,
+    cascade_mode: str | None,
+    state: WorkflowState,
+    tool_call_id: str,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("supersede_decision_node", tool_call_id)
     nodes_state = state.get("decision_nodes") or {}
     if node_id not in nodes_state:
-        return _tool_not_available_update("supersede_decision_node", f"node '{node_id}' không tồn tại", tool_call_id)
+        return _tool_not_available_update("supersede_decision_node", f"node '{node_id}' does not exist", tool_call_id)
     if not str(new_statement or "").strip():
         return _missing_required_arg_update("supersede_decision_node", "new_statement", tool_call_id)
     if cascade_mode is not None and cascade_mode not in {"reconfirm", "abandon"}:
         return _tool_not_available_update(
-            "supersede_decision_node", f"cascade_mode không hợp lệ '{cascade_mode}'", tool_call_id
+            "supersede_decision_node", f"invalid cascade_mode '{cascade_mode}'", tool_call_id
         )
 
     resolved_mode = cascade_mode or infer_cascade_mode(nodes_state, node_id)
@@ -885,12 +916,14 @@ async def _load_artifact_links(config: RunnableConfig) -> list[dict[str, str]]:
         return []
     async with session_factory() as db:
         rows = (
-            await db.execute(
-                select(ArtifactLink)
-                .where(ArtifactLink.project_id == project_id)
-                .order_by(ArtifactLink.created_at)
+            (
+                await db.execute(
+                    select(ArtifactLink).where(ArtifactLink.project_id == project_id).order_by(ArtifactLink.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     return [
         {
             "source_id": str(row.source_artifact_id),
@@ -903,9 +936,7 @@ async def _load_artifact_links(config: RunnableConfig) -> list[dict[str, str]]:
 
 async def _read_artifact_graph_impl(config: RunnableConfig, tool_call_id: str) -> Command:
     links = await _load_artifact_links(config)
-    return Command(
-        update={"messages": [ToolMessage(content=json.dumps({"links": links}), tool_call_id=tool_call_id)]}
-    )
+    return Command(update={"messages": [ToolMessage(content=json.dumps({"links": links}), tool_call_id=tool_call_id)]})
 
 
 @tool("read_artifact_graph")
@@ -926,7 +957,7 @@ async def _create_artifact_link_impl(
 ) -> Command:
     project_id, session_id, session_factory = _config_ids(config)
     if project_id is None or session_factory is None:
-        return _tool_not_available_update("create_artifact_link", "thiếu project/session context", tool_call_id)
+        return _tool_not_available_update("create_artifact_link", "missing project/session context", tool_call_id)
     try:
         body = ArtifactLinkCreateRequest(
             source_artifact_id=uuid.UUID(str(source_artifact_id)),
@@ -934,7 +965,7 @@ async def _create_artifact_link_impl(
             relation_type=RelationType(str(relation_type)),
         )
     except (ValueError, TypeError) as exc:
-        return _tool_not_available_update("create_artifact_link", f"input không hợp lệ: {exc}", tool_call_id)
+        return _tool_not_available_update("create_artifact_link", f"invalid input: {exc}", tool_call_id)
     created_by_id = await _session_user_id(session_factory, session_id)
     try:
         async with session_factory() as db:
@@ -948,7 +979,9 @@ async def _create_artifact_link_impl(
         return _tool_not_available_update("create_artifact_link", str(exc), tool_call_id)
     except Exception:
         logger.exception("create_artifact_link failed")
-        return _tool_not_available_update("create_artifact_link", "lỗi nội bộ khi tạo artifact link", tool_call_id)
+        return _tool_not_available_update(
+            "create_artifact_link", "internal error while creating artifact link", tool_call_id
+        )
     return Command(
         update={
             "messages": [
@@ -988,9 +1021,7 @@ async def _run_impact_analysis_impl(
     affected = result["affected_node_ids"]
     feedback = dict(state.get("feedback_summary") or {})
     if affected:
-        feedback["stale_warning"] = (
-            f"{len(affected)} node cần xác nhận lại do thay đổi: {', '.join(affected)}"
-        )
+        feedback["stale_warning"] = f"{len(affected)} node need reconfirmation due to change: {', '.join(affected)}"
         feedback["impact_result"] = {
             "affected_node_ids": affected,
             "stale_artifact_ids": result["stale_artifact_ids"],
@@ -1033,6 +1064,7 @@ async def run_impact_analysis(
 # The note tools are silent scratchpad; respond is the outward voice for a non-question turn. It
 # lets the analyst deliver a critique or an exploration TO the user and pause for their reaction,
 # so the agent is not forced to phrase every proactive turn as an ask_user (the Q&A-bias fix).
+
 
 async def _respond_impl(message: str, mode: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(message or "").strip():
@@ -1078,6 +1110,7 @@ async def respond(
 # critique.py, records a quality_report, and increments critique_rounds. It does not interrupt —
 # the analyst surfaces the result to the user via `respond` on a later turn.
 
+
 async def _run_critique_impl(
     target: str,  # noqa: ARG001 — kept for schema parity; the judge scores the loaded draft body
     mode: str,
@@ -1092,7 +1125,7 @@ async def _run_critique_impl(
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
         return _tool_not_available_update(
             "run_critique",
-            "đã đạt giới hạn critique rounds; hãy revise, respond/escalate, hoặc finalize nếu gate đã pass.",
+            "critique round limit reached; revise, respond/escalate, or finalize if the gate has passed.",
             tool_call_id,
         )
 
@@ -1104,7 +1137,7 @@ async def _run_critique_impl(
     if not body.strip():
         return _tool_not_available_update(
             "run_critique",
-            "chưa có draft hiện tại để critique; hãy write_draft hoặc load artifact trước.",
+            "no current draft to critique; write_draft or load an artifact first.",
             tool_call_id,
         )
     judged = await _invoke_judge(body, mode, llm_client)
@@ -1229,9 +1262,7 @@ async def _recommend_next_workflow_impl(
     # Audit: reuse AgentToolCall.input_snapshot for the result blob (no output_snapshot column).
     # Best-effort — a DB failure must not deny the recommendation to the user.
     if not state.get("last_agent_run_id"):
-        raise RuntimeError(
-            "recommend_next_workflow requires last_agent_run_id in state — analyze_node must run first"
-        )
+        raise RuntimeError("recommend_next_workflow requires last_agent_run_id in state — analyze_node must run first")
     run_id = uuid.UUID(state["last_agent_run_id"])
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -1239,10 +1270,12 @@ async def _recommend_next_workflow_impl(
         async with session_factory() as db:
             already = (
                 await db.execute(
-                    select(exists().where(
-                        AgentToolCall.run_id == run_id,
-                        AgentToolCall.tool_name == "recommend_next_workflow",
-                    ))
+                    select(
+                        exists().where(
+                            AgentToolCall.run_id == run_id,
+                            AgentToolCall.tool_name == "recommend_next_workflow",
+                        )
+                    )
                 )
             ).scalar()
             if not already:
@@ -1292,6 +1325,7 @@ async def recommend_next_workflow(
 # run_readiness_check — 10-dimension readiness assessment (no interrupt; audits to AgentToolCall)
 # ---------------------------------------------------------------------------
 
+
 async def _run_readiness_check_impl(
     target: str,  # noqa: ARG001 — kept for schema parity; the check is coverage-driven
     state: WorkflowState,
@@ -1305,9 +1339,7 @@ async def _run_readiness_check_impl(
     report = compute_readiness_score(state.get("section_coverage"), state)
 
     if not state.get("last_agent_run_id"):
-        raise RuntimeError(
-            "run_readiness_check requires last_agent_run_id in state — analyze_node must run first"
-        )
+        raise RuntimeError("run_readiness_check requires last_agent_run_id in state — analyze_node must run first")
     run_id = uuid.UUID(state["last_agent_run_id"])
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -1315,10 +1347,12 @@ async def _run_readiness_check_impl(
         async with session_factory() as db:
             already = (
                 await db.execute(
-                    select(exists().where(
-                        AgentToolCall.run_id == run_id,
-                        AgentToolCall.tool_name == "run_readiness_check",
-                    ))
+                    select(
+                        exists().where(
+                            AgentToolCall.run_id == run_id,
+                            AgentToolCall.tool_name == "run_readiness_check",
+                        )
+                    )
                 )
             ).scalar()
             if not already:
@@ -1386,7 +1420,7 @@ async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_cal
             update={
                 "messages": [
                     ToolMessage(
-                        content=f"read_artifact: id không hợp lệ ({artifact_id!r}).",
+                        content=f"read_artifact: invalid id ({artifact_id!r}).",
                         tool_call_id=tool_call_id,
                     )
                 ]
@@ -1403,11 +1437,11 @@ async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_cal
             )
 
     if result is None:
-        content = f"read_artifact: không tìm thấy artifact {artifact_id} (hoặc chưa có nội dung) trong project."
+        content = f"read_artifact: artifact not found {artifact_id} (or has no content yet) in project."
     else:
         body = result["body"] or ""
         if len(body) > READ_ARTIFACT_MAX_CHARS:
-            body = body[:READ_ARTIFACT_MAX_CHARS] + "\n\n…(đã cắt bớt phần còn lại)"
+            body = body[:READ_ARTIFACT_MAX_CHARS] + "\n\n…(remaining content truncated)"
         content = f"# {result['title']}\n\n{body}"
     return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
 
@@ -1489,30 +1523,30 @@ def web_search(query: str, *, client=None) -> dict:
 
 
 def _elicit_5_whys(seed: str) -> dict:
-    chain = [{"depth": 1, "prompt": f"Tại sao '{seed}' xảy ra?"}] + [
-        {"depth": d, "prompt": "Tại sao nguyên nhân ở tầng trên tồn tại?"} for d in range(2, 6)
+    chain = [{"depth": 1, "prompt": f"Why '{seed}' happen?"}] + [
+        {"depth": d, "prompt": "Why does the upper-level cause exist?"} for d in range(2, 6)
     ]
     return {
         "technique": "5_whys",
         "seed": seed,
         "chain": chain,
-        "root_cause": "Lần theo chuỗi 'tại sao' tới tầng cuối để chốt nguyên nhân gốc rồi ghi thành node.",
+        "root_cause": "Follow the why-chain to the final layer, identify the root cause, then record it as a node.",
     }
 
 
 def _elicit_reverse(seed: str) -> dict:
     failure_modes = [
         {
-            "mode": f"Cách nhanh nhất khiến '{seed}' thất bại hoàn toàn",
-            "mitigation_hint": "Đảo ngược thành điều kiện thành công bắt buộc.",
+            "mode": f"Fastest way to make '{seed}' fail completely",
+            "mitigation_hint": "Invert into a required success condition.",
         },
         {
-            "mode": "Giả định ngầm bị phá vỡ trong thực tế",
-            "mitigation_hint": "Liệt kê giả định, gắn mỗi cái với một kiểm chứng.",
+            "mode": "Implicit assumption breaks in reality",
+            "mitigation_hint": "List assumptions and attach each to a validation.",
         },
         {
-            "mode": "Phụ thuộc bên ngoài không sẵn sàng đúng lúc",
-            "mitigation_hint": "Xác định fallback hoặc giảm phụ thuộc.",
+            "mode": "External dependency is not ready in time",
+            "mitigation_hint": "Identify a fallback or reduce dependency.",
         },
     ]
     return {"technique": "reverse", "seed": seed, "failure_modes": failure_modes}
@@ -1522,10 +1556,10 @@ def _elicit_moscow(seed: str) -> dict:
     return {
         "technique": "moscow",
         "seed": seed,
-        "must": [f"(Bắt buộc cho v1) hạng mục cốt lõi của: {seed}"],
+        "must": [f"(Required for v1) core item for: {seed}"],
         "should": [],
         "could": [],
-        "wont": [f"(Loại khỏi v1) hạng mục hoãn lại của: {seed}"],
+        "wont": [f"(Excluded from v1) deferred item for: {seed}"],
     }
 
 
@@ -1534,15 +1568,15 @@ def _elicit_first_principles(seed: str) -> dict:
         "technique": "first_principles",
         "seed": seed,
         "fundamentals": [
-            f"Sự thật nền tảng không thể chối cãi về '{seed}'",
-            "Ràng buộc vật lý/kinh tế thực sự (không phải quy ước kế thừa)",
+            f"Undeniable first-principle fact about '{seed}'",
+            "Real physical/economic constraint (not a design convention)",
         ],
-        "rebuilt_approach": "Từ các nguyên lý nền, dựng lại giải pháp tối giản bỏ giả định kế thừa.",
+        "rebuilt_approach": "Rebuild a minimal solution from first principles without design assumptions.",
     }
 
 
 def _elicit_comparable_products(seed: str, search_client) -> dict:
-    res = web_search(f"phần mềm quản lý {seed}", client=search_client)
+    res = web_search(f"management software {seed}", client=search_client)
     results = res.get("results") or []
     if res.get("error") or not results:
         return {
@@ -1550,16 +1584,15 @@ def _elicit_comparable_products(seed: str, search_client) -> dict:
             "seed": seed,
             "products": [
                 {
-                    "name": f"(Sản phẩm tương tự với {seed})",
-                    "model": "Mô hình tham chiếu cần kiểm chứng",
-                    "relevance": "Điền khi có dữ liệu thực.",
+                    "name": f"(Comparable product for {seed})",
+                    "model": "Reference model to validate",
+                    "relevance": "Fill when real data is available.",
                 }
             ],
             "source": "model_knowledge",
         }
     products = [
-        {"name": r.get("title", ""), "model": r.get("snippet", ""), "relevance": f"Liên quan đến: {seed}"}
-        for r in results
+        {"name": r.get("title", ""), "model": r.get("snippet", ""), "relevance": f"Related to: {seed}"} for r in results
     ]
     return {"technique": "comparable_products", "seed": seed, "products": products, "source": "web_search"}
 
@@ -1586,7 +1619,7 @@ def elicit(technique: str, seed: str, *, search_client=None) -> dict:
 
 @tool("web_search")
 async def web_search_tool(
-    query: Annotated[str, "Truy vấn tìm kiếm tri thức ngoài."],
+    query: Annotated[str, "External knowledge search query."],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Search the web for external knowledge (comparable products, industry standards). Returns structured results.
@@ -1604,16 +1637,16 @@ async def web_search_tool(
 async def elicit_tool(
     technique: Annotated[
         Literal["5_whys", "reverse", "moscow", "first_principles", "comparable_products"],
-        "Kỹ thuật khai phá BMAD áp lên seed.",
+        "BMAD elicitation technique applied to the seed.",
     ],
-    seed: Annotated[str, "Hạt giống/chủ đề để áp kỹ thuật."],
+    seed: Annotated[str, "Seed/topic to apply the technique to."],
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
     """Apply a BMAD elicitation technique to a seed and return a structured frame to reason over and record as nodes.
 
     comparable_products fetches real external knowledge via web_search (falls back to model knowledge).
-    Mỗi lần gọi thành công tăng session_elicit_count để policy biết cold-start đã được khai phá.
+    Each successful call increments session_elicit_count so policy knows the cold start has been explored.
     """
     try:
         result = elicit(technique, seed)

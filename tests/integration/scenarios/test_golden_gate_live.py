@@ -46,7 +46,7 @@ def _real_analyst():
 
 def _skip_without_key():
     if not judge_settings.judge_api_key:
-        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy live LLM")
+        pytest.skip("JUDGE_API_KEY is required in .env.test to run the live LLM")
 
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ async def _ensure_brd_vision_item(client, headers, project_id: str) -> str:
 
     created = await client.post(
         f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
-        json={"title": "Vision Objectives", "body": "Chưa có nội dung.", "status": "draft"},
+        json={"title": "Vision Objectives", "body": "Chua co content.", "status": "draft"},
         headers=headers,
     )
     assert created.status_code == 201, created.text
@@ -124,7 +124,7 @@ async def test_live_cold_start_does_not_draft_on_thin_input(
     headers, proj = scenario_project
     session_id = await _open_session(client, headers, proj["id"])
 
-    await _send(client, headers, proj["id"], session_id, "Tôi muốn làm app quản lý quán cà phê.")
+    await _send(client, headers, proj["id"], session_id, "I want to build a coffee shop management app.")
     await scenario_env.drain(session_id)
 
     analysis = await scenario_env.get_checkpoint_field(session_id, "analysis_result")
@@ -156,7 +156,7 @@ def _dump_transcript(label: str, messages, decision_nodes, analysis) -> None:
                 print(f"[{i}] 🤖 AGENT(empty)")
         elif isinstance(m, ToolMessage):
             content = str(m.content or "")
-            preview = content if len(content) <= 300 else content[:300] + "…"
+            preview = content if len(content) <= 300 else content[:300] + "..."
             print(f"[{i}] ◀ TOOL_RESULT[{m.tool_call_id}]: {preview}")
         else:
             role = getattr(m, "type", type(m).__name__)
@@ -172,7 +172,7 @@ def _dump_transcript(label: str, messages, decision_nodes, analysis) -> None:
 async def test_live_cold_start_full_transcript(
     client, scenario_env, scenario_project, graph_flag_on
 ):
-    """Scenario 1 (golden Phần 1): empty project + thin input → agent explores, does not draft.
+    """Scenario 1 (golden Part 1): empty project + thin input → agent explores, does not draft.
 
     Dumps the full message thread + every tool call/result + the decision graph, then asserts the
     cold-start invariant (no write_draft / finalize on the first thin turn).
@@ -184,7 +184,7 @@ async def test_live_cold_start_full_transcript(
     headers, proj = scenario_project
     session_id = await _open_session(client, headers, proj["id"])
 
-    await _send(client, headers, proj["id"], session_id, "Tôi muốn làm app quản lý quán cà phê.")
+    await _send(client, headers, proj["id"], session_id, "I want to build a coffee shop management app.")
     await scenario_env.drain(session_id)
 
     messages = await scenario_env.get_checkpoint_field(session_id, "messages")
@@ -220,7 +220,7 @@ async def _user_facing(client, headers, project_id, session_id) -> list[dict]:
 async def test_live_cold_start_through_draft_full(
     client, scenario_env, scenario_project, graph_flag_on
 ):
-    """Full golden Phần 1→2: cold-start exploration primed across turns until the agent drafts.
+    """Full golden Part 1→2: cold-start exploration primed across turns until the agent drafts.
 
     Dumps the user-facing chat each turn, then the full tool thread + decision graph + draft body.
     Lenient on whether the draft lands on the exact turn (real LLM is non-deterministic); the point
@@ -248,7 +248,7 @@ async def test_live_cold_start_through_draft_full(
     draft_body = await scenario_env.get_checkpoint_field(session_id, "draft_body")
     _dump_transcript("COLD-START → DRAFT", messages, decision_nodes, analysis)
     print("\n========== DRAFT BODY (rendered from graph) ==========")
-    print(draft_body or "(chưa có draft_body — agent chưa write_draft)")
+    print(draft_body or "(chua co draft_body — agent chua write_draft)")
     print("=" * 54)
 
 
@@ -257,17 +257,17 @@ async def test_live_cold_start_through_draft_full(
 # ---------------------------------------------------------------------------
 
 def _setup_brain_for_reversal() -> ScriptedLLM:
-    """Create N1 (vận hành-first) confirmed + N3/N4 as dependents, then wait for user."""
+    """Create N1 (operations-first) confirmed + N3/N4 as dependents, then wait for user."""
     return ScriptedLLM(tool_brain=[
-        tool_select("elicit_tool", technique="5_whys", seed="vận hành"),
+        tool_select("elicit_tool", technique="5_whys", seed="operations"),
         tool_select("create_decision_node", node_id="N1", kind="decision",
-                    statement="vận hành-first: kiểm soát nguyên liệu theo công thức", technique="5_whys"),
+                    statement="operations-first: kiem soat nguyen lieu theo cong thuc", technique="5_whys"),
         tool_select("create_decision_node", node_id="N3", kind="objective",
-                    statement="Giảm thất thoát nguyên liệu 20%", depends_on=["N1"]),
+                    statement="Reduce loss nguyen lieu 20%", depends_on=["N1"]),
         tool_select("create_decision_node", node_id="N4", kind="scope",
-                    statement="Màn hình bếp realtime", depends_on=["N1"]),
+                    statement="Realtime kitchen screen", depends_on=["N1"]),
         tool_select("update_decision_node", node_id="N1", status="confirmed"),
-        tool_select("ask_user", message="Chốt hướng vận hành-first nhé?"),
+        tool_select("ask_user", message="Chot huong operations-first nhe?"),
     ])
 
 
@@ -290,7 +290,7 @@ async def test_live_reversal_old_node_preserved(
     # Do NOT send a second message here — the brain would be exhausted and end the session.
     scenario_env.set_llm(_setup_brain_for_reversal())
     await _send(client, headers, proj["id"], session_id,
-                "Tôi muốn làm app quản lý quán cà phê — chủ yếu kiểm soát nguyên liệu.")
+                "I want to build a coffee shop management app - mainly inventory control.")
     await scenario_env.drain(session_id)
 
     nodes_before = await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {}
@@ -302,7 +302,7 @@ async def test_live_reversal_old_node_preserved(
     scenario_env.set_llm(analyst)
 
     await _send(client, headers, proj["id"], session_id,
-                "Nghĩ lại rồi. Đổi qua loyalty-first — giữ chân khách quan trọng hơn.")
+                "I reconsidered. Switch to loyalty-first - customer retention is more important.")
     await scenario_env.drain(session_id)
 
     nodes_after = await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {}
@@ -334,12 +334,12 @@ async def test_live_reversal_old_node_preserved(
 # ---------------------------------------------------------------------------
 
 _PRIME_TURNS = [
-    "Tôi muốn làm app quản lý quán cà phê.",
-    ("Vấn đề chính: hay hụt nguyên liệu giữa ca, nhân viên không biết còn bao nhiêu. "
-     "Mỗi tuần xảy ra 3–4 lần, ảnh hưởng trực tiếp doanh thu."),
-    ("Phạm vi MVP: theo dõi tồn kho realtime, nhắc ngưỡng tối thiểu, báo cáo cuối ca. "
-     "Khách hàng là chủ quán hoặc quản lý ca. Deadline: 6 tuần."),
-    "Tôi xác nhận hướng này. Hãy viết bản draft đầu tiên cho phần Vision & Objectives.",
+    "I want to build a coffee shop management app.",
+    ("Main problem: inventory often runs short mid-shift, staff do not know how much remains. "
+     "Moi tuan xay ra 3–4 lan, anh huong truc tiep doanh thu."),
+    ("MVP scope: realtime inventory tracking, minimum threshold reminders, end-of-shift reports. "
+     "Customers are owners or shift managers. Deadline: 6 weeks."),
+    "I confirm this direction. Write the first draft for Vision & Objectives.",
 ]
 
 
@@ -366,7 +366,7 @@ async def test_live_sufficient_context_reaches_write_draft(
         tools = _tools_last_turn(analysis)
         trajectory.append({"content": content[:40], "tools": tools})
 
-    print(f"\n[B3 sufficient-context] trajectory:")
+    print("\n[B3 sufficient-context] trajectory:")
     for row in trajectory:
         print(f"  {row['content']!r} -> {row['tools']}")
 
@@ -387,9 +387,9 @@ def _propose_brain() -> ScriptedLLM:
     """Create N1 as proposed and ask user for confirmation."""
     return ScriptedLLM(tool_brain=[
         tool_select("create_decision_node", node_id="N1", kind="decision",
-                    statement="vận hành-first: kiểm soát nguyên liệu theo công thức",
+                    statement="operations-first: kiem soat nguyen lieu theo cong thuc",
                     technique="5_whys"),
-        tool_select("ask_user", message="Bạn đồng ý hướng vận hành-first không?"),
+        tool_select("ask_user", message="Do you agree with the operations-first direction?"),
     ])
 
 
@@ -407,7 +407,7 @@ async def test_live_user_agreement_triggers_agent_advance(
     # ScriptedLLM creates N1 as proposed and hands control to user
     scenario_env.set_llm(_propose_brain())
     await _send(client, headers, proj["id"], session_id,
-                "Tôi muốn làm app quản lý quán cà phê — chủ yếu kiểm soát nguyên liệu.")
+                "I want to build a coffee shop management app - mainly inventory control.")
     await scenario_env.drain(session_id)
 
     nodes_before = await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {}
@@ -418,7 +418,7 @@ async def test_live_user_agreement_triggers_agent_advance(
     analyst = _real_analyst()
     scenario_env.set_llm(analyst)
     await _send(client, headers, proj["id"], session_id,
-                "Đồng ý hướng vận hành-first, đi theo hướng đó.")
+                "Dong y huong operations-first, di theo huong do.")
     await scenario_env.drain(session_id)
 
     nodes_after = await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {}
@@ -445,11 +445,11 @@ def _artifact_build_brain() -> ScriptedLLM:
     """Build a 4-node graph over 2 scripted turns: confirmed decision + 3 dependents."""
     return ScriptedLLM(tool_brain=[
         # Turn 1 of user message — creates the root direction
-        tool_select("elicit_tool", technique="5_whys", seed="hụt nguyên liệu"),
+        tool_select("elicit_tool", technique="5_whys", seed="inventory shortage"),
         tool_select("create_decision_node", node_id="N1", kind="decision",
-                    statement="vận hành-first: định lượng công thức + trừ kho", technique="5_whys"),
+                    statement="operations-first: quantification cong thuc + stock deduction", technique="5_whys"),
         tool_select("update_decision_node", node_id="N1", status="confirmed"),
-        tool_select("ask_user", message="Tôi đã ghi nhận hướng vận hành-first. Tiếp tục xây scope nhé?"),
+        tool_select("ask_user", message="Toi da ghi nhan huong operations-first. Tiep tuc xay scope nhe?"),
     ])
 
 
@@ -457,12 +457,12 @@ def _artifact_extend_brain() -> ScriptedLLM:
     """Second scripted turn: add 3 dependent nodes."""
     return ScriptedLLM(tool_brain=[
         tool_select("create_decision_node", node_id="N3", kind="objective",
-                    statement="Giảm thất thoát NL <4%", depends_on=["N1"]),
+                    statement="Reduce loss NL <4%", depends_on=["N1"]),
         tool_select("create_decision_node", node_id="N4", kind="scope",
-                    statement="Cảnh báo tồn thấp realtime", depends_on=["N1"]),
+                    statement="Canh bao ton thap realtime", depends_on=["N1"]),
         tool_select("create_decision_node", node_id="N5", kind="assumption",
-                    statement="Nhân viên dùng app trên tablet", depends_on=["N1"]),
-        tool_select("ask_user", message="3 dependent nodes đã ghi. Bạn review được chưa?"),
+                    statement="Staff use the app on tablets", depends_on=["N1"]),
+        tool_select("ask_user", message="3 dependent nodes recorded. Can you review?"),
     ])
 
 
@@ -483,14 +483,14 @@ async def test_live_artifact_nodes_persist_across_turns(
     # Turn 1: ScriptedLLM creates root node N1
     scenario_env.set_llm(_artifact_build_brain())
     await _send(client, headers, proj["id"], session_id,
-                "Tôi muốn làm app quản lý quán cà phê — pain chính là hụt nguyên liệu.")
+                "I want to build a coffee shop management app - main pain is inventory shortage.")
     await scenario_env.drain(session_id)
     nodes_t1 = dict(await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {})
     assert "N1" in nodes_t1 and nodes_t1["N1"]["status"] == "confirmed", "Setup T1 failed"
 
     # Turn 2: ScriptedLLM adds N3/N4/N5
     scenario_env.set_llm(_artifact_extend_brain())
-    await _send(client, headers, proj["id"], session_id, "Ok, tiếp tục xây scope đi.")
+    await _send(client, headers, proj["id"], session_id, "Ok, tiep tuc xay scope di.")
     await scenario_env.drain(session_id)
     nodes_t2 = dict(await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {})
     assert {"N1", "N3", "N4", "N5"} <= set(nodes_t2), "Setup T2 failed"
@@ -499,7 +499,7 @@ async def test_live_artifact_nodes_persist_across_turns(
     analyst = _real_analyst()
     scenario_env.set_llm(analyst)
     await _send(client, headers, proj["id"], session_id,
-                "Trông ổn rồi. Bây giờ muốn thêm chức năng báo cáo cuối ca.")
+                "Trong ok roi. Bay gio muon them chuc nang bao cao cuoi ca.")
     await scenario_env.drain(session_id)
     nodes_t3 = dict(await scenario_env.get_checkpoint_field(session_id, "decision_nodes") or {})
     analysis = await scenario_env.get_checkpoint_field(session_id, "analysis_result")

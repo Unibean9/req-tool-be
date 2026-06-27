@@ -1,7 +1,7 @@
-"""Cold-start không còn gate ở menu.
+"""Cold-start no longer has a menu gate.
 
-write_draft luôn có trong menu; tool tự trả recoverable feedback nếu model draft ngay khi
-cold-start còn mỏng.
+write_draft always appears in the menu; tool returns recoverable feedback itself if model draft ngay when
+cold-start is still thin.
 """
 
 import pytest
@@ -45,7 +45,7 @@ async def test_write_draft_self_rejects_thin_cold_start():
     # user_confirmed=None: confirm_intent was never called — a true cold-start with no context gathered.
     state = _base_state(decision_nodes={}, session_elicit_count=0, user_confirmed=None)
 
-    command = await _write_draft_impl("Draft", "Nội dung draft quá sớm", state, {"configurable": {}}, "tc1")
+    command = await _write_draft_impl("Draft", "Content draft qua som", state, {"configurable": {}}, "tc1")
 
     assert command.update["tool_errors"][0]["code"] == "cold_start_requires_elicitation"
     assert "elicit" in command.update["messages"][0].content

@@ -38,7 +38,7 @@ def _origin(turn=1):
 
 
 def test_create_node_valid_schema():
-    node = create_node(kind="objective", statement="Giảm thất thoát", origin=_origin(), depends_on=[])
+    node = create_node(kind="objective", statement="Reduce loss", origin=_origin(), depends_on=[])
 
     assert set(node) == _DECISION_NODE_KEYS
     assert node["status"] == "proposed"
@@ -49,17 +49,17 @@ def test_create_node_valid_schema():
     assert node["section"] is None
     assert node["fields"] is None
 
-    other = create_node(kind="objective", statement="Khác", origin=_origin(), depends_on=[])
+    other = create_node(kind="objective", statement="Khac", origin=_origin(), depends_on=[])
     assert node["id"] and node["id"] != other["id"]
 
 
 def test_update_node_status_and_statement(decision_graph_factory):
     nodes = decision_graph_factory({"id": "N3", "kind": "objective", "status": "proposed"})
 
-    result = update_node(nodes, "N3", status="confirmed", statement="mới")
+    result = update_node(nodes, "N3", status="confirmed", statement="new")
 
     assert result["N3"]["status"] == "confirmed"
-    assert result["N3"]["statement"] == "mới"
+    assert result["N3"]["statement"] == "new"
     assert result["N3"]["id"] == "N3"
 
 
@@ -89,7 +89,7 @@ def test_update_node_does_not_supersede(decision_graph_factory):
 def test_supersede_node_reconfirm_full_lifecycle(decision_graph_factory):
     nodes = decision_graph_factory({"id": "N1", "kind": "objective", "status": "confirmed"})
 
-    result = supersede_node(nodes, "N1", "Hướng mới", _origin(), cascade_mode="reconfirm")
+    result = supersede_node(nodes, "N1", "Huong new", _origin(), cascade_mode="reconfirm")
 
     new_id = result["N1"]["superseded_by"]
     assert result["N1"]["status"] == "superseded"
@@ -105,7 +105,7 @@ def test_supersede_node_abandon_full_lifecycle(decision_graph_factory):
         {"id": "N4", "depends_on": ["N1"], "status": "confirmed"},
     )
 
-    result = supersede_node(nodes, "N1", "Đảo hướng", _origin(), cascade_mode="abandon")
+    result = supersede_node(nodes, "N1", "Dao huong", _origin(), cascade_mode="abandon")
 
     assert result["N1"]["status"] == "superseded"
     assert result["N3"]["status"] == "parked"
@@ -122,7 +122,7 @@ def test_cascade_mode_inferred_when_not_specified(decision_graph_factory):
         {"id": "N5", "depends_on": ["N1"], "status": "confirmed"},
     )
     assert infer_cascade_mode(direction, "N1") == "abandon"
-    out = supersede_node(direction, "N1", "Đảo", _origin())
+    out = supersede_node(direction, "N1", "Dao", _origin())
     assert out["N3"]["status"] == "parked"
     assert out["N4"]["status"] == "parked"
     assert out["N5"]["status"] == "parked"
@@ -134,7 +134,7 @@ def test_cascade_mode_inferred_when_not_specified(decision_graph_factory):
         {"id": "N7", "depends_on": ["N3"], "status": "confirmed"},
     )
     assert infer_cascade_mode(local, "N3") == "reconfirm"
-    out = supersede_node(local, "N3", "Sửa giá trị", _origin())
+    out = supersede_node(local, "N3", "Sua gia tri", _origin())
     assert out["N7"]["status"] == "needs_confirmation"
 
 
@@ -157,7 +157,7 @@ def test_supersede_node_cycle_does_not_overwrite_old_status(decision_graph_facto
         {"id": "B", "depends_on": ["A"], "status": "confirmed"},
     )
 
-    result = supersede_node(nodes, "A", "Đảo hướng", _origin(), cascade_mode="abandon")
+    result = supersede_node(nodes, "A", "Dao huong", _origin(), cascade_mode="abandon")
 
     new_id = result["A"]["superseded_by"]
     assert result["A"]["status"] == "superseded"

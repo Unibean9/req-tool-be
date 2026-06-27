@@ -1,4 +1,4 @@
-"""Đổi workflow phase srs sang prd
+"""Rename workflow phase srs to prd
 
 Revision ID: f2a3b4c5d6e8
 Revises: f1a2b3c4d5e7

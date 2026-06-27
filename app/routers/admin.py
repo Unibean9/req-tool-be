@@ -41,6 +41,7 @@ async def list_users(
     if q:
         pattern = f"%{q}%"
         from sqlalchemy import or_
+
         stmt = stmt.where(or_(User.email.ilike(pattern), User.full_name.ilike(pattern)))
     if role is not None:
         stmt = stmt.where(User.role == role)
@@ -61,9 +62,9 @@ async def update_user(
     result = await db.execute(select(User).where(User.id == user_id))
     target = result.scalar_one_or_none()
     if not target:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy người dùng")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="User not found")
     if target.id == admin.id and body.role == "user":
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Không thể hạ cấp chính mình")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail="Cannot downgrade yourself")
     if body.role is not None:
         target.role = body.role
     if body.is_active is not None:
@@ -89,12 +90,14 @@ async def list_all_orgs(
     )
     results = []
     for org, count in rows:
-        results.append(OrgAdminResponse(
-            id=org.id,
-            name=org.name,
-            slug=org.slug,
-            owner_id=org.owner_id,
-            created_at=org.created_at,
-            member_count=count,
-        ))
+        results.append(
+            OrgAdminResponse(
+                id=org.id,
+                name=org.name,
+                slug=org.slug,
+                owner_id=org.owner_id,
+                created_at=org.created_at,
+                member_count=count,
+            )
+        )
     return ok(results)

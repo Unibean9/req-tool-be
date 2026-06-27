@@ -33,7 +33,7 @@ def _names(state):
 async def test_create_writes_node_to_state(graph_on):
     state = {"messages": [], "user_confirmed": True, "turn_count": 2, "decision_nodes": {}}
 
-    command = await _create_decision_node_impl("decision", "v1 = vận hành-first", [], "5_whys", state, "tc1")
+    command = await _create_decision_node_impl("decision", "v1 = operations-first", [], "5_whys", state, "tc1")
 
     nodes = command.update["decision_nodes"]
     assert len(nodes) == 1
@@ -93,7 +93,7 @@ async def test_create_rejects_invalid_kind(graph_on):
 async def test_create_rejects_duplicate_node_id(graph_on, decision_graph_factory):
     state = {"messages": [], "decision_nodes": decision_graph_factory({"id": "N1", "status": "confirmed"})}
 
-    command = await _create_decision_node_impl("decision", "ghi đè", [], None, state, "tc1", node_id="N1")
+    command = await _create_decision_node_impl("decision", "ghi de", [], None, state, "tc1", node_id="N1")
 
     assert "decision_nodes" not in command.update
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"
@@ -105,7 +105,7 @@ async def test_create_can_record_parked_question_blocks(graph_on):
 
     command = await _create_decision_node_impl(
         "open_question",
-        "Định nghĩa tích điểm đa kênh",
+        "Define multi-channel points accrual",
         [],
         None,
         state,
@@ -180,7 +180,7 @@ async def test_supersede_ripples_to_dependents(graph_on, decision_graph_factory)
     )
     state = {"messages": [], "decision_nodes": nodes}
 
-    command = await _supersede_decision_node_impl("N1", "đảo hướng", "abandon", state, "tc1")
+    command = await _supersede_decision_node_impl("N1", "dao huong", "abandon", state, "tc1")
 
     updated = command.update["decision_nodes"]
     assert updated["N1"]["status"] == "superseded"

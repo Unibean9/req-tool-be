@@ -36,13 +36,14 @@ def _graph(request: Request):
 def _require_graph(request: Request):
     graph = _graph(request)
     if graph is None:
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent service chưa sẵn sàng")
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Agent service is not ready")
     return graph
 
 
 # ---------------------------------------------------------------------------
 # Session CRUD
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     _SESSION_PREFIX,
@@ -82,9 +83,7 @@ async def get_session(
 ) -> Any:
     await require_project_member_404(project_id, user, db)
     service = AgentService(db=db, graph=_graph(request), session_factory=async_session_factory)
-    session = await service.get_session_response(
-        project_id=project_id, session_id=session_id, user_id=user.id
-    )
+    session = await service.get_session_response(project_id=project_id, session_id=session_id, user_id=user.id)
     return ok(session)
 
 
@@ -105,6 +104,7 @@ async def delete_session(
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
+
 
 @router.post(_SESSION_PREFIX + "/{session_id}/messages", response_model=ApiResponse[AgentMessageResponse])
 async def send_message(
@@ -166,6 +166,7 @@ async def stream_session_events(
 # Tool calls
 # ---------------------------------------------------------------------------
 
+
 @router.get(_SESSION_PREFIX + "/{session_id}/tool-calls", response_model=ApiResponse[list[AgentToolCallResponse]])
 async def list_tool_calls(
     request: Request,
@@ -192,9 +193,7 @@ async def approve_tool_call(
     await require_project_member_404(project_id, user, db)
     tc = await AgentService(
         db=db, graph=_require_graph(request), session_factory=async_session_factory
-    ).approve_tool_call(
-        project_id=project_id, tool_call_id=tool_call_id, created_by_id=user.id, user_id=user.id
-    )
+    ).approve_tool_call(project_id=project_id, tool_call_id=tool_call_id, created_by_id=user.id, user_id=user.id)
     return ok(AgentToolCallResponse.model_validate(tc))
 
 
@@ -209,9 +208,7 @@ async def reject_tool_call(
     await require_project_member_404(project_id, user, db)
     tc = await AgentService(
         db=db, graph=_require_graph(request), session_factory=async_session_factory
-    ).reject_tool_call(
-        project_id=project_id, tool_call_id=tool_call_id, user_id=user.id
-    )
+    ).reject_tool_call(project_id=project_id, tool_call_id=tool_call_id, user_id=user.id)
     return ok(AgentToolCallResponse.model_validate(tc))
 
 

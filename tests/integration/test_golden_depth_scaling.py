@@ -24,7 +24,7 @@ def test_parked_question_resurfaces_when_blocker_resolved():
     assert nodes["Q4"]["status"] == "parked"
     assert nodes["Q4"]["blocks"] == ["N7"]
 
-    resolved = update_node(nodes, "N7", status="confirmed", statement="Quán khoảng 150 khách/ngày")
+    resolved = update_node(nodes, "N7", status="confirmed", statement="About 150 customers/day")
     resurfaced = scan_parked_questions(resolved)
 
     assert [node["id"] for node in resurfaced] == ["Q4"]
@@ -33,12 +33,12 @@ def test_parked_question_resurfaces_when_blocker_resolved():
 def test_depth_scaling_prd_includes_rules_and_edge_cases():
     nodes = {
         "R1": {
-            "id": "R1", "kind": "fact", "statement": "Business rule: 1 ghé / khách / ngày",
+            "id": "R1", "kind": "fact", "statement": "Business rule: 1 visit / customer / day",
             "status": "inferred", "origin": {}, "depends_on": [], "supersedes": None,
             "superseded_by": None, "blocks": [], "answer": None,
         },
         "R2": {
-            "id": "R2", "kind": "fact", "statement": "Business rule: ghé tính theo đơn",
+            "id": "R2", "kind": "fact", "statement": "Business rule: ghe tinh theo don",
             "status": "needs_confirmation", "origin": {}, "depends_on": [], "supersedes": None,
             "superseded_by": None, "blocks": [], "answer": None,
         },

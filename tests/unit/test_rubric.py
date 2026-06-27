@@ -19,8 +19,8 @@ def test_rubric_has_invest_and_smart_criteria():
 
 def test_every_criterion_has_name_and_description():
     for key, spec in rubric.RUBRIC_CRITERIA.items():
-        assert spec["name"], f"{key} thiếu name"
-        assert spec["description"], f"{key} thiếu description"
+        assert spec["name"], f"{key} missing name"
+        assert spec["description"], f"{key} missing description"
 
 
 def test_rubric_has_business_alignment():

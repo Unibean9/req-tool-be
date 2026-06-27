@@ -7,12 +7,12 @@ def _selector(_change, _nodes, _stale_artifacts):
 
 def test_impact_finds_affected_nodes_via_artifact_link(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "R1", "kind": "fact", "statement": "1 ghé / khách / ngày", "status": "confirmed"},
-        {"id": "S1", "kind": "scope", "statement": "Thu ngân nhập SĐT", "status": "confirmed"},
-        {"id": "U1", "kind": "risk", "statement": "Không liên quan", "status": "confirmed"},
+        {"id": "R1", "kind": "fact", "statement": "1 visit / customer / day", "status": "confirmed"},
+        {"id": "S1", "kind": "scope", "statement": "Cashier enters phone number", "status": "confirmed"},
+        {"id": "U1", "kind": "risk", "statement": "Unrelated", "status": "confirmed"},
     )
 
-    result = impact("thêm kênh giao hàng", nodes, [{"source_id": "brd", "target_id": "prd"}], _selector, "brd")
+    result = impact("add delivery channel", nodes, [{"source_id": "brd", "target_id": "prd"}], _selector, "brd")
 
     assert result["affected_node_ids"] == ["R1", "S1"]
 
@@ -24,7 +24,7 @@ def test_impact_marks_exactly_affected_nodes_needs_confirmation(decision_graph_f
         {"id": "U1", "kind": "risk", "status": "confirmed"},
     )
 
-    result = impact("thêm kênh giao hàng", nodes, [{"source_id": "brd", "target_id": "prd"}], _selector, "brd")
+    result = impact("add delivery channel", nodes, [{"source_id": "brd", "target_id": "prd"}], _selector, "brd")
     updated = result["decision_nodes"]
 
     assert updated["R1"]["status"] == "needs_confirmation"
@@ -34,10 +34,10 @@ def test_impact_marks_exactly_affected_nodes_needs_confirmation(decision_graph_f
 
 def test_impact_does_not_modify_statement(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "R1", "kind": "fact", "statement": "1 ghé / khách / ngày", "status": "confirmed"},
+        {"id": "R1", "kind": "fact", "statement": "1 visit / customer / day", "status": "confirmed"},
     )
 
-    result = impact("thêm kênh giao hàng", nodes, [{"source_id": "brd", "target_id": "prd"}], lambda *_: ["R1"], "brd")
+    result = impact("add delivery channel", nodes, [{"source_id": "brd", "target_id": "prd"}], lambda *_: ["R1"], "brd")
 
     assert result["decision_nodes"]["R1"]["statement"] == nodes["R1"]["statement"]
 
@@ -53,7 +53,7 @@ def test_impact_flags_artifact_stale(decision_graph_factory):
 def test_impact_empty_when_no_relevant_nodes(decision_graph_factory):
     nodes = decision_graph_factory({"id": "R1", "kind": "fact", "status": "confirmed"})
 
-    result = impact("đổi màu logo", nodes, [{"source_id": "brd", "target_id": "prd"}], lambda *_: [], "brd")
+    result = impact("doi mau logo", nodes, [{"source_id": "brd", "target_id": "prd"}], lambda *_: [], "brd")
 
     assert result["affected_node_ids"] == []
     assert result["decision_nodes"]["R1"]["status"] == "confirmed"
@@ -76,7 +76,7 @@ def test_sync_debt_parked_with_blocks(decision_graph_factory):
 
     updated, debt = park_sync_debt(
         nodes,
-        "Định nghĩa tích điểm đa kênh",
+        "Define multi-channel points accrual",
         ["R1", "S1"],
         {"turn": 1, "by": "agent"},
     )

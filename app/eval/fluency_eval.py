@@ -20,6 +20,7 @@ from langchain_core.messages import AIMessage
 # Gate result — same shape as runtime_harness.py
 # ---------------------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class GateResult:
     gate: str
@@ -34,16 +35,15 @@ class GateResult:
 # Key Facts State — note_parser TAG parsing + prompt injection
 # ---------------------------------------------------------------------------
 
+
 def _key_facts_note_parser_parses_tag() -> GateResult:
     from app.graphs.note_parser import extract_structured_objects
 
-    content = "KEY_FACT: App sẽ hỗ trợ 10k DAU | source: user | turn: 2"
+    content = "KEY_FACT: App will support 10k DAU | source: user | turn: 2"
     result = extract_structured_objects(content)
     facts = result.get("key_facts", [])
     passed = (
-        len(facts) == 1
-        and facts[0].get("statement") == "App sẽ hỗ trợ 10k DAU"
-        and facts[0].get("source") == "user"
+        len(facts) == 1 and facts[0].get("statement") == "App will support 10k DAU" and facts[0].get("source") == "user"
     )
     return GateResult(
         gate="note_parser parses KEY_FACT tag",
@@ -58,14 +58,10 @@ def _key_facts_note_parser_parses_tag() -> GateResult:
 def _key_facts_optional_fields_default_empty() -> GateResult:
     from app.graphs.note_parser import extract_structured_objects
 
-    content = "KEY_FACT: DAU target là 10k"
+    content = "KEY_FACT: DAU target is 10k"
     result = extract_structured_objects(content)
     facts = result.get("key_facts", [])
-    passed = (
-        len(facts) == 1
-        and facts[0].get("source") == ""
-        and facts[0].get("turn") == ""
-    )
+    passed = len(facts) == 1 and facts[0].get("source") == "" and facts[0].get("turn") == ""
     return GateResult(
         gate="optional KEY_FACT fields default to empty string",
         passed=passed,
@@ -81,9 +77,9 @@ def _key_facts_injected_into_prompt() -> GateResult:
     from tests.integration.test_graph_nodes import _state
 
     state = _state()
-    state["key_facts"] = [{"statement": "Budget tối đa 500tr", "source": "cfo", "turn": "2"}]
+    state["key_facts"] = [{"statement": "Maximum budget is 500m", "source": "cfo", "turn": "2"}]
     prompt = _build_tool_selection_prompt(state, [])
-    passed = "Budget tối đa 500tr" in prompt
+    passed = "Maximum budget is 500m" in prompt
     return GateResult(
         gate="key_facts block injected into tool-selection prompt",
         passed=passed,
@@ -113,6 +109,7 @@ def _key_facts_empty_no_section_in_prompt() -> GateResult:
 # ---------------------------------------------------------------------------
 # Interrupt Semantics — STREAM_RESPONSE enum value; ask_user keeps session ACTIVE
 # ---------------------------------------------------------------------------
+
 
 def _interrupt_stream_response_in_enum() -> GateResult:
     from app.models.agent import AgentSessionInterruptType
@@ -153,7 +150,7 @@ def _interrupt_ask_user_uses_stream_response() -> GateResult:
         state = {"messages": [], "user_confirmed": None}
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
         with patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new=AsyncMock(side_effect=_fake_save)):
-            await _ask_user_impl("Câu hỏi test?", state, config, "tc-001")
+            await _ask_user_impl("Test question?", state, config, "tc-001")
 
     asyncio.run(run())
     passed = called_with.get("interrupt_kind") == "stream_response"
@@ -171,6 +168,7 @@ def _interrupt_ask_user_uses_stream_response() -> GateResult:
 # Contextual Instruction Layers — has_draft=False skips critique/governance/output layers
 # ---------------------------------------------------------------------------
 
+
 def _layers_no_draft_skips_critique_governance() -> GateResult:
     from app import instructions
 
@@ -181,7 +179,10 @@ def _layers_no_draft_skips_critique_governance() -> GateResult:
     if full is None or no_draft is None:
         return GateResult(
             gate="has_draft=False skips layers 08/09/10",
-            passed=False, score=0.0, threshold=1.0, critical=True,
+            passed=False,
+            score=0.0,
+            threshold=1.0,
+            critical=True,
             reason="get_instruction returned None (instructions not loaded?)",
         )
     passed = len(no_draft) < len(full)
@@ -192,8 +193,9 @@ def _layers_no_draft_skips_critique_governance() -> GateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"no_draft={len(no_draft)} chars vs full={len(full)} chars (diff={diff})" if passed
-               else "no_draft instruction is not shorter than full — layers not filtered",
+        reason=f"no_draft={len(no_draft)} chars vs full={len(full)} chars (diff={diff})"
+        if passed
+        else "no_draft instruction is not shorter than full — layers not filtered",
     )
 
 
@@ -208,7 +210,10 @@ def _layers_cache_key_has_draft_distinct() -> GateResult:
     if full is None or with_draft is None or no_draft is None:
         return GateResult(
             gate="cache returns distinct entries for each has_draft value",
-            passed=False, score=0.0, threshold=1.0, critical=False,
+            passed=False,
+            score=0.0,
+            threshold=1.0,
+            critical=False,
             reason="instruction None",
         )
     cache = instructions._assembled_cache
@@ -232,6 +237,7 @@ def _layers_cache_key_has_draft_distinct() -> GateResult:
 # Composite Dispatch — tools array schema, gate logic, multi-tool emission per turn
 # ---------------------------------------------------------------------------
 
+
 def _dispatch_schema_uses_tools_array() -> GateResult:
     # Native tool calling: analyze_node binds the available tools as a provider-agnostic schema list,
     # each {name, description, parameters} — the model returns native tool_calls, no JSON shim.
@@ -249,8 +255,7 @@ def _dispatch_schema_uses_tools_array() -> GateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=f"bound tools: {[s['name'] for s in schemas]}" if passed
-               else f"malformed schemas: {schemas}",
+        reason=f"bound tools: {[s['name'] for s in schemas]}" if passed else f"malformed schemas: {schemas}",
     )
 
 
@@ -283,7 +288,7 @@ def _dispatch_interrupt_keeps_note_companion() -> GateResult:
     state = _state()
     state["user_confirmed"] = True
     requested = [
-        {"name": "ask_user", "args": {"message": "Câu hỏi?"}},
+        {"name": "ask_user", "args": {"message": "Question?"}},
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
@@ -354,16 +359,18 @@ def _dispatch_analyze_node_emits_two_calls() -> GateResult:
                 yield db
 
         mock_llm = AsyncMock()
-        mock_llm.generate = AsyncMock(return_value=(
-            AIMessage(
-                content="",
-                tool_calls=[
-                    {"id": "eval:0", "name": "critique_note", "args": {"content": "Note A"}},
-                    {"id": "eval:1", "name": "explore_note", "args": {"content": "Note B"}},
-                ],
-            ),
-            None,
-        ))
+        mock_llm.generate = AsyncMock(
+            return_value=(
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"id": "eval:0", "name": "critique_note", "args": {"content": "Note A"}},
+                        {"id": "eval:1", "name": "explore_note", "args": {"content": "Note B"}},
+                    ],
+                ),
+                None,
+            )
+        )
 
         state = _state()
         state["user_confirmed"] = True
@@ -407,6 +414,7 @@ def _dispatch_analyze_node_emits_two_calls() -> GateResult:
 # Aggregation & markdown
 # ---------------------------------------------------------------------------
 
+
 def run_fluency_eval() -> dict[str, Any]:
     gates = [
         # key facts
@@ -446,9 +454,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
     ]
     for i, row in enumerate(report["gates"], 1):
         icon = "✅" if row["passed"] else "❌"
-        lines.append(
-            f"| {i} | {row['gate']} | {row['score']:.2f} | {icon} | {row['reason']} |"
-        )
+        lines.append(f"| {i} | {row['gate']} | {row['score']:.2f} | {icon} | {row['reason']} |")
     total = len(report["gates"])
     passed_count = sum(1 for r in report["gates"] if r["passed"])
     lines += [
@@ -481,5 +487,6 @@ def main(output_path: Path | None = None) -> int:
 
 if __name__ == "__main__":
     import sys
+
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     raise SystemExit(main(out))

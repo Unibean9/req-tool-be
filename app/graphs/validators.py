@@ -10,6 +10,7 @@ false positives; deeper analysis is added later by the LLM critic.
 """
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 REQUIRED_FIELDS = ("title", "body")
@@ -17,12 +18,12 @@ REQUIRED_FIELDS = ("title", "body")
 WEASEL_WORDS = (
     # Vietnamese
     "nhanh",
-    "dễ dùng",
-    "tối ưu",
-    "thân thiện",
-    "linh hoạt",
-    "hiệu quả",
-    "mạnh mẽ",
+    "easy to use",
+    "optimized",
+    "friendly",
+    "flexible",
+    "effective",
+    "robust",
     # English
     "fast",
     "easy to use",
@@ -37,8 +38,8 @@ WEASEL_WORDS = (
 
 # Condition / outcome signals for a business rule (spec §9.4). Vietnamese has no rigid if/then
 # syntax, so the keyword lists are broad; false negatives are acceptable, false positives are not.
-_RULE_CONDITION = ("nếu", "khi", "trong trường hợp", "điều kiện", "trigger", "if", "when")
-_RULE_OUTCOME = ("thì", "sẽ", "kết quả", "phải", "then", "will", "must")
+_RULE_CONDITION = ("if", "when", "in case", "condition", "trigger", "neu", "khi", "truong hop", "dieu kien")
+_RULE_OUTCOME = ("then", "will", "result", "must", "thi", "se", "ket qua", "phai")
 
 # BMAD workflow enums (addendum §17). Kept local to avoid importing the graph layer into validators.
 _WORKFLOW_MODES = {"brainstorm", "brief", "prd", "readiness_check", "architecture_readiness"}
@@ -56,6 +57,11 @@ def _has_word(text: str, word: str) -> bool:
     return re.search(rf"\b{re.escape(word)}\b", text, re.IGNORECASE | re.UNICODE) is not None
 
 
+def _ascii_fold(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", text)
+    return "".join(ch for ch in normalized if not unicodedata.combining(ch)).lower()
+
+
 def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
     violations: list[str] = []
     warnings: list[str] = []
@@ -64,7 +70,7 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
     for fld in REQUIRED_FIELDS:
         value = proposal.get(fld)
         if value is None or (isinstance(value, str) and not value.strip()):
-            violations.append(f"Thiếu trường bắt buộc: {fld}")
+            violations.append(f"Missing required field: {fld}")
 
     title = proposal.get("title") or ""
     body = proposal.get("body") or ""
@@ -73,41 +79,42 @@ def validate_proposal(artifact_type: str, proposal: dict) -> ValidationResult:
     # 2. Weasel words — at most one warning per word
     for word in WEASEL_WORDS:
         if _has_word(text, word):
-            warnings.append(f"Từ mơ hồ (weasel word): '{word}'")
+            warnings.append(f"Weasel word (weasel word): '{word}'")
 
     lowered = text.lower()
+    folded = _ascii_fold(text)
 
     # 3. Business rule must carry a condition AND an outcome — a rule missing either is
     # structurally meaningless, so this is a hard violation (spec §9.4).
     if artifact_type == "business_rule":
-        if not any(token in lowered for token in _RULE_CONDITION):
-            violations.append("Business rule thiếu condition (điều kiện kích hoạt)")
-        if not any(token in lowered for token in _RULE_OUTCOME):
-            violations.append("Business rule thiếu outcome (kết quả khi điều kiện thỏa)")
+        if not any(token in folded for token in _RULE_CONDITION):
+            violations.append("Business rule is missing condition (trigger condition)")
+        if not any(token in folded for token in _RULE_OUTCOME):
+            violations.append("Business rule is missing outcome (result when condition is satisfied)")
 
     # 4. Open question must declare a tracking status — quality signal, not a hard block.
     if artifact_type == "open_question" and not _has_status(proposal, lowered):
-        warnings.append("Open question thiếu status (unresolved/answered/deferred)")
+        warnings.append("Open question missing status (unresolved/answered/deferred)")
 
     # 5. Each captured assumption should name a confidence and an owner — quality signals.
     for assumption in proposal.get("assumptions") or []:
         if not (assumption.get("confidence") or "").strip():
-            warnings.append("Assumption thiếu confidence")
+            warnings.append("Assumption missing confidence")
         if not (assumption.get("owner") or "").strip():
-            warnings.append("Assumption thiếu owner")
+            warnings.append("Assumption missing owner")
 
     # 6. BMAD workflow validators (addendum §17) — block invalid transitions.
     if artifact_type == "workflow_state":
         if proposal.get("workflow_mode") not in _WORKFLOW_MODES:
-            violations.append("workflow_mode không hợp lệ")
+            violations.append("Invalid workflow_mode")
         if proposal.get("planning_track") not in _PLANNING_TRACKS:
-            violations.append("planning_track không hợp lệ")
+            violations.append("Invalid planning_track")
     if artifact_type == "workflow_recommendation":
         recommended = proposal.get("recommended_next_workflow")
         if recommended == "epic_story_readiness":
-            violations.append("epic_story_readiness nằm ngoài phạm vi BMAD MVP")
+            violations.append("epic_story_readiness is outside BMAD MVP scope")
         if recommended == "architecture_readiness" and (proposal.get("unresolved_critical_risks") or []):
-            violations.append("unresolved_critical_risks chặn chuyển sang giai đoạn triển khai")
+            violations.append("unresolved_critical_risks blocks transition to implementation phase")
 
     return ValidationResult(passed=len(violations) == 0, violations=violations, warnings=warnings)
 

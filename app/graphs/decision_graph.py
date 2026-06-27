@@ -86,9 +86,7 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
     return result
 
 
-def get_dependents(
-    nodes: dict[str, DecisionNode], node_id: str, visited: set[str] | None = None
-) -> list[str]:
+def get_dependents(nodes: dict[str, DecisionNode], node_id: str, visited: set[str] | None = None) -> list[str]:
     """Return all nodes that transitively depend on node_id by following depends_on edges.
 
     visited-set prevents infinite loops: each node is visited at most once even in cyclic graphs.
@@ -178,8 +176,7 @@ def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[Decis
         if node.get("kind") != "open_question" or node.get("status") != "parked" or not blocks:
             continue
         if all(
-            (decision_nodes.get(blocker_id) or {}).get("status") in _RESOLVED_BLOCKER_STATUSES
-            for blocker_id in blocks
+            (decision_nodes.get(blocker_id) or {}).get("status") in _RESOLVED_BLOCKER_STATUSES for blocker_id in blocks
         ):
             resurfaced.append(node)
     return resurfaced
@@ -187,11 +184,7 @@ def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[Decis
 
 def is_brd_stable(decision_nodes: dict[str, DecisionNode]) -> bool:
     """BRD is stable when every active node is confirmed or inferred; parked and superseded do not count."""
-    active = [
-        node
-        for node in decision_nodes.values()
-        if node.get("status") not in _INACTIVE_STATUSES
-    ]
+    active = [node for node in decision_nodes.values() if node.get("status") not in _INACTIVE_STATUSES]
     return bool(active) and all(node.get("status") in _BRD_STABLE_STATUSES for node in active)
 
 
@@ -200,29 +193,26 @@ def _normalize_statement(value: str) -> str:
 
 
 _BRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
-    ("objective", "Cần chốt mục tiêu đo được cho BRD."),
-    ("scope", "Cần chốt phạm vi v1 cho BRD."),
-    ("assumption", "Cần ghi rõ giả định chính của BRD."),
-    ("risk", "Cần ghi rủi ro chính của BRD."),
+    ("objective", "Need a measurable objective for the BRD."),
+    ("scope", "Need v1 scope for the BRD."),
+    ("assumption", "Need the main BRD assumption."),
+    ("risk", "Need the main BRD risk."),
 )
 
 _PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
-    ("actor", "Actor: xác định khách hàng và nhân viên thao tác trong luồng."),
-    ("flow", "Luồng chính: mô tả từng bước xử lý từ đầu đến cuối."),
-    ("rule", "Business rule: chốt quy tắc tích điểm và điều kiện tính điểm."),
+    ("actor", "Actor: identify customers and staff acting in the flow."),
+    ("flow", "Main flow: describe each processing step from start to finish."),
+    ("rule", "Business rule: define point accrual rules and point conditions."),
     # Each edge-case keys on its own distinctive phrase, not a shared "edge_case" marker, so coverage
     # of one does not suppress the others (they map to separate PRD checklist items).
-    ("cộng bù", "Edge-case: khách quên SĐT lúc mua → cộng bù sau được không?"),
-    ("gộp lịch sử", "Edge-case: khách đổi SĐT → gộp lịch sử thế nào?"),
-    ("hết hạn", "Edge-case: phiếu free hết hạn không?"),
+    ("retroactive accrual", "Edge-case: customer forgot phone number at purchase -> can points be added later?"),
+    ("merge history", "Edge-case: customer changes phone number -> how is history merged?"),
+    ("expiration", "Edge-case: does the free voucher expire?"),
 )
 
 
 def _gap_present(decision_nodes: dict[str, DecisionNode], marker: str) -> bool:
-    active_nodes = [
-        node for node in decision_nodes.values()
-        if node.get("status") not in {"parked", "superseded"}
-    ]
+    active_nodes = [node for node in decision_nodes.values() if node.get("status") not in {"parked", "superseded"}]
     if marker in VALID_KINDS:
         return any(node.get("kind") == marker for node in active_nodes)
     marker_text = marker.replace("_", " ")
@@ -301,8 +291,10 @@ def _link_value(link: Any, *names: str) -> str | None:
 def _reachable_artifacts(artifact_links: list[Any], changed_artifact_id: str | None) -> tuple[list[str], list[str]]:
     if not artifact_links:
         return [], []
-    start = str(changed_artifact_id) if changed_artifact_id else _link_value(
-        artifact_links[0], "source_id", "source_artifact_id"
+    start = (
+        str(changed_artifact_id)
+        if changed_artifact_id
+        else _link_value(artifact_links[0], "source_id", "source_artifact_id")
     )
     if not start:
         return [], []
@@ -331,9 +323,9 @@ def _default_impact_selector(change_description: str, decision_nodes: dict[str, 
         if tokens and any(token in statement for token in tokens):
             affected.append(node_id)
             continue
-        if any(token in normalized_change for token in ("giao", "kênh", "kenh", "delivery", "đa kênh")) and any(
-            token in statement for token in ("thu ngân", "tai quay", "tại quầy", "khách/ngày", "1 ghé")
-        ):
+        if any(
+            token in normalized_change for token in ("handoff", "channel", "kenh", "delivery", "multi-channel")
+        ) and any(token in statement for token in ("cashier", "tai quay", "at counter", "customers/day", "1 visit")):
             affected.append(node_id)
     return affected
 
@@ -370,7 +362,8 @@ def impact(
     selected = _llm_selected_ids(llm, change_description, decision_nodes, stale_artifact_ids)
     affected_ids = selected if selected is not None else _default_impact_selector(change_description, decision_nodes)
     affected_ids = [
-        node_id for node_id in dict.fromkeys(affected_ids)
+        node_id
+        for node_id in dict.fromkeys(affected_ids)
         if node_id in decision_nodes and decision_nodes[node_id].get("status") != "superseded"
     ]
     updated = _clone(decision_nodes)

@@ -68,7 +68,7 @@ def test_gate_drops_second_interrupt_but_keeps_note():
 
 
 def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
-    """Unavailable finalize vẫn dispatch để tool trả lỗi; note side-effect-free được giữ cùng lượt."""
+    """Unavailable finalize still dispatches so the tool can respond; side-effect-free note is kept in the same turn."""
     state = _state()  # finalize not available
     requested = [
         {"name": "finalize", "args": {"summary": "done"}},
@@ -138,7 +138,7 @@ async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session)
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Câu hỏi?"}},
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Cau hoi?"}},
         {"id": "scripted:1", "name": "explore_note", "args": {"content": "note"}},
     ]), None))
 

@@ -26,7 +26,7 @@ def test_no_destructive_mutation_creates_new_node(decision_graph_factory):
     nodes = decision_graph_factory({"id": "N1", "kind": "decision", "status": "confirmed"})
     origin = {"turn": 3, "by": "user", "technique": None, "source": None}
 
-    result = supersede_node(nodes, "N1", "Hướng mới", origin, cascade_mode="reconfirm")
+    result = supersede_node(nodes, "N1", "Huong new", origin, cascade_mode="reconfirm")
 
     old = result["N1"]
     new_id = old["superseded_by"]
@@ -46,7 +46,7 @@ def test_supersede_reconfirm_marks_dependents_needs_confirmation(decision_graph_
     )
     origin = {"turn": 4, "by": "user", "technique": None, "source": None}
 
-    result = supersede_node(nodes, "N1", "Chỉnh cục bộ", origin, cascade_mode="reconfirm")
+    result = supersede_node(nodes, "N1", "Chinh cuc bo", origin, cascade_mode="reconfirm")
 
     assert result["N1"]["status"] == "superseded"
     assert result["N3"]["status"] == "needs_confirmation"
@@ -62,7 +62,7 @@ def test_supersede_abandon_marks_dependents_parked(decision_graph_factory):
     )
     origin = {"turn": 5, "by": "user", "technique": None, "source": None}
 
-    result = supersede_node(nodes, "N1", "Đảo hướng gốc", origin, cascade_mode="abandon")
+    result = supersede_node(nodes, "N1", "Dao huong goc", origin, cascade_mode="abandon")
 
     assert result["N1"]["status"] == "superseded"
     assert result["N3"]["status"] == "parked"
@@ -79,7 +79,7 @@ def test_supersede_ripple_does_not_affect_unrelated_nodes(decision_graph_factory
     )
     origin = {"turn": 6, "by": "user", "technique": None, "source": None}
 
-    result = supersede_node(nodes, "N1", "Đổi N1", origin, cascade_mode="abandon")
+    result = supersede_node(nodes, "N1", "Doi N1", origin, cascade_mode="abandon")
 
     assert result["N5"]["status"] == "confirmed"
 
@@ -94,7 +94,7 @@ def test_supersede_does_not_revive_already_superseded_dependent(decision_graph_f
     )
     origin = {"turn": 8, "by": "user", "technique": None, "source": None}
 
-    result = supersede_node(nodes, "N1", "Đảo hướng", origin, cascade_mode="abandon")
+    result = supersede_node(nodes, "N1", "Dao huong", origin, cascade_mode="abandon")
 
     assert result["N5"]["status"] == "superseded"
     assert result["N5"]["superseded_by"] == "N5b"

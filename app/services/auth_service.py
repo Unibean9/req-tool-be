@@ -39,16 +39,16 @@ class AuthService:
             except httpx.HTTPStatusError as exc:
                 raise HTTPException(
                     status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Trao đổi token GitHub thất bại: {exc.response.status_code}",
+                    detail=f"GitHub token exchange failed: {exc.response.status_code}",
                 ) from exc
             except httpx.RequestError as exc:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub") from exc
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Could not connect to GitHub") from exc
 
         gh_access_token = token_resp.json().get("access_token")
         if not gh_access_token:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                detail="Xác thực GitHub OAuth thất bại: không nhận được access token",
+                detail="GitHub OAuth failed: no access token received",
             )
 
         gh_headers = {"Authorization": f"Bearer {gh_access_token}", "Accept": "application/vnd.github+json"}
@@ -63,10 +63,10 @@ class AuthService:
             except httpx.HTTPStatusError as exc:
                 raise HTTPException(
                     status.HTTP_502_BAD_GATEWAY,
-                    detail=f"Lỗi GitHub API: {exc.response.status_code}",
+                    detail=f"GitHub API error: {exc.response.status_code}",
                 ) from exc
             except httpx.RequestError as exc:
-                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Không thể kết nối GitHub") from exc
+                raise HTTPException(status.HTTP_502_BAD_GATEWAY, detail="Could not connect to GitHub") from exc
 
         gh_user = user_resp.json()
         emails = emails_resp.json()
@@ -78,7 +78,7 @@ class AuthService:
         if not verified_primary:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                detail="Tài khoản GitHub chưa có email chính đã xác minh. Vui lòng thêm và xác minh email trên GitHub trước khi liên kết.",  # noqa: E501 — single message string
+                detail="GitHub account has no verified primary email. Add and verify an email on GitHub before linking.",  # noqa: E501 — single message string
             )
 
         github_id = str(gh_user["id"])
@@ -112,26 +112,24 @@ class AuthService:
     async def refresh_tokens(self, refresh_token: str) -> tuple[str, str]:
         payload = decode_token(refresh_token)
         if not payload or payload.get("type") != "refresh":
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token không hợp lệ")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token is invalid")
         try:
             uid = uuid.UUID(payload["sub"])
         except (KeyError, ValueError):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token không hợp lệ") from None
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Refresh token is invalid") from None
         result = await self.db.execute(select(User).where(User.id == uid))
         user = result.scalar_one_or_none()
         if not user or not user.is_active:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Không tìm thấy người dùng")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="User not found")
         return create_access_token(str(user.id), user.role), create_refresh_token(str(user.id))
 
     async def get_user_for_dev_login(self, email: str) -> User:
-        result = await self.db.execute(
-            select(User).where(User.email == email, User.is_active.is_(True))
-        )
+        result = await self.db.execute(select(User).where(User.email == email, User.is_active.is_(True)))
         user = result.scalar_one_or_none()
         if not user:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND,
-                detail="Không tìm thấy người dùng đang hoạt động với email này",
+                detail="No active user found with this email",
             )
         return user
 

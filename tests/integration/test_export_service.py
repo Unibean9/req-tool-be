@@ -4,13 +4,13 @@ from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
 
 REQUIREMENTS_BODY = {
-    "vision_objectives": "Tăng tỷ lệ giữ chân người dùng lên 20%.",
-    "problem_statement": "Quy trình hiện tại chậm và thiếu minh bạch.",
-    "stakeholder_register": "Người dùng cuối, quản trị viên, chủ dự án.",
-    "scope_capabilities": "Dashboard theo dõi và luồng phê duyệt.",
-    "business_rules": "Mọi phê duyệt phải có người chịu trách nhiệm.",
-    "constraints_assumptions": "Tích hợp trong hạ tầng hiện có.",
-    "risks_issues": "Thiếu dữ liệu lịch sử để baseline.",
+    "vision_objectives": "Increase user retention by 20%.",
+    "problem_statement": "The current process is slow and lacks transparency.",
+    "stakeholder_register": "End users, administrators, project owners.",
+    "scope_capabilities": "Tracking dashboard and approval flow.",
+    "business_rules": "Every approval must have an accountable owner.",
+    "constraints_assumptions": "Integrate with the existing infrastructure.",
+    "risks_issues": "Historical data is missing for baseline.",
 }
 
 
@@ -18,7 +18,7 @@ REQUIREMENTS_BODY = {
 async def test_brd_export_renders_requirements_sections_and_research_basis(client):
     headers, project = await _project_context(client)
     await _requirements_artifact(client, headers, project["id"], REQUIREMENTS_BODY)
-    await _source_document(client, headers, project["id"], "Interview", "Người dùng cần dashboard rõ ràng")
+    await _source_document(client, headers, project["id"], "Interview", "Users need a dashboard ro rang")
 
     resp = await client.get(f"{BASE}/projects/{project['id']}/exports/brd.md", headers=headers)
 
@@ -35,8 +35,8 @@ async def test_brd_export_renders_requirements_sections_and_research_basis(clien
         "## Research Basis",
     ]:
         assert heading in text
-    assert "Tăng tỷ lệ giữ chân" in text
-    assert "Interview: Người dùng cần dashboard rõ ràng" in text
+    assert "Increase retention rate" in text
+    assert "Interview: Users need a dashboard ro rang" in text
 
 
 @pytest.mark.asyncio
@@ -52,7 +52,7 @@ async def test_product_brief_renders_first_four_sections_only(client):
     assert "## Vision and Objectives" in text
     assert "## Scope and Capabilities" in text
     assert "## Business Rules" not in text
-    assert "Dashboard theo dõi" in text
+    assert "Dashboard theo doi" in text
 
 
 @pytest.mark.asyncio
@@ -65,7 +65,7 @@ async def test_prd_export_empty_project_does_not_crash(client):
     text = resp.text
     assert "# Product Requirements Document" in text
     assert "## Functional Requirement" in text
-    assert "_Không có nội dung._" in text
+    assert "_No content._" in text
 
 
 @pytest.mark.asyncio

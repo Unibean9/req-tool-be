@@ -1,5 +1,5 @@
 {
   "artifact_type": "goal",
-  "content": "Tăng tỷ lệ chuyển đổi đăng ký dùng thử sang trả phí từ 8% lên 12% trong quý 3/2026, đo bằng số liệu trên dashboard thanh toán, áp dụng cho toàn bộ người dùng gói Pro.",
-  "expected_quality": "Cao — goal cụ thể, có chỉ số đo lường, có mốc thời gian (SMART đầy đủ), không mơ hồ."
+  "content": "Increase trial-to-paid conversion from 8% to 12% in Q3 2026, measured on the billing dashboard for all Pro users.",
+  "expected_quality": "High - specific goal, measurable metric, timeframe, SMART-complete, not ambiguous."
 }

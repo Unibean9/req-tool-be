@@ -41,7 +41,7 @@ async def test_agent_message_payload_column_nullable(db_session):
     msg_set = AgentMessage(
         session_id=session.id,
         role=AgentMessageRole.AGENT,
-        content="chào bạn",
+        content="hello",
         payload={"kind": "greeting", "locale": "vi"},
     )
     db_session.add_all([msg_none, msg_set])
@@ -76,7 +76,7 @@ def test_agent_message_response_payload_nullable():
         "id": uuid.uuid4(),
         "session_id": uuid.uuid4(),
         "role": AgentMessageRole.AGENT,
-        "content": "nội dung",
+        "content": "content",
         "created_at": None,
         "updated_at": None,
     }

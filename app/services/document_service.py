@@ -77,7 +77,7 @@ class DocumentService:
             query = query.with_for_update()
         artifact = (await self.db.execute(query)).scalar_one_or_none()
         if artifact is None:
-            raise ValueError("Document item không tồn tại")
+            raise ValueError("Document item does not exist")
         return artifact
 
     async def create_item_version(
@@ -96,9 +96,7 @@ class DocumentService:
     ) -> tuple[Artifact, ArtifactVersion]:
         if tool_call_id is not None:
             existing_version = (
-                await self.db.execute(
-                    select(ArtifactVersion).where(ArtifactVersion.tool_call_id == tool_call_id)
-                )
+                await self.db.execute(select(ArtifactVersion).where(ArtifactVersion.tool_call_id == tool_call_id))
             ).scalar_one_or_none()
             if existing_version is not None:
                 artifact = await self.get_document_item_artifact(
@@ -120,11 +118,7 @@ class DocumentService:
             for_update=True,
         )
         current_version = await self._current_version(artifact)
-        next_version_number = (
-            current_version.version_number + 1
-            if current_version is not None
-            else 1
-        )
+        next_version_number = current_version.version_number + 1 if current_version is not None else 1
         version = ArtifactVersion(
             artifact_id=artifact.id,
             version_number=next_version_number,
@@ -170,9 +164,7 @@ class DocumentService:
         ).scalars()
         versioned_types = {value.value for value in versioned_rows}
         parent.status = (
-            ArtifactStatus.ACCEPTED
-            if set(expected_children).issubset(versioned_types)
-            else ArtifactStatus.DRAFT
+            ArtifactStatus.ACCEPTED if set(expected_children).issubset(versioned_types) else ArtifactStatus.DRAFT
         )
 
     async def document_coverage(
@@ -239,10 +231,7 @@ class DocumentService:
             ).scalars()
             accepted_types = {value.value for value in accepted_rows}
 
-        coverage = {
-            item_type: ("filled" if item_type in accepted_types else "missing")
-            for item_type in registry_items
-        }
+        coverage = {item_type: ("filled" if item_type in accepted_types else "missing") for item_type in registry_items}
         accepted_count = len(accepted_types)
         return {
             "section_coverage": coverage,
@@ -304,10 +293,10 @@ class DocumentService:
         self._require_item(document_type, item_type)
         container = await self._load_container(project_id, document_type)
         if container is None:
-            raise ValueError("Document chưa tồn tại")
+            raise ValueError("Document does not exist")
         artifact = next((child for child in container.children if child.type.value == item_type), None)
         if artifact is None:
-            raise ValueError("Document item chưa tồn tại")
+            raise ValueError("Document item does not exist")
         return await self._item_view(item_type, artifact)
 
     async def upsert_item(
@@ -322,7 +311,7 @@ class DocumentService:
         self._require_item(document_type, item_type)
         container = await self._load_container(project_id, document_type)
         if container is None:
-            raise ValueError("Document chưa tồn tại")
+            raise ValueError("Document does not exist")
         artifact = next((child for child in container.children if child.type.value == item_type), None)
         item_config = get_config(item_type)
         if artifact is None:
@@ -395,15 +384,18 @@ class DocumentService:
                 description=config.description,
             )
         versions = (
-            await self.db.execute(
-                select(ArtifactVersion)
-                .where(ArtifactVersion.artifact_id == artifact.id)
-                .order_by(ArtifactVersion.version_number)
+            (
+                await self.db.execute(
+                    select(ArtifactVersion)
+                    .where(ArtifactVersion.artifact_id == artifact.id)
+                    .order_by(ArtifactVersion.version_number)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         version_views = [
-            await self.artifacts.version_to_response(version, artifact_type=item_type)
-            for version in versions
+            await self.artifacts.version_to_response(version, artifact_type=item_type) for version in versions
         ]
         current_version = next(
             (version for version in version_views if version.id == artifact.current_version_id),
@@ -435,13 +427,13 @@ class DocumentService:
     def _require_container(self, document_type: str):
         config = get_config(document_type)
         if not config.is_container:
-            raise ValueError("Document type không hợp lệ")
+            raise ValueError("Invalid document type")
         return config
 
     def _require_item(self, document_type: str, item_type: str) -> None:
         self._require_container(document_type)
         if item_type not in children_of(document_type):
-            raise ValueError("Item type không thuộc document")
+            raise ValueError("Item type does not belong to document")
 
     def _type_view(self, artifact_type: str) -> DocumentTypeView:
         config = get_config(artifact_type)

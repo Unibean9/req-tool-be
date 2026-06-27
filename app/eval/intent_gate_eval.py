@@ -30,6 +30,7 @@ class GateResult:
 # confirm_intent tool — schema registration, arg keys, interrupt kind
 # ---------------------------------------------------------------------------
 
+
 def _confirm_intent_in_schema_enum() -> GateResult:
     # Native tool calling: confirm_intent is registered iff it is bound to the intent-phase menu.
     from app.graphs.agent_tools import get_available_tools
@@ -136,8 +137,10 @@ def _confirm_intent_sets_user_confirmed_stream_response() -> GateResult:
 # Intent phase gate — get_available_tools hides artifact tools before confirm_intent
 # ---------------------------------------------------------------------------
 
+
 def _names(state: dict) -> set[str]:
     from app.graphs.agent_tools import get_available_tools
+
     return {t.name for t in get_available_tools(state)}
 
 
@@ -178,10 +181,7 @@ def _gate_unlocks_after_confirm() -> GateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason=(
-            f"write_draft={'write_draft' in names_after}, "
-            f"confirm_intent={'confirm_intent' in names_after}"
-        ),
+        reason=(f"write_draft={'write_draft' in names_after}, confirm_intent={'confirm_intent' in names_after}"),
     )
 
 
@@ -203,6 +203,7 @@ def _gate_confirm_intent_one_shot() -> GateResult:
 # ---------------------------------------------------------------------------
 # Solo enforcement — confirm_intent is interrupt-bearing; side-effect-free notes may ride along
 # ---------------------------------------------------------------------------
+
 
 def _solo_confirm_keeps_companion_note() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
@@ -246,6 +247,7 @@ def _solo_empty_summary_passes_for_tool_feedback() -> GateResult:
 # End-to-end gate flow — write_draft self-reject path before confirm, allowed after frame
 # ---------------------------------------------------------------------------
 
+
 def _flow_blocks_write_draft_before_confirm() -> GateResult:
     from app.graphs.nodes import _gate_selected_tools
 
@@ -281,6 +283,7 @@ def _flow_allows_write_draft_after_confirm() -> GateResult:
 # ---------------------------------------------------------------------------
 # Aggregation & markdown
 # ---------------------------------------------------------------------------
+
 
 def run_intent_gate_eval() -> dict[str, Any]:
     gates = [
@@ -320,9 +323,7 @@ def _markdown_report(report: dict[str, Any]) -> str:
     ]
     for i, row in enumerate(report["gates"], 1):
         icon_row = "✅" if row["passed"] else "❌"
-        lines.append(
-            f"| {i} | {row['gate']} | {row['score']:.2f} | {icon_row} | {row['reason']} |"
-        )
+        lines.append(f"| {i} | {row['gate']} | {row['score']:.2f} | {icon_row} | {row['reason']} |")
     total = len(report["gates"])
     passed_count = sum(1 for r in report["gates"] if r["passed"])
     lines += [
@@ -357,5 +358,6 @@ def main(output_path: Path | None = None) -> int:
 
 if __name__ == "__main__":
     import sys
+
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else None
     raise SystemExit(main(out))

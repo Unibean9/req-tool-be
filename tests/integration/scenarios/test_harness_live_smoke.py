@@ -6,7 +6,7 @@ system prompt into the graph (gates), the tool schemas, and per-turn context. Tw
 - **Gate-enforced** rules (force-critique-before-finalize, human gate, resume idempotency) run in
   graph/code regardless of which model is used — already proven deterministically by the offline
   scenario + unit suite, so a live run cannot add signal there.
-- **Model-judgment** rules (greeting ≠ artifact, ambiguity → confirm/ask, enough context → draft)
+- **Model-judgment** rules (greeting = artifact, ambiguity → confirm/ask, enough context → draft)
   depend on the model reading the now-thinner prompt. THIS is what a live run must confirm.
 
 So this smoke drives a real analyst through the judgment arc and records the per-turn tool
@@ -25,11 +25,11 @@ from tests.conftest import BASE
 from tests.eval.config import judge_settings
 
 _TURNS = [
-    ("greeting", "Chào bạn nhé!"),
-    ("ambiguous", "Mình muốn xây một công cụ gì đó cho sinh viên, ý tưởng còn mơ hồ lắm."),
-    ("context-1", "Đối tượng là sinh viên học nhóm 3–6 người; pain lớn nhất là trùng lịch và quên buổi, gần như mỗi tuần."),
-    ("context-2", "Phạm vi MVP: nhắc lịch + tìm khung giờ chung. Ngân sách nhỏ, làm trong 1 tháng."),
-    ("draft-push", "Tôi xác nhận intent và frame. Hãy viết draft đầu tiên; phần nào chưa rõ thì đánh dấu cần xác nhận."),
+    ("greeting", "Hello there!"),
+    ("ambiguous", "Minh muon xay mot cong cu gi do cho sinh vien, y tuong con mo ho lam."),
+    ("context-1", "Audience is students in groups of 3-6; biggest pain is schedule conflicts and forgotten sessions almost every week."),
+    ("context-2", "Pham vi MVP: nhac lich + tim khung gio chung. Ngan sach nho, lam trong 1 thang."),
+    ("draft-push", "I confirm the intent and frame. Write the first draft; mark unclear parts as needing confirmation."),
 ]
 
 
@@ -51,7 +51,7 @@ async def _ensure_vision_item(client, headers, project_id: str) -> str:
         f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
         json={
             "title": "Vision Objectives",
-            "body": "Chưa có nội dung.",
+            "body": "Chua co content.",
             "status": "draft",
         },
         headers=headers,
@@ -75,7 +75,7 @@ async def _create_session(client, headers, project_id: str) -> uuid.UUID:
 @pytest.mark.asyncio
 async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, scenario_project):
     if not judge_settings.judge_api_key:
-        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy analyst LLM thật")
+        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real analyst LLM")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory

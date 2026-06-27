@@ -48,7 +48,7 @@ def test_confirm_intent_is_interrupt_bearing():
 
 
 # ---------------------------------------------------------------------------
-# Menu không còn intent gate
+# Menu no longer has intent gate
 # ---------------------------------------------------------------------------
 
 def test_intent_phase_keeps_broad_tool_menu():
@@ -64,7 +64,7 @@ def test_intent_phase_offers_confirm_intent():
 
 
 def test_artifact_phase_keeps_confirm_intent_and_write_draft_available():
-    # confirm_intent tự reject nếu gọi lại; menu không còn one-shot gate.
+    # confirm_intent self-rejects if called again; menu no longer has a one-shot gate.
     names = _names({"messages": [], "user_confirmed": True})
     assert "confirm_intent" in names
     assert "write_draft" in names
@@ -111,7 +111,7 @@ async def test_confirm_intent_sets_user_confirmed():
 
 
 def test_empty_summary_passes_gate_for_tool_feedback():
-    # Gate không đổi tool; confirm_intent tự reject bằng ToolMessage lỗi.
+    # Gate does not change tools; confirm_intent self-rejects with a ToolMessage error.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "confirm_intent", "args": {"summary": ""}}])
     assert gated[0]["name"] == "confirm_intent"
@@ -215,7 +215,7 @@ async def test_audit_idempotent_when_row_exists():
 
 
 def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
-    # write_draft chưa khả dụng nhưng vẫn được dispatch để tool trả lỗi cho model tự sửa.
+    # write_draft is unavailable but still dispatched so the tool returns an error for model self-correction.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
     assert len(gated) == 1
@@ -223,7 +223,7 @@ def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
 
 
 def test_write_draft_in_artifact_phase_not_coerced():
-    # Solo gate không đổi tool; availability/depth gate do chính write_draft trả ToolMessage lỗi.
+    # Solo gate does not change tools; availability/depth gate is handled by write_draft returning a ToolMessage error.
     state = {"messages": [], "user_confirmed": True}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "T", "body": "B"}}])
     assert gated[0]["name"] == "write_draft"
@@ -235,7 +235,7 @@ def test_write_draft_available_before_confirm_intent():
 
 @pytest.mark.asyncio
 async def test_write_draft_without_body_returns_tool_error():
-    # Body rỗng là lỗi tool-level, không còn coerce sang ask_user.
+    # Empty body is a tool-level error and is no longer coerced to ask_user.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {}}])
     assert gated[0]["name"] == "write_draft"

@@ -87,10 +87,7 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
                 # Keep only writes already recorded for THIS checkpoint (LangGraph
                 # writes a step's values before its aput); drop superseded checkpoints'
                 # writes so stale interrupts never leak into the next turn's resume.
-                kept = [
-                    item for item in prior.get("pending_writes", [])
-                    if item.get("checkpoint_id") == checkpoint_id
-                ]
+                kept = [item for item in prior.get("pending_writes", []) if item.get("checkpoint_id") == checkpoint_id]
                 session.graph_checkpoint = {
                     "data": base64.b64encode(checkpoint_bytes).decode("ascii"),
                     "serde_type": serde_type,
@@ -206,9 +203,7 @@ async def checkpoint_values_for_session(
         session_factory=session_factory,
     )
     try:
-        checkpoint = await checkpointer.aget_tuple(
-            {"configurable": {"thread_id": str(session_id)}}
-        )
+        checkpoint = await checkpointer.aget_tuple({"configurable": {"thread_id": str(session_id)}})
     except NoResultFound:
         return None
     if checkpoint is None:
