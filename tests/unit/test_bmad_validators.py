@@ -26,7 +26,7 @@ def test_epic_story_readiness_is_out_of_scope():
         "title": "T", "body": "B",
         "recommended_next_workflow": "epic_story_readiness", "prd_coverage": 0.3,
     })
-    assert any("ngoài phạm vi" in v for v in r.violations)
+    assert any("ngoai pham vi" in v for v in r.violations)
 
 
 def test_cannot_recommend_implementation_with_critical_risks():

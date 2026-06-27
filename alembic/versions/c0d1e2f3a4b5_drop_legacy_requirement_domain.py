@@ -71,4 +71,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    raise NotImplementedError("Migration cleanup một chiều; dùng migration lịch sử trước đó để dựng lại domain cũ.")
+    raise NotImplementedError("One-way migration cleanup; use the previous historical migration to rebuild the old domain.")

@@ -8,6 +8,7 @@ from app.graphs.agent_tools import (
 from app.graphs.nodes import (
     analyze_node,
     converse_node,
+    orchestrator_node,
     route_after_triage,
     route_before_analyze,
     route_node,
@@ -22,6 +23,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
 
     builder.add_node("triage", triage_node)
     builder.add_node("converse", converse_node)
+    builder.add_node("orchestrator", orchestrator_node)
     builder.add_node("analyze", analyze_node)
     builder.add_node("summarize", summarize_node)
     # Tool-loop: analyze emits an AIMessage(tool_calls) via the shim, route_node dispatches to this
@@ -37,19 +39,32 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
     # goes straight to analyze. converse flows into analyze on resume so the human's real reply is
     # then analyzed. On resume LangGraph re-enters the interrupted node, so triage does not re-run.
     builder.set_entry_point("triage")
-    builder.add_conditional_edges("triage", route_after_triage, {
-        "converse": "converse",
-        "analyze": "analyze",
-    })
-    builder.add_edge("converse", "analyze")
-    builder.add_conditional_edges("analyze", route_node, {
-        "tools": "tools",
-        END: END,
-    })
-    builder.add_conditional_edges("tools", route_before_analyze, {
-        "summarize": "summarize",
-        "analyze": "analyze",
-    })
-    builder.add_edge("summarize", "analyze")
+    builder.add_conditional_edges(
+        "triage",
+        route_after_triage,
+        {
+            "converse": "converse",
+            "analyze": "orchestrator",
+        },
+    )
+    builder.add_edge("converse", "orchestrator")
+    builder.add_edge("orchestrator", "analyze")
+    builder.add_conditional_edges(
+        "analyze",
+        route_node,
+        {
+            "tools": "tools",
+            END: END,
+        },
+    )
+    builder.add_conditional_edges(
+        "tools",
+        route_before_analyze,
+        {
+            "summarize": "summarize",
+            "analyze": "orchestrator",
+        },
+    )
+    builder.add_edge("summarize", "orchestrator")
 
     return builder.compile(checkpointer=checkpointer)

@@ -10,61 +10,67 @@ SMART (goal). Each criterion holds `name`, `description` and `guidance`
 RUBRIC_CRITERIA: dict[str, dict[str, str]] = {
     # --- 6 ISO/IEC/IEEE 29148 quality characteristics ---
     "unambiguous": {
-        "name": "Không mơ hồ (Unambiguous)",
-        "description": "Phát biểu chỉ có một cách hiểu; không dùng từ mơ hồ (nhanh, dễ dùng, tối ưu, thân thiện).",
-        "guidance": "Điểm thấp nếu chứa weasel words hoặc diễn giải đa nghĩa; cao nếu đo lường và cụ thể.",
+        "name": "Unambiguous",
+        "description": (
+            "Statement has only one interpretation and avoids weasel words "
+            "(fast, easy to use, optimized, friendly)."
+        ),
+        "guidance": (
+            "Low score if it contains weasel words or ambiguous phrasing; "
+            "high score if measurable and specific."
+        ),
     },
     "verifiable": {
-        "name": "Kiểm chứng được (Verifiable)",
-        "description": "Có thể kiểm tra/đo lường để xác nhận artifact đã được thoả mãn.",
-        "guidance": "Điểm cao nếu có tiêu chí đo lường, ngưỡng, hoặc cách kiểm thử rõ ràng.",
+        "name": "Verifiable",
+        "description": "Can be tested/measured to confirm the artifact is satisfied.",
+        "guidance": "High score if it has measurement criteria, thresholds, or clear test method.",
     },
     "complete": {
-        "name": "Đầy đủ (Complete)",
-        "description": "Bao phủ đủ thông tin cần thiết, không để khoảng trống quan trọng.",
-        "guidance": "Điểm thấp nếu thiếu actor, điều kiện, hoặc kết quả mong đợi.",
+        "name": "Complete",
+        "description": "Covers necessary information without important gaps.",
+        "guidance": "Low score if actor, condition, or expected result is missing.",
     },
     "consistent": {
-        "name": "Nhất quán (Consistent)",
-        "description": "Không mâu thuẫn nội tại và không xung đột với các artifact khác.",
-        "guidance": "Điểm thấp nếu phát biểu tự mâu thuẫn hoặc trùng lặp gây nhiễu.",
+        "name": "Consistent",
+        "description": "No internal contradictions and no conflict with other artifacts.",
+        "guidance": "Low score if statements contradict themselves or duplicate noisily.",
     },
     "traceable": {
-        "name": "Truy vết được (Traceable)",
-        "description": "Có thể liên kết ngược về nguồn (intent/problem/goal) và xuôi tới artifact con.",
-        "guidance": "Điểm cao nếu nêu rõ lý do/nguồn gốc và liên hệ tới mục tiêu cấp trên.",
+        "name": "Traceable",
+        "description": "Can link backward to sources (intent/problem/goal) and forward to child artifacts.",
+        "guidance": "High score if it states rationale/source and connects to parent goals.",
     },
     "feasible": {
-        "name": "Khả thi (Feasible)",
-        "description": "Thực hiện được trong ràng buộc kỹ thuật, thời gian và nguồn lực hợp lý.",
-        "guidance": "Điểm thấp nếu yêu cầu phi thực tế hoặc vượt ràng buộc đã biết.",
+        "name": "Feasible",
+        "description": "Achievable within reasonable technical, time, and resource constraints.",
+        "guidance": "Low score if unrealistic or beyond known constraints.",
     },
     # --- INVEST (user story) + SMART (goal) — applied per artifact_type ---
     "invest": {
         "name": "INVEST (user story)",
         "description": "Independent, Negotiable, Valuable, Estimable, Small, Testable.",
-        "guidance": "Chỉ chấm khi artifact là story/epic; trả null nếu không áp dụng.",
+        "guidance": "Score only for story/epic artifacts; return null if not applicable.",
     },
     "smart": {
         "name": "SMART (goal)",
         "description": "Specific, Measurable, Achievable, Relevant, Time-bound.",
-        "guidance": "Chỉ chấm khi artifact là goal; trả null nếu không áp dụng.",
+        "guidance": "Score only for goal artifacts; return null if not applicable.",
     },
     # --- 3 business-specific dimensions (spec §12), aligned to the 7-section taxonomy ---
     "business_alignment": {
-        "name": "Bám mục tiêu kinh doanh (Business alignment)",
-        "description": "Artifact có hỗ trợ business vision và objectives đã nêu không.",
-        "guidance": "Điểm cao nếu liên hệ rõ tới section vision_objectives; thấp nếu lạc khỏi mục tiêu.",
+        "name": "Business alignment",
+        "description": "Whether the artifact supports stated business vision and objectives.",
+        "guidance": "High score if clearly tied to vision_objectives; low if off-goal.",
     },
     "risk_awareness": {
-        "name": "Nhận thức rủi ro (Risk awareness)",
-        "description": "Các rủi ro và issues liên quan đã được surface chưa.",
-        "guidance": "Điểm cao nếu nêu rủi ro thuộc section risks_issues và phản ánh structured risks đã thu thập.",
+        "name": "Risk awareness",
+        "description": "Whether related risks and issues have been surfaced.",
+        "guidance": "High score if risks are in risks_issues and reflect collected structured risks.",
     },
     "scope_control": {
-        "name": "Kiểm soát phạm vi (Scope control)",
-        "description": "Ranh giới in-scope/out-of-scope có rõ ràng không.",
-        "guidance": "Điểm cao nếu section scope_capabilities nêu rõ in-scope VÀ out-of-scope; thấp nếu mơ hồ.",
+        "name": "Scope control",
+        "description": "Whether in-scope/out-of-scope boundaries are clear.",
+        "guidance": "High score if scope_capabilities states both in-scope and out-of-scope; low if vague.",
     },
 }
 

@@ -150,7 +150,7 @@ def _config(session_id: uuid.UUID) -> dict:
 
 def _checkpoint() -> dict:
     checkpoint = empty_checkpoint()
-    checkpoint["channel_values"] = {"messages": [{"role": "user", "content": "Xin chào"}]}
+    checkpoint["channel_values"] = {"messages": [{"role": "user", "content": "Hello"}]}
     checkpoint["channel_versions"] = {"messages": "1"}
     checkpoint["versions_seen"] = {"analyze": {"messages": "1"}}
     return checkpoint

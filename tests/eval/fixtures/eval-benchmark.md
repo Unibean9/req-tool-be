@@ -1,7 +1,7 @@
 # Output LLM cho eval benchmark
 
-- Thời gian bắt đầu: 2026-06-20 01:47:51 +0700
-- Thời gian kết thúc: 2026-06-20 01:48:43 +0700
+- Start time: 2026-06-20 01:47:51 +0700
+- End time: 2026-06-20 01:48:43 +0700
 - Judge provider: bedrock
 - Judge model: amazon.nova-pro-v1:0
 
@@ -12,11 +12,11 @@
 Input:
 
 ```text
-Cải thiện trải nghiệm người dùng để hệ thống nhanh hơn, dễ dùng hơn và thân thiện hơn với mọi người.
+Improve user experience so the system is faster, easier to use, and friendlier for everyone.
 ```
 
 Overall baseline: 0.300
-Stdev qua 3 lần judge: 0.000
+Stdev across 3 judge runs: 0.000
 
 LLM baseline output:
 
@@ -33,7 +33,7 @@ LLM baseline output:
     "smart": null
   },
   "overall": 0.3,
-  "rationale": "Artifact không rõ ràng, dùng từ mơ hồ như 'nhanh hơn', 'dễ dùng hơn', 'thân thiện hơn'. Khó kiểm chứng và không đầy đủ thông tin cụ thể. Tuy nhiên, không có mâu thuẫn nội tại. Khả thi tùy thuộc vào ràng buộc cụ thể."
+  "rationale": "Artifact is unclear, uses vague words nhu 'nhanh hon', 'easy to use hon', 'friendly hon'. Hard to verify va lacks specific information. However, has no internal contradiction. Feasible depends on specific constraints."
 }
 ```
 
@@ -53,7 +53,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.3,
-    "rationale": "Artifact không rõ ràng, dùng từ mơ hồ (nhanh, dễ dùng, thân thiện). Khó kiểm chứng và không đầy đủ thông tin cụ thể. Tuy nhiên, không có mâu thuẫn nội tại. Khả thi tùy thuộc vào ngữ cảnh."
+    "rationale": "Artifact is unclear, uses vague words (nhanh, easy to use, friendly). Hard to verify va lacks specific information. However, has no internal contradiction. Feasible depends on context."
   },
   {
     "scores": {
@@ -67,7 +67,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.3,
-    "rationale": "Artifact không rõ ràng, dùng từ mơ hồ như 'nhanh hơn', 'dễ dùng hơn', 'thân thiện hơn'. Khó kiểm chứng và không đầy đủ thông tin cụ thể. Tuy nhiên, không có mâu thuẫn nội tại và có khả năng thực hiện."
+    "rationale": "Artifact is unclear, uses vague words nhu 'nhanh hon', 'easy to use hon', 'friendly hon'. Hard to verify va lacks specific information. However, has no internal contradiction va is feasible."
   },
   {
     "scores": {
@@ -81,7 +81,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.3,
-    "rationale": "Artifact không rõ ràng, dùng từ mơ hồ như 'nhanh hơn', 'dễ dùng hơn', 'thân thiện hơn'. Khó kiểm chứng và không đầy đủ thông tin cụ thể. Tuy nhiên, không có mâu thuẫn nội tại. Khả thi vừa phải do không quá tốn kém nhưng cần nhiều thời gian và nguồn lực."
+    "rationale": "Artifact is unclear, uses vague words nhu 'nhanh hon', 'easy to use hon', 'friendly hon'. Hard to verify va lacks specific information. However, has no internal contradiction. Feasible may not be too costly but needs time and resources."
   }
 ]
 ```
@@ -91,11 +91,11 @@ LLM variance outputs:
 Input:
 
 ```text
-Tăng tỷ lệ chuyển đổi đăng ký dùng thử sang trả phí từ 8% lên 12% trong quý 3/2026, đo bằng số liệu trên dashboard thanh toán, áp dụng cho toàn bộ người dùng gói Pro.
+Increase trial-to-paid conversion from 8% to 12% in Q3 2026, measured on the billing dashboard for all Pro users.
 ```
 
 Overall baseline: 0.840
-Stdev qua 3 lần judge: 0.034
+Stdev across 3 judge runs: 0.034
 
 LLM baseline output:
 
@@ -112,7 +112,7 @@ LLM baseline output:
     "smart": null
   },
   "overall": 0.84,
-  "rationale": "Artifact rõ ràng, có thể kiểm chứng và đầy đủ thông tin. Tuy nhiên, cần cung cấp thêm thông tin về nguồn gốc yêu cầu để tăng điểm traceable."
+  "rationale": "Artifact is clear, verifiable, and complete. However, it needs more source information to improve traceability."
 }
 ```
 
@@ -132,7 +132,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.82,
-    "rationale": "Artifact có định nghĩa rõ ràng, đo lường được, đầy đủ thông tin, nhất quán, nhưng thiếu rõ ràng về nguồn gốc và lý do cụ thể. Khả thi trong ràng buộc thời gian và nguồn lực."
+    "rationale": "Artifact has a clear definition, is measurable, complete, and consistent, but lacks clear source and specific rationale. Feasible within time and resource constraints."
   },
   {
     "scores": {
@@ -146,7 +146,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.84,
-    "rationale": "Artifact có định nghĩa rõ ràng, đo lường được, đầy đủ thông tin và nhất quán. Tuy nhiên, việc liên kết với mục tiêu cấp trên cần rõ ràng hơn. Mục tiêu dường như khả thi trong ràng buộc thời gian và nguồn lực."
+    "rationale": "Artifact has a clear definition, is measurable, complete, and consistent. However, linkage to parent goals should be clearer. The goal seems feasible within time and resource constraints."
   },
   {
     "scores": {
@@ -160,7 +160,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.9,
-    "rationale": "Artifact rõ ràng, có thể kiểm chứng, gần như đầy đủ, nhất quán, có thể truy vết, và khả thi. Tuy nhiên, không nêu rõ nguồn gốc chi tiết và một số ràng buộc nguồn lực."
+    "rationale": "Artifact is clear, verifiable, nearly complete, consistent, traceable, va kha thi. However, does not state detailed source va mot so rang buoc resources."
   }
 ]
 ```
@@ -170,11 +170,11 @@ LLM variance outputs:
 Input:
 
 ```text
-Là một quản trị viên dự án, tôi muốn xuất ma trận truy vết yêu cầu (RTM) ra file CSV để chia sẻ với khách hàng trong buổi nghiệm thu. Tiêu chí chấp nhận: (1) file gồm cột requirement, goal, problem, trạng thái; (2) tải về dưới 3 giây với 500 dòng; (3) chỉ quản trị viên truy cập được.
+As a project administrator, I want to export the requirements traceability matrix (RTM) as a CSV file to share with customers during acceptance. Acceptance criteria: (1) the file includes requirement, goal, problem, and status columns; (2) downloads in under 3 seconds for 500 rows; (3) only administrators can access it.
 ```
 
 Overall baseline: 0.880
-Stdev qua 3 lần judge: 0.000
+Stdev across 3 judge runs: 0.000
 
 LLM baseline output:
 
@@ -191,7 +191,7 @@ LLM baseline output:
     "smart": null
   },
   "overall": 0.88,
-  "rationale": "Artifact rõ ràng, chi tiết và có tiêu chí chấp nhận cụ thể. Tuy nhiên, có thể cần thêm chi tiết về cách thực hiện để đảm bảo khả thi hoàn toàn."
+  "rationale": "Artifact is clear and detailed, with specific acceptance criteria. However, it may need more implementation detail to ensure full feasibility."
 }
 ```
 
@@ -211,7 +211,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.88,
-    "rationale": "Artifact rõ ràng, chi tiết và có tiêu chí chấp nhận cụ thể. Tuy nhiên, cần cải thiện về độ đo lường và chi tiết hơn về traceability."
+    "rationale": "Artifact is clear, detailed va co specific acceptance criteria. However, needs improvement ve measurability va detailed hon ve traceability."
   },
   {
     "scores": {
@@ -225,7 +225,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.88,
-    "rationale": "Artifact rõ ràng, chi tiết và có tiêu chí chấp nhận cụ thể. Tuy nhiên, vẫn còn một chút mơ hồ về định nghĩa 'trạng thái' và cần xem xét thêm về khả năng thực hiện trong mọi môi trường."
+    "rationale": "Artifact is clear and detailed, with specific acceptance criteria. However, the definition of 'status' is still slightly vague and feasibility across environments needs review."
   },
   {
     "scores": {
@@ -239,7 +239,7 @@ LLM variance outputs:
       "smart": null
     },
     "overall": 0.88,
-    "rationale": "Artifact rõ ràng, chi tiết, và có tiêu chí chấp nhận cụ thể. Tuy nhiên, một số thuật ngữ như 'trạng thái' cần xác định rõ hơn để tránh mơ hồ."
+    "rationale": "Artifact is clear, detailed, va co specific acceptance criteria. However, mot so thuat ngu nhu 'status' needs clearer definition de avoid ambiguity."
   }
 ]
 ```
@@ -250,30 +250,30 @@ LLM variance outputs:
 
 Delta overall: 0.500
 
-Input yếu:
+Weak input:
 
 ```text
-Cải thiện hiệu quả và tối ưu hệ thống để mang lại trải nghiệm tốt cho người dùng.
+Improve system effectiveness and optimization to provide a better user experience.
 ```
 
-Proposal trước/sau quality gate:
+Proposal before/after quality gate:
 
 ```json
 {
   "before": {
     "artifact_type": "goal",
-    "title": "Bản nháp",
-    "body": "Cải thiện hiệu quả và tối ưu hệ thống để mang lại trải nghiệm tốt cho người dùng."
+    "title": "Draft",
+    "body": "Improve system effectiveness and optimization to provide a better user experience."
   },
   "after": {
     "artifact_type": "goal",
-    "title": "Bản nháp",
-    "body": "Tăng tỷ lệ hoàn thành quy trình lên 95% trong vòng 2 tháng, đo bằng log hệ thống."
+    "title": "Draft",
+    "body": "Increase process completion rate to 95% within 2 months, measured by system logs."
   }
 }
 ```
 
-LLM judge output trước gate:
+LLM judge output before gate:
 
 ```json
 {
@@ -288,7 +288,7 @@ LLM judge output trước gate:
     "smart": null
   },
   "overall": 0.3,
-  "rationale": "Artifact quá mơ hồ, không định lượng, thiếu chi tiết cụ thể, khó kiểm chứng và không rõ khả thi."
+  "rationale": "Artifact too vague, not quantified, missing detailed cu the, kho kiem chung va unclear feasibility."
 }
 ```
 
@@ -307,7 +307,7 @@ LLM judge output sau gate:
     "smart": 0.8
   },
   "overall": 0.8,
-  "rationale": "Artifact có mục tiêu cụ thể, đo lường được và có thời hạn. Tuy nhiên, cần cung cấp thêm chi tiết về các bước cụ thể để đạt được mục tiêu."
+  "rationale": "Artifact has a specific goal, is measurable, and has a deadline. However, it needs more detail about specific steps to achieve the goal."
 }
 ```
 
@@ -315,30 +315,30 @@ LLM judge output sau gate:
 
 Delta overall: 0.500
 
-Input yếu:
+Weak input:
 
 ```text
-Là người dùng, tôi muốn hệ thống chạy nhanh, thân thiện và dễ dùng để làm việc tốt hơn.
+As a user, I want the system to run fast, be friendly, and be easy to use so I can work better.
 ```
 
-Proposal trước/sau quality gate:
+Proposal before/after quality gate:
 
 ```json
 {
   "before": {
     "artifact_type": "story",
-    "title": "Bản nháp",
-    "body": "Là người dùng, tôi muốn hệ thống chạy nhanh, thân thiện và dễ dùng để làm việc tốt hơn."
+    "title": "Draft",
+    "body": "As a user, I want the system to run fast, be friendly, and be easy to use so I can work better."
   },
   "after": {
     "artifact_type": "story",
-    "title": "Bản nháp",
-    "body": "Tăng tỷ lệ hoàn thành quy trình lên 95% trong vòng 2 tháng, đo bằng log hệ thống."
+    "title": "Draft",
+    "body": "Increase process completion rate to 95% within 2 months, measured by system logs."
   }
 }
 ```
 
-LLM judge output trước gate:
+LLM judge output before gate:
 
 ```json
 {
@@ -353,7 +353,7 @@ LLM judge output trước gate:
     "smart": null
   },
   "overall": 0.3,
-  "rationale": "Artifact chứa nhiều từ mơ hồ như 'nhanh', 'thân thiện', 'dễ dùng', không định lượng cụ thể. Khó kiểm chứng và không đầy đủ thông tin. Tuy nhiên, không có mâu thuẫn nội tại."
+  "rationale": "Artifact contains many vague words such as 'fast', 'friendly', and 'easy to use', is not specifically quantified, is hard to verify, and lacks complete information. However, it has no internal contradiction."
 }
 ```
 
@@ -372,6 +372,6 @@ LLM judge output sau gate:
     "smart": 0.8
   },
   "overall": 0.8,
-  "rationale": "Artifact có mục tiêu cụ thể và đo lường được, tuy nhiên cần cung cấp thêm chi tiết về các bước cụ thể để đạt được mục tiêu."
+  "rationale": "Artifact has a specific and measurable goal, but needs more detail about specific steps to achieve it."
 }
 ```

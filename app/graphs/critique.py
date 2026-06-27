@@ -28,15 +28,15 @@ _DEFAULT_MODE = "completeness"
 
 # Short focus per mode, embedded in the judge prompt so the score reflects the requested angle.
 _MODE_FOCUS: dict[str, str] = {
-    "clarity": "Độ rõ ràng và không mơ hồ của từng phát biểu.",
-    "completeness": "Độ đầy đủ: actor, điều kiện, kết quả mong đợi có thiếu không.",
-    "consistency": "Tính nhất quán nội tại và với các phần khác.",
-    "feasibility": "Tính khả thi trong ràng buộc kỹ thuật, thời gian, nguồn lực.",
-    "testability": "Khả năng kiểm chứng: tiêu chí đo lường, cách kiểm thử.",
-    "traceability": "Khả năng truy vết ngược nguồn và xuôi tới artifact con.",
-    "six_hats": "Soi qua sáu chiếc mũ tư duy (dữ kiện, cảm xúc, rủi ro, lợi ích, sáng tạo, điều phối).",
-    "swot": "Điểm mạnh, điểm yếu, cơ hội, thách thức.",
-    "risk_review": "Rủi ro tiềm ẩn, xác suất và mức tác động.",
+    "clarity": "Clarity and lack of ambiguity in each statement.",
+    "completeness": "Completeness: whether actor, condition, and expected result are missing.",
+    "consistency": "Internal consistency and consistency with other sections.",
+    "feasibility": "Feasibility within technical, time, and resource constraints.",
+    "testability": "Testability: measurement criteria and test method.",
+    "traceability": "Traceability backward to sources and forward to child artifacts.",
+    "six_hats": "Review through six thinking hats (facts, emotions, risks, benefits, creativity, orchestration).",
+    "swot": "Strengths, weaknesses, opportunities, threats.",
+    "risk_review": "Latent risks, likelihood, and impact level.",
 }
 
 JUDGE_SCHEMA: dict[str, Any] = {
@@ -53,8 +53,8 @@ JUDGE_SCHEMA: dict[str, Any] = {
 }
 
 _JUDGE_SYSTEM = (
-    "Bạn là chuyên gia kỹ nghệ yêu cầu. Phản biện artifact theo góc độ được chỉ định, "
-    "chấm điểm 0.0–1.0, liệt kê findings (điểm yếu cụ thể) và suggestions (cách cải thiện) bằng tiếng Việt."
+    "You are a requirements engineering expert. Critique the artifact from the specified angle, "
+    "score 0.0-1.0, and list findings (specific weaknesses) and suggestions (improvements) in the user's locale."
 )
 
 
@@ -64,9 +64,9 @@ def _normalize_mode(mode: str) -> str:
 
 def _build_judge_prompt(body: str, mode: str) -> str:
     return (
-        f"Phản biện artifact dưới đây, tập trung vào góc độ '{mode}': {_MODE_FOCUS.get(mode, '')}\n\n"
-        f"RUBRIC THAM CHIẾU:\n{render_criteria_block()}\n\n"
-        f"ARTIFACT:\n{body or '(trống)'}"
+        f"Critique the artifact below, focusing on angle '{mode}': {_MODE_FOCUS.get(mode, '')}\n\n"
+        f"REFERENCE RUBRIC:\n{render_criteria_block()}\n\n"
+        f"ARTIFACT:\n{body or '(empty)'}"
     )
 
 

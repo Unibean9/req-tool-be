@@ -43,15 +43,18 @@ async def read_artifact_graph(
     project_id: uuid.UUID,
 ) -> list[dict]:
     rows = (
-        await db.execute(
-            select(ArtifactLink)
-            .join(Artifact, ArtifactLink.source_id == Artifact.id)
-            .where(Artifact.project_id == project_id)
+        (
+            await db.execute(
+                select(ArtifactLink)
+                .join(Artifact, ArtifactLink.source_id == Artifact.id)
+                .where(Artifact.project_id == project_id)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [
-        {"source_id": str(r.source_id), "target_id": str(r.target_id), "relation_type": r.relation_type}
-        for r in rows
+        {"source_id": str(r.source_id), "target_id": str(r.target_id), "relation_type": r.relation_type} for r in rows
     ]
 
 

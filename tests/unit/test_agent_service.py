@@ -262,7 +262,7 @@ async def test_create_session_blocks_when_predecessor_not_accepted(client, db_se
             project_id=project_id,
             type=ArtifactType.BRD,
             status=ArtifactStatus.DRAFT,
-            title="BRD nháp",
+            title="Draft BRD",
             extra_metadata={},
         )
     )
@@ -283,7 +283,7 @@ async def test_create_session_allows_accepted_predecessor(client, db_session):
             project_id=project_id,
             type=ArtifactType.BRD,
             status=ArtifactStatus.ACCEPTED,
-            title="BRD đã accepted",
+            title="BRD da accepted",
             extra_metadata={},
         )
     )
@@ -351,7 +351,7 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
     await svc.handle_user_message(
         project_id=project_id,
         session_id=session.id,
-        content="Thêm thông tin",
+        content="Them thong tin",
         user_id=owner_id,
     )
 
@@ -386,14 +386,14 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
             checker._dump_pending_write(
                 "task-1",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Tiếp tục?"}, id=INTERRUPT_ID)],
+                [Interrupt(value={"type": "ask_human", "message": "Tiep tuc?"}, id=INTERRUPT_ID)],
             )
         ]
     }
 
-    command = svc._resume_command(session, {"content": "Có"})
+    command = svc._resume_command(session, {"content": "Co"})
 
-    assert command.resume == {INTERRUPT_ID: {"content": "Có"}}
+    assert command.resume == {INTERRUPT_ID: {"content": "Co"}}
     # Every human resume resets the per-request silent-loop counter so conversations are unbounded.
     assert command.update == {"turn_count": 0}
 
@@ -407,7 +407,7 @@ async def test_resume_command_merges_turn_count_reset_with_state_update(db_sessi
         status=AgentSessionStatus.WAITING_FOR_HUMAN, interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
     )
 
-    command = svc._resume_command(session, {"content": "Có"}, state_update={"mode_hint": "critique"})
+    command = svc._resume_command(session, {"content": "Co"}, state_update={"mode_hint": "critique"})
 
     assert command.update == {"turn_count": 0, "mode_hint": "critique"}
 
@@ -442,21 +442,21 @@ async def test_resume_command_keys_all_interrupt_ids_when_multiple_pending(db_se
             checker._dump_pending_write(
                 "task-1",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lần 1?"}, id=INTERRUPT_ID_1)],
+                [Interrupt(value={"type": "ask_human", "message": "Lan 1?"}, id=INTERRUPT_ID_1)],
             ),
             checker._dump_pending_write(
                 "task-2",
                 "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lần 2?"}, id=INTERRUPT_ID_2)],
+                [Interrupt(value={"type": "ask_human", "message": "Lan 2?"}, id=INTERRUPT_ID_2)],
             ),
         ]
     }
 
-    command = svc._resume_command(session, {"content": "Có"})
+    command = svc._resume_command(session, {"content": "Co"})
 
     assert command.resume == {
-        INTERRUPT_ID_1: {"content": "Có"},
-        INTERRUPT_ID_2: {"content": "Có"},
+        INTERRUPT_ID_1: {"content": "Co"},
+        INTERRUPT_ID_2: {"content": "Co"},
     }
 
 
@@ -482,7 +482,7 @@ async def test_handle_user_message_rejects_non_owner(client, db_session):
         await svc.handle_user_message(
             project_id=project_id,
             session_id=session.id,
-            content="Xin chào",
+            content="Hello",
             user_id=uuid.uuid4(),
         )
 
@@ -502,7 +502,7 @@ async def test_handle_user_message_when_active_returns_200_and_queues(client, db
     db_session.add(session)
     await db_session.flush()
 
-    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tạo đi")
+    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tao di")
 
     assert msg.role == AgentMessageRole.USER
     assert msg.payload["queued"] is True
@@ -523,7 +523,7 @@ async def test_handle_user_message_propose_artifacts_returns_200_and_queues(clie
     db_session.add(session)
     await db_session.flush()
 
-    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="ok tạo đi")
+    msg = await svc.handle_user_message(project_id=project_id, session_id=session.id, content="ok tao di")
 
     assert msg.payload["queued"] is True
     _no_background_tasks.assert_not_called()
@@ -560,7 +560,7 @@ async def test_drain_queue_processes_queued_messages_after_completed(client, db_
     db_session.add(session)
     await db_session.flush()
     queued = AgentMessage(
-        session_id=session.id, role=AgentMessageRole.USER, content="tạo đi", payload={"queued": True}
+        session_id=session.id, role=AgentMessageRole.USER, content="tao di", payload={"queued": True}
     )
     db_session.add(queued)
     await db_session.flush()
@@ -591,7 +591,7 @@ async def test_drain_queue_does_not_fire_after_waiting_for_human(client, db_sess
     db_session.add(session)
     await db_session.flush()
     queued = AgentMessage(
-        session_id=session.id, role=AgentMessageRole.USER, content="tạo đi", payload={"queued": True}
+        session_id=session.id, role=AgentMessageRole.USER, content="tao di", payload={"queued": True}
     )
     db_session.add(queued)
     await db_session.flush()
@@ -676,7 +676,7 @@ async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session)
     # No __interrupt__ (the tool never ran), but the last message still carries tool_calls.
     graph.ainvoke = AsyncMock(return_value={
         "messages": [AIMessage(content="", tool_calls=[
-            {"id": "r:0", "name": "ask_user", "args": {"message": "Còn gì nữa không?"}}
+            {"id": "r:0", "name": "ask_user", "args": {"message": "Anything else?"}}
         ])],
     })
     svc = _make_service(db_session, graph)
@@ -828,7 +828,7 @@ async def test_run_graph_resume_failure_marks_session_failed_and_saves_agent_mes
         missing_context=[],
         llm_client=AsyncMock(),
         initial_state=None,
-        resume_command=Command(resume={"content": "Thêm thông tin"}),
+        resume_command=Command(resume={"content": "Them thong tin"}),
     )
 
     updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
@@ -942,8 +942,8 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
     old_version = ArtifactVersion(
         artifact_id=focused.id,
         version_number=1,
-        title="Vision cũ",
-        body="Body cũ",
+        title="Vision cu",
+        body="Body cu",
         status=VersionStatus.DRAFT,
         change_source=ChangeSource.MANUAL,
         extra_metadata={},
@@ -960,7 +960,7 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
             "base_version_id": str(old_version.id),
             "evidence_refs": [f"agent_run:{run.id}"],
             "inference_level": "medium",
-            "confirmed_assumptions": ["Metric retention đã xác nhận"],
+            "confirmed_assumptions": ["Retention metric confirmed"],
             "pending_assumptions": [],
             "synthesis_source": "bmad_synthesis",
         },
@@ -988,8 +988,8 @@ async def test_approve_tool_call_rejects_stale_base_version(client, db_session, 
     old_version = ArtifactVersion(
         artifact_id=focused.id,
         version_number=1,
-        title="Vision cũ",
-        body="Body cũ",
+        title="Vision cu",
+        body="Body cu",
         status=VersionStatus.DRAFT,
         change_source=ChangeSource.MANUAL,
         extra_metadata={},
@@ -997,8 +997,8 @@ async def test_approve_tool_call_rejects_stale_base_version(client, db_session, 
     current_version = ArtifactVersion(
         artifact_id=focused.id,
         version_number=2,
-        title="Vision mới",
-        body="Body mới",
+        title="Vision new",
+        body="Body new",
         status=VersionStatus.DRAFT,
         change_source=ChangeSource.MANUAL,
         extra_metadata={},
@@ -1046,7 +1046,7 @@ async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, d
             "missing": ["target"],
             "needs_confirmation": [],
             "inferred": [],
-            "blocking_reasons": ["Thiếu target cần xác nhận"],
+            "blocking_reasons": ["Missing target needing confirmation"],
         },
     }
     await db_session.flush()
@@ -1087,14 +1087,14 @@ async def test_feedback_loop_many_edits_only_persists_final_ready_version(client
                         "missing": [f"gap-{index}"],
                         "needs_confirmation": [],
                         "inferred": [],
-                        "blocking_reasons": [f"Feedback nhỏ {index} chưa đủ readiness"],
+                        "blocking_reasons": [f"Feedback nho {index} chua du readiness"],
                     },
                 },
                 status=AgentToolCallStatus.PROPOSED,
             )
             db_session.add(tc)
             await db_session.flush()
-        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note=f"Chỉnh nhỏ {index}")
+        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note=f"Chinh nho {index}")
 
     versions_before_approve = (
         await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.artifact_id == focused_artifact_id))
@@ -1131,9 +1131,9 @@ async def test_approve_tool_call_blocks_unconfirmed_candidate_readiness(client, 
         **tc.input_snapshot,
         "body": "\n\n".join(
             [
-                "## Vision\nTăng retention.",
-                "## Objectives\n- Cải thiện activation.",
-                "## Success Metrics\n- Retention target 15% (agent suy diễn, cần xác nhận).",
+                "## Vision\nTang retention.",
+                "## Objectives\n- Cai thien activation.",
+                "## Success Metrics\n- Retention target 15% (agent-inferred, needs confirmation).",
             ]
         ),
         "synthesis_metadata": {
@@ -1145,8 +1145,8 @@ async def test_approve_tool_call_blocks_unconfirmed_candidate_readiness(client, 
             "can_persist": False,
             "missing": [],
             "needs_confirmation": ["Target retention 15%"],
-            "inferred": ["Retention target 15% (agent suy diễn, cần xác nhận)."],
-            "blocking_reasons": ["Candidate còn assumption cần user xác nhận trước khi persist."],
+            "inferred": ["Retention target 15% (agent-inferred, needs confirmation)."],
+            "blocking_reasons": ["Candidate still has assumptions needing user confirmation before persistence."],
         },
     }
     await db_session.flush()
@@ -1169,7 +1169,7 @@ async def test_approve_tool_call_recomputes_readiness_even_when_snapshot_claims_
     session, run, tc = await _make_single_propose_session(db_session, project_id)
     tc.input_snapshot = {
         **tc.input_snapshot,
-        "body": "Nội dung thiếu heading",
+        "body": "Content missing heading",
         "candidate_readiness": _sufficient_readiness(),
     }
     await db_session.flush()
@@ -1226,8 +1226,8 @@ async def test_approve_tool_call_reuses_existing_version_for_partial_retry(
     existing = ArtifactVersion(
         artifact_id=focused_artifact_id,
         version_number=1,
-        title="Mục tiêu",
-        body="Mô tả",
+        title="Goal",
+        body="Mo ta",
         status=VersionStatus.DRAFT,
         change_source=ChangeSource.AI_GENERATION,
         agent_run_id=run.id,
@@ -1333,7 +1333,7 @@ async def test_approve_tool_call_rejects_missing_focused_artifact(client, db_ses
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
-    tc.input_snapshot = {"artifact_type": "unknown_type", "title": "Mục tiêu", "body": "Mô tả"}
+    tc.input_snapshot = {"artifact_type": "unknown_type", "title": "Goal", "body": "Mo ta"}
     await db_session.flush()
 
     with pytest.raises(HTTPException) as exc:
@@ -1438,7 +1438,7 @@ async def test_request_edit_supersedes_tool_call_and_resumes_when_last(client, d
     # Session with a single proposed tool call — edit on it should trigger resume.
     session, run, tc = await _make_single_propose_session(db_session, project_id)
 
-    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Cần chỉnh sửa")
+    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Can chinh sua")
 
     updated = (await db_session.execute(select(AgentToolCall).where(AgentToolCall.id == tc.id))).scalar_one()
     assert updated.status == AgentToolCallStatus.SUPERSEDED
@@ -1453,7 +1453,7 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 
     _, _, tc1, _ = await _make_propose_session(db_session, project_id)
 
-    await svc.request_edit(project_id=project_id, tool_call_id=tc1.id, note="Cần chỉnh sửa")
+    await svc.request_edit(project_id=project_id, tool_call_id=tc1.id, note="Can chinh sua")
 
     _no_background_tasks.assert_not_called()
 
@@ -1492,7 +1492,7 @@ async def test_request_edit_rejects_stale_base_version(client, db_session, _no_b
     await db_session.flush()
 
     with pytest.raises(HTTPException) as exc:
-        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sửa lại")
+        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
 
     assert exc.value.status_code == 409
     assert exc.value.detail["current_version_id"] == str(current_version.id)
@@ -1523,7 +1523,7 @@ async def _make_single_propose_session(db_session, project_id, created_by_id=Non
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
             "artifact_type": "vision_objectives",
-            "title": "Mục tiêu",
+            "title": "Goal",
             "body": _vision_body(),
             "focused_artifact_id": str(focused.id),
             "synthesis_metadata": _synthesis_metadata("vision_objectives", focused.id),
@@ -1556,7 +1556,7 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
             "artifact_type": "vision_objectives",
-            "title": "Mục tiêu A",
+            "title": "Goal A",
             "body": _vision_body(),
             "focused_artifact_id": str(focused_a.id),
             "synthesis_metadata": _synthesis_metadata("vision_objectives", focused_a.id),
@@ -1568,7 +1568,7 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
         run_id=run.id, tool_name="create_artifact",
         input_snapshot={
             "artifact_type": "problem_statement",
-            "title": "Mục tiêu B",
+            "title": "Goal B",
             "body": _problem_body(),
             "focused_artifact_id": str(focused_b.id),
             "synthesis_metadata": _synthesis_metadata("problem_statement", focused_b.id),
@@ -1616,8 +1616,8 @@ async def _make_brd_items(db_session, project_id):
 def _vision_body():
     return "\n\n".join(
         [
-            "## Vision\nTăng retention.",
-            "## Objectives\n- Cải thiện activation.",
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
             "## Success Metrics\n- Retention target 15%.",
         ]
     )
@@ -1626,10 +1626,10 @@ def _vision_body():
 def _problem_body():
     return "\n\n".join(
         [
-            "## Problem Statement\nNgười dùng chưa thấy giá trị sớm.",
-            "## Affected Users\nNgười dùng mới.",
-            "## Impact\nRetention thấp.",
-            "## Root Cause / Contributing Factors\nOnboarding thiếu hướng dẫn.",
+            "## Problem Statement\nUsers do not see value early.",
+            "## Affected Users\nNew users.",
+            "## Impact\nRetention thap.",
+            "## Root Cause / Contributing Factors\nOnboarding lacks guidance.",
         ]
     )
 
@@ -1637,9 +1637,9 @@ def _problem_body():
 def _risks_body():
     return "\n\n".join(
         [
-            "## Risks\n- Rủi ro adoption thấp.",
-            "## Issues\n- Chưa có baseline retention.",
-            "## Mitigation Plan\n- Đo baseline và thử onboarding mới.",
+            "## Risks\n- Low adoption risk.",
+            "## Issues\n- No retention baseline yet.",
+            "## Mitigation Plan\n- Measure baseline and test new onboarding.",
         ]
     )
 
@@ -1704,7 +1704,7 @@ async def test_first_user_message_starts_graph_fresh(client, db_session, _no_bac
     db_session.add(session)
     await db_session.flush()
 
-    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="Xin chào")
+    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="Hello")
 
     _no_background_tasks.assert_called_once()
     scheduled = _no_background_tasks.call_args.args[0]

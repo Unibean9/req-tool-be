@@ -25,7 +25,7 @@ def upgrade() -> None:
         "\n[MIGRATION WARNING] Updating stakeholders.actor_type from is_business_actor:\n"
         "  - is_business_actor=TRUE  → actor_type='business_actor'\n"
         "  - is_business_actor=FALSE → actor_type='none'\n"
-        "  Downgrade sẽ DROP column actor_type nhưng KHÔNG khôi phục is_business_actor về trạng thái gốc.",
+        "  Downgrade will DROP column actor_type but will NOT restore is_business_actor to its original state.",
         stacklevel=2,
     )
 

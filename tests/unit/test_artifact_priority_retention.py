@@ -14,7 +14,7 @@ async def test_wont_artifacts_are_retained_when_other_priorities_are_deleted(db_
         type=ArtifactType.FUNCTIONAL_REQUIREMENT,
         status=ArtifactStatus.DRAFT,
         priority=ArtifactPriority.WONT,
-        title="Không làm trong phase này",
+        title="Khong lam trong phase nay",
     )
     must = Artifact(
         project_id=project_id,

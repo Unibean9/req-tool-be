@@ -66,10 +66,10 @@ class ArtifactService:
         if body.parent_id is not None:
             parent = await self.db.get(Artifact, body.parent_id)
             if parent is None or parent.project_id != project_id:
-                raise ValueError("Parent artifact không thuộc dự án này")
+                raise ValueError("Parent artifact does not belong to this project")
             expected_container = container_for(body.type.value)
             if parent.parent_id is not None or expected_container != parent.type.value:
-                raise ValueError("Parent artifact không phù hợp với document registry")
+                raise ValueError("Parent artifact does not match the document registry")
         artifact = Artifact(
             project_id=project_id,
             parent_id=body.parent_id,
@@ -200,7 +200,7 @@ class ArtifactService:
         artifact = await self._get_project_artifact(project_id, artifact_id)
         version = await self.db.get(ArtifactVersion, version_id)
         if version is None or version.artifact_id != artifact.id:
-            raise ValueError("Không tìm thấy phiên bản artifact")
+            raise ValueError("Artifact version not found")
         artifact.current_version_id = version.id
         artifact.title = version.title
         await self.db.flush()
@@ -216,10 +216,8 @@ class ArtifactService:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
         child_ids = (
-            await self.db.execute(
-                select(Artifact.id).where(Artifact.parent_id == artifact.id)
-            )
-        ).scalars().all()
+            (await self.db.execute(select(Artifact.id).where(Artifact.parent_id == artifact.id))).scalars().all()
+        )
         for child_id in child_ids:
             await self.delete(
                 project_id=project_id,
@@ -254,17 +252,17 @@ class ArtifactService:
         await self._require_project_member(project_id, created_by_id)
         artifact = await self.db.get(Artifact, artifact_id)
         if artifact is None:
-            raise ValueError("Không tìm thấy artifact")
+            raise ValueError("Artifact not found")
         if artifact.project_id != project_id:
-            raise PermissionError("Artifact không thuộc dự án này")
+            raise PermissionError("Artifact does not belong to this project")
         if body.artifact_version_id is not None:
             version = await self.db.get(ArtifactVersion, body.artifact_version_id)
             if version is None or version.artifact_id != artifact.id:
-                raise ValueError("Phiên bản evidence không thuộc artifact này")
+                raise ValueError("Evidence version does not belong to this artifact")
         if body.source_document_id is not None:
             document = await self.db.get(SourceDocument, body.source_document_id)
             if document is None or document.project_id != project_id:
-                raise ValueError("Source document không thuộc dự án này")
+                raise ValueError("Source document does not belong to this project")
         evidence = ArtifactEvidence(
             artifact_id=artifact.id,
             artifact_version_id=body.artifact_version_id,
@@ -305,7 +303,7 @@ class ArtifactService:
         created_by_id: uuid.UUID | None = None,
     ) -> ArtifactLink:
         if source_artifact_id == target_artifact_id:
-            raise ValueError("Artifact không được liên kết chính nó")
+            raise ValueError("Artifact cannot link to itself")
         await self._require_project_member(project_id, created_by_id)
 
         result = await self.db.execute(
@@ -315,9 +313,9 @@ class ArtifactService:
         source = artifacts.get(source_artifact_id)
         target = artifacts.get(target_artifact_id)
         if source is None or target is None:
-            raise ValueError("Không tìm thấy artifact cần liên kết")
+            raise ValueError("Artifact to link was not found")
         if source.project_id != project_id or target.project_id != project_id:
-            raise ValueError("Artifact link phải nằm trong cùng một dự án")
+            raise ValueError("Artifact link must stay within the same project")
         duplicate = await self.db.execute(
             select(ArtifactLink.id).where(
                 ArtifactLink.project_id == project_id,
@@ -334,7 +332,9 @@ class ArtifactService:
             )
         )
         if duplicate.scalar_one_or_none() is not None:
-            raise ValueError("Artifact link đã tồn tại")
+            raise ValueError("Artifact link already exists")
+        if await self._has_link_path(project_id, source_artifact_id, target_artifact_id):
+            raise ValueError("Artifact link creates a cycle")
 
         link = ArtifactLink(
             project_id=project_id,
@@ -346,6 +346,39 @@ class ArtifactService:
         self.db.add(link)
         await self.db.flush()
         return link
+
+    async def _has_link_path(
+        self,
+        project_id: uuid.UUID,
+        source_artifact_id: uuid.UUID,
+        target_artifact_id: uuid.UUID,
+    ) -> bool:
+        """True if a path target -> ... -> source already exists; adding source -> target would cycle.
+
+        Best-effort: read-then-insert with no lock, so two complementary concurrent inserts can both
+        pass. The agent creates links sequentially within a turn, so the real-world race risk is low.
+        """
+        rows = (
+            await self.db.execute(
+                select(ArtifactLink.source_artifact_id, ArtifactLink.target_artifact_id).where(
+                    ArtifactLink.project_id == project_id
+                )
+            )
+        ).all()
+        adjacency: dict[uuid.UUID, list[uuid.UUID]] = {}
+        for source_id, target_id in rows:
+            adjacency.setdefault(source_id, []).append(target_id)
+        visited: set[uuid.UUID] = set()
+        queue = [target_artifact_id]
+        while queue:
+            current = queue.pop(0)
+            if current == source_artifact_id:
+                return True
+            if current in visited:
+                continue
+            visited.add(current)
+            queue.extend(adjacency.get(current, []))
+        return False
 
     def link_to_response(self, link: ArtifactLink) -> ArtifactLinkResponse:
         return ArtifactLinkResponse(
@@ -432,36 +465,36 @@ class ArtifactService:
         )
         artifact = result.scalar_one_or_none()
         if artifact is None:
-            raise ValueError("Không tìm thấy artifact")
+            raise ValueError("Artifact not found")
         return artifact
 
     async def _get_current_version(self, artifact: Artifact) -> ArtifactVersion:
         if artifact.current_version_id is None:
-            raise ValueError("Artifact chưa có phiên bản hiện tại")
+            raise ValueError("Artifact has no current version")
         current = await self.db.get(ArtifactVersion, artifact.current_version_id)
         if current is None:
-            raise ValueError("Không tìm thấy phiên bản hiện tại")
+            raise ValueError("Current version not found")
         return current
 
     async def _require_project_member(self, project_id: uuid.UUID, user_id: uuid.UUID | None) -> None:
         if user_id is None:
-            raise PermissionError("User không có quyền truy cập dự án")
+            raise PermissionError("User does not have access to the project")
         result = await self.db.execute(select(Project.org_id).where(Project.id == project_id))
         org_id = result.scalar_one_or_none()
         if org_id is None:
-            raise ValueError("Không tìm thấy dự án")
+            raise ValueError("Project not found")
         member = await self.db.execute(
             select(OrgMember.id).where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
         )
         if member.scalar_one_or_none() is None:
-            raise PermissionError("User không có quyền truy cập dự án")
+            raise PermissionError("User does not have access to the project")
 
     def _validate_status_transition(self, current: ArtifactStatus, target: ArtifactStatus) -> None:
         if current == target:
             return
         if target not in ALLOWED_STATUS_TRANSITIONS[current]:
             raise InvalidArtifactStatusTransition(
-                f"Không thể chuyển trạng thái artifact từ {current.value} sang {target.value}"
+                f"Cannot transition artifact status from {current.value} sang {target.value}"
             )
 
 
@@ -483,7 +516,7 @@ class ArtifactVersionService:
         artifact = await self.artifacts._get_project_artifact(project_id, artifact_id)
         version = await self.db.get(ArtifactVersion, version_id)
         if version is None or version.artifact_id != artifact.id:
-            raise ValueError("Không tìm thấy phiên bản artifact")
+            raise ValueError("Artifact version not found")
         review = ArtifactReview(
             artifact_id=artifact.id,
             artifact_version_id=version.id,
@@ -547,26 +580,30 @@ class ArtifactLinkService:
         await self.artifacts._require_project_member(project_id, user_id)
         link = await self.db.get(ArtifactLink, link_id)
         if link is None or link.project_id != project_id:
-            raise ValueError("Không tìm thấy artifact link")
+            raise ValueError("Artifact not found link")
         await self.db.delete(link)
         await self.db.flush()
 
     async def graph(self, *, project_id: uuid.UUID, user_id: uuid.UUID) -> ArtifactGraphResponse:
         await self.artifacts._require_project_member(project_id, user_id)
         artifact_rows = (
-            await self.db.execute(
-                select(Artifact)
-                .where(Artifact.project_id == project_id)
-                .order_by(Artifact.created_at, Artifact.id)
+            (
+                await self.db.execute(
+                    select(Artifact).where(Artifact.project_id == project_id).order_by(Artifact.created_at, Artifact.id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         link_rows = (
-            await self.db.execute(
-                select(ArtifactLink)
-                .where(ArtifactLink.project_id == project_id)
-                .order_by(ArtifactLink.created_at)
+            (
+                await self.db.execute(
+                    select(ArtifactLink).where(ArtifactLink.project_id == project_id).order_by(ArtifactLink.created_at)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         nodes = [
             ArtifactNode(
@@ -630,7 +667,7 @@ class ArtifactLinkService:
 class SourceDocumentInUseError(Exception):
     def __init__(self, artifact_ids: list[uuid.UUID]):
         self.artifact_ids = artifact_ids
-        super().__init__("Source document đang được dùng làm evidence")
+        super().__init__("Source document is being used as evidence")
 
 
 class SourceDocumentService:
@@ -673,7 +710,7 @@ class SourceDocumentService:
         await self.artifacts._require_project_member(project_id, user_id)
         document = await self.db.get(SourceDocument, source_document_id)
         if document is None or document.project_id != project_id:
-            raise ValueError("Không tìm thấy source document")
+            raise ValueError("Source document not found")
         evidence = await self.db.execute(
             select(ArtifactEvidence.artifact_id).where(ArtifactEvidence.source_document_id == source_document_id)
         )

@@ -4,11 +4,11 @@ import pytest
 
 from app.graphs.agent_tools import (
     CRITIQUE_ROUNDS_MAX,
-    NOTE_STEP_LIMIT,
     _run_critique_impl,
     get_available_tools,
 )
 from app.graphs.critique import CRITIQUE_MODES, _invoke_judge
+from app.graphs.decision_graph import create_node, render_view
 from tests.integration.test_graph_nodes import _state
 
 
@@ -17,17 +17,33 @@ def _tool_names(state):
     return {t.name for t in get_available_tools({**state, "user_confirmed": True})}
 
 
-def test_run_critique_is_available_when_draft_body_loaded():
-    state = _state(artifact_type="goal")
-    state["draft_body"] = "## Mục tiêu\n- Tăng giữ chân 30%."
+def _draft_state(statement: str = "Increase retention by 30%.") -> dict:
+    state = _state(artifact_type="brd")
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement=statement,
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    return state
+
+
+def _draft_body(state: dict) -> str:
+    return render_view(state["decision_nodes"], state["artifact_type"])
+
+
+def test_run_critique_is_available_when_decision_graph_has_view():
+    state = _draft_state()
     assert "run_critique" in _tool_names(state)
 
 
-def test_run_critique_is_available_when_focused_artifact_body_is_loaded():
-    state = _state(artifact_type="goal")
+def test_run_critique_ignores_focused_artifact_body_without_graph():
+    state = _state(artifact_type="brd")
     state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
-    state["draft_body"] = "## Mục tiêu\n- Tăng giữ chân 30%."
-    assert "run_critique" in _tool_names(state)
+    state["draft_body"] = "## Goal\n- Increase retention by 30%."
+    assert "run_critique" not in _tool_names(state)
 
 
 def test_run_critique_not_available_without_draft():
@@ -36,8 +52,7 @@ def test_run_critique_not_available_without_draft():
 
 
 def test_run_critique_gated_after_max_rounds():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft"
+    state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
     assert "run_critique" not in _tool_names(state)
 
@@ -55,38 +70,34 @@ async def test_run_critique_bypass_without_draft_returns_tool_error():
 
 @pytest.mark.asyncio
 async def test_run_critique_bypass_after_max_rounds_returns_tool_error():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft"
+    state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
     config = {"configurable": {"llm_client": None}}
 
     command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
 
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"
-    assert "giới hạn critique" in command.update["messages"][0].content
+    assert "critique round limit" in command.update["messages"][0].content
 
 
 def test_write_draft_always_available_regardless_of_critique_cap():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft"
+    state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
     assert "write_draft" in _tool_names(state)
 
 
 def test_ask_user_always_available_regardless_of_caps():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft"
+    state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
     state["messages"] = [
-        type("M", (), {"tool_calls": [{"name": "critique_note"}]})() for _ in range(NOTE_STEP_LIMIT)
+        type("M", (), {"tool_calls": [{"name": "critique_note"}]})() for _ in range(5)
     ]
     assert "ask_user" in _tool_names(state)
 
 
 @pytest.mark.asyncio
 async def test_run_critique_increments_critique_rounds():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
+    state = _draft_state()
     state["critique_rounds"] = 1
     config = {"configurable": {"llm_client": None}}
 
@@ -97,8 +108,7 @@ async def test_run_critique_increments_critique_rounds():
 
 @pytest.mark.asyncio
 async def test_run_critique_updates_quality_report():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
+    state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
     command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
@@ -124,38 +134,35 @@ def _scripted_client(score: float, findings: list[str], suggestions: list[str]):
 
 @pytest.mark.asyncio
 async def test_run_critique_pass_gate_classification():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
-    config = {"configurable": {"llm_client": _scripted_client(0.9, ["nit nhỏ"], ["mở rộng"])}}
+    state = _draft_state()
+    config = {"configurable": {"llm_client": _scripted_client(0.9, ["nit nho"], ["mo rong"])}}
 
     report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
 
     assert report["quality_gate_result"] == "pass"
     assert report["blocking_issues"] == []
-    assert report["non_blocking_warnings"] == ["nit nhỏ"]
+    assert report["non_blocking_warnings"] == ["nit nho"]
     assert report["recommended_next_action"] == "finalize"
 
 
 @pytest.mark.asyncio
 async def test_run_critique_fail_gate_classification():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
-    config = {"configurable": {"llm_client": _scripted_client(0.5, ["thiếu metric"], ["thêm KPI"])}}
+    state = _draft_state()
+    config = {"configurable": {"llm_client": _scripted_client(0.5, ["missing metric"], ["them KPI"])}}
 
     report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
 
     assert report["quality_gate_result"] == "fail"
-    assert report["blocking_issues"] == ["thiếu metric"]
-    assert report["revision_plan"] == ["thêm KPI"]
+    assert report["blocking_issues"] == ["missing metric"]
+    assert report["revision_plan"] == ["them KPI"]
     assert report["recommended_next_action"] == "revise"
 
 
 @pytest.mark.asyncio
 async def test_run_critique_escalates_at_rounds_cap_when_failing():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
+    state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX - 1  # this critique reaches the cap
-    config = {"configurable": {"llm_client": _scripted_client(0.5, ["thiếu metric"], ["thêm KPI"])}}
+    config = {"configurable": {"llm_client": _scripted_client(0.5, ["missing metric"], ["them KPI"])}}
 
     report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
 
@@ -165,8 +172,7 @@ async def test_run_critique_escalates_at_rounds_cap_when_failing():
 
 @pytest.mark.asyncio
 async def test_run_critique_degraded_path_fails_gate():
-    state = _state(artifact_type="goal")
-    state["working_draft"] = "draft body"
+    state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
     report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
@@ -180,13 +186,12 @@ async def test_run_critique_degraded_path_fails_gate():
 async def test_run_critique_writes_draft_hash():
     import hashlib
 
-    state = _state(artifact_type="goal")
-    state["draft_body"] = "## Mục tiêu\n- Tăng giữ chân 30%."
+    state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
     command = await _run_critique_impl("draft", "completeness", state, config, "c1")
 
-    body = state["draft_body"]
+    body = _draft_body(state)
     assert command.update["last_critiqued_draft_hash"] == hashlib.md5(body.encode()).hexdigest()[:8]
 
 
@@ -218,10 +223,10 @@ async def test_run_critique_invokes_llm_when_present():
 
     client = AsyncMock()
     client.generate = AsyncMock(return_value=(
-        {"score": 0.8, "findings": ["thiếu metric"], "suggestions": ["thêm KPI"]}, None
+        {"score": 0.8, "findings": ["missing metric"], "suggestions": ["them KPI"]}, None
     ))
 
     result = await _invoke_judge("body", "completeness", llm_client=client)
 
     assert result["score"] == 0.8
-    assert result["findings"] == ["thiếu metric"]
+    assert result["findings"] == ["missing metric"]

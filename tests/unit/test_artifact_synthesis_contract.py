@@ -17,7 +17,7 @@ def test_all_document_items_have_markdown_output_contracts():
         contract = output_contract(item_type)
         assert contract.format == "markdown"
         assert contract.required_headings
-        assert contract.confirmation_note == "(agent suy diễn, cần xác nhận)"
+        assert contract.confirmation_note == "(agent-inferred, needs confirmation)"
 
 
 def test_vision_objectives_contract_is_requirements_specific():
@@ -33,7 +33,7 @@ def test_synthesis_metadata_requires_stable_provenance_shape():
         artifact_type="vision_objectives",
         focused_artifact_id=uuid.uuid4(),
         evidence_refs=["agent_run:run-1"],
-        pending_assumptions=["Target retention cần xác nhận"],
+        pending_assumptions=["Retention target needs confirmation"],
     )
 
     dumped = metadata.model_dump(mode="json")
@@ -50,9 +50,9 @@ def test_candidate_readiness_schema_exposes_persistence_contract():
     readiness = ArtifactCandidateReadiness(
         state=ArtifactReadinessState.NEEDS_CONFIRMATION,
         missing=["target"],
-        needs_confirmation=["Target retention cần xác nhận"],
-        inferred=["Metric retention được agent suy luận"],
-        blocking_reasons=["Còn assumption cần user xác nhận"],
+        needs_confirmation=["Retention target needs confirmation"],
+        inferred=["Retention metric inferred by the agent"],
+        blocking_reasons=["Remaining assumption needs user confirmation"],
     )
 
     dumped = readiness.model_dump(mode="json")
@@ -60,9 +60,9 @@ def test_candidate_readiness_schema_exposes_persistence_contract():
     assert dumped["state"] == "needs_confirmation"
     assert dumped["can_persist"] is False
     assert dumped["missing"] == ["target"]
-    assert dumped["needs_confirmation"] == ["Target retention cần xác nhận"]
-    assert dumped["inferred"] == ["Metric retention được agent suy luận"]
-    assert dumped["blocking_reasons"] == ["Còn assumption cần user xác nhận"]
+    assert dumped["needs_confirmation"] == ["Retention target needs confirmation"]
+    assert dumped["inferred"] == ["Retention metric inferred by the agent"]
+    assert dumped["blocking_reasons"] == ["Remaining assumption needs user confirmation"]
 
 
 def test_candidate_readiness_is_poorly_structured_when_required_heading_missing():
@@ -73,7 +73,7 @@ def test_candidate_readiness_is_poorly_structured_when_required_heading_missing(
 
     readiness = evaluate_candidate_readiness(
         artifact_type="vision_objectives",
-        body="## Vision\nTăng retention.\n\n## Objectives\n- Cải thiện activation.",
+        body="## Vision\nTang retention.\n\n## Objectives\n- Cai thien activation.",
         synthesis_metadata=metadata,
     )
 
@@ -90,8 +90,8 @@ def test_candidate_readiness_is_incomplete_when_pending_assumption_has_no_marker
     )
     body = "\n\n".join(
         [
-            "## Vision\nTăng retention.",
-            "## Objectives\n- Cải thiện activation.",
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
             "## Success Metrics\n- Retention target 15%.",
         ]
     )
@@ -116,9 +116,9 @@ def test_candidate_readiness_needs_confirmation_when_pending_assumption_is_marke
     )
     body = "\n\n".join(
         [
-            "## Vision\nTăng retention.",
-            "## Objectives\n- Cải thiện activation.",
-            "## Success Metrics\n- Retention target 15% (agent suy diễn, cần xác nhận).",
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
+            "## Success Metrics\n- Retention target 15% (agent-inferred, needs confirmation).",
         ]
     )
 
@@ -141,8 +141,8 @@ def test_candidate_readiness_is_sufficient_when_structure_and_assumptions_are_co
     )
     body = "\n\n".join(
         [
-            "## Vision\nTăng retention.",
-            "## Objectives\n- Cải thiện activation.",
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
             "## Success Metrics\n- Retention target 15%.",
         ]
     )

@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import add_messages
@@ -5,6 +6,7 @@ from langgraph.graph import add_messages
 
 class AssumptionObject(TypedDict):
     """A captured assumption (spec §5.4): what is being relied on and how confident we are."""
+
     statement: str
     source: str
     confidence: str
@@ -15,6 +17,7 @@ class AssumptionObject(TypedDict):
 
 class RiskObject(TypedDict):
     """A captured risk: an adverse event with its likelihood and mitigation."""
+
     statement: str
     likelihood: str
     impact: str
@@ -25,6 +28,7 @@ class RiskObject(TypedDict):
 
 class OpenQuestionObject(TypedDict):
     """An unresolved question blocking or informing the requirements."""
+
     question: str
     domain: str
     decision_needed: str
@@ -33,13 +37,61 @@ class OpenQuestionObject(TypedDict):
 
 class KeyFactObject(TypedDict):
     """A key fact about the project: a confirmed datum that must survive conversation compression."""
+
     statement: str
     source: str
     turn: str
 
 
+class DecisionNode(TypedDict):
+    """A node in the decision graph — the unit of truth for an artifact.
+
+    Lifecycle preserves history: changing a decision creates a new node that supersedes the old one
+    (never deleted). depends_on edges enable backward ripple when a node is superseded. The artifact
+    view (BRD/PRD) is a derived projection rendered from active nodes, never the source.
+    """
+
+    id: str
+    kind: str  # objective | scope | assumption | decision | risk | open_question | fact
+    statement: str
+    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded
+    origin: dict[str, Any]  # {turn, by, technique, source} — why this node exists
+    depends_on: list[str]
+    supersedes: str | None
+    superseded_by: str | None
+    blocks: list[str]
+    answer: str | None
+    # Which output-contract required_heading this node renders under (e.g. "## Objectives"). The 7 kinds
+    # don't map 1:1 to contract sections (a vision and an objective are both kind=objective), so the
+    # node carries its target section explicitly. None → render_view falls back to a kind heuristic.
+    section: str | None
+    # Column values for a table section, keyed by the contract's table_columns (e.g.
+    # {"goal": ..., "metric": ..., "target": ...}). A single free-text statement cannot fill an N-column
+    # table; fields carries that structure. A section renders as a table when its nodes carry fields.
+    fields: dict[str, str] | None
+
+
+def merge_decision_nodes(
+    left: dict[str, "DecisionNode"] | None, right: dict[str, "DecisionNode"] | None
+) -> dict[str, "DecisionNode"]:
+    """Merge decision-graph updates per node-id instead of replacing the whole dict.
+
+    Two decision tools in one turn each receive the pre-turn snapshot via InjectedState and each return
+    the full graph; a plain-replace channel would let the second clobber the first's new node. Per-id
+    merge keeps both: a key present only in `left` survives because `right` (built from the same
+    snapshot) simply does not mention it. The graph is non-destructive — no tool ever removes a node —
+    so a merge can never resurrect deleted history.
+    """
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
+
+
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
+
     method: str
     planning_track: str
     project_type: str
@@ -49,6 +101,7 @@ class MethodProfile(TypedDict):
 
 class ArtifactChain(TypedDict):
     """Status of each BMAD planning artifact stage (addendum §8)."""
+
     brainstorming: str
     product_brief: str
     prd: str
@@ -56,6 +109,7 @@ class ArtifactChain(TypedDict):
 
 class Readiness(TypedDict):
     """Readiness assessment across the planning lifecycle (addendum §8)."""
+
     requirements_ready: bool
     architecture_needed: str
     implementation_ready: bool
@@ -71,6 +125,7 @@ class QualityReport(TypedDict):
     against `settings.critique_score_threshold`, never from whether `blocking_issues` is empty —
     so the no-LLM degraded path (score=0.0, findings=[]) still yields "fail" (fail-safe).
     """
+
     mode: str
     score: float
     findings: list[str]
@@ -133,7 +188,7 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser, queried by validators (Phase 5) and the finalize gate.
+    # populated by the note parser, queried by validators and the finalize gate.
     assumptions: list[AssumptionObject]
     risks: list[RiskObject]
     open_questions: list[OpenQuestionObject]
@@ -142,23 +197,31 @@ class WorkflowState(TypedDict):
     key_facts: list[KeyFactObject]
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
-    # Persisted draft body loaded from the DB each analyze turn — lets run_critique target the
-    # confirmed artifact even when no in-session working_draft exists yet.
+    # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
+    # draft view; this field stays as DB context for document workflows.
     draft_body: str | None
-    working_draft: str | None
     candidate_readiness: dict[str, Any] | None
     tool_errors: list[dict[str, Any]]
     feedback_summary: dict[str, Any] | None
     verification_status: dict[str, Any] | None
     latest_checked_revision: str | None
     # BMAD method layer (addendum §8) — sits above the 7-section engine; analyze_node assigns
-    # workflow_mode / planning_track each turn. Independent of active_mode.
+    # workflow_mode / planning_track each turn.
     method_profile: MethodProfile
     artifact_chain: ArtifactChain
     readiness: Readiness
     # Multi-angle mode steering. A one-shot hint set by the user to switch the
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.
     mode_hint: str | None
+    # Count of successful elicit() calls this session. Drives the cold-start hard gate: a fresh
+    # project must run at least one elicitation before write_draft is offered. Each elicit emits a +1
+    # delta; the additive reducer accumulates them so two elicits in one turn don't collide
+    # (INVALID_CONCURRENT_GRAPH_UPDATE). Persists across resume within a session.
+    session_elicit_count: Annotated[int, operator.add]
+    # Decision graph keyed by node id — source of truth for the artifact. Old sessions missing this key
+    # default to {} on load without migration or crash. The merge reducer keeps concurrent same-turn
+    # node writes from clobbering each other (see merge_decision_nodes).
+    decision_nodes: Annotated[dict[str, DecisionNode], merge_decision_nodes]
 
 
 def build_initial_workflow_state(
@@ -171,7 +234,7 @@ def build_initial_workflow_state(
     focused_artifact_id: Any = None,
     mode_hint: str | None = None,
 ) -> WorkflowState:
-    """Tạo state khởi tạo duy nhất cho mọi đường vào graph."""
+    """Build the canonical initial state for every graph entry point."""
     return {
         "artifact_type": artifact_type,
         "workflow_area": workflow_area,
@@ -199,7 +262,6 @@ def build_initial_workflow_state(
         "key_facts": [],
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
-        "working_draft": None,
         "candidate_readiness": None,
         "tool_errors": [],
         "feedback_summary": None,
@@ -209,4 +271,6 @@ def build_initial_workflow_state(
         "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
         "readiness": dict(DEFAULT_READINESS),
         "mode_hint": mode_hint,
+        "session_elicit_count": 0,
+        "decision_nodes": {},
     }

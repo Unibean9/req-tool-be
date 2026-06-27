@@ -12,12 +12,12 @@ async def make_auth_headers(client, db_session=None) -> dict:
     if db_session is None:
         override = _app.dependency_overrides.get(get_db)
         if override is None:
-            raise RuntimeError("Không có db_session hoặc override get_db đang hoạt động")
+            raise RuntimeError("No db_session or active get_db override")
         gen = override()
         try:
             db_session = await gen.__anext__()
         except StopAsyncIteration:
-            raise RuntimeError("Override get_db không trả về session") from None
+            raise RuntimeError("get_db override did not return a session") from None
 
     uid = uuid_mod.uuid4().hex[:8]
     user = User(

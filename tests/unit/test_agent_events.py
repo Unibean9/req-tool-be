@@ -46,7 +46,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
         project_id=project_id,
         artifact_type="goal",
         workflow_area="analysis",
-        graph_checkpoint={"secret": "khong-duoc-leak"},
+        graph_checkpoint={"secret": "must-not-leak"},
         status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
         created_by_id=owner_id,
@@ -58,7 +58,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
         AgentMessage(
             session_id=session.id,
             role=AgentMessageRole.AGENT,
-            content="Cần duyệt artifact đề xuất.",
+            content="Artifact proposal needs approval.",
         )
     )
     run = AgentRun(session_id=session.id, analysis_result={"confidence": 0.9})
@@ -68,7 +68,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
         AgentToolCall(
             run_id=run.id,
             tool_name="create_artifact",
-            input_snapshot={"artifact_type": "goal", "title": "Mục tiêu"},
+            input_snapshot={"artifact_type": "goal", "title": "Goal"},
             status=AgentToolCallStatus.PROPOSED,
         )
     )
@@ -84,7 +84,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
     assert snapshot["session"]["id"] == session.id
     assert snapshot["session"]["created_by_id"] == owner_id
     assert "graph_checkpoint" not in snapshot["session"]
-    assert snapshot["messages"][0]["content"] == "Cần duyệt artifact đề xuất."
+    assert snapshot["messages"][0]["content"] == "Artifact proposal needs approval."
     assert snapshot["tool_calls"][0]["tool_name"] == "create_artifact"
 
 
@@ -142,7 +142,7 @@ async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_s
             AgentToolCall(
                 run_id=run.id,
                 tool_name="write_draft:section-1",
-                input_snapshot={"title": "Bản nháp", "body": "Nội dung"},
+                input_snapshot={"title": "Draft", "body": "Content"},
                 status=AgentToolCallStatus.PROPOSED,
             ),
             AgentToolCall(
@@ -182,7 +182,7 @@ async def _snapshot_for(db_session, project_id, *, status, interrupt_type=None):
         project_id=project_id,
         artifact_type="goal",
         workflow_area="analysis",
-        graph_checkpoint={"secret": "khong-duoc-leak"},
+        graph_checkpoint={"secret": "must-not-leak"},
         status=status,
         interrupt_type=interrupt_type,
         created_by_id=owner_id,
@@ -260,7 +260,7 @@ async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_ses
 
 
 # ---------------------------------------------------------------------------
-# Phase 5 — payload exposed in snapshot (S6, S7)
+# payload exposed in snapshot (S6, S7)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -282,7 +282,7 @@ async def test_snapshot_messages_include_payload(client, db_session):
         AgentMessage(
             session_id=session.id,
             role=AgentMessageRole.AGENT,
-            content="Mục tiêu là gì?",
+            content="Goal la gi?",
             payload={"kind": "question", "locale": "vi", "options": [], "blocks": []},
         )
     )
@@ -314,7 +314,7 @@ async def test_snapshot_mixed_legacy_and_new_messages(client, db_session):
         AgentMessage(
             session_id=session.id,
             role=AgentMessageRole.AGENT,
-            content="mới",
+            content="new",
             payload={"kind": "question", "locale": "vi"},
         ),
     ])

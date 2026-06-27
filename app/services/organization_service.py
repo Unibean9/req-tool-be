@@ -26,12 +26,10 @@ class OrgService:
     async def _unique_slug(self, base: str) -> str:
         slug = base
         for _ in range(10):
-            if not (await self.db.execute(
-                select(Organization).where(Organization.slug == slug)
-            )).scalar_one_or_none():
+            if not (await self.db.execute(select(Organization).where(Organization.slug == slug))).scalar_one_or_none():
                 return slug
             slug = f"{base}-{secrets.token_hex(3)}"
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Không thể tạo slug duy nhất")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create a unique slug")
 
     async def _fetch_stats(self, org_ids: list) -> dict:
         member_q = (
@@ -46,10 +44,7 @@ class OrgService:
         )
         members = {r.org_id: r.cnt for r in (await self.db.execute(member_q)).all()}
         projects = {r.org_id: r.cnt for r in (await self.db.execute(project_q)).all()}
-        return {
-            oid: OrgStats(member_count=members.get(oid, 0), project_count=projects.get(oid, 0))
-            for oid in org_ids
-        }
+        return {oid: OrgStats(member_count=members.get(oid, 0), project_count=projects.get(oid, 0)) for oid in org_ids}
 
     async def list_mine(self, user: User) -> list[OrgResponse]:
         result = await self.db.execute(
@@ -77,7 +72,7 @@ class OrgService:
         result = await self.db.execute(select(Organization).where(Organization.id == org_id))
         org = result.scalar_one_or_none()
         if not org:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy tổ chức")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Organization not found")
         stats = await self._fetch_stats([org.id])
         return OrgResponse.model_validate(org).model_copy(update={"stats": stats[org.id]})
 
@@ -115,17 +110,19 @@ class OrgService:
         skipped: list[str] = []
         not_found: list[str] = []
         for item in body.members:
-            target = (await self.db.execute(
-                select(User).where(
-                    or_(User.email == item.identifier, User.github_login == item.identifier)
+            target = (
+                await self.db.execute(
+                    select(User).where(or_(User.email == item.identifier, User.github_login == item.identifier))
                 )
-            )).scalar_one_or_none()
+            ).scalar_one_or_none()
             if not target:
                 not_found.append(item.identifier)
                 continue
-            existing = (await self.db.execute(
-                select(OrgMember).where(OrgMember.org_id == org_id, OrgMember.user_id == target.id)
-            )).scalar_one_or_none()
+            existing = (
+                await self.db.execute(
+                    select(OrgMember).where(OrgMember.org_id == org_id, OrgMember.user_id == target.id)
+                )
+            ).scalar_one_or_none()
             if existing:
                 skipped.append(item.identifier)
                 continue
@@ -142,7 +139,7 @@ class OrgService:
         )
         member = result.scalar_one_or_none()
         if not member:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy thành viên")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Member not found")
         if member.role == "owner":
             owners = await self.db.execute(
                 select(OrgMember).where(OrgMember.org_id == org_id, OrgMember.role == "owner")
@@ -150,6 +147,6 @@ class OrgService:
             if len(owners.scalars().all()) <= 1:
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
-                    detail="Không thể xóa owner duy nhất của tổ chức",
+                    detail="Cannot remove the organization's only owner",
                 )
         await self.db.delete(member)

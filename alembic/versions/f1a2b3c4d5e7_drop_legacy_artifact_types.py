@@ -61,7 +61,7 @@ def upgrade() -> None:
     if duplicate_projects:
         project_ids = ", ".join(str(row.project_id) for row in duplicate_projects)
         raise RuntimeError(
-            "Không thể tự động gộp nhiều artifact legacy thành một requirements artifact "
+            "Cannot automatically merge multiple legacy artifacts into one requirements artifact "
             f"cho project: {project_ids}"
         )
 

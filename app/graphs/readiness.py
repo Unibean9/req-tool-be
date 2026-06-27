@@ -3,8 +3,8 @@
 Distinct from rubric.py (artifact *quality*): this assesses readiness to advance the planning
 lifecycle from document-registry item coverage.
 
-Scope Stability reads the `out_of_scope` sub-dimension of scope_capabilities (added in Phase 1):
-when section_coverage carries a granular dict for that section and out_of_scope is absent, the
+Scope Stability reads the `out_of_scope` sub-dimension of scope_capabilities: when
+section_coverage carries a granular dict for that section and out_of_scope is absent, the
 dimension scores 0 and "scope_stability" is flagged.
 """
 
@@ -14,19 +14,19 @@ from app.documents.registry import children_of, status_score
 
 # dimension key -> (description, source sections). Implementation Readiness is special (min of all).
 READINESS_DIMENSIONS: dict[str, dict[str, Any]] = {
-    "goal_clarity": {"description": "Mục tiêu rõ ràng.", "sections": ["vision_objectives"]},
-    "problem_depth": {"description": "Vấn đề được đào đủ sâu.", "sections": ["problem_statement"]},
-    "stakeholder_coverage": {"description": "Bên liên quan đầy đủ.", "sections": ["stakeholder_register"]},
-    "scope_stability": {"description": "Ranh giới scope ổn định.", "sections": ["scope_capabilities"]},
-    "capability_clarity": {"description": "Năng lực rõ ràng.", "sections": ["scope_capabilities"]},
-    "business_rule_testability": {"description": "Quy tắc nghiệp vụ kiểm chứng được.", "sections": ["business_rules"]},
-    "constraint_visibility": {"description": "Ràng buộc hiển thị.", "sections": ["constraints_assumptions"]},
-    "risk_exposure": {"description": "Rủi ro được nhận diện.", "sections": ["risks_issues"]},
+    "goal_clarity": {"description": "Clear objective.", "sections": ["vision_objectives"]},
+    "problem_depth": {"description": "Problem explored deeply enough.", "sections": ["problem_statement"]},
+    "stakeholder_coverage": {"description": "Stakeholder coverage is complete.", "sections": ["stakeholder_register"]},
+    "scope_stability": {"description": "Scope boundary is stable.", "sections": ["scope_capabilities"]},
+    "capability_clarity": {"description": "Capability is clear.", "sections": ["scope_capabilities"]},
+    "business_rule_testability": {"description": "Business rule is verifiable.", "sections": ["business_rules"]},
+    "constraint_visibility": {"description": "Constraints are visible.", "sections": ["constraints_assumptions"]},
+    "risk_exposure": {"description": "Risks are identified.", "sections": ["risks_issues"]},
     "architecture_readiness": {
-        "description": "Sẵn sàng cho kiến trúc.",
+        "description": "Ready for architecture.",
         "sections": ["constraints_assumptions", "risks_issues"],
     },
-    "implementation_readiness": {"description": "Sẵn sàng triển khai.", "sections": ["__all__"]},
+    "implementation_readiness": {"description": "Ready for implementation.", "sections": ["__all__"]},
 }
 
 _ALL_SECTIONS = list(children_of("brd"))

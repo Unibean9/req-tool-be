@@ -39,15 +39,15 @@ def _resolve_api_key(config: LLMProviderConfig) -> str:
         if value is None:
             raise ValueError("Encrypted API key could not be decrypted — possible key rotation mismatch")
         return value
-    raise ValueError("Config không có API key")
+    raise ValueError("Config has no API key")
 
 
 def _decrypt_required(value: str | None, field_name: str) -> str:
     if not value:
-        raise ValueError(f"Config thiếu {field_name}")
+        raise ValueError(f"Config missing {field_name}")
     decrypted = decrypt_token(value)
     if decrypted is None:
-        raise ValueError(f"{field_name} không thể giải mã — có thể lệch key rotation")
+        raise ValueError(f"{field_name} cannot be decrypted - key rotation may be out of sync")
     return decrypted
 
 
@@ -105,7 +105,7 @@ class LLMProviderService:
         )
         config = result.scalar_one_or_none()
         if config is None:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy cấu hình LLM provider")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="LLM provider config not found")
         return config
 
     async def update(
@@ -145,7 +145,7 @@ class LLMProviderService:
         config = await self.get(user_id=user_id, config_id=config_id)
         now = datetime.now(UTC)
         if config.last_checked_at and now - config.last_checked_at < timedelta(seconds=30):
-            raise CooldownError("Health-check đang trong thời gian cooldown")
+            raise CooldownError("Health check is in cooldown")
         start = time.perf_counter()
         try:
             provider_reply, tool_calling_supported = await asyncio.wait_for(

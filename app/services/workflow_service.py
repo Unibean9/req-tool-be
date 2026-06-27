@@ -44,7 +44,7 @@ class WorkflowService:
     ) -> WorkflowRunResponse:
         active_run = await self.get_current_run(project_id)
         if active_run is not None:
-            raise ActiveWorkflowRunExistsError("Dự án đã có workflow run đang hoạt động")
+            raise ActiveWorkflowRunExistsError("Project already has an active workflow run")
 
         run = WorkflowRun(
             project_id=project_id,
@@ -122,7 +122,7 @@ class WorkflowService:
         )
         step = result.scalar_one_or_none()
         if step is None:
-            raise ValueError("Không tìm thấy workflow step")
+            raise ValueError("Workflow step not found")
         step.status = status
         await self.db.flush()
         return step

@@ -15,7 +15,7 @@ async def test_create_workflow_run_auto_seeds_five_pending_steps(client, db_sess
 
     resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng phân tích yêu cầu"},
+        json={"name": "Requirements analysis flow"},
         headers=headers,
     )
 
@@ -34,7 +34,7 @@ async def test_workflow_step_seed_has_correct_keys_and_phase_mapping(client):
 
     resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng phân tích yêu cầu"},
+        json={"name": "Requirements analysis flow"},
         headers=headers,
     )
 
@@ -54,7 +54,7 @@ async def test_update_step_status_internal_persists_status(client, db_session):
     headers, project = await _project_context(client)
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng phân tích yêu cầu"},
+        json={"name": "Requirements analysis flow"},
         headers=headers,
     )
     step_id = create_resp.json()["data"]["steps"][0]["id"]
@@ -75,18 +75,18 @@ async def test_create_workflow_run_rejects_duplicate_active_run(client):
     headers, project = await _project_context(client)
     first = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng đầu tiên"},
+        json={"name": "First flow"},
         headers=headers,
     )
     second = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng thứ hai"},
+        json={"name": "Second flow"},
         headers=headers,
     )
 
     assert first.status_code == 201, first.text
     assert second.status_code == 409
-    assert "đang hoạt động" in second.json()["detail"]
+    assert "active" in second.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_get_current_workflow_run_returns_active_or_404(client, db_session
     missing = await client.get(f"{BASE}/projects/{project['id']}/workflow-runs/current", headers=headers)
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng hiện tại"},
+        json={"name": "Current flow"},
         headers=headers,
     )
     current = await client.get(f"{BASE}/projects/{project['id']}/workflow-runs/current", headers=headers)
@@ -111,7 +111,7 @@ async def test_get_workflow_steps_returns_current_run_steps(client):
     headers, project = await _project_context(client)
     await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng hiện tại"},
+        json={"name": "Current flow"},
         headers=headers,
     )
 
@@ -128,7 +128,7 @@ async def test_get_workflow_progress_returns_status_summary(client, db_session):
     headers, project = await _project_context(client)
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng hiện tại"},
+        json={"name": "Current flow"},
         headers=headers,
     )
     await WorkflowService(db_session).update_step_status(
@@ -152,13 +152,13 @@ async def test_workflow_endpoints_reject_non_project_member(client):
     outsider_headers = await make_auth_headers(client)
     await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Luồng hiện tại"},
+        json={"name": "Current flow"},
         headers=owner_headers,
     )
 
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/workflow-runs",
-        json={"name": "Không có quyền"},
+        json={"name": "No permission"},
         headers=outsider_headers,
     )
     current_resp = await client.get(f"{BASE}/projects/{project['id']}/workflow-runs/current", headers=outsider_headers)

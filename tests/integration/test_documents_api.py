@@ -55,7 +55,7 @@ async def test_create_brd_item_links_child_to_container(client):
         f"{BASE}/projects/{project['id']}/documents/brd/vision_objectives",
         json={
             "title": "Vision",
-            "body": "Tăng retention 20% trong Q4.",
+            "body": "Increase retention by 20% in Q4.",
             "status": "accepted",
         },
         headers=headers,
@@ -64,7 +64,7 @@ async def test_create_brd_item_links_child_to_container(client):
     item = item_response.json()["data"]
     assert item["parent_id"] == container["artifact_id"]
     assert item["artifact_type"] == "vision_objectives"
-    assert item["current_version"]["body"] == "Tăng retention 20% trong Q4."
+    assert item["current_version"]["body"] == "Increase retention by 20% in Q4."
 
     document_response = await client.get(
         f"{BASE}/projects/{project['id']}/documents/brd",

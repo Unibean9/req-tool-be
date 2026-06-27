@@ -44,7 +44,7 @@ async def get_current_workflow_run(
     await require_project_access(project_id, user, db)
     run = await WorkflowService(db).get_current_run_response(project_id)
     if run is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy workflow run đang hoạt động")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Active workflow run not found")
     return ok(run)
 
 
@@ -57,7 +57,7 @@ async def list_workflow_steps(
     await require_project_access(project_id, user, db)
     steps = await WorkflowService(db).list_current_steps(project_id)
     if steps is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy workflow run đang hoạt động")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Active workflow run not found")
     return ok(steps)
 
 
@@ -70,5 +70,5 @@ async def get_workflow_progress(
     await require_project_access(project_id, user, db)
     progress = await WorkflowService(db).get_progress(project_id)
     if progress is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy workflow run đang hoạt động")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Active workflow run not found")
     return ok(progress)

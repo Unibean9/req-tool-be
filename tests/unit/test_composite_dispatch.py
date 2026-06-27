@@ -1,4 +1,4 @@
-"""D1 — Composite Dispatch tests (Phase 4 evaluation step).
+"""D1 — Composite Dispatch tests.
 
 Covers: gate precedence, multi-tool_calls, backward-compat negative test.
 """
@@ -6,10 +6,9 @@ Covers: gate precedence, multi-tool_calls, backward-compat negative test.
 import pytest
 from langchain_core.messages import AIMessage
 
-from app.graphs.nodes import _gate_selected_tools, _INTERRUPT_BEARING_TOOLS
+from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
 from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
 from tests.unit.test_tool_parity import _project
-
 
 # ---------------------------------------------------------------------------
 # _gate_selected_tools unit tests
@@ -69,7 +68,7 @@ def test_gate_drops_second_interrupt_but_keeps_note():
 
 
 def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
-    """Unavailable finalize vẫn dispatch để tool trả lỗi; note side-effect-free được giữ cùng lượt."""
+    """Unavailable finalize still dispatches so the tool can respond; side-effect-free note is kept in the same turn."""
     state = _state()  # finalize not available
     requested = [
         {"name": "finalize", "args": {"summary": "done"}},
@@ -115,8 +114,12 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
     # IDs are unique per call.
     assert tool_calls[0]["id"] != tool_calls[1]["id"]
     run_id = out["last_agent_run_id"]
-    assert tool_calls[0]["id"] == f"{run_id}:0"
-    assert tool_calls[1]["id"] == f"{run_id}:1"
+    assert tool_calls[0]["id"] == f"{run_id}-0"
+    assert tool_calls[1]["id"] == f"{run_id}-1"
+    # Bedrock (Anthropic) validates tool_use.id against ^[a-zA-Z0-9_-]+$ on history replay — no ":".
+    import re
+    for tc in tool_calls:
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", tc["id"]), f"id violates Bedrock pattern: {tc['id']}"
 
 
 # (test_backward_compat_old_format_degrades_gracefully removed: the {"tool": ...} legacy
@@ -126,15 +129,16 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
 @pytest.mark.asyncio
 async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session):
     """ask_user + explore_note → gate keeps BOTH (the note rides along) and records no drop."""
-    from app.graphs.nodes import analyze_node
     from unittest.mock import AsyncMock
+
+    from app.graphs.nodes import analyze_node
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Câu hỏi?"}},
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Cau hoi?"}},
         {"id": "scripted:1", "name": "explore_note", "args": {"content": "note"}},
     ]), None))
 
@@ -146,4 +150,3 @@ async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session)
     tool_calls = out["messages"][-1].tool_calls
     assert [tc["name"] for tc in tool_calls] == ["ask_user", "explore_note"]
     assert "gated_tool" not in out["analysis_result"]
-

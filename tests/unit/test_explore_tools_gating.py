@@ -1,16 +1,7 @@
-"""Phase 4 — Explore Tools + Dynamic Gating.
+"""Explore Tools + Dynamic Gating.
 
-Adds the note scratchpad tools (`critique_note`/`explore_note`) and `get_available_tools(state)`,
-the state-driven gate that decides which tools the loop may pick each turn. Two gates:
-- `finalize` appears only once `working_draft` is non-empty (the single hard-gate).
-- the note tools are dropped after N consecutive note turns, forcing the loop to ask_user/write_draft
-  so it cannot spam notes forever (S4 — no infinite loop).
-
-The consecutive-note count is derived on-the-fly from message history (N2) — no new state field.
-
-The bind_tools/system-prompt wiring into analyze_node (spec steps 4–5) and the T7 emergent-chain
-eval are deferred to Phase 5: the production LLMClient has no bind_tools and analyze_node emits no
-native tool_calls until the enum is removed.
+Covers the note scratchpad tools (`critique_note`/`explore_note`) and `get_available_tools(state)`,
+the state-driven menu that decides which tools the loop may pick each turn.
 """
 
 import hashlib
@@ -18,7 +9,8 @@ import hashlib
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
-from app.graphs.agent_tools import NOTE_STEP_LIMIT, get_available_tools
+from app.graphs.agent_tools import get_available_tools
+from app.graphs.decision_graph import create_node, render_view
 
 
 def _names(tools):
@@ -39,6 +31,22 @@ def _pass_gate(draft: str) -> dict:
     }
 
 
+def _draft_state(statement: str = "Mot content draft") -> dict:
+    nodes = {
+        "N1": create_node(
+            kind="objective",
+            statement=statement,
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    return {"artifact_type": "brd", "decision_nodes": nodes}
+
+
+def _draft_body(state: dict) -> str:
+    return render_view(state["decision_nodes"], state["artifact_type"])
+
+
 def _note_turn(call_id: str):
     """An AIMessage choosing a note tool — one note turn in the loop's history."""
     return AIMessage(content="", tool_calls=[{"id": call_id, "name": "critique_note", "args": {"content": "x"}}])
@@ -50,28 +58,27 @@ def _note_turn(call_id: str):
 
 def test_finalize_not_available_without_draft_body():
     assert "finalize" not in _names(get_available_tools({"messages": []}))
-    # Field present but empty/None is still CLOSED.
-    assert "finalize" not in _names(get_available_tools({"messages": [], "working_draft": None}))
-    assert "finalize" not in _names(get_available_tools({"messages": [], "working_draft": "  "}))
+    assert "finalize" not in _names(get_available_tools({"messages": [], "decision_nodes": {}}))
 
 
 # ---------------------------------------------------------------------------
-# T2 — finalize available once working_draft is non-empty AND a critique has run
+# T2 — finalize available once graph view is non-empty AND a critique has run
 # ---------------------------------------------------------------------------
 
 def test_finalize_available_after_write_draft():
     # finalize now also requires critique_rounds > 0 AND a passing, current quality gate (spec §15.1).
-    draft = "Một nội dung draft"
-    state = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 1, **_pass_gate(draft)}
+    state = {**_draft_state(), "messages": [], "user_confirmed": True, "critique_rounds": 1}
+    state.update(_pass_gate(_draft_body(state)))
     assert "finalize" in _names(get_available_tools(state))
 
 
 def test_finalize_hidden_when_gate_fails():
-    draft = "Một nội dung draft"
+    state = {**_draft_state(), "messages": [], "user_confirmed": True, "critique_rounds": 1}
+    draft = _draft_body(state)
     state = {
+        **state,
         "messages": [],
         "user_confirmed": True,
-        "working_draft": draft,
         "critique_rounds": 1,
         "quality_report": {"quality_gate_result": "fail", "blocking_issues": ["x"]},
         "last_critiqued_draft_hash": _hash(draft),
@@ -80,34 +87,38 @@ def test_finalize_hidden_when_gate_fails():
 
 
 def test_finalize_hidden_when_draft_stale():
-    draft = "Một nội dung draft"
-    state = {"messages": [], "user_confirmed": True, "working_draft": draft + " (đã sửa)", "critique_rounds": 1, **_pass_gate(draft)}
+    original = _draft_state("Mot content draft")
+    edited = _draft_state("Mot content draft da sua")
+    state = {
+        **edited,
+        "messages": [],
+        "user_confirmed": True,
+        "critique_rounds": 1,
+        **_pass_gate(_draft_body(original)),
+    }
     assert "finalize" not in _names(get_available_tools(state))
 
 
 def test_readiness_check_gated_on_critique_rounds():
-    draft = "Một nội dung draft"
-    no_critique = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 0}
+    no_critique = {**_draft_state(), "messages": [], "user_confirmed": True, "critique_rounds": 0}
     assert "run_readiness_check" not in _names(get_available_tools(no_critique))
-    with_critique = {"messages": [], "user_confirmed": True, "working_draft": draft, "critique_rounds": 1}
+    with_critique = {**_draft_state(), "messages": [], "user_confirmed": True, "critique_rounds": 1}
     assert "run_readiness_check" in _names(get_available_tools(with_critique))
 
 
 # ---------------------------------------------------------------------------
-# T3 — step-limit computed from message history forces ask/draft after N notes
+# T3 — note tools are no longer capped by a step-limit gate
 # ---------------------------------------------------------------------------
 
-def test_step_limit_forces_ask_or_draft_after_N_notes():
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
+def test_note_tools_remain_available_after_many_notes():
+    messages = [_note_turn(f"c{i}") for i in range(5)]
     names = _names(get_available_tools({"messages": messages}))
 
-    # the note tools are dropped, so the loop is forced toward ask_user/write_draft.
-    assert "critique_note" not in names and "explore_note" not in names
-    assert "ask_user" in names or "write_draft" in names
+    assert "critique_note" in names and "explore_note" in names
 
 
-def test_write_note_available_below_step_limit():
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT - 1)]
+def test_write_note_available_with_no_note_history():
+    messages = []
     names = _names(get_available_tools({"messages": messages}))
     assert "critique_note" in names and "explore_note" in names
 
@@ -137,18 +148,14 @@ def test_read_artifact_available_in_intent_and_artifact_phase():
 
 
 def test_respond_resets_note_step_limit():
-    # NOTE_STEP_LIMIT notes would normally drop the note tools; a respond turn after them is a
-    # user-facing pause that resets the streak, so the note tools are offered again.
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)] + [_respond_turn("r1")]
+    messages = [_note_turn(f"c{i}") for i in range(5)] + [_respond_turn("r1")]
     names = _names(get_available_tools({"messages": messages}))
     assert "critique_note" in names and "explore_note" in names
 
 
 def test_note_step_limit_does_not_block_run_critique():
-    # run_critique is not a NOTE_TOOL, so the note step-limit must not gate it — only the draft
-    # presence + critique-rounds cap do. After NOTE_STEP_LIMIT notes it is still offered.
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
-    names = _names(get_available_tools({"messages": messages, "user_confirmed": True, "working_draft": "draft body"}))
+    messages = [_note_turn(f"c{i}") for i in range(5)]
+    names = _names(get_available_tools({**_draft_state(), "messages": messages, "user_confirmed": True}))
     assert "run_critique" in names
 
 
@@ -160,11 +167,11 @@ def test_note_step_limit_does_not_block_run_critique():
 async def test_write_note_appends_to_messages():
     from app.graphs.agent_tools import _write_note_impl
 
-    command = await _write_note_impl("Giả định X có thể sai vì...", {}, "call_1", "explore_note")
+    command = await _write_note_impl("Assumption X may be wrong because...", {}, "call_1", "explore_note")
 
     appended = command.update["messages"]
     assert len(appended) == 1
     msg = appended[0]
     assert isinstance(msg, ToolMessage)
-    assert "Giả định X" in msg.content
+    assert "Assumption X" in msg.content
     assert msg.tool_call_id == "call_1"

@@ -1,4 +1,3 @@
-
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,9 +11,9 @@ class Settings(BaseSettings):
     @classmethod
     def _normalize_database_url(cls, v: str) -> str:
         if v.startswith("postgres://"):
-            return "postgresql+asyncpg://" + v[len("postgres://"):]
+            return "postgresql+asyncpg://" + v[len("postgres://") :]
         if v.startswith("postgresql://"):
-            return "postgresql+asyncpg://" + v[len("postgresql://"):]
+            return "postgresql+asyncpg://" + v[len("postgresql://") :]
         return v
 
     jwt_secret_key: str = "change-this-in-production"
@@ -43,6 +42,14 @@ class Settings(BaseSettings):
     aws_secret_access_key: str = ""
     aws_region: str = "us-east-1"
     bedrock_notation_model: str = "google.gemma-3-4b-it"
+
+    # External web search for elicitation (comparable_products). "" disables it (graceful fallback to
+    # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
+    search_provider: str = "duckduckgo"
+
+    # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
+    # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.
+    decision_graph_enabled: bool = True
 
     app_env: str = "development"
     app_debug: bool = False
@@ -80,13 +87,18 @@ class Settings(BaseSettings):
             if not self.password_pepper:
                 raise ValueError("PASSWORD_PEPPER must be set in non-development environments")
             if not self.github_client_id or not self.github_client_secret:
-                raise ValueError("GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments")  # noqa: E501 — single message string
+                raise ValueError(
+                    "GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET must be set in non-development environments"
+                )  # noqa: E501 — single message string
             if not self.github_state_secret:
                 raise ValueError("GITHUB_STATE_SECRET must be set in non-development environments")
             if not self.cors_origins:
                 raise ValueError("CORS_ORIGINS must be non-empty in non-development environments")
             if not self.github_app_id or not self.github_app_private_key or not self.github_app_slug:
-                raise ValueError("GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in non-development environments")  # noqa: E501 — single message string
+                raise ValueError(
+                    "GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, and GITHUB_APP_SLUG must be set in "
+                    "non-development environments"
+                )
         return self
 
 

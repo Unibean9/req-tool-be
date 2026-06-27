@@ -26,7 +26,7 @@ def _judge_client():
     from tests.eval.config import JudgeSettings
     judge_settings = JudgeSettings()
     if not judge_settings.judge_api_key:
-        pytest.skip(f"{_REAL_JUDGE_ENV}=1 nhưng thiếu JUDGE_API_KEY")
+        pytest.skip(f"{_REAL_JUDGE_ENV}=1 nhung missing JUDGE_API_KEY")
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
     return LLMClientFactory.create(

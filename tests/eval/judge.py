@@ -40,16 +40,16 @@ JUDGE_SCHEMA: dict[str, Any] = {
 }
 
 _JUDGE_SYSTEM = (
-    "Bạn là chuyên gia kỹ nghệ yêu cầu (requirements engineering). "
-    "Chấm artifact theo từng tiêu chí trong rubric, mỗi tiêu chí 0.0–1.0. "
-    "Trả null cho invest/smart nếu tiêu chí không áp dụng cho loại artifact này. "
-    "overall là điểm tổng hợp 0.0–1.0; rationale giải thích ngắn gọn bằng tiếng Việt."
+    "You are a requirements engineering expert. "
+    "Score the artifact by each rubric criterion, each from 0.0-1.0. "
+    "Return null for invest/smart if the criterion does not apply to this artifact type. "
+    "overall is the aggregate score from 0.0-1.0; rationale is a concise explanation in English."
 )
 
 
 def _build_prompt(artifact_text: str) -> str:
     return (
-        "Chấm artifact requirements sau theo rubric.\n\n"
+        "Score the following requirements artifact against the rubric.\n\n"
         f"RUBRIC:\n{render_criteria_block()}\n\n"
         f"ARTIFACT:\n{artifact_text}"
     )
@@ -57,17 +57,17 @@ def _build_prompt(artifact_text: str) -> str:
 
 def _validate(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
-        raise ValueError("Judge phải trả JSON object")
+        raise ValueError("Judge must return a JSON object")
     scores = result.get("scores")
     if not isinstance(scores, dict):
-        raise ValueError("Judge thiếu trường 'scores'")
+        raise ValueError("Judge is missing field 'scores'")
     for key in _REQUIRED_SCORE_KEYS:
         if key not in scores:
-            raise ValueError(f"Judge thiếu điểm tiêu chí bắt buộc: {key}")
+            raise ValueError(f"Judge is missing required criterion score: {key}")
     if not isinstance(result.get("overall"), (int, float)):
-        raise ValueError("Judge thiếu 'overall' dạng số")
+        raise ValueError("Judge is missing numeric 'overall'")
     if not isinstance(result.get("rationale"), str):
-        raise ValueError("Judge thiếu 'rationale' dạng chuỗi")
+        raise ValueError("Judge is missing string 'rationale'")
     result["overall"] = float(result["overall"])
     return result
 
@@ -105,22 +105,22 @@ CONVERSATION_JUDGE_SCHEMA: dict[str, Any] = {
 }
 
 _CONVERSATION_JUDGE_SYSTEM = (
-    "Bạn đánh giá một hội thoại giữa trợ lý phân tích yêu cầu và người dùng theo góc độ đa chế độ. "
-    "mode_variety (0.0–1.0): mức độ trợ lý sử dụng nhiều chế độ khác nhau (hỏi/đánh giá/khám phá) "
-    "thay vì chỉ hỏi. proactive_count: số lượt trợ lý CHỦ ĐỘNG chuyển khỏi chế độ hỏi-đáp thuần. "
-    "rationale: giải thích ngắn gọn bằng tiếng Việt."
+    "Evaluate a conversation between a requirements analysis assistant and a user from a multi-mode perspective. "
+    "mode_variety (0.0-1.0): how much the assistant uses multiple modes (question/assessment/exploration) "
+    "instead of only asking. proactive_count: number of turns where the assistant proactively leaves pure Q&A mode. "
+    "rationale: concise explanation in English."
 )
 
 
 def _validate_conversation(result: Any) -> dict[str, Any]:
     if not isinstance(result, dict):
-        raise ValueError("Conversation judge phải trả JSON object")
+        raise ValueError("Conversation judge must return a JSON object")
     if not isinstance(result.get("mode_variety"), (int, float)):
-        raise ValueError("Conversation judge thiếu 'mode_variety' dạng số")
+        raise ValueError("Conversation judge is missing numeric 'mode_variety'")
     if not isinstance(result.get("proactive_count"), int) or isinstance(result.get("proactive_count"), bool):
-        raise ValueError("Conversation judge thiếu 'proactive_count' dạng số nguyên")
+        raise ValueError("Conversation judge is missing integer 'proactive_count'")
     if not isinstance(result.get("rationale"), str):
-        raise ValueError("Conversation judge thiếu 'rationale' dạng chuỗi")
+        raise ValueError("Conversation judge is missing string 'rationale'")
     result["mode_variety"] = float(result["mode_variety"])
     return result
 
@@ -128,7 +128,7 @@ def _validate_conversation(result: Any) -> dict[str, Any]:
 async def judge_conversation(conversation_text: str, llm_client) -> dict[str, Any]:
     """Score one conversation for multi-angle behaviour. Raises ValueError on a bad shape."""
     result, _usage = await llm_client.generate(
-        messages=[{"role": "user", "content": f"Đánh giá hội thoại sau:\n\n{conversation_text}"}],
+        messages=[{"role": "user", "content": f"Evaluate the following conversation:\n\n{conversation_text}"}],
         system=_CONVERSATION_JUDGE_SYSTEM,
         max_tokens=512,
         response_format=CONVERSATION_JUDGE_SCHEMA,

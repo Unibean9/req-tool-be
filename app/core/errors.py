@@ -79,7 +79,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     return _problem(
         status.HTTP_422_UNPROCESSABLE_ENTITY,
         "Validation Error",
-        "Dữ liệu đầu vào không hợp lệ",
+        "Invalid input data",
         str(request.url),
         _request_id(request),
         errors,
@@ -89,7 +89,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     logger.exception("Unhandled error on %s %s", request.method, request.url, exc_info=exc)
     # Never expose internal detail outside development
-    detail = str(exc) if settings.app_debug else "Đã xảy ra lỗi không mong muốn."
+    detail = str(exc) if settings.app_debug else "An unexpected error occurred."
     return _problem(
         status.HTTP_500_INTERNAL_SERVER_ERROR,
         "Internal Server Error",

@@ -16,7 +16,7 @@ async def test_graph_endpoint_returns_nodes_links_and_version_references(client)
         headers,
         project["id"],
         artifact_type="functional_requirement",
-        title="Yêu cầu chức năng",
+        title="Requirement chuc nang",
     )
     link = await _create_link(client, headers, project["id"], fr["id"], req["id"], "satisfies")
 
@@ -71,9 +71,9 @@ async def test_graph_endpoint_reports_conflicting_artifacts_warning(client):
 async def test_create_link_rejects_cross_project_self_and_bidirectional_duplicate(client):
     headers, project = await _project_context(client)
     other_headers, other_project = await _project_context(client)
-    source = await _create_artifact(client, headers, project["id"], title="Nguồn")
-    target = await _create_artifact(client, headers, project["id"], title="Đích")
-    other = await _create_artifact(client, other_headers, other_project["id"], title="Khác dự án")
+    source = await _create_artifact(client, headers, project["id"], title="Source")
+    target = await _create_artifact(client, headers, project["id"], title="Target")
+    other = await _create_artifact(client, other_headers, other_project["id"], title="Other project")
 
     self_link = await client.post(
         f"{BASE}/projects/{project['id']}/artifact-links",
@@ -111,7 +111,7 @@ async def test_evidence_attach_and_retrieve(client, db_session):
             "source_document_id": source_doc["id"],
             "source_type": "document",
             "locator": "doc:section-1",
-            "excerpt": "Người dùng cần báo cáo theo tháng.",
+            "excerpt": "Users need monthly reports.",
             "confidence": 0.9,
             "metadata": {"trang": 1},
         },
@@ -160,7 +160,7 @@ async def _project_context(client):
 async def _create_artifact(client, headers, project_id, *, artifact_type="functional_requirement", title="Artifact"):
     resp = await client.post(
         f"{BASE}/projects/{project_id}/artifacts",
-        json={"type": artifact_type, "title": title, "body": f"Nội dung {title}", "priority": "must"},
+        json={"type": artifact_type, "title": title, "body": f"Content {title}", "priority": "must"},
         headers=headers,
     )
     assert resp.status_code == 201, resp.text
@@ -180,7 +180,7 @@ async def _create_link(client, headers, project_id, source_id, target_id, relati
 async def _create_source_document(client, headers, project_id):
     resp = await client.post(
         f"{BASE}/projects/{project_id}/source-documents",
-        json={"title": "Tài liệu nguồn", "source_type": "text_paste", "content_text": "Bằng chứng"},
+        json={"title": "Source document", "source_type": "text_paste", "content_text": "Evidence"},
         headers=headers,
     )
     assert resp.status_code == 201, resp.text

@@ -18,6 +18,7 @@ class ErrorDetail(BaseModel):
 
 class ErrorResponse(BaseModel):
     """RFC 7807 Problem Detail extended with request_id and structured errors."""
+
     type: str = "about:blank"
     title: str
     status: int

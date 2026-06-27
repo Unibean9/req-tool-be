@@ -33,6 +33,6 @@ tasks:
       - python -m pytest -q
 
   ruff:
-    desc: Chạy Ruff lint nhanh
+    desc: Run quick Ruff lint
     cmds:
       - "{{.PYTHON}} -m ruff check app tests alembic"

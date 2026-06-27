@@ -10,12 +10,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 _TRANSCRIPTS_DIR = Path(__file__).parents[2] / "tests" / "integration" / "scenarios" / "transcripts"
 
 _KIND_LABEL = {
-    "question": "❓ Agent (câu hỏi)",
-    "assessment": "📋 Agent (xác nhận intent)",
+    "question": "❓ Agent (question)",
+    "assessment": "📋 Agent (intent confirmation)",
 }
 
 _STATUS_LABEL = {
@@ -45,7 +44,7 @@ def _render_message(msg: dict[str, Any]) -> str:
     return f"> {label}: {content}"
 
 
-def _render_tool_call(tc: dict[str, Any], final_step: bool = False) -> list[str]:
+def _render_tool_call(tc: dict[str, Any]) -> list[str]:
     snap = tc.get("input_snapshot") or {}
     status = tc.get("status", "unknown")
     title = snap.get("title", "")
@@ -131,8 +130,8 @@ def render_transcript(path: Path) -> str:
         new_tcs = [tc for tc in snap.get("tool_calls", []) if tc["id"] not in seen_tc_ids]
         for tc in new_tcs:
             seen_tc_ids.add(tc["id"])
-            for l in _render_tool_call(tc):
-                lines.append(l)
+            for line in _render_tool_call(tc):
+                lines.append(line)
             lines.append("")
 
         if action_type == "approve_all":
@@ -207,25 +206,26 @@ def main() -> None:
         transcript_names=["multi-turn-qna", "reject-then-explore"],
         title="Conversation Trace: Harness Conversation Fluency (D1–D5)",
         plan_notes=(
-            "Các kịch bản này chứng minh D4 (session ACTIVE sau ask_user), D1 (composite dispatch).\n"
-            "Mỗi bước hiển thị message thực tế từ API + trạng thái session.\n\n"
-            "**Claim D4:** Sau `ask_user`, session status = `ACTIVE` (không phải `WAITING_FOR_HUMAN`).\n"
-            "**Claim D1:** Nhiều tool_call có thể dispatch trong một turn (gate pass-through)."
+            "These scenarios prove D4 (session ACTIVE sau ask_user), D1 (composite dispatch).\n"
+            "Each step shows the actual API message and session status.\n\n"
+            "**Claim D4:** After `ask_user`, session status = `ACTIVE` (not necessarily `WAITING_FOR_HUMAN`).\n"
+            "**Claim D1:** Multiple tool_calls can dispatch in one turn (gate pass-through)."
         ),
         output_path=Path("plans/harness-conversation-fluency/conversation-trace.md"),
     )
 
-    # intent-phase-gate: intent-propose-approve (D6 confirm_intent → write_draft) +
-    # multi-turn-qna (D6 multi-turn flow).
+    # intent-phase-gate: intent-propose-approve (D6 confirm_intent → write_draft)
+    # + multi-turn-qna (D6 multi-turn flow).
     render_conversation_file(
         transcript_names=["intent-propose-approve", "multi-turn-qna"],
         title="Conversation Trace: Intent Phase Gate (D6)",
         plan_notes=(
-            "Kịch bản chứng minh D6 intent gate: `confirm_intent` (assessment) unblock `write_draft`.\n"
-            "Session giữ `ACTIVE` sau `confirm_intent` (STREAM_RESPONSE interrupt);\n"
-            "`write_draft` chỉ xuất hiện sau khi intent đã confirm.\n\n"
+            "Scenario proves D6 intent gate: `confirm_intent` opens artifact phase, "
+            "then unblocks `write_draft`.\n"
+            "Session stays `ACTIVE` sau `confirm_intent` (STREAM_RESPONSE interrupt);\n"
+            "`write_draft` appears only after intent is confirmed.\n\n"
             "**Claim D6:** `confirm_intent` → `interrupt_type=STREAM_RESPONSE`, session `ACTIVE`.\n"
-            "**Claim D6-flow:** Sau confirm, `write_draft` propose thành công → artifact."
+            "**Claim D6-flow:** After confirmation, `write_draft` successfully proposes → artifact."
         ),
         output_path=Path("plans/intent-phase-gate/conversation-trace.md"),
     )
