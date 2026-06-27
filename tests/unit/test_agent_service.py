@@ -1036,6 +1036,7 @@ async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, d
     session, run, tc = await _make_single_propose_session(db_session, project_id)
     tc.input_snapshot = {
         **tc.input_snapshot,
+        "body": "## Vision\nIncrease retention.",
         "synthesis_metadata": {
             **tc.input_snapshot["synthesis_metadata"],
             "pending_assumptions": ["Target retention 15%"],
@@ -1055,7 +1056,7 @@ async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, d
         await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
 
     assert exc.value.status_code == 422
-    assert exc.value.detail["state"] == "well_structured_but_incomplete"
+    assert exc.value.detail["state"] == "poorly_structured"
     await db_session.refresh(tc)
     focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
     assert tc.status == AgentToolCallStatus.PROPOSED
@@ -1123,7 +1124,38 @@ async def test_feedback_loop_many_edits_only_persists_final_ready_version(client
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_blocks_unconfirmed_candidate_readiness(client, db_session):
+async def test_approve_tool_call_normalizes_unmarked_pending_assumptions_before_persist(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "body": "\n\n".join(
+            [
+                "## Vision\nIncrease retention.",
+                "## Objectives\n- Improve activation.",
+                "## Success Metrics\n- Retention target 15%.",
+            ]
+        ),
+        "synthesis_metadata": {
+            **tc.input_snapshot["synthesis_metadata"],
+            "confirmed_assumptions": ["Students use study groups weekly"],
+            "pending_assumptions": ["Target retention 15%"],
+        },
+    }
+    await db_session.flush()
+
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))).scalar_one()
+    assert "## Assumptions" in version.body
+    assert "- Students use study groups weekly" in version.body
+    assert "- Target retention 15% ⚠️ needs confirmation" in version.body
+    assert tc.created_version_id == version.id
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_persists_marked_confirmation_candidate_readiness(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
@@ -1142,24 +1174,22 @@ async def test_approve_tool_call_blocks_unconfirmed_candidate_readiness(client, 
         },
         "candidate_readiness": {
             "state": "needs_confirmation",
-            "can_persist": False,
+            "can_persist": True,
             "missing": [],
             "needs_confirmation": ["Target retention 15%"],
             "inferred": ["Retention target 15% (agent-inferred, needs confirmation)."],
-            "blocking_reasons": ["Candidate still has assumptions needing user confirmation before persistence."],
+            "blocking_reasons": [],
         },
     }
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
 
-    assert exc.value.status_code == 422
-    assert exc.value.detail["state"] == "needs_confirmation"
     versions = (
         await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
     ).scalars().all()
-    assert versions == []
+    assert len(versions) == 1
+    assert tc.created_version_id == versions[0].id
 
 
 @pytest.mark.asyncio

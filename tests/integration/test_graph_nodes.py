@@ -141,8 +141,46 @@ async def test_analyze_node_low_confidence_returns_ask_action(client, db_session
     result = await analyze_node(state, config)
 
     assert result["analysis_result"]["tools"][0]["name"] == "ask_user"
+    assert result["analysis_result"]["model_tool_calls"][0]["name"] == "ask_user"
+    assert "ask_user" in result["analysis_result"]["available_tools"]
+    assert result["analysis_result"]["dispatched_tool_calls"][0]["name"] == "ask_user"
     assert result["turn_count"] == 1
     assert result["last_agent_run_id"] is not None
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_records_raw_model_tool_calls_before_gate(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Can you confirm the target?"}},
+        {"id": "scripted:1", "name": "create_decision_node", "args": {"kind": "fact", "statement": "Target unclear"}},
+    ]), None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    analysis = result["analysis_result"]
+    assert [tc["name"] for tc in analysis["model_tool_calls"]] == ["ask_user", "create_decision_node"]
+    assert [tc["name"] for tc in analysis["dispatched_tool_calls"]] == ["ask_user"]
+    assert analysis["dropped_tool_calls"] == ["create_decision_node"]
+
+    async with TestSessionFactory() as db:
+        run = await db.get(AgentRun, uuid.UUID(result["last_agent_run_id"]))
+        assert [tc["name"] for tc in run.analysis_result["model_tool_calls"]] == [
+            "ask_user",
+            "create_decision_node",
+        ]
 
 
 @pytest.mark.asyncio

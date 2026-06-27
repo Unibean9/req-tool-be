@@ -221,6 +221,50 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_snapshot_keeps_single_canonical_body_when_graph_render_wins(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    model_body = "\n\n".join(
+        [
+            "## Vision\nModel-authored vision.",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="fact",
+            statement="Students need a clearer first-session path.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="Vision",
+        )
+    }
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await _write_draft_impl("Vision", model_body, state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        assert row.input_snapshot["body"] == render_view(state["decision_nodes"], "vision_objectives")
+        assert "model_body" not in row.input_snapshot
+        assert "body_source" not in row.input_snapshot
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
 async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_interrupt, client, db_session):
     from app.graphs.agent_tools import _write_draft_impl
     from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
@@ -262,6 +306,9 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
         assert metadata["base_version_id"] == str(current.id)
         assert metadata["confirmed_assumptions"] == ["Retention metric confirmed by the user"]
         assert metadata["pending_assumptions"] == ["Specific target needs confirmation"]
+        assert "## Assumptions" in row.input_snapshot["body"]
+        assert "- Retention metric confirmed by the user" in row.input_snapshot["body"]
+        assert "- Specific target needs confirmation ⚠️ needs confirmation" in row.input_snapshot["body"]
 
 
 @pytest.mark.asyncio
@@ -296,11 +343,74 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     async with TestSessionFactory() as db:
         row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
         readiness = row.input_snapshot["candidate_readiness"]
-        assert readiness["state"] == "well_structured_but_incomplete"
-        assert readiness["can_persist"] is False
-        assert readiness["blocking_reasons"]
-        assert command.update["candidate_readiness"]["state"] == "well_structured_but_incomplete"
+        assert readiness["state"] == "needs_confirmation"
+        assert readiness["can_persist"] is True
+        assert readiness["blocking_reasons"] == []
+        assert "- Specific target needs confirmation ⚠️ needs confirmation" in row.input_snapshot["body"]
+        assert command.update["candidate_readiness"]["state"] == "needs_confirmation"
         assert command.update["tool_errors"] == []
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_graph_render_marker_makes_pending_assumption_persistable(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["decision_nodes"] = {
+        "V1": create_node(
+            kind="fact",
+            statement="Students need faster group scheduling.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Vision",
+        ),
+        "O1": create_node(
+            kind="objective",
+            statement="Reduce scheduling coordination time.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Objectives",
+        ),
+        "M1": create_node(
+            kind="objective",
+            statement="Successful scheduling rate target needs confirmation.",
+            origin={"source": "test"},
+            status="needs_confirmation",
+            section="## Success Metrics",
+            fields={
+                "goal": "Schedule study groups",
+                "user/business value": "Students coordinate faster",
+                "metric": "Successful scheduling rate",
+                "target": "80%",
+                "timeframe": "First semester",
+            },
+        )
+    }
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    command = await _write_draft_impl("Vision", "## Vision\nModel body without marker.", state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        assert row.input_snapshot["body"].startswith(render_view(state["decision_nodes"], "vision_objectives"))
+        assert "body_source" not in row.input_snapshot
+        assert "⚠️ needs confirmation" in row.input_snapshot["body"]
+        assert "## Assumptions" in row.input_snapshot["body"]
+        assert row.input_snapshot["candidate_readiness"]["state"] == "needs_confirmation"
+        assert row.input_snapshot["candidate_readiness"]["can_persist"] is True
+        assert command.update["candidate_readiness"]["can_persist"] is True
 
 
 @pytest.mark.asyncio

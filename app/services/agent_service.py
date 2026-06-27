@@ -32,6 +32,7 @@ from app.models.artifact import (
 )
 from app.schemas.agent import AgentSessionResponse
 from app.schemas.artifact_synthesis import (
+    canonical_artifact_body,
     evaluate_candidate_readiness,
     synthesis_metadata_dict,
     synthesis_metadata_from_snapshot,
@@ -522,6 +523,8 @@ class AgentService:
             synthesis_metadata = synthesis_metadata_dict(snapshot)
         except ValueError as exc:
             raise HTTPException(422, detail="Tool call metadata synthesis is invalid") from exc
+        body = canonical_artifact_body(body=str(body or ""), synthesis_metadata=synthesis_metadata)
+        snapshot["body"] = body
         self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 
         try:
