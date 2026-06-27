@@ -15,6 +15,11 @@ class DocumentTypeConfig:
     threshold: float = 1.0
 
 
+# Shown verbatim in any table cell the agent left empty. It is also the gate's signal: a body
+# containing it has an unfilled required column, so candidate_readiness refuses to mark it SUFFICIENT.
+INCOMPLETE_CELL_PLACEHOLDER = "_(cần bổ sung)_"
+
+
 @dataclass(frozen=True)
 class ArtifactOutputContract:
     artifact_type: str
@@ -22,6 +27,12 @@ class ArtifactOutputContract:
     required_headings: tuple[str, ...]
     guidance: str
     table_columns: tuple[str, ...] = ()
+    # id_prefix turns the first "id" column into an auto-numbered trace tag (e.g. FR-01) so other
+    # artifacts cross-reference a requirement by tag instead of restating it. render_style selects how
+    # an id-tagged item projects: "table" (one row per entry) or "entries" (a per-entry sub-section,
+    # used when a field like a multi-step flow does not fit a cell).
+    id_prefix: str = ""
+    render_style: str = "table"
     confirmation_note: str = "(agent-inferred, needs confirmation)"
 
     def to_dict(self) -> dict[str, Any]:
@@ -31,6 +42,8 @@ class ArtifactOutputContract:
             "required_headings": list(self.required_headings),
             "guidance": self.guidance,
             "table_columns": list(self.table_columns),
+            "id_prefix": self.id_prefix,
+            "render_style": self.render_style,
             "confirmation_note": self.confirmation_note,
         }
 
@@ -178,7 +191,11 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         threshold=0.75,
     ),
     _item("functional_requirement", "Functional Requirement", "A testable product behavior."),
-    _item("use_case", "Use Case", "An actor-goal interaction flow."),
+    _item(
+        "use_case",
+        "Business Capabilities",
+        "A business capability: the boundary of a domain or a major business flow.",
+    ),
     _item("non_functional_requirement", "Non-Functional Requirement", "A measurable quality constraint."),
     _item("acceptance_criteria", "Acceptance Criteria", "Conditions that prove a requirement is met."),
     _item("domain_entity", "Domain Entity", "A core domain concept and its responsibilities."),
@@ -249,38 +266,39 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
     "functional_requirement": ArtifactOutputContract(
         artifact_type="functional_requirement",
         format="markdown",
-        required_headings=(
-            "## Functional Requirement",
-            "## Behavior",
-            "## Inputs and Outputs",
-            "## Acceptance Signals",
-        ),
-        guidance="Write testable behavior, using system shall/should where appropriate.",
+        required_headings=("## Functional Requirements",),
+        guidance="One row per testable behavior; reference use cases by their UC id where relevant.",
+        table_columns=("id", "requirement", "behavior", "inputs/outputs", "acceptance signal", "priority"),
+        id_prefix="FR",
     ),
     "use_case": ArtifactOutputContract(
         artifact_type="use_case",
         format="markdown",
-        required_headings=(
-            "## Use Case",
-            "## Actors",
-            "## Preconditions",
-            "## Main Flow",
-            "## Alternate / Exception Flows",
-            "## Postconditions",
+        required_headings=("## Business Capabilities",),
+        guidance=(
+            "List 3-8 business capabilities. Describe each briefly: the goal it solves, who uses it, "
+            "the value it delivers, and its main scope. Do not detail flows, preconditions, or exception "
+            "branches here — those belong to user stories and event storming."
         ),
-        guidance="Describe actor-goal flow and error/exception branches.",
+        table_columns=("goal", "users", "value", "scope"),
+        id_prefix="BC",
+        render_style="entries",
     ),
     "non_functional_requirement": ArtifactOutputContract(
         artifact_type="non_functional_requirement",
         format="markdown",
-        required_headings=("## Quality Attribute", "## Requirement", "## Measurement", "## Scope and Tradeoffs"),
-        guidance="State quality attributes with measurable targets and verification method.",
+        required_headings=("## Non-Functional Requirements",),
+        guidance="One row per quality attribute with a measurable target and verification method.",
+        table_columns=("id", "quality attribute", "requirement", "measurement", "scope/tradeoff"),
+        id_prefix="NFR",
     ),
     "acceptance_criteria": ArtifactOutputContract(
         artifact_type="acceptance_criteria",
         format="markdown",
         required_headings=("## Acceptance Criteria",),
-        guidance="Use Given/When/Then or a testable checklist.",
+        guidance="One Given/When/Then row per criterion; link each to its functional requirement by FR id.",
+        table_columns=("id", "linked requirement", "given", "when", "then"),
+        id_prefix="AC",
     ),
     "domain_entity": ArtifactOutputContract(
         artifact_type="domain_entity",

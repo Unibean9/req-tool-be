@@ -21,6 +21,7 @@ from app.models.agent import (
     AgentToolCall,
 )
 from app.models.artifact import Artifact
+from app.schemas.agent import public_tool_call_input_snapshot
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
@@ -149,7 +150,7 @@ class AgentEventService:
                     "id": tool_call.id,
                     "run_id": tool_call.run_id,
                     "tool_name": tool_call.tool_name,
-                    "input_snapshot": tool_call.input_snapshot,
+                    "input_snapshot": public_tool_call_input_snapshot(tool_call.input_snapshot),
                     "status": tool_call.status,
                     "created_artifact_id": tool_call.created_artifact_id,
                     "created_version_id": tool_call.created_version_id,

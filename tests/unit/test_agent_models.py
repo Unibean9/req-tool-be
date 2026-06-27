@@ -15,6 +15,7 @@ from app.models.agent import (
     AgentToolCallStatus,
 )
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
+from app.schemas.agent import AgentToolCallResponse
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -105,6 +106,34 @@ async def test_agent_message_and_tool_call_cascade_from_session(client, db_sessi
     assert await db_session.get(AgentMessage, message_id) is None
     assert await db_session.get(AgentRun, run_id) is None
     assert await db_session.get(AgentToolCall, tool_call_id) is None
+
+
+def test_agent_tool_call_response_hides_contract_version_but_keeps_trace():
+    response = AgentToolCallResponse.model_validate(
+        {
+            "id": uuid.uuid4(),
+            "run_id": uuid.uuid4(),
+            "tool_name": "write_draft:section-1",
+            "input_snapshot": {
+                "title": "Draft",
+                "synthesis_metadata": {
+                    "contract_version": "2026-06-23",
+                    "evidence_refs": ["agent_run:1"],
+                },
+                "candidate_readiness": {"state": "sufficient"},
+            },
+            "status": AgentToolCallStatus.PROPOSED,
+            "created_artifact_id": None,
+            "created_version_id": None,
+            "resolved_at": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    )
+
+    assert "contract_version" not in response.input_snapshot["synthesis_metadata"]
+    assert response.input_snapshot["synthesis_metadata"]["evidence_refs"] == ["agent_run:1"]
+    assert response.input_snapshot["candidate_readiness"] == {"state": "sufficient"}
 
 
 @pytest.mark.asyncio

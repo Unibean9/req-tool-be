@@ -9,6 +9,7 @@ from app.documents.registry import children_of, get_config
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType, ArtifactVersion, SourceDocument
 from app.models.organization import OrgMember
 from app.models.project import Project
+from app.schemas.artifact_synthesis import strip_synthesis_assumptions
 
 
 class ExportService:
@@ -84,7 +85,7 @@ async def _load_document_items(
             .order_by(Artifact.created_at, Artifact.id)
         )
     ).all()
-    return {artifact.type.value: version.body for artifact, version in rows}
+    return {artifact.type.value: strip_synthesis_assumptions(version.body) for artifact, version in rows}
 
 
 async def _load_research_basis(project_id: uuid.UUID, db: AsyncSession) -> str | None:

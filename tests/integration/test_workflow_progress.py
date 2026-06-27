@@ -3,6 +3,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from app.models.agent import AgentRun, AgentSession
 from app.models.artifact import WorkflowRun, WorkflowRunStatus, WorkflowStep, WorkflowStepStatus
 from app.services.workflow_service import WorkflowService
 from tests.conftest import BASE
@@ -121,6 +122,44 @@ async def test_get_workflow_steps_returns_current_run_steps(client):
     steps = resp.json()["data"]
     assert len(steps) == 5
     assert {"step_key", "phase", "status"}.issubset(steps[0])
+
+
+@pytest.mark.asyncio
+async def test_workflow_steps_include_latest_agent_run_activity(client, db_session):
+    headers, project = await _project_context(client)
+    await client.post(
+        f"{BASE}/projects/{project['id']}/workflow-runs",
+        json={"name": "Current flow"},
+        headers=headers,
+    )
+    session = AgentSession(
+        project_id=uuid.UUID(project["id"]),
+        artifact_type="vision_objectives",
+        workflow_area="analysis",
+        step_key="intent_vision",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        AgentRun(
+            session_id=session.id,
+            analysis_result={
+                "model_tool_calls": [{"name": "create_decision_node", "args": {"kind": "fact"}}],
+                "dispatched_tool_calls": [{"name": "create_decision_node", "args": {"kind": "fact"}}],
+                "dropped_tool_calls": [],
+            },
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(f"{BASE}/projects/{project['id']}/workflow-steps", headers=headers)
+
+    assert resp.status_code == 200, resp.text
+    intent_step = next(step for step in resp.json()["data"] if step["step_key"] == "intent_vision")
+    assert intent_step["input_snapshot"]["agent_session_id"] == str(session.id)
+    assert intent_step["output_snapshot"]["model_tool_calls"][0]["name"] == "create_decision_node"
+    assert intent_step["metadata"]["agent_activity"]["agent_session_id"] == str(session.id)
 
 
 @pytest.mark.asyncio
