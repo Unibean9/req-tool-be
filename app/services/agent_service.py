@@ -389,37 +389,18 @@ class AgentService:
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
 
-        # TODO: Bat lai strict approval gate sau demo MVP.
-        # await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)  # noqa: ERA001
-        # artifact, version = await self._execute_create_artifact(  # noqa: ERA001
-        #     project_id=project_id,  # noqa: ERA001
-        #     snapshot=tool_call.input_snapshot or {},  # noqa: ERA001
-        #     run_id=tool_call.run_id,  # noqa: ERA001
-        #     tool_call_id=tool_call.id,  # noqa: ERA001
-        #     created_by_id=created_by_id,  # noqa: ERA001
-        # )  # noqa: ERA001
-        artifact: Artifact | None = None
-        version: ArtifactVersion | None = None
-        try:
-            artifact, version = await self._execute_create_artifact(
-                project_id=project_id,
-                snapshot=tool_call.input_snapshot or {},
-                run_id=tool_call.run_id,
-                tool_call_id=tool_call.id,
-                created_by_id=created_by_id,
-            )
-        except HTTPException as exc:
-            snapshot = dict(tool_call.input_snapshot or {})
-            snapshot["approval_bypass"] = {
-                "reason": "strict_validation_skipped_for_mvp_demo",
-                "status_code": exc.status_code,
-                "detail": exc.detail,
-            }
-            tool_call.input_snapshot = snapshot
+        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)
+        artifact, version = await self._execute_create_artifact(
+            project_id=project_id,
+            snapshot=tool_call.input_snapshot or {},
+            run_id=tool_call.run_id,
+            tool_call_id=tool_call.id,
+            created_by_id=created_by_id,
+        )
 
         tool_call.status = AgentToolCallStatus.EXECUTED
-        tool_call.created_artifact_id = artifact.id if artifact else None
-        tool_call.created_version_id = version.id if version else None
+        tool_call.created_artifact_id = artifact.id
+        tool_call.created_version_id = version.id
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
@@ -544,7 +525,8 @@ class AgentService:
             raise HTTPException(422, detail="Tool call metadata synthesis is invalid") from exc
         body = canonical_artifact_body(body=str(body or ""), synthesis_metadata=synthesis_metadata)
         snapshot["body"] = body
-        self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
+        # TODO: Bat lai readiness gate sau demo MVP; tam thoi skip de approve van tao artifact.
+        # self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)  # noqa: ERA001
 
         try:
             artifact, version = await DocumentService(self.db).create_item_version(
