@@ -26,7 +26,7 @@ async def test_create_org_commits_membership_for_next_request_project_create(db_
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             register_response = await client.post(
                 f"{BASE}/auth/register",
-                json={"email": email, "password": password, "full_name": "Chủ sở hữu org"},
+                json={"email": email, "password": password, "full_name": "Chu so huu org"},
             )
             assert register_response.status_code == 201
 
@@ -41,7 +41,7 @@ async def test_create_org_commits_membership_for_next_request_project_create(db_
             project = await client.post(
                 f"{BASE}/orgs/{org_id}/projects",
                 headers=headers,
-                json={"name": "Project regression", "description": "Kiểm tra membership đã commit"},
+                json={"name": "Project regression", "description": "Kiem tra membership da commit"},
             )
             assert project.status_code == 201
     finally:

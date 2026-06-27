@@ -65,7 +65,7 @@ def test_multifernet_rotation_rejects_unknown_key(monkeypatch):
 
 def test_llm_provider_api_key_required_constraint_sqlite_skip(db_session):
     if db_session.bind.dialect.name != "postgresql":
-        pytest.skip("Chỉ kiểm tra DB-level constraint trên PostgreSQL")
+        pytest.skip("Chi kiem tra DB-level constraint tren PostgreSQL")
     names = {item.name for item in LLMProviderConfig.__table_args__ if getattr(item, "name", None)}
     assert "ck_llm_provider_api_key_required" in names
 
@@ -548,14 +548,14 @@ async def test_health_check_endpoint_returns_503_on_provider_failure(client, mon
     config_id = create_resp.json()["data"]["id"]
 
     async def fake_health_check(self, user_id, config_id):
-        raise ProviderUnavailableError("Provider lỗi")
+        raise ProviderUnavailableError("Provider loi")
 
     monkeypatch.setattr(LLMProviderService, "health_check", fake_health_check)
 
     resp = await client.post(f"{BASE}/users/me/llm-provider-configs/{config_id}/health-check", headers=headers)
 
     assert resp.status_code == 503
-    assert resp.json()["detail"] == "Provider lỗi"
+    assert resp.json()["detail"] == "Provider loi"
 
 
 @pytest.mark.asyncio
@@ -586,7 +586,7 @@ async def test_health_check_endpoint_returns_429_on_cooldown(client, monkeypatch
     config_id = create_resp.json()["data"]["id"]
 
     async def fake_health_check(self, user_id, config_id):
-        raise CooldownError("Thử lại sau")
+        raise CooldownError("Thu lai sau")
 
     monkeypatch.setattr(LLMProviderService, "health_check", fake_health_check)
 
@@ -752,7 +752,7 @@ async def test_no_api_key_in_logs_after_create(client, caplog, monkeypatch):
 @pytest.mark.asyncio
 async def test_partial_index_one_default_per_user(db_session):
     if db_session.bind.dialect.name != "postgresql":
-        pytest.skip("Partial unique index chỉ verify trên PostgreSQL thật")
+        pytest.skip("Partial unique index chi verify tren PostgreSQL that")
     user_id = uuid.uuid4()
     db_session.add_all(
         [

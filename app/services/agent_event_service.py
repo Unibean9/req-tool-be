@@ -76,34 +76,44 @@ class AgentEventService:
     ) -> dict[str, Any]:
         session = (
             await self.db.execute(
-                select(AgentSession).where(
+                select(AgentSession)
+                .where(
                     AgentSession.id == session_id,
                     AgentSession.project_id == project_id,
                     AgentSession.created_by_id == user_id,
-                ).execution_options(populate_existing=True)
+                )
+                .execution_options(populate_existing=True)
             )
         ).scalar_one_or_none()
         if not session:
-            raise HTTPException(404, detail="Agent session không tồn tại")
+            raise HTTPException(404, detail="Agent session not found")
 
         messages = (
-            await self.db.execute(
-                select(AgentMessage)
-                .where(AgentMessage.session_id == session_id)
-                .order_by(AgentMessage.created_at)
-                .execution_options(populate_existing=True)
+            (
+                await self.db.execute(
+                    select(AgentMessage)
+                    .where(AgentMessage.session_id == session_id)
+                    .order_by(AgentMessage.created_at)
+                    .execution_options(populate_existing=True)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         tool_calls = (
-            await self.db.execute(
-                select(AgentToolCall)
-                .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
-                .where(AgentRun.session_id == session_id)
-                .where(public_tool_call_filter())
-                .order_by(AgentToolCall.created_at)
-                .execution_options(populate_existing=True)
+            (
+                await self.db.execute(
+                    select(AgentToolCall)
+                    .join(AgentRun, AgentToolCall.run_id == AgentRun.id)
+                    .where(AgentRun.session_id == session_id)
+                    .where(public_tool_call_filter())
+                    .order_by(AgentToolCall.created_at)
+                    .execution_options(populate_existing=True)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         document = await self._document_for_session(session, project_id)
 
         return {

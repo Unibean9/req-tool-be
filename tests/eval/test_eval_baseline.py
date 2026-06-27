@@ -24,8 +24,7 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
 def _load_fixtures() -> list[dict]:
-    # Exclude *_weak.json — those are low-quality fixtures for the quality-gate eval
-    # (Phase 5) and are not part of the baseline golden set.
+    # Exclude *_weak.json — low-quality fixtures used by the quality-gate eval, not the baseline.
     paths = [p for p in sorted(_FIXTURES_DIR.glob("*.json")) if not p.stem.endswith("_weak")]
     return [json.loads(p.read_text(encoding="utf-8")) for p in paths]
 
@@ -62,7 +61,7 @@ def _valid_result(overall: float = 0.8) -> dict:
             "smart": 0.8,
         },
         "overall": overall,
-        "rationale": "ổn",
+        "rationale": "ok",
     }
 
 
@@ -90,7 +89,7 @@ async def test_baseline_with_real_judge(capsys):
     from tests.eval.config import judge_settings
 
     if not judge_settings.judge_api_key:
-        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy judge thật")
+        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real judge")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory

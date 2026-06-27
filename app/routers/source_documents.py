@@ -44,7 +44,7 @@ async def delete_source_document(
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             detail={
-                "message": "Source document đang được dùng làm evidence",
+                "message": "Source document is being used as evidence",
                 "artifact_ids": [str(artifact_id) for artifact_id in exc.artifact_ids],
             },
         ) from exc

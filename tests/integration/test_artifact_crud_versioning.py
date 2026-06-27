@@ -23,8 +23,8 @@ async def test_create_artifact_creates_identity_and_first_version(client, db_ses
         f"{BASE}/projects/{project['id']}/artifacts",
         json={
             "type": "functional_requirement",
-            "title": "Đăng nhập bằng email",
-            "body": "Người dùng đăng nhập bằng email và mật khẩu.",
+            "title": "Email login",
+            "body": "Users log in with email and password.",
             "priority": "must",
             "metadata": {"nguon": "phong_van"},
         },
@@ -35,8 +35,8 @@ async def test_create_artifact_creates_identity_and_first_version(client, db_ses
     artifact = resp.json()["data"]
     assert artifact["current_version_id"] is not None
     assert artifact["current_version"]["version_number"] == 1
-    assert artifact["current_version"]["title"] == "Đăng nhập bằng email"
-    assert artifact["current_version"]["body"] == "Người dùng đăng nhập bằng email và mật khẩu."
+    assert artifact["current_version"]["title"] == "Email login"
+    assert artifact["current_version"]["body"] == "Users log in with email and password."
 
     version = await db_session.get(ArtifactVersion, uuid.UUID(artifact["current_version_id"]))
     assert version.artifact_id.hex == artifact["id"].replace("-", "")
@@ -46,12 +46,12 @@ async def test_create_artifact_creates_identity_and_first_version(client, db_ses
 @pytest.mark.asyncio
 async def test_update_artifact_creates_immutable_version_and_preserves_old_content(client, db_session):
     headers, project = await _project_context(client)
-    artifact = await _create_artifact(client, headers, project["id"], title="Phiên bản 1", body="Nội dung cũ")
+    artifact = await _create_artifact(client, headers, project["id"], title="Version 1", body="Old content")
     old_version_id = artifact["current_version_id"]
 
     resp = await client.patch(
         f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
-        json={"title": "Phiên bản 2", "body": "Nội dung mới", "change_summary": "Cập nhật nội dung"},
+        json={"title": "Version 2", "body": "New content", "change_summary": "Cap nhat content"},
         headers=headers,
     )
 
@@ -60,11 +60,11 @@ async def test_update_artifact_creates_immutable_version_and_preserves_old_conte
     assert updated["current_version_id"] != old_version_id
     assert updated["current_version"]["version_number"] == 2
     assert updated["current_version"]["parent_version_id"] == old_version_id
-    assert updated["current_version"]["title"] == "Phiên bản 2"
+    assert updated["current_version"]["title"] == "Version 2"
 
     old_version = await db_session.get(ArtifactVersion, uuid.UUID(old_version_id))
-    assert old_version.title == "Phiên bản 1"
-    assert old_version.body == "Nội dung cũ"
+    assert old_version.title == "Version 1"
+    assert old_version.body == "Old content"
 
 
 @pytest.mark.asyncio
@@ -111,12 +111,12 @@ async def test_review_approve_and_reject_create_review_rows(client, db_session):
 
     approve = await client.post(
         f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}/versions/{version_id}/review",
-        json={"review_status": "approved", "comment": "Đạt yêu cầu"},
+        json={"review_status": "approved", "comment": "Meets requirements"},
         headers=headers,
     )
     reject = await client.post(
         f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}/versions/{version_id}/review",
-        json={"review_status": "rejected", "comment": "Cần sửa lại"},
+        json={"review_status": "rejected", "comment": "Needs revision"},
         headers=headers,
     )
 
@@ -137,11 +137,11 @@ async def test_review_approve_and_reject_create_review_rows(client, db_session):
 @pytest.mark.asyncio
 async def test_restore_version_sets_current_version_without_overwriting_history(client, db_session):
     headers, project = await _project_context(client)
-    artifact = await _create_artifact(client, headers, project["id"], title="Cũ", body="Nội dung cũ")
+    artifact = await _create_artifact(client, headers, project["id"], title="Old", body="Old content")
     first_version_id = artifact["current_version_id"]
     updated_resp = await client.patch(
         f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
-        json={"title": "Mới", "body": "Nội dung mới"},
+        json={"title": "New", "body": "New content"},
         headers=headers,
     )
     second_version_id = updated_resp.json()["data"]["current_version_id"]
@@ -167,9 +167,9 @@ async def test_source_document_upload_does_not_create_artifact(client, db_sessio
     resp = await client.post(
         f"{BASE}/projects/{project['id']}/source-documents",
         json={
-            "title": "Ghi chú phỏng vấn",
+            "title": "Interview notes",
             "source_type": "markdown_upload",
-            "content_text": "# Ghi chú\nNgười dùng cần báo cáo.",
+            "content_text": "# Ghi chu\nNguoi dung can bao cao.",
             "mime_type": "text/markdown",
         },
         headers=headers,
@@ -188,9 +188,9 @@ async def test_source_document_accepts_research_metadata(client):
     resp = await client.post(
         f"{BASE}/projects/{project['id']}/source-documents",
         json={
-            "title": "Phỏng vấn",
+            "title": "Interview",
             "source_type": "text_paste",
-            "content_text": "Người dùng cần dashboard",
+            "content_text": "Users need a dashboard",
             "metadata": {"research_type": "interview"},
         },
         headers=headers,
@@ -208,18 +208,18 @@ async def test_artifact_endpoints_reject_non_project_member(client):
 
     create_resp = await client.post(
         f"{BASE}/projects/{project['id']}/artifacts",
-        json={"type": "functional_requirement", "title": "Không hợp lệ", "body": "Không có quyền"},
+        json={"type": "functional_requirement", "title": "Invalid", "body": "No permission"},
         headers=outsider_headers,
     )
     list_resp = await client.get(f"{BASE}/projects/{project['id']}/artifacts", headers=outsider_headers)
     update_resp = await client.patch(
         f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
-        json={"body": "Không được sửa"},
+        json={"body": "Cannot edit"},
         headers=outsider_headers,
     )
     source_resp = await client.post(
         f"{BASE}/projects/{project['id']}/source-documents",
-        json={"title": "Không hợp lệ", "source_type": "text_paste", "content_text": "Không có quyền"},
+        json={"title": "Invalid", "source_type": "text_paste", "content_text": "No permission"},
         headers=outsider_headers,
     )
 
@@ -256,8 +256,8 @@ async def test_list_artifacts_filters_by_type_status_and_priority(client):
 @pytest.mark.asyncio
 async def test_delete_artifact_removes_own_history_and_links_but_keeps_related_artifact(client, db_session):
     headers, project = await _project_context(client)
-    source = await _create_artifact(client, headers, project["id"], title="Nguồn")
-    target = await _create_artifact(client, headers, project["id"], title="Đích")
+    source = await _create_artifact(client, headers, project["id"], title="Source")
+    target = await _create_artifact(client, headers, project["id"], title="Target")
     db_session.add(
         ArtifactEvidence(
             artifact_id=uuid.UUID(source["id"]),
@@ -296,7 +296,7 @@ async def test_delete_source_document_returns_conflict_when_evidence_uses_it(cli
     headers, project = await _project_context(client)
     source_doc_resp = await client.post(
         f"{BASE}/projects/{project['id']}/source-documents",
-        json={"title": "Tài liệu nguồn", "source_type": "text_paste", "content_text": "Bằng chứng"},
+        json={"title": "Source document", "source_type": "text_paste", "content_text": "Evidence"},
         headers=headers,
     )
     artifact = await _create_artifact(client, headers, project["id"])
@@ -331,8 +331,8 @@ async def _create_artifact(
     project_id,
     *,
     artifact_type="functional_requirement",
-    title="Yêu cầu",
-    body="Nội dung yêu cầu",
+    title="Requirement",
+    body="Requirement content",
     priority="must",
     metadata=None,
 ):

@@ -23,7 +23,7 @@ async def test_create_link_rejects_self_link(db_session):
 
     service = ArtifactService(db_session)
 
-    with pytest.raises(ValueError, match="không được liên kết chính nó"):
+    with pytest.raises(ValueError, match="cannot link to itself"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=source.id,
@@ -55,7 +55,7 @@ async def test_create_link_rejects_cross_project_target(db_session):
 
     service = ArtifactService(db_session)
 
-    with pytest.raises(ValueError, match="cùng một dự án"):
+    with pytest.raises(ValueError, match="same project"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=source.id,
@@ -88,7 +88,7 @@ async def test_create_link_rejects_non_project_member(db_session):
 
     service = ArtifactService(db_session)
 
-    with pytest.raises(PermissionError, match="không có quyền truy cập dự án"):
+    with pytest.raises(PermissionError, match="no project access"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=source.id,
@@ -127,7 +127,7 @@ async def test_create_link_rejects_reverse_duplicate_relation(db_session):
         created_by_id=user.id,
     )
 
-    with pytest.raises(ValueError, match="đã tồn tại"):
+    with pytest.raises(ValueError, match="already exists"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=target.id,
@@ -166,7 +166,7 @@ async def test_create_link_rejects_reverse_duplicate_even_with_different_relatio
         created_by_id=user.id,
     )
 
-    with pytest.raises(ValueError, match="đã tồn tại"):
+    with pytest.raises(ValueError, match="already exists"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=target.id,

@@ -47,19 +47,19 @@ async def test_project_create_contract_is_name_and_optional_description_only(cli
 
     minimal_resp = await client.post(
         f"{BASE}/orgs/{org['id']}/projects",
-        json={"name": "Dự án tối giản", "description": "Mô tả ngắn"},
+        json={"name": "Minimal project", "description": "Short description"},
         headers=headers,
     )
     obsolete_resp = await client.post(
         f"{BASE}/orgs/{org['id']}/projects",
-        json={"name": "Dự án sai", "problems": ["Vấn đề nghiệp vụ"]},
+        json={"name": "Du an sai", "problems": ["Van de nghiep vu"]},
         headers=headers,
     )
 
     assert minimal_resp.status_code == 201, minimal_resp.text
     project = minimal_resp.json()["data"]
-    assert project["name"] == "Dự án tối giản"
-    assert project["description"] == "Mô tả ngắn"
+    assert project["name"] == "Minimal project"
+    assert project["description"] == "Short description"
     assert "problems" not in project
     assert "context" not in project
     assert obsolete_resp.status_code == 422

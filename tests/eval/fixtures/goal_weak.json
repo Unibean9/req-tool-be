@@ -1,10 +1,10 @@
 {
   "artifact_type": "goal",
-  "content": "Cải thiện hiệu quả và tối ưu hệ thống để mang lại trải nghiệm tốt cho người dùng.",
+  "content": "Improve system effectiveness and optimization to provide a better user experience.",
   "expected_violations": [],
   "expected_warnings": [
-    "weasel: hiệu quả",
-    "weasel: tối ưu",
-    "SMART: thiếu yếu tố đo lường/thời hạn"
+    "weasel: effective",
+    "weasel: optimized",
+    "SMART: missing measurement/timeframe"
   ]
 }

@@ -18,7 +18,7 @@ async def test_register_commits_user_for_next_request_login(db_session):
                 await session.rollback()
                 raise
 
-    email = f"dang-ky-{uuid.uuid4().hex[:8]}@example.com"
+    email = f"register-{uuid.uuid4().hex[:8]}@example.com"
     password = "Secret123!"
     previous_override = app.dependency_overrides.get(get_db)
     app.dependency_overrides[get_db] = get_db_without_auto_commit
@@ -26,7 +26,7 @@ async def test_register_commits_user_for_next_request_login(db_session):
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             register_response = await client.post(
                 f"{BASE}/auth/register",
-                json={"email": email, "password": password, "full_name": "Người dùng E2E"},
+                json={"email": email, "password": password, "full_name": "E2E User"},
             )
             assert register_response.status_code == 201
 

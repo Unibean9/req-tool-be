@@ -56,7 +56,7 @@ def _harness_tool_gate_eval() -> RuntimeGateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="unsafe finalize bị chặn bằng tool-error" if passed else "unsafe finalize vẫn có thể dispatch",
+        reason="unsafe finalize is blocked by tool-error" if passed else "unsafe finalize can still dispatch",
     )
 
 
@@ -68,11 +68,11 @@ def _artifact_readiness_eval() -> RuntimeGateResult:
         evidence_refs=[],
         inference_level="medium",
         confirmed_assumptions=[],
-        pending_assumptions=["Target retention cần xác nhận"],
+        pending_assumptions=["Target retention needs confirmation"],
     )
     readiness = evaluate_candidate_readiness(
         artifact_type="vision_objectives",
-        body="## Vision\nTăng retention.",
+        body="## Vision\nIncrease retention.",
         synthesis_metadata=metadata,
     )
     passed = not readiness.can_persist
@@ -82,7 +82,9 @@ def _artifact_readiness_eval() -> RuntimeGateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="candidate thiếu contract bị chặn" if passed else "candidate thiếu contract vẫn persist được",
+        reason="candidate with missing contract is blocked"
+        if passed
+        else "candidate with missing contract can still persist",
     )
 
 
@@ -106,7 +108,9 @@ def _stale_state_eval() -> RuntimeGateResult:
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=True,
-        reason="service stale guard trả structured 409 detail" if passed else "service stale guard không nhận diện stale",
+        reason="service stale guard returns structured 409 detail"
+        if passed
+        else "service stale guard does not detect stale state",
     )
 
 
@@ -121,23 +125,27 @@ def _feedback_revision_eval() -> RuntimeGateResult:
     state["quality_report"] = {
         "mode": "critique",
         "score": 0.4,
-        "findings": ["Metric chưa đo được"],
-        "suggestions": ["Thêm baseline và target"],
-        "blocking_issues": ["Metric chưa đo được"],
+        "findings": ["Metric is not measurable yet"],
+        "suggestions": ["Add baseline and target"],
+        "blocking_issues": ["Metric is not measurable yet"],
         "non_blocking_warnings": [],
-        "revision_plan": ["Thêm baseline và target"],
+        "revision_plan": ["Add baseline and target"],
         "quality_gate_result": "fail",
         "recommended_next_action": "revise",
     }
     prompt = _build_tool_selection_prompt(state, [])
-    passed = all(fragment in prompt for fragment in ("Metric chưa đo được", "Thêm baseline và target", "revise"))
+    passed = all(
+        fragment in prompt for fragment in ("Metric is not measurable yet", "Add baseline and target", "revise")
+    )
     return RuntimeGateResult(
         gate="feedback_revision_eval",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=0.8,
         critical=False,
-        reason="feedback fail xuất hiện trong observation" if passed else "feedback fail không vào prompt lượt sau",
+        reason="feedback failure appears in observation"
+        if passed
+        else "feedback failure does not enter the next prompt",
     )
 
 
@@ -157,9 +165,9 @@ def _structured_output_eval() -> RuntimeGateResult:
         },
     }
     invalid_payloads = [
-        {"message": "thiếu tool"},
-        {"tool": "finalize", "message": "sai enum"},
-        {"tool": "ask_user", "message": "ok", "extra": "thừa"},
+        {"message": "missing tool"},
+        {"tool": "finalize", "message": "wrong enum"},
+        {"tool": "ask_user", "message": "ok", "extra": "extra"},
     ]
     rejected = 0
     for payload in invalid_payloads:
@@ -174,7 +182,7 @@ def _structured_output_eval() -> RuntimeGateResult:
         score=rejected / len(invalid_payloads),
         threshold=1.0,
         critical=True,
-        reason="invalid structured output bị reject" if passed else "invalid structured output còn lọt qua",
+        reason="invalid structured output is rejected" if passed else "invalid structured output still passes through",
     )
 
 
@@ -184,7 +192,7 @@ def _runtime_recovery_eval() -> RuntimeGateResult:
     command = _recoverable_tool_update(
         RecoverableToolError(
             code="missing_focused_artifact",
-            message="Thiếu focused_artifact_id",
+            message="Missing focused_artifact_id",
             user_fixable=True,
         ),
         "call_1",
@@ -197,7 +205,9 @@ def _runtime_recovery_eval() -> RuntimeGateResult:
         score=1.0 if passed else 0.0,
         threshold=0.9,
         critical=False,
-        reason="recoverable tool error quay lại observation" if passed else "recoverable tool error vẫn làm fail turn",
+        reason="recoverable tool error returns to observation"
+        if passed
+        else "recoverable tool error still fails the turn",
     )
 
 
@@ -254,10 +264,10 @@ def _load_input(path: Path) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_cli_streams()
-    parser = argparse.ArgumentParser(description="Chạy deterministic runtime harness eval.")
-    parser.add_argument("--input", type=Path, help="Fixture JSON gates đã tính sẵn.")
-    parser.add_argument("--json-report", type=Path, help="Đường dẫn ghi report JSON.")
-    parser.add_argument("--markdown-report", type=Path, help="Đường dẫn ghi report Markdown.")
+    parser = argparse.ArgumentParser(description="Run deterministic runtime harness eval.")
+    parser.add_argument("--input", type=Path, help="Precomputed gate fixture JSON.")
+    parser.add_argument("--json-report", type=Path, help="Path to write the JSON report.")
+    parser.add_argument("--markdown-report", type=Path, help="Path to write the Markdown report.")
     args = parser.parse_args(argv)
 
     report = _load_input(args.input) if args.input else run_runtime_harness_eval()

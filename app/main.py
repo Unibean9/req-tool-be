@@ -52,10 +52,12 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     import asyncio
+
     if settings.auto_migrate:
         await asyncio.get_event_loop().run_in_executor(None, _run_migrations)
     if settings.app_env == "development":
         from scripts.seed_dev_users import seed
+
         await seed()
 
     from app.instructions import load_instructions, loaded_roles
@@ -69,6 +71,7 @@ async def lifespan(app: FastAPI):
     from app.database import async_session_factory
     from app.graphs.checkpointer import DelegatingCheckpointer
     from app.graphs.graph import build_graph
+
     app.state.compiled_graph = build_graph(DelegatingCheckpointer(async_session_factory))
 
     yield
@@ -126,6 +129,7 @@ async def health():
     from sqlalchemy import text
 
     from app.database import async_session_factory
+
     async with async_session_factory() as session:
         await session.execute(text("SELECT 1"))
     return {"status": "ok", "db": "connected"}

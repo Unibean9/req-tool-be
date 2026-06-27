@@ -30,12 +30,12 @@ class ProjectService:
     async def _unique_slug(self, org_id: uuid.UUID, base: str) -> str:
         slug = base
         for _ in range(10):
-            if not (await self.db.execute(
-                select(Project).where(Project.org_id == org_id, Project.slug == slug)
-            )).scalar_one_or_none():
+            if not (
+                await self.db.execute(select(Project).where(Project.org_id == org_id, Project.slug == slug))
+            ).scalar_one_or_none():
                 return slug
             slug = f"{base}-{secrets.token_hex(3)}"
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Không thể tạo slug duy nhất")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not create a unique slug")
 
     async def create(self, org_id: uuid.UUID, body: ProjectCreateRequest) -> Project:
         slug = await self._unique_slug(org_id, slugify(body.name, fallback="project"))
@@ -54,17 +54,13 @@ class ProjectService:
         return list(result.scalars().all())
 
     async def get(self, org_id: uuid.UUID, project_id: uuid.UUID) -> Project:
-        result = await self.db.execute(
-            select(Project).where(Project.id == project_id, Project.org_id == org_id)
-        )
+        result = await self.db.execute(select(Project).where(Project.id == project_id, Project.org_id == org_id))
         project = result.scalar_one_or_none()
         if not project:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Không tìm thấy dự án")
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Project not found")
         return project
 
-    async def update(
-        self, org_id: uuid.UUID, project_id: uuid.UUID, body: ProjectUpdateRequest
-    ) -> Project:
+    async def update(self, org_id: uuid.UUID, project_id: uuid.UUID, body: ProjectUpdateRequest) -> Project:
         project = await self.get(org_id, project_id)
         if body.name is not None:
             project.name = body.name
@@ -85,13 +81,9 @@ class ProjectService:
         )
 
         # 1. Break the cyclic cross-FKs before deleting the rows they reference.
+        await self.db.execute(update(Artifact).where(Artifact.project_id == project_id).values(current_version_id=None))
         await self.db.execute(
-            update(Artifact).where(Artifact.project_id == project_id).values(current_version_id=None)
-        )
-        await self.db.execute(
-            update(ArtifactVersion)
-            .where(ArtifactVersion.artifact_id.in_(artifact_ids))
-            .values(parent_version_id=None)
+            update(ArtifactVersion).where(ArtifactVersion.artifact_id.in_(artifact_ids)).values(parent_version_id=None)
         )
         await self.db.execute(
             update(AgentToolCall)

@@ -7,13 +7,13 @@ class ApprovalRequired(Exception):
     def __init__(self, tool_name: str, args_snapshot: dict[str, Any]):
         self.tool_name = tool_name
         self.args_snapshot = args_snapshot
-        super().__init__(f"Tool cần approval trước khi chạy: {tool_name}")
+        super().__init__(f"Tool requires approval before running: {tool_name}")
 
 
 class GovernanceDenied(Exception):
     def __init__(self, tool_name: str):
         self.tool_name = tool_name
-        super().__init__(f"Tool bị policy từ chối: {tool_name}")
+        super().__init__(f"Tool was rejected by policy: {tool_name}")
 
 
 POLICY = {
@@ -108,6 +108,7 @@ def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
 
 # BMAD governance gates (addendum §18). These are checkpoints, not loop tools: calling one runs the
 # @governed wrapper, which raises ApprovalRequired per the POLICY rule above.
+
 
 @governed
 async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001

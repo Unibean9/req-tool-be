@@ -1,3 +1,4 @@
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -6,6 +7,7 @@ import app.database as db_module
 from app.database import get_db
 from app.main import app
 from app.models.base import Base
+from tests.golden_decision_helpers import graph_from, make_node_factory
 
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -52,6 +54,33 @@ async def db_session():
         yield session
         app.dependency_overrides.pop(get_db, None)
         await session.rollback()
+
+
+@pytest.fixture
+def decision_node_factory():
+    """Mint schema-complete DecisionNode dicts with auto-incremented ids.
+
+    Usage: node = decision_node_factory(kind="decision", status="confirmed", depends_on=["N1"]).
+    Pass id="N1" to pin a stable name when later assertions reference it.
+    """
+    return make_node_factory()
+
+
+@pytest.fixture
+def decision_graph_factory(decision_node_factory):
+    """Build a decision_nodes dict from keyword specs, indexed by id.
+
+    Usage:
+        graph = decision_graph_factory(
+            {"id": "N1", "kind": "decision", "status": "confirmed"},
+            {"id": "N3", "depends_on": ["N1"]},
+        )
+    """
+
+    def _build(*node_specs: dict) -> dict[str, dict]:
+        return graph_from([decision_node_factory(**spec) for spec in node_specs])
+
+    return _build
 
 
 BASE = "/api/v1"

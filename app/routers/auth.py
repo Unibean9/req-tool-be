@@ -29,7 +29,7 @@ class LoginRequest(BaseModel):
 async def register(body: RegisterRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     if result.scalar_one_or_none():
-        raise HTTPException(status.HTTP_409_CONFLICT, detail="Email đã được đăng ký")
+        raise HTTPException(status.HTTP_409_CONFLICT, detail="Email is already registered")
 
     user = User(
         email=body.email,
@@ -48,11 +48,13 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.email == body.email))
     user = result.scalar_one_or_none()
     if not user or not user.hashed_password or not verify_password(body.password, user.hashed_password):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Email hoặc mật khẩu không đúng")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Email or password is incorrect")
     if not user.is_active:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Tài khoản đã bị vô hiệu hóa")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail="Account is disabled")
 
-    return ok(TokenResponse(
-        access_token=create_access_token(str(user.id), user.role),
-        refresh_token=create_refresh_token(str(user.id)),
-    ))
+    return ok(
+        TokenResponse(
+            access_token=create_access_token(str(user.id), user.role),
+            refresh_token=create_refresh_token(str(user.id)),
+        )
+    )

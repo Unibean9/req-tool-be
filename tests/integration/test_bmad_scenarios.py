@@ -1,4 +1,4 @@
-"""Checkpoint C smoke tests — the 5 addendum §20 scenarios + active_mode/workflow_mode coexistence.
+"""Checkpoint C smoke tests — the 5 addendum §20 scenarios + workflow_mode derivation.
 
 These are behavior smoke tests (not exhaustive units): each confirms the headline behavior of one
 scenario through analyze_node or the pure BMAD helpers.
@@ -115,15 +115,11 @@ def test_scenario5_small_mvp_quick_track_ceiling():
 
 
 @pytest.mark.asyncio
-async def test_active_mode_and_workflow_mode_coexist_end_to_end(client, db_session):
-    """active_mode and method_profile.current_workflow are written to distinct state locations.
-
-    Both are now derived (not LLM-echoed): active_mode from the gated primary tool (ask_user →
-    discovery), current_workflow from coverage. They still live in distinct state locations."""
+async def test_workflow_mode_derived_end_to_end(client, db_session):
+    """method_profile.current_workflow is derived from coverage and lives outside analysis_result."""
     result, _, _ = await _analyze(
         client, db_session,
         {"tools": [{"name": "ask_user", "args": {"message": "?"}}]},
     )
-    assert result["analysis_result"]["active_mode"] == "discovery"
     assert result["method_profile"]["current_workflow"] in {"brainstorm", "brief"}
     assert "current_workflow" not in result["analysis_result"]

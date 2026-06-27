@@ -6,7 +6,7 @@ system prompt into the graph (gates), the tool schemas, and per-turn context. Tw
 - **Gate-enforced** rules (force-critique-before-finalize, human gate, resume idempotency) run in
   graph/code regardless of which model is used — already proven deterministically by the offline
   scenario + unit suite, so a live run cannot add signal there.
-- **Model-judgment** rules (greeting ≠ artifact, ambiguity → confirm/ask, enough context → draft)
+- **Model-judgment** rules (greeting = artifact, ambiguity → confirm/ask, enough context → draft)
   depend on the model reading the now-thinner prompt. THIS is what a live run must confirm.
 
 So this smoke drives a real analyst through the judgment arc and records the per-turn tool
@@ -25,18 +25,46 @@ from tests.conftest import BASE
 from tests.eval.config import judge_settings
 
 _TURNS = [
-    ("greeting", "Chào bạn nhé!"),
-    ("ambiguous", "Mình muốn xây một công cụ gì đó cho sinh viên, ý tưởng còn mơ hồ lắm."),
-    ("context-1", "Đối tượng là sinh viên học nhóm 3–6 người; pain lớn nhất là trùng lịch và quên buổi, gần như mỗi tuần."),
-    ("context-2", "Phạm vi MVP: nhắc lịch + tìm khung giờ chung. Ngân sách nhỏ, làm trong 1 tháng."),
-    ("finalize-push", "Ổn rồi, nộp thôi, finalize đi bạn."),
+    ("greeting", "Hello there!"),
+    ("ambiguous", "Minh muon xay mot cong cu gi do cho sinh vien, y tuong con mo ho lam."),
+    ("context-1", "Audience is students in groups of 3-6; biggest pain is schedule conflicts and forgotten sessions almost every week."),
+    ("context-2", "Pham vi MVP: nhac lich + tim khung gio chung. Ngan sach nho, lam trong 1 thang."),
+    ("draft-push", "I confirm the intent and frame. Write the first draft; mark unclear parts as needing confirmation."),
 ]
 
 
+async def _ensure_vision_item(client, headers, project_id: str) -> str:
+    container = await client.post(
+        f"{BASE}/projects/{project_id}/documents/brd",
+        headers=headers,
+    )
+    assert container.status_code in {200, 201, 409}, container.text
+
+    existing = await client.get(
+        f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
+        headers=headers,
+    )
+    if existing.status_code == 200:
+        return existing.json()["data"]["artifact_id"]
+
+    created = await client.post(
+        f"{BASE}/projects/{project_id}/documents/brd/vision_objectives",
+        json={
+            "title": "Vision Objectives",
+            "body": "Chua co content.",
+            "status": "draft",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["data"]["artifact_id"]
+
+
 async def _create_session(client, headers, project_id: str) -> uuid.UUID:
+    focused_artifact_id = await _ensure_vision_item(client, headers, project_id)
     resp = await client.post(
         f"{BASE}/projects/{project_id}/agent-sessions",
-        json={"artifact_type": "intent"},
+        json={"artifact_type": "vision_objectives", "focused_artifact_id": focused_artifact_id},
         headers=headers,
     )
     assert resp.status_code == 201, resp.text
@@ -47,7 +75,7 @@ async def _create_session(client, headers, project_id: str) -> uuid.UUID:
 @pytest.mark.asyncio
 async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, scenario_project):
     if not judge_settings.judge_api_key:
-        pytest.skip("Cần JUDGE_API_KEY trong .env.test để chạy analyst LLM thật")
+        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real analyst LLM")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
@@ -83,7 +111,7 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
             "tool_errors": [e.get("code") for e in (errors or [])] if isinstance(errors, list) else errors,
         })
 
-    print("\n=== LIVE SMOKE TRAJECTORY (model=%s) ===" % judge_settings.judge_model)
+    print(f"\n=== LIVE SMOKE TRAJECTORY (model={judge_settings.judge_model}) ===")
     for row in trajectory:
         print(
             f"  [{row['turn']:>13}] tools={row['tools']!s:<26} mode={row['active_mode']!s:<12} "
@@ -96,4 +124,11 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
     )
     assert "finalize" not in greeting["tools"], (
         f"greeting must not finalize; got tools={greeting['tools']}"
+    )
+    first_draft_idx = next(
+        (idx for idx, row in enumerate(trajectory) if "write_draft" in row["tools"]),
+        None,
+    )
+    assert first_draft_idx is not None, (
+        f"live analyst must reach write_draft to prove the pre-draft flow; trajectory={trajectory}"
     )

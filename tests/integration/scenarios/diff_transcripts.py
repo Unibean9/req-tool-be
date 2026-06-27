@@ -90,10 +90,10 @@ def main(argv: list[str] | None = None) -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
-    parser = argparse.ArgumentParser(description="So transcript JSON với baseline sau khi normalize nhiễu runtime.")
+    parser = argparse.ArgumentParser(description="So transcript JSON voi baseline sau when normalize nhieu runtime.")
     parser.add_argument("--baseline", type=Path, default=Path("plans/harness-refactor/baseline"))
     parser.add_argument("--transcripts", type=Path, default=Path("tests/integration/scenarios/transcripts"))
-    parser.add_argument("--include-eval-score", action="store_true", help="So cả điểm/rationale của judge.")
+    parser.add_argument("--include-eval-score", action="store_true", help="So ca diem/rationale cua judge.")
     args = parser.parse_args(argv)
 
     baseline = _json_files(args.baseline)
@@ -104,11 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     changed: list[str] = []
 
     if missing:
-        print("Thiếu transcript so với baseline:")
+        print("Thieu transcript so voi baseline:")
         for name in missing:
             print(f"- {name}")
     if extra:
-        print("Transcript mới ngoài baseline:")
+        print("Transcript new ngoai baseline:")
         for name in extra:
             print(f"- {name}")
 
@@ -128,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(
-        f"OK: {len(baseline)} transcript khớp baseline sau normalize "
+        f"OK: {len(baseline)} transcript khop baseline sau normalize "
         f"(eval_score={'included' if args.include_eval_score else 'ignored'})."
     )
     return 0

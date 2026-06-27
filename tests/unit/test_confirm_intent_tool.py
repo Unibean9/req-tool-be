@@ -1,18 +1,21 @@
-"""D6 — confirm_intent tool, schema registration, and the intent phase gate.
+"""D6 — confirm_intent tool, schema registration, and self-validation.
 
-The intent phase (user_confirmed is None) restricts the menu to exploration + confirmation tools;
-confirm_intent flips user_confirmed=True and unlocks the artifact menu (one-shot, no reset path).
+Intent menu gate removed; confirm_intent still self-rejects when intent is already confirmed.
 """
 
-import pytest
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from langchain_core.messages import AIMessage
 
-from app.graphs.agent_tools import _confirm_intent_impl, _write_draft_impl, get_available_tools, NOTE_STEP_LIMIT
+from app.graphs.agent_tools import (
+    _confirm_intent_impl,
+    _write_draft_impl,
+    get_available_tools,
+)
 from app.graphs.nodes import (
-    _TOOL_REQUIRED_ARGS,
     _INTERRUPT_BEARING_TOOLS,
+    _TOOL_REQUIRED_ARGS,
     _build_tool_schemas,
     _gate_selected_tools,
 )
@@ -45,33 +48,45 @@ def test_confirm_intent_is_interrupt_bearing():
 
 
 # ---------------------------------------------------------------------------
-# Intent phase gate (user_confirmed is None)
+# Menu no longer has intent gate
 # ---------------------------------------------------------------------------
 
-def test_intent_phase_hides_artifact_tools():
+def test_intent_phase_keeps_broad_tool_menu():
     names = _names({"messages": [], "user_confirmed": None})
-    assert "write_draft" not in names
+    assert "write_draft" in names
     assert "finalize" not in names
     assert "run_critique" not in names
 
 
 def test_intent_phase_offers_confirm_intent():
-    assert "confirm_intent" in _names({"messages": [], "user_confirmed": None})
+    names = _names({"messages": [], "user_confirmed": None})
+    assert "confirm_intent" in names
 
 
-def test_artifact_phase_hides_confirm_intent():
-    # One-shot: confirm_intent disappears once user_confirmed=True.
+def test_artifact_phase_keeps_confirm_intent_and_write_draft_available():
+    # confirm_intent self-rejects if called again; menu no longer has a one-shot gate.
     names = _names({"messages": [], "user_confirmed": True})
-    assert "confirm_intent" not in names
+    assert "confirm_intent" in names
     assert "write_draft" in names
 
 
-def test_note_step_limit_applies_in_intent_phase():
-    messages = [_note_turn(f"c{i}") for i in range(NOTE_STEP_LIMIT)]
+def test_write_draft_available_without_elicit():
+    names = _names(
+        {
+            "messages": [],
+            "user_confirmed": True,
+            "session_elicit_count": 0,
+        }
+    )
+    assert "write_draft" in names
+
+
+def test_note_tools_remain_available_in_intent_phase_after_many_notes():
+    messages = [_note_turn(f"c{i}") for i in range(5)]
     names = _names({"messages": messages, "user_confirmed": None})
-    assert "explore_note" not in names
-    assert "critique_note" not in names
-    assert "confirm_intent" in names  # confirmation survives the note step-limit
+    assert "explore_note" in names
+    assert "critique_note" in names
+    assert "confirm_intent" in names
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +111,7 @@ async def test_confirm_intent_sets_user_confirmed():
 
 
 def test_empty_summary_passes_gate_for_tool_feedback():
-    # Gate không đổi tool; confirm_intent tự reject bằng ToolMessage lỗi.
+    # Gate does not change tools; confirm_intent self-rejects with a ToolMessage error.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "confirm_intent", "args": {"summary": ""}}])
     assert gated[0]["name"] == "confirm_intent"
@@ -200,7 +215,7 @@ async def test_audit_idempotent_when_row_exists():
 
 
 def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
-    # write_draft chưa khả dụng nhưng vẫn được dispatch để tool trả lỗi cho model tự sửa.
+    # write_draft is unavailable but still dispatched so the tool returns an error for model self-correction.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
     assert len(gated) == 1
@@ -208,27 +223,19 @@ def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
 
 
 def test_write_draft_in_artifact_phase_not_coerced():
-    # Once user_confirmed=True, write_draft is available and should pass through unchanged.
+    # Solo gate does not change tools; availability/depth gate is handled by write_draft returning a ToolMessage error.
     state = {"messages": [], "user_confirmed": True}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "T", "body": "B"}}])
     assert gated[0]["name"] == "write_draft"
 
 
-@pytest.mark.asyncio
-async def test_write_draft_in_intent_phase_returns_tool_error():
-    state = {"messages": [], "user_confirmed": None}
-    body = "## Vision\n" + ("Hệ thống điểm danh tự động hóa quy trình check-in cho người tham gia. " * 12)
-    command = await _write_draft_impl("Vision", body, state, {"configurable": {}}, "tc-write")
-
-    assert command.update["tool_errors"][0]["code"] == "tool_not_available"
-    msg = command.update["messages"][0]
-    assert msg.status == "error"
-    assert "confirm_intent" in msg.content
+def test_write_draft_available_before_confirm_intent():
+    assert "write_draft" in _names({"messages": [], "user_confirmed": None})
 
 
 @pytest.mark.asyncio
 async def test_write_draft_without_body_returns_tool_error():
-    # Body rỗng là lỗi tool-level, không còn coerce sang ask_user.
+    # Empty body is a tool-level error and is no longer coerced to ask_user.
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {}}])
     assert gated[0]["name"] == "write_draft"

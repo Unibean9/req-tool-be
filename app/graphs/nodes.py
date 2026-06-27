@@ -11,6 +11,12 @@ from sqlalchemy import exists, select
 
 from app.config import settings
 from app.documents.registry import children_of, get_config, output_contract, status_score
+from app.graphs.decision_graph import (
+    add_parked_questions_for_gaps,
+    completeness_sweep,
+    is_brd_stable,
+    scan_parked_questions,
+)
 from app.graphs.policy import ancestor_types
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
@@ -27,7 +33,7 @@ from app.services.document_service import DocumentService
 
 # Native tool calling replaces the old JSON tool-selection schema: analyze_node binds the available
 # tool schemas to the provider API (see _build_tool_schemas) and the model returns native tool_calls.
-# Analytic fields (active_mode, locale, workflow_mode) are derived from the picked tool + state.
+# Analytic fields (locale, workflow_mode) are derived from the picked tool + state.
 
 # Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
@@ -39,23 +45,6 @@ _TOOL_REQUIRED_ARGS = {
     "finalize": ["summary"],
     "run_critique": ["mode"],
     "confirm_intent": ["summary"],
-}
-
-# analyze_node derives active_mode from the picked (primary) tool, so the operating angle no longer
-# depends on the model self-reporting it (the JSON-shim era field). Values are in the spec §7.1
-# vocabulary (explore_note -> structuring, not discovery). respond falls back to critique; the
-# discovery baseline covers any tool not listed.
-_TOOL_ACTIVE_MODE: dict[str, str] = {
-    "critique_note": "critique",
-    "explore_note": "structuring",
-    "ask_user": "discovery",
-    "confirm_intent": "discovery",
-    "write_draft": "structuring",
-    "finalize": "finalization",
-    "run_critique": "critique",
-    "respond": "critique",
-    "run_readiness_check": "finalization",
-    "recommend_next_workflow": "finalization",
 }
 
 # Injected tool params are runtime wiring (LangGraph fills them), never LLM-visible args — strip
@@ -71,11 +60,7 @@ def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
 
 
 def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
-    """Convert LangGraph tool objects to the provider-agnostic schema list for generate(tools=...).
-
-    analyze_node binds the full registry so an out-of-turn tool self-rejects via a tool_result error
-    rather than being swapped out by the graph; the per-state menu is surfaced in the prompt instead.
-    """
+    """Convert state-valid tools into provider-agnostic schemas for generate(tools=...)."""
     schemas: list[dict[str, Any]] = []
     for t in tools:
         raw = t.args_schema.model_json_schema() if t.args_schema else {"type": "object", "properties": {}}
@@ -92,7 +77,7 @@ def _normalize_planning_track(track: Any) -> str:
 def _derive_artifact_chain(section_coverage: dict[str, str] | None) -> dict[str, str]:
     """BMAD artifact-chain status (missing/partial/complete) derived from 7-section coverage.
 
-    Sole source is section_coverage (Phase 1–2 engine) mapped to 0.0–1.0 scores — no 9-slot data.
+    Sole source is section_coverage mapped to 0.0–1.0 scores — no 9-slot data.
     brief tracks the first four sections; prd tracks all seven.
     """
     cov = section_coverage or {}
@@ -151,8 +136,8 @@ SUMMARY_SCHEMA = {
 }
 
 SUMMARY_SYSTEM = (
-    "Bạn là trợ lý tóm tắt hội thoại yêu cầu sản phẩm. "
-    "Giữ nguyên các ràng buộc quan trọng, đặc biệt số liệu, tên riêng, deadline và phạm vi."
+    "You summarize product requirements conversations. "
+    "Preserve important constraints, especially numbers, names, deadlines, and scope."
 )
 
 # Triage schema: classify a fresh turn and, for a conversational one, draft the reply in one cheap
@@ -168,14 +153,36 @@ TRIAGE_SCHEMA = {
 }
 
 TRIAGE_SYSTEM = (
-    "Bạn là bộ phân loại lượt mở đầu cho một trợ lý phân tích yêu cầu sản phẩm. "
-    "Quyết định lượt này là trò chuyện xã giao hay là công việc phân tích yêu cầu."
+    "You classify the opening turn for a product requirements analyst assistant. "
+    "Decide whether this turn is small talk or requirements analysis work."
 )
 
 # Locale-templated fallback when the classifier returns no reply text for a converse turn.
 _FALLBACK_GREETING = {
     "vi": "Xin chào! Tôi là trợ lý phân tích yêu cầu. Bạn muốn bắt đầu từ đâu?",
     "en": "Hello! I'm your requirements analysis assistant. Where would you like to start?",
+}
+
+_COERCED_ASK_FALLBACK_BY_LOCALE = {
+    "vi": (
+        "Mình cần làm rõ thêm một ý trước khi có thể viết phần này chắc hơn. "
+        "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
+    ),
+    "en": (
+        "I need to clarify one more point before I can write this section with confidence. "
+        "Can you share the most important missing context?"
+    ),
+}
+
+_RESPOND_FALLBACK_BY_LOCALE = {
+    "vi": (
+        "Dựa trên thông tin hiện có, mình cần phân tích thêm trước khi kết luận. "
+        "Bạn bổ sung thêm bối cảnh hoặc xác nhận các điểm chính để mình tiếp tục nhé?"
+    ),
+    "en": (
+        "Based on the current information, I need more analysis before concluding. "
+        "Please add context or confirm the key points so I can continue."
+    ),
 }
 
 
@@ -204,7 +211,7 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
     cfg = config["configurable"]
     llm_client = cfg["llm_client"]
     if llm_client is None:
-        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+        raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     last_user = ""
     for m in reversed(state.get("messages") or []):
@@ -214,13 +221,13 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
             break
 
     prompt = (
-        "Phân loại tin nhắn của người dùng.\n\n"
-        f"Tin nhắn: {last_user!r}\n\n"
-        "turn_type: 'converse' nếu chỉ là chào hỏi, cảm ơn, tán gẫu hoặc lạc đề; "
-        "'work' nếu là yêu cầu phân tích/làm rõ/tạo artifact.\n"
-        "locale: 'vi' nếu tiếng Việt, 'en' nếu tiếng Anh.\n"
-        "Nếu turn_type='converse', đặt 'reply' là một câu đáp ngắn, thân thiện ĐÚNG ngôn ngữ "
-        "người dùng — chào lại, nói ngắn gọn bạn giúp được gì, và mời họ chia sẻ điều muốn xây."
+        "Classify the user's message.\n\n"
+        f"Message: {last_user!r}\n\n"
+        "turn_type: 'converse' if only greeting, thanks, small talk, or off-topic; "
+        "'work' if is a request to analyze, clarify, or create an artifact.\n"
+        "locale: 'vi' if Vietnamese, 'en' if English.\n"
+        "If turn_type='converse', set 'reply' to a short, friendly sentence in the user's exact language "
+        "- greet back, briefly say what you can help with, and invite them to share what they want to build."
     )
     try:
         result, _usage = await llm_client.generate(
@@ -261,11 +268,13 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
     async with session_factory() as db:
         already_saved = (
             await db.execute(
-                select(exists().where(
-                    AgentMessage.session_id == session_id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                    AgentMessage.content == message,
-                ))
+                select(
+                    exists().where(
+                        AgentMessage.session_id == session_id,
+                        AgentMessage.role == AgentMessageRole.AGENT,
+                        AgentMessage.content == message,
+                    )
+                )
             )
         ).scalar()
         if not already_saved:
@@ -277,9 +286,7 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
                     payload={"kind": "greeting", "locale": locale},
                 )
             )
-        session_row = (
-            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
-        ).scalar_one()
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
@@ -294,6 +301,49 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
     }
 
 
+def _should_run_completeness_sweep(state: WorkflowState) -> bool:
+    feedback = state.get("feedback_summary") or {}
+    if state.get("completeness_sweep_requested") or state.get("user_requested_prd_descent"):
+        return True
+    if state.get("artifact_type") != "prd":
+        return False
+    if feedback.get("brd_stable_sweep_done"):
+        return False
+    return is_brd_stable(state.get("decision_nodes") or {})
+
+
+async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None = None) -> dict[str, Any]:
+    """Pre-analyst orchestration: resurface parked blockers and run completeness sweep when triggered."""
+    _ = config
+    decision_nodes = state.get("decision_nodes") or {}
+    feedback = dict(state.get("feedback_summary") or {})
+    resurfaced = scan_parked_questions(decision_nodes)
+    if resurfaced:
+        feedback["resurfaced_questions"] = [
+            {"id": node["id"], "statement": node["statement"], "blocks": list(node.get("blocks") or [])}
+            for node in resurfaced
+        ]
+    else:
+        feedback.pop("resurfaced_questions", None)
+
+    update: dict[str, Any] = {"feedback_summary": feedback}
+    if _should_run_completeness_sweep(state):
+        gaps = completeness_sweep(decision_nodes, state.get("artifact_type") or "brd")
+        updated_nodes, created = add_parked_questions_for_gaps(
+            decision_nodes,
+            gaps,
+            {"turn": state.get("turn_count") or 0, "by": "agent", "technique": "completeness_sweep", "source": None},
+        )
+        feedback["brd_stable_sweep_done"] = True
+        feedback["depth_signal"] = "BRD stable -> can descend to PRD"
+        feedback["sweep_gaps"] = list(gaps)
+        feedback["created_parked_questions"] = [{"id": node["id"], "statement": node["statement"]} for node in created]
+        update["feedback_summary"] = feedback
+        if created:
+            update["decision_nodes"] = updated_nodes
+    return update
+
+
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -301,7 +351,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     project_id = uuid.UUID(cfg["project_id"])
     llm_client = cfg.get("strong_llm_client") or cfg["llm_client"]
     if llm_client is None:
-        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+        raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     effective_state: WorkflowState = state
     focus_reset_update: dict[str, Any] = {}
@@ -316,22 +366,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     context_types = [artifact_type, *ancestor_types(artifact_type)]
     async with session_factory() as db:
         db_focused_artifact_id = (
-            await db.execute(
-                select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id)
-            )
+            await db.execute(select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id))
         ).scalar_one_or_none()
         state_focused_artifact_id = (
-            uuid.UUID(str(state["focused_artifact_id"]))
-            if state.get("focused_artifact_id")
-            else None
+            uuid.UUID(str(state["focused_artifact_id"])) if state.get("focused_artifact_id") else None
         )
         if db_focused_artifact_id != state_focused_artifact_id:
             focus_reset_update = {
-                "focused_artifact_id": (
-                    str(db_focused_artifact_id)
-                    if db_focused_artifact_id is not None
-                    else None
-                ),
+                "focused_artifact_id": (str(db_focused_artifact_id) if db_focused_artifact_id is not None else None),
                 "critique_rounds": 0,
                 "quality_report": None,
                 "last_critiqued_draft_hash": None,
@@ -367,13 +409,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             focused_artifact_id=db_focused_artifact_id,
         )
         previous_accepted = sum(
-            1 for value in (effective_state.get("section_coverage") or {}).values()
-            if value == "filled"
+            1 for value in (effective_state.get("section_coverage") or {}).values() if value == "filled"
         )
-        current_accepted = sum(
-            1 for value in (coverage.get("section_coverage") or {}).values()
-            if value == "filled"
-        )
+        current_accepted = sum(1 for value in (coverage.get("section_coverage") or {}).values() if value == "filled")
         if (
             coverage["coverage_complete"]
             or current_accepted > previous_accepted
@@ -381,9 +419,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         ):
             coverage["section_coverage_stall_count"] = 0
         else:
-            coverage["section_coverage_stall_count"] = (
-                effective_state.get("section_coverage_stall_count") or 0
-            ) + 1
+            coverage["section_coverage_stall_count"] = (effective_state.get("section_coverage_stall_count") or 0) + 1
         effective_state = {**effective_state, **coverage}
     draft_body = draft["body"] if draft else None
 
@@ -394,9 +430,13 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         agent_role=cfg.get("agent_role"),
         context={"has_draft": draft_body is not None},
     )
-    from app.graphs.agent_tools import get_all_analyzer_tools
+    # Artifact-type shape (taxonomy chain + section-coverage contract) belongs with the static policy
+    # in L1, not the per-turn payload — appended last so the static prefix stays cache-friendly.
+    system_prompt = (system_prompt or "") + _build_artifact_contract_block(effective_state)
+    from app.graphs.agent_tools import get_available_tools
 
-    tool_schemas = _build_tool_schemas(get_all_analyzer_tools())
+    available_tools = get_available_tools(effective_state)
+    tool_schemas = _build_tool_schemas(available_tools)
     started_at = time.monotonic()
     ai_message, usage = await llm_client.generate(
         messages=_build_analyzer_messages(effective_state, prompt),
@@ -407,32 +447,27 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
 
-    # Post-call gate now keeps only the solo-enforcement invariant; availability and field errors
-    # round-trip through tool_result so the model self-corrects next turn.
+    # Post-LLM gate keeps only the solo invariant; availability is enforced by the state-driven tool surface.
     raw_tools = [
         {"name": tc.get("name") or "", "args": dict(tc.get("args") or {})}
         for tc in (getattr(ai_message, "tool_calls", None) or [])
     ]
     gated_tools = _gate_selected_tools(effective_state, raw_tools)
+    dropped_tools = _dropped_tool_names(raw_tools, gated_tools)
+    # One-shot: clear the previous turn's notice (already rendered into this turn's prompt) and stage
+    # this turn's drops for the next prompt — so the model sees its dropped tools exactly once.
+    next_feedback = dict(effective_state.get("feedback_summary") or {})
+    next_feedback.pop("dropped_tools", None)
+    if dropped_tools:
+        next_feedback["dropped_tools"] = dropped_tools
 
-    # Analytic fields are derived from the gated primary tool + state, not self-reported by the LLM:
-    # active_mode from the tool's operating angle, locale sticky-from-state (default vi), and the
-    # draft_update captured from any text the model emitted alongside its tool calls.
-    primary_tool = gated_tools[0]["name"] if gated_tools else None
-    active_mode = _TOOL_ACTIVE_MODE.get(primary_tool or "", "discovery")
+    # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
+    # (default vi). Drafts of record flow through decision_nodes and write_draft.
     locale = effective_state.get("locale") or "vi"
-    # When the model picks tools it may emit chain-of-thought as content alongside tool_use blocks;
-    # that reasoning text is NOT a draft (OQ2: capturing it poisoned working_draft).
-    # Only treat content as a draft_update on a terminal turn (no tool_calls), where it is the
-    # model's deliberate final message — drafts of record flow through write_draft (→ draft_body).
-    has_tool_calls = bool(getattr(ai_message, "tool_calls", None))
-    draft_update = None if has_tool_calls else ((getattr(ai_message, "content", None) or "").strip() or None)
 
     analysis_result: dict[str, Any] = {
         "tools": gated_tools,
-        "active_mode": active_mode,
         "locale": locale,
-        "draft_update": draft_update,
         "coverage_complete": coverage["coverage_complete"],
     }
 
@@ -461,21 +496,21 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         "locale": locale,
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": draft_body,
-        # Incremental write (C1): carry the running draft forward. A turn with no draft_update keeps
-        # the prior draft; the draft only grows (the model is never allowed to reset it mid-session).
-        "working_draft": draft_update or effective_state.get("working_draft"),
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
+        "feedback_summary": next_feedback,
         **focus_reset_update,
         **coverage,
     }
     # Emit the gated tools as AIMessage(tool_calls=[...]) so route_node dispatches to the ToolNode.
-    # tool_call.id = "{run_id}:{i}" — unique per call in the same turn for LangGraph ToolNode
-    # uniqueness. DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
+    # tool_call.id = "{run_id}-{i}" — unique per call in the same turn for LangGraph ToolNode
+    # uniqueness. The separator must be "-" not ":" — Anthropic on Bedrock validates tool_use.id
+    # against ^[a-zA-Z0-9_-]+$ and rejects ":" when the message history is replayed next turn.
+    # DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
     # Empty tool_calls means the analyst is done: emit a plain AIMessage carrying its final text.
     if gated_tools:
         tool_calls = []
@@ -486,27 +521,18 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             if tool == "ask_user" and not str(args.get("message") or "").strip():
                 # Prefer the gate-set message (names the gated tool) over the generic fallback.
                 gate_msg = str(analysis_result.get("message") or "")
-                args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK
+                args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK_BY_LOCALE.get(
+                    locale, _COERCED_ASK_FALLBACK_BY_LOCALE["en"]
+                )
             if tool == "respond":
                 if _response_message_incomplete(args.get("message")):
-                    args["message"] = _RESPOND_FALLBACK
-                args["mode"] = args.get("mode") or active_mode or "critique"
-            tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
+                    args["message"] = _RESPOND_FALLBACK_BY_LOCALE.get(locale, _RESPOND_FALLBACK_BY_LOCALE["en"])
+                args["mode"] = args.get("mode") or "critique"
+            tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
         result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
     else:
         result["messages"] = [AIMessage(content=(getattr(ai_message, "content", None) or "").strip())]
     return result
-
-
-_COERCED_ASK_FALLBACK = (
-    "Mình cần làm rõ thêm một ý trước khi có thể viết phần này chắc hơn. "
-    "Bạn có thể chia sẻ thêm thông tin quan trọng nhất còn thiếu không?"
-)
-
-_RESPOND_FALLBACK = (
-    "Dựa trên thông tin hiện có, mình cần phân tích thêm trước khi kết luận. "
-    "Bạn bổ sung thêm bối cảnh hoặc xác nhận các điểm chính để mình tiếp tục nhé?"
-)
 
 
 def _response_message_incomplete(message: Any) -> bool:
@@ -521,7 +547,7 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
     cfg = config["configurable"]
     llm_client = cfg["llm_client"]
     if llm_client is None:
-        raise ValueError("Chưa cấu hình LLM provider. Vui lòng thêm API key trong phần cài đặt.")
+        raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     prompt = _build_summary_prompt(state)
     try:
@@ -608,9 +634,7 @@ async def _save_and_interrupt_ask(
                     payload=payload,
                 )
             )
-        session_row = (
-            await db.execute(select(AgentSession).where(AgentSession.id == session_id))
-        ).scalar_one()
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = session_status
         session_row.interrupt_type = session_interrupt_type
         await db.commit()
@@ -636,15 +660,16 @@ async def _agent_message_already_saved(db, session_id, run_id, content) -> bool:
     return bool(
         (
             await db.execute(
-                select(exists().where(
-                    AgentMessage.session_id == session_id,
-                    AgentMessage.role == AgentMessageRole.AGENT,
-                    condition,
-                ))
+                select(
+                    exists().where(
+                        AgentMessage.session_id == session_id,
+                        AgentMessage.role == AgentMessageRole.AGENT,
+                        condition,
+                    )
+                )
             )
         ).scalar()
     )
-
 
 
 def _msg_role_content(m) -> tuple[str, str]:
@@ -660,7 +685,14 @@ def _msg_role_content(m) -> tuple[str, str]:
 
 
 def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str, Any]]:
-    """Dựng thread thật cho LLM: hội thoại + tool_use/tool_result + payload phân tích lượt này."""
+    """Build the real LLM message thread and place the workspace payload by recency.
+
+    The latest user message must be the last message the model reads; primacy/recency is weighted
+    much higher than the middle region (lost-in-the-middle). Therefore the dynamic workspace block
+    is inserted immediately before the final user turn, so the user message is the final anchor.
+    Only while inside a tool loop (the last message is a tool_result, not a human turn) is the
+    workspace appended at the end as before; then recency should belong to tool context.
+    """
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
     for raw in state.get("messages") or []:
@@ -668,7 +700,54 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
         if message is not None:
             _append_client_message(messages, message)
     _append_analyzer_prompt(messages, prompt)
+    _append_latest_user_emphasis(messages, _latest_human_text(state))
     return messages
+
+
+def _is_human_turn(message: Any) -> bool:
+    """A genuine human turn — a plain user message, not a tool_result/tool output or assistant turn.
+
+    On resume the harness records the human reply as a plain ``{"role": "user", ...}`` dict (or a
+    HumanMessage); tool outputs arrive as ToolMessages (role/type ``tool`` or carrying a
+    tool_call_id). This distinction is what lets us re-surface the human's words without mistaking a
+    mid-loop tool result for user input.
+    """
+    if isinstance(message, dict):
+        if message.get("tool_call_id") or message.get("tool_calls"):
+            return False
+        return str(message.get("role") or "") in {"user", "human"}
+    if getattr(message, "tool_call_id", None) or getattr(message, "tool_calls", None):
+        return False
+    return getattr(message, "type", "") in {"user", "human"}
+
+
+def _latest_human_text(state: WorkflowState) -> str:
+    """Text of the most recent genuine human turn, for recency re-surfacing (empty if none)."""
+    for raw in reversed(state.get("messages") or []):
+        if _is_human_turn(raw):
+            _role, content = _msg_role_content(raw)
+            text = str(content or "").strip()
+            if text:
+                return text
+    return ""
+
+
+def _append_latest_user_emphasis(messages: list[dict[str, Any]], human_text: str) -> None:
+    """Make the human's latest message the FINAL text block the model reads.
+
+    The conversation, not the rules, must own the recency slot: a long static/workspace payload in
+    the middle is undervalued (lost-in-the-middle), so the user's actual ask is restated last. Works
+    for every case — a tool_result-bearing resume turn buries the reply inside a tool_result block,
+    so re-stating it as a trailing text block is the only way to keep it last.
+    """
+    if not human_text or not messages:
+        return
+    block = {"type": "text", "text": f"— Latest user turn (prioritize responding to this intent): {human_text}"}
+    last = messages[-1]
+    if last.get("role") == "user":
+        last["content"] = [*_content_blocks(last.get("content")), block]
+    else:
+        messages.append({"role": "user", "content": [block]})
 
 
 def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -> dict[str, Any] | None:
@@ -690,12 +769,14 @@ def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -
         call_id = str(tool_call_id or "")
         return {
             "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": call_id,
-                "name": str(name or tool_names_by_id.get(call_id) or "tool"),
-                "content": str(content or ""),
-            }],
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": call_id,
+                    "name": str(name or tool_names_by_id.get(call_id) or "tool"),
+                    "content": str(content or ""),
+                }
+            ],
         }
 
     if role == "assistant" and tool_calls:
@@ -705,12 +786,14 @@ def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -
             tool_name = str(call.get("name") or "")
             if call_id and tool_name:
                 tool_names_by_id[call_id] = tool_name
-            blocks.append({
-                "type": "tool_use",
-                "id": call_id,
-                "name": tool_name,
-                "input": dict(call.get("args") or {}),
-            })
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": tool_name,
+                    "input": dict(call.get("args") or {}),
+                }
+            )
         return {"role": "assistant", "content": blocks}
 
     if role not in {"user", "assistant"}:
@@ -770,7 +853,7 @@ def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     """Persisted-draft block: tell the analyst the body already on record, so it mines the delta."""
     if not draft_body:
         return ""
-    return f"\n\nDRAFT ĐANG CÓ cho loại '{state['artifact_type']}':\n{draft_body}"
+    return f"\n\nCURRENT DRAFT for type '{state['artifact_type']}':\n{draft_body}"
 
 
 def _build_key_facts_block(state: WorkflowState) -> str:
@@ -778,24 +861,21 @@ def _build_key_facts_block(state: WorkflowState) -> str:
     facts = state.get("key_facts") or []
     if not facts:
         return ""
-    lines = "\n".join(
-        f"- {f['statement']}"
-        + (f" (nguồn: {f['source']})" if f.get("source") else "")
-        for f in facts
-    )
-    return f"\n\nKEY FACTS đã xác nhận (không hỏi lại):\n{lines}"
+    lines = "\n".join(f"- {f['statement']}" + (f" (source: {f['source']})" if f.get("source") else "") for f in facts)
+    return f"\n\nConfirmed key facts (do not ask again):\n{lines}"
 
 
-def _build_working_draft_block(state: WorkflowState) -> str:
-    """Running-draft block (C1): the in-session draft accumulated across turns, newer than the
-    persisted body, so the model treats it as the live target."""
-    working_draft = (state.get("working_draft") or "").strip()
-    if not working_draft:
+def _build_decision_view_block(state: WorkflowState) -> str:
+    """Rendered decision-graph view shown as the live draft target."""
+    decision_nodes = state.get("decision_nodes") or {}
+    if not decision_nodes:
         return ""
-    return (
-        "\n\nDRAFT ĐANG XÂY DỰNG (cập nhật tăng dần — phản ánh các ý đã rõ):\n"
-        f"{working_draft}"
-    )
+    from app.graphs.decision_graph import render_view
+
+    view = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
+    if not view:
+        return ""
+    return f"\n\nDRAFT IN PROGRESS (incrementally updated - reflects clarified points):\n{view}"
 
 
 def _last_message_has_tool_calls(state: WorkflowState) -> bool:
@@ -821,9 +901,15 @@ def _log_tool_error(code: str, tool_name: str, message: str) -> None:
 # Tools that call interrupt() — they must always run solo (no composite dispatch).
 # DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
 # be paired with another tool in the same turn to preserve idempotency invariants.
-_INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
-    "ask_user", "respond", "write_draft", "finalize", "confirm_intent",
-})
+_INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset(
+    {
+        "ask_user",
+        "respond",
+        "write_draft",
+        "finalize",
+        "confirm_intent",
+    }
+)
 
 # Silent scratchpad notes: no interrupt, no DB write, pure state append (assumptions/risks/
 # open_questions/key_facts). They may ride along with an interrupt-bearing tool because the ToolNode
@@ -831,6 +917,26 @@ _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
 # so the model can record what it learned in the SAME turn it asks a question, instead of having the
 # note dropped by solo enforcement (the only key_facts populator, which starved the anti-re-ask block).
 _SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
+
+
+def _dropped_tool_names(requested: list[dict], kept: list[dict]) -> list[str]:
+    """Names the gate removed from the model's selection this turn.
+
+    Closes the feedback loop: a silently dropped tool gives the model no ground truth to self-correct,
+    so it keeps re-pairing the same tools. The diff is a name-multiset subtraction (the gate never
+    substitutes a tool, only drops), surfaced next turn via feedback_summary['dropped_tools'].
+    """
+    from collections import Counter
+
+    kept_counts = Counter(item.get("name") or "" for item in kept)
+    dropped: list[str] = []
+    for item in requested:
+        name = item.get("name") or ""
+        if kept_counts.get(name, 0) > 0:
+            kept_counts[name] -= 1
+        else:
+            dropped.append(name)
+    return dropped
 
 
 def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
@@ -843,10 +949,7 @@ def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[d
     needs only the requested set; it is intentionally unused.
     """
     # Normalize to a stable {name, args} shape; the model's chosen tools are never substituted.
-    validated = [
-        {"name": item.get("name") or "", "args": dict(item.get("args") or {})}
-        for item in requested
-    ]
+    validated = [{"name": item.get("name") or "", "args": dict(item.get("args") or {})} for item in requested]
 
     # Solo enforcement: at most one interrupt-bearing tool per turn (two interrupts in a node is
     # unsafe). When one is present, keep it plus any side-effect-free notes (so their structured facts
@@ -896,47 +999,39 @@ def _build_tool_selection_prompt(
     """
     from app.graphs.agent_tools import get_available_tools
 
-    artifact_context = "\n".join(
-        f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts
-    ) or "(chưa có artifact nào)"
+    artifact_context = (
+        "\n".join(f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts) or "(no artifacts yet)"
+    )
 
     # The analyst already receives the full conversation as a real message thread
     # (_build_analyzer_messages), so restating it here would double every recent turn. The payload
     # carries only the running summary — a deliberate compaction of older turns — when one exists.
     conversation_summary = (state.get("conversation_summary") or "").strip()
-    summary_block = (
-        f"Tóm tắt hội thoại đã tích lũy:\n{conversation_summary}\n\n"
-        if conversation_summary
-        else ""
-    )
+    summary_block = f"Accumulated conversation summary:\n{conversation_summary}\n\n" if conversation_summary else ""
 
     locale = (state.get("locale") or "").strip()
     language_lock = (
-        f"\n\nQUAN TRỌNG: Trả lời TOÀN BỘ bằng ngôn ngữ '{locale}'. Tuyệt đối không trộn lẫn ngôn ngữ khác."
-        if locale
-        else ""
+        f"\n\nIMPORTANT: Respond entirely in language '{locale}'. Do not mix in another language." if locale else ""
     )
 
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
     draft_block = _build_draft_block(state, draft_body)
-    working_draft_block = _build_working_draft_block(state)
-    contract_block = _build_output_contract_block(state)
+    decision_view_block = _build_decision_view_block(state)
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
-
+    # Taxonomy chain + section-coverage contract are no longer here — they moved to the system prompt
+    # (see _build_artifact_contract_block) so the per-turn payload stays small next to the conversation.
     return (
-        f"Bạn là analyst cho loại artifact: {state['artifact_type']}.\n\n"
-        f"Context hiện tại:\n{artifact_context}"
-        f"{_build_taxonomy_chain_block(state)}\n\n"
+        f"You are the analyst for artifact type: {state['artifact_type']}.\n\n"
+        f"Current context:\n{artifact_context}\n\n"
         f"{summary_block}"
-        f"Công cụ khả dụng lượt này: {tool_menu}.\n"
-        "Chọn 1–3 công cụ phù hợp và điền các field của từng công cụ theo policy trong system prompt."
+        f"Tools available this turn: {tool_menu}.\n"
+        "Choose 1-3 suitable tools and fill each tool's fields according to the system prompt policy."
         f"{_build_section_coverage_hint(state)}"
-        f"{contract_block}"
         f"{key_facts_block}"
         f"{feedback_block}"
         f"{draft_block}"
-        f"{working_draft_block}"
+        f"{decision_view_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
     )
@@ -965,12 +1060,35 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
                 parts.append(f"- {key}: {_compact_list(values)}")
 
     feedback_summary = state.get("feedback_summary") or {}
+    resurfaced = feedback_summary.get("resurfaced_questions") or []
+    if resurfaced:
+        rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in resurfaced[:3])
+        parts.append(f"- resurfaced_questions: {rendered}")
+    if feedback_summary.get("depth_signal"):
+        parts.append(f"- depth_signal: {feedback_summary['depth_signal']}")
+    sweep_gaps = feedback_summary.get("sweep_gaps") or []
+    if sweep_gaps:
+        parts.append(f"- sweep_gaps: {_compact_list(sweep_gaps)}")
+    created_parked = feedback_summary.get("created_parked_questions") or []
+    if created_parked:
+        rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in created_parked[:3])
+        parts.append(f"- created_parked_questions: {rendered}")
     if feedback_summary.get("stale_warning"):
         parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
+    dropped = feedback_summary.get("dropped_tools") or []
+    if dropped:
+        parts.append(
+            "- skipped last turn (not run because it was bundled with an interrupting tool and must run separately); "
+            f"call it again in a separate turn if still needed: {_compact_list(dropped)}"
+        )
 
     if not parts:
         return ""
-    return "\n\nFEEDBACK CONTROL:\n" + "\n".join(parts)
+    return (
+        "\n\nFEEDBACK CONTROL:\n"
+        "- the signals below are orchestration priorities; choose suitable tools and order without ignoring them.\n"
+        + "\n".join(parts)
+    )
 
 
 def _compact_list(values: list[Any], limit: int = 3) -> str:
@@ -978,6 +1096,16 @@ def _compact_list(values: list[Any], limit: int = 3) -> str:
     if len(values) > limit:
         rendered.append(f"... (+{len(values) - limit})")
     return "; ".join(rendered)
+
+
+def _build_artifact_contract_block(state: WorkflowState) -> str:
+    """Artifact-type shape appended to the SYSTEM prompt (L1), not the per-turn payload.
+
+    The taxonomy chain and the section-coverage contract depend only on artifact_type (stable per
+    session), so they belong with the static policy — kept out of the per-turn user payload so they
+    do not compete with the live conversation for the recency slot.
+    """
+    return _build_taxonomy_chain_block(state) + _build_output_contract_block(state)
 
 
 def _build_taxonomy_chain_block(state: WorkflowState) -> str:
@@ -992,11 +1120,11 @@ def _build_taxonomy_chain_block(state: WorkflowState) -> str:
             desc = get_config(item_type).description
         except (KeyError, ValueError):
             continue
-        marker = " (đang làm)" if item_type == artifact_type else ""
+        marker = " (current)" if item_type == artifact_type else ""
         lines.append(f"- {item_type}{marker}: {desc}")
     if not lines:
         return ""
-    return "\n\nLOẠI ARTIFACT & nguồn gốc (chain):\n" + "\n".join(lines)
+    return "\n\nARTIFACT TYPE & provenance chain:\n" + "\n".join(lines)
 
 
 def _build_output_contract_block(state: WorkflowState) -> str:
@@ -1006,28 +1134,42 @@ def _build_output_contract_block(state: WorkflowState) -> str:
     except ValueError:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
-    columns = ", ".join(contract.table_columns) if contract.table_columns else "(không bắt buộc table)"
+    columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
+    # Graph-first: the artifact view renders from decision nodes, so the contract is a coverage target
+    # for the nodes to fill — not a Markdown body to hand-write. Only the flag-off rollback path still
+    # authors a body directly, so keep the body-shape contract for that case.
+    if settings.decision_graph_enabled:
+        # Keep only artifact-specific content in the per-turn payload; node/status/no-fabrication
+        # policy already lives in the system prompt, so do not repeat it here.
+        return (
+            "\n\nSECTION COVERAGE REQUIRED (view rendered from the decision graph - "
+            "create nodes to fill it, do not hand-write the Markdown body):\n"
+            f"{headings}\n"
+            f"Table columns when using a table: {columns}\n"
+            "Prioritize current/accepted artifact versions and accepted predecessors over chat history."
+        )
     return (
-        "\n\nOUTPUT CONTRACT BẮT BUỘC:\n"
+        "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"
-        "- Body phải là Markdown theo chuẩn artifact này, không phải JSON/form dump.\n"
-        "- Hội thoại/user input chỉ là evidence/context; không copy nguyên transcript vào body.\n"
-        "- Nội dung agent suy diễn hoặc cần user xác nhận phải ghi note ngay tại chỗ trong ngoặc, "
-        f"ví dụ {contract.confirmation_note}.\n"
-        "- Khi input còn ít, candidate vẫn phải giữ cấu trúc đầy đủ và đánh dấu rõ: "
-        "`inferred` cho phần agent suy luận, `missing` cho phần thiếu evidence, "
-        "`needs_confirmation` cho assumption cần user xác nhận.\n"
-        "- Không làm nghèo body bằng cách bỏ heading; nếu chưa đủ dữ liệu, giữ heading và ghi phần thiếu rõ ràng.\n"
+        "- Body must be Markdown following this artifact standard, not a JSON/form dump.\n"
+        "- Conversation/user input is only evidence/context; do not copy the transcript into the body.\n"
+        "- Agent-inferred content or content needing user confirmation must be noted inline in parentheses, "
+        f"for example {contract.confirmation_note}.\n"
+        "- When input is thin, the candidate must still keep the full structure and mark clearly: "
+        "`inferred` for agent-inferred content, `missing` for missing evidence, "
+        "`needs_confirmation` for assumptions needing user confirmation.\n"
+        "- Do not weaken the body by dropping headings; if data is insufficient, keep headings "
+        "and mark missing content clearly.\n"
         f"- Guidance: {contract.guidance}\n"
         "Required headings:\n"
         f"{headings}\n"
-        f"Table columns khi dùng table: {columns}\n"
-        "Ưu tiên current/accepted artifact version và predecessor đã accepted hơn chat history."
+        f"Table columns when using a table: {columns}\n"
+        "Prioritize current/accepted artifact versions and accepted predecessors over chat history."
     )
 
 
 def _build_mode_hint_directive(state: WorkflowState) -> str:
-    """Inject a user-supplied `mode_hint` — an explicit "cướp lái" to switch operating angle now.
+    """Inject a user-supplied `mode_hint` — an explicit override to switch operating angle this turn.
 
     Dynamic per-turn payload only. The proactive-mode policy (when to leave plain Q&A, prefer
     respond over burying an assessment in a question) is static and lives in the decision-policy
@@ -1037,8 +1179,8 @@ def _build_mode_hint_directive(state: WorkflowState) -> str:
     if not mode_hint:
         return ""
     return (
-        f"\n\nYÊU CẦU MODE: người dùng muốn chuyển sang chế độ '{mode_hint}'. Hãy chuyển ngay "
-        f"trong lượt này, đặt active_mode='{mode_hint}' và phản hồi đúng theo chế độ đó."
+        f"\n\nMODE REQUEST: the user wants to switch to mode '{mode_hint}'. Switch immediately "
+        f"this turn and respond according to that mode."
     )
 
 
@@ -1050,8 +1192,8 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     # question verbatim, so steer the model to synthesize what it has and move on or propose.
     if (state.get("section_coverage_stall_count") or 0) >= 2:
         return (
-            "\n\nĐộ phủ section không tăng qua nhiều lượt. Đừng lặp lại cùng hướng khai thác — hãy tổng "
-            "hợp những gì đã có và cân nhắc propose, hoặc chuyển sang một angle hoàn toàn khác."
+            "\n\nSection coverage has not improved across multiple turns. Do not repeat the same exploration path - "
+            "synthesize what exists and consider proposing, or switch to a completely different angle."
         )
     # Gap-inventory: list every weak section (missing first, then partial/needs_review) so the LLM
     # picks the angle that fits the conversation instead of being pinned to one scripted question.
@@ -1063,32 +1205,33 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
     ]
     inventory = "\n".join(gap_lines)
     return (
-        "\n\nĐộ phủ section — các khía cạnh còn thiếu hoặc chưa rõ (tham chiếu, không phải thứ tự "
-        "bắt buộc):\n"
+        "\n\nSection coverage - aspects still missing or unclear (reference only, not required order):\n"
         f"{inventory}\n"
-        "Tự chọn angle phù hợp nhất với mạch hội thoại để advance — khai thác thêm, suy luận điều hợp "
-        "lý, hoặc draft khi đã đủ."
+        "Choose the best angle for the conversation flow to advance - explore more, make reasonable "
+        "inferences, or draft when enough is known."
     )
 
 
 def _build_summary_prompt(state: WorkflowState) -> str:
-    current_summary = (state.get("conversation_summary") or "").strip() or "(chưa có)"
-    recent_messages = "\n".join(
-        f"{role}: {content}"
-        for role, content in (
-            _msg_role_content(m)
-            for m in (state.get("messages") or [])[-settings.summary_trigger_every:]
+    current_summary = (state.get("conversation_summary") or "").strip() or "(none yet)"
+    recent_messages = (
+        "\n".join(
+            f"{role}: {content}"
+            for role, content in (
+                _msg_role_content(m) for m in (state.get("messages") or [])[-settings.summary_trigger_every :]
+            )
         )
-    ) or "(chưa có hội thoại mới)"
+        or "(no new conversation)"
+    )
 
     return (
-        "Cập nhật tóm tắt chạy cho hội thoại yêu cầu sản phẩm.\n\n"
-        f"TÓM TẮT HIỆN TẠI:\n{current_summary}\n\n"
-        f"HỘI THOẠI MỚI:\n{recent_messages}\n\n"
-        "Trả về đúng bốn section sau:\n"
-        "Yêu cầu đã xác nhận\n"
-        "Ràng buộc — KHÔNG paraphrase\n"
-        "Khoảng trống chưa rõ\n"
-        "Quyết định đã thống nhất\n\n"
-        "Trong section ràng buộc, giữ nguyên verbatim mọi số liệu, deadline, tên riêng và giới hạn phạm vi."
+        "Update the running summary for the product requirements conversation.\n\n"
+        f"CURRENT SUMMARY:\n{current_summary}\n\n"
+        f"NEW CONVERSATION:\n{recent_messages}\n\n"
+        "Return exactly the following four sections:\n"
+        "Confirmed requirements\n"
+        "Constraints - DO NOT paraphrase\n"
+        "Unclear gaps\n"
+        "Agreed decisions\n\n"
+        "In the constraints section, keep all numbers, deadlines, proper names, and scope limits verbatim."
     )

@@ -32,19 +32,19 @@ def test_transcript_diff_ignores_runtime_noise_and_eval_score(tmp_path):
                                 {
                                     "id": "22222222-2222-2222-2222-222222222222",
                                     "created_at": "2026-06-25T10:00:00",
-                                    "content": "Giữ nguyên nội dung",
+                                    "content": "Giu nguyen content",
                                 }
                             ],
                             "tool_calls": [
                                 {
                                     "tool_name": "write_draft:33333333-3333-3333-3333-333333333333",
-                                    "input_snapshot": {"title": "Bản nháp"},
+                                    "input_snapshot": {"title": "Draft"},
                                 }
                             ],
                         }
                     }
                 ],
-                "eval": [{"score": {"overall": 0.7, "rationale": "judge thật"}}],
+                "eval": [{"score": {"overall": 0.7, "rationale": "judge that"}}],
             },
             ensure_ascii=False,
         ),
@@ -62,13 +62,13 @@ def test_transcript_diff_ignores_runtime_noise_and_eval_score(tmp_path):
                                 {
                                     "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
                                     "created_at": "2026-06-26T10:00:00",
-                                    "content": "Giữ nguyên nội dung",
+                                    "content": "Giu nguyen content",
                                 }
                             ],
                             "tool_calls": [
                                 {
                                     "tool_name": "write_draft:cccccccc-cccc-cccc-cccc-cccccccccccc",
-                                    "input_snapshot": {"title": "Bản nháp"},
+                                    "input_snapshot": {"title": "Draft"},
                                 }
                             ],
                         }

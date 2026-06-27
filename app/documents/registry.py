@@ -22,7 +22,7 @@ class ArtifactOutputContract:
     required_headings: tuple[str, ...]
     guidance: str
     table_columns: tuple[str, ...] = ()
-    confirmation_note: str = "(agent suy diễn, cần xác nhận)"
+    confirmation_note: str = "(agent-inferred, needs confirmation)"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -92,88 +92,88 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "vision_objectives",
         "Vision and Objectives",
-        "Tầm nhìn và mục tiêu: vì sao làm, thành công trông như thế nào, đo bằng gì.",
+        "Vision and objectives: why this exists, what success looks like, and how it is measured.",
         sub_dimensions={
-            "business_goal": "Mục tiêu kinh doanh cụ thể cần đạt.",
-            "user_goal": "Kết quả người dùng muốn đạt được.",
-            "metric": "Chỉ số đo lường thành công.",
-            "target": "Ngưỡng hoặc kết quả mục tiêu cần đạt.",
-            "timeframe": "Mốc thời gian hoặc hạn hoàn thành.",
-            "intent": "Lý do và động cơ sáng kiến được thực hiện.",
-            "success_definition": "Trạng thái lý tưởng khi sáng kiến thành công.",
+            "business_goal": "Specific business goal to achieve.",
+            "user_goal": "Outcome the user wants to achieve.",
+            "metric": "Metric used to measure success.",
+            "target": "Target threshold or outcome to achieve.",
+            "timeframe": "Timeline or completion deadline.",
+            "intent": "Reason and motivation for the initiative.",
+            "success_definition": "Ideal state when the initiative succeeds.",
         },
         threshold=0.8,
     ),
     _item(
         "problem_statement",
         "Problem Statement",
-        "Phát biểu vấn đề: ai gặp trở ngại gì, nguyên nhân gốc, tần suất và tác động.",
+        "Problem statement: who faces which obstacle, root cause, frequency, and impact.",
         sub_dimensions={
-            "who": "Đối tượng bị ảnh hưởng trực tiếp bởi vấn đề.",
-            "obstacle": "Trở ngại cụ thể mà đối tượng đang gặp.",
-            "root_cause": "Nguyên nhân gốc rễ sau khi đào sâu vấn đề.",
-            "frequency": "Tần suất hoặc quy mô lặp lại của vấn đề.",
-            "impact": "Ảnh hưởng lên người dùng, quy trình, hoặc kinh doanh.",
+            "who": "Audience directly affected by the problem.",
+            "obstacle": "Specific obstacle the audience faces.",
+            "root_cause": "Root cause after problem exploration.",
+            "frequency": "Frequency or repeated scale of the problem.",
+            "impact": "Impact on users, process, or business.",
         },
         threshold=0.8,
     ),
     _item(
         "stakeholder_register",
         "Stakeholder Register",
-        "Danh sách bên liên quan: người dùng chính, bên liên quan phụ, người quyết định, vận hành.",
+        "Stakeholder register: primary users, secondary stakeholders, decision makers, and operators.",
         sub_dimensions={
-            "primary_user": "Người dùng cuối trực tiếp hoặc persona chính.",
-            "secondary_stakeholders": "Các bên liên quan gián tiếp và cách họ bị ảnh hưởng.",
-            "decision_maker": "Người có quyền phê duyệt hoặc ra quyết định.",
-            "operator": "Người triển khai, vận hành, hoặc hỗ trợ sau ra mắt.",
+            "primary_user": "Direct end user or primary persona.",
+            "secondary_stakeholders": "Indirect stakeholders and how they are affected.",
+            "decision_maker": "Person with approval or decision authority.",
+            "operator": "Person who deploys, operates, or supports after launch.",
         },
         threshold=0.75,
     ),
     _item(
         "scope_capabilities",
         "Scope and Capabilities",
-        "Phạm vi và năng lực: cái gì trong scope, cái gì ngoài scope, năng lực cần có và ưu tiên.",
+        "Scope and capabilities: what is in scope, out of scope, required capabilities, and priority.",
         sub_dimensions={
-            "in_scope": "Năng lực và hạng mục thuộc phạm vi lần này.",
-            "out_of_scope": "Phần được loại trừ rõ ràng khỏi phạm vi.",
-            "capability": "Năng lực sản phẩm hoặc hệ thống cần có.",
-            "priority": "Mức ưu tiên như Must, Should, Could.",
+            "in_scope": "Capabilities and items in scope for this iteration.",
+            "out_of_scope": "Items explicitly excluded from scope.",
+            "capability": "Required product or system capability.",
+            "priority": "Priority such as Must, Should, or Could.",
         },
         threshold=0.75,
     ),
     _item(
         "business_rules",
         "Business Rules",
-        "Quy tắc nghiệp vụ: điều kiện, kết quả, trigger và phạm vi áp dụng.",
+        "Business rules: conditions, outcomes, triggers, and applicability scope.",
         sub_dimensions={
-            "condition": "Điều kiện kích hoạt quy tắc nghiệp vụ.",
-            "outcome": "Kết quả hoặc hành động khi điều kiện thỏa.",
-            "trigger": "Sự kiện hoặc thời điểm quy tắc được áp dụng.",
-            "scope": "Phạm vi áp dụng của quy tắc.",
+            "condition": "Condition that triggers the business rule.",
+            "outcome": "Outcome or action when the condition is satisfied.",
+            "trigger": "Event or time when the rule applies.",
+            "scope": "Applicability scope of the rule.",
         },
         threshold=0.75,
     ),
     _item(
         "constraints_assumptions",
         "Constraints and Assumptions",
-        "Ràng buộc và giả định: giới hạn cứng, giả định đang dựa vào và cách kiểm chứng.",
+        "Constraints and assumptions: hard limits, relied-on assumptions, and validation approach.",
         sub_dimensions={
-            "constraint": "Ràng buộc cứng về thời gian, ngân sách, kỹ thuật, hoặc pháp lý.",
-            "assumption": "Giả định đang được dựa vào để ra quyết định.",
-            "validation": "Cách kiểm chứng giả định trước khi build.",
-            "dependency": "Phụ thuộc bên ngoài, vendor, hoặc team khác.",
+            "constraint": "Hard constraint on time, budget, technology, or legal scope.",
+            "assumption": "Assumption currently relied on for decisions.",
+            "validation": "How the assumption will be validated before build.",
+            "dependency": "External dependency, vendor, or another team.",
         },
         threshold=0.75,
     ),
     _item(
         "risks_issues",
         "Risks and Issues",
-        "Rủi ro và vấn đề: sự kiện bất lợi, xác suất, giảm thiểu và trạng thái theo dõi.",
+        "Risks and issues: adverse events, likelihood, mitigation, and tracking status.",
         sub_dimensions={
-            "risk": "Sự kiện hoặc điều kiện bất lợi có thể xảy ra.",
-            "likelihood": "Xác suất xảy ra của rủi ro.",
-            "mitigation": "Chiến lược giảm thiểu hoặc xử lý rủi ro.",
-            "status": "Trạng thái theo dõi của rủi ro hoặc vấn đề mở.",
+            "risk": "Adverse event or condition that may occur.",
+            "likelihood": "Likelihood of the risk occurring.",
+            "mitigation": "Risk mitigation or handling strategy.",
+            "status": "Tracking status for the risk or open issue.",
         },
         threshold=0.75,
     ),
@@ -189,10 +189,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
 
 _BY_TYPE = {config.artifact_type: config for config in _CONFIGS}
 _CONTAINER_BY_ITEM = {
-    child: config.artifact_type
-    for config in _CONFIGS
-    if config.is_container
-    for child in config.children
+    child: config.artifact_type for config in _CONFIGS if config.is_container for child in config.children
 }
 
 _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
@@ -200,7 +197,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         artifact_type="vision_objectives",
         format="markdown",
         required_headings=("## Vision", "## Objectives", "## Success Metrics"),
-        guidance="Tài liệu hóa tầm nhìn, mục tiêu và cách đo thành công.",
+        guidance="Document the vision, objectives, and success measurement.",
         table_columns=("goal", "user/business value", "metric", "target", "timeframe"),
     ),
     "problem_statement": ArtifactOutputContract(
@@ -212,41 +209,41 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Impact",
             "## Root Cause / Contributing Factors",
         ),
-        guidance="Nêu ai đang gặp vấn đề gì, tần suất, nguyên nhân và tác động.",
+        guidance="State who faces which problem, its frequency, cause, and impact.",
     ),
     "stakeholder_register": ArtifactOutputContract(
         artifact_type="stakeholder_register",
         format="markdown",
         required_headings=("## Stakeholders",),
-        guidance="Liệt kê các bên liên quan và quyền/quy trách nhiệm của họ.",
+        guidance="List stakeholders and their authority/responsibilities.",
         table_columns=("role", "responsibility", "decision authority", "needs/concerns", "involvement"),
     ),
     "scope_capabilities": ArtifactOutputContract(
         artifact_type="scope_capabilities",
         format="markdown",
         required_headings=("## Scope", "## Capabilities", "## Out of Scope"),
-        guidance="Tách rõ phạm vi, năng lực cần có và phần loại trừ.",
+        guidance="Separate scope, required capabilities, and exclusions clearly.",
         table_columns=("capability", "priority", "rationale", "dependency"),
     ),
     "business_rules": ArtifactOutputContract(
         artifact_type="business_rules",
         format="markdown",
         required_headings=("## Business Rules",),
-        guidance="Mỗi rule phải có điều kiện, trigger, kết quả, phạm vi và ngoại lệ.",
+        guidance="Each rule must include condition, trigger, outcome, scope, and exceptions.",
         table_columns=("rule id", "condition", "trigger", "outcome", "scope", "exception"),
     ),
     "constraints_assumptions": ArtifactOutputContract(
         artifact_type="constraints_assumptions",
         format="markdown",
         required_headings=("## Constraints", "## Assumptions", "## Validation Plan"),
-        guidance="Tách ràng buộc cứng khỏi giả định và nêu cách kiểm chứng.",
+        guidance="Separate hard constraints from assumptions and state validation approach.",
         table_columns=("constraint/assumption", "impact", "owner/source", "validation"),
     ),
     "risks_issues": ArtifactOutputContract(
         artifact_type="risks_issues",
         format="markdown",
         required_headings=("## Risks", "## Issues", "## Mitigation Plan"),
-        guidance="Theo dõi rủi ro/vấn đề với khả năng xảy ra, tác động và giảm thiểu.",
+        guidance="Track risks/issues with likelihood, impact, and mitigation.",
         table_columns=("risk", "likelihood", "impact", "mitigation", "status"),
     ),
     "functional_requirement": ArtifactOutputContract(
@@ -258,7 +255,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Inputs and Outputs",
             "## Acceptance Signals",
         ),
-        guidance="Viết behavior testable, dùng system shall/should khi phù hợp.",
+        guidance="Write testable behavior, using system shall/should where appropriate.",
     ),
     "use_case": ArtifactOutputContract(
         artifact_type="use_case",
@@ -271,19 +268,19 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Alternate / Exception Flows",
             "## Postconditions",
         ),
-        guidance="Mô tả actor-goal flow và các nhánh lỗi/ngoại lệ.",
+        guidance="Describe actor-goal flow and error/exception branches.",
     ),
     "non_functional_requirement": ArtifactOutputContract(
         artifact_type="non_functional_requirement",
         format="markdown",
         required_headings=("## Quality Attribute", "## Requirement", "## Measurement", "## Scope and Tradeoffs"),
-        guidance="Nêu quality attribute với target đo được và cách verify.",
+        guidance="State quality attributes with measurable targets and verification method.",
     ),
     "acceptance_criteria": ArtifactOutputContract(
         artifact_type="acceptance_criteria",
         format="markdown",
         required_headings=("## Acceptance Criteria",),
-        guidance="Dùng Given/When/Then hoặc checklist có thể kiểm thử.",
+        guidance="Use Given/When/Then or a testable checklist.",
     ),
     "domain_entity": ArtifactOutputContract(
         artifact_type="domain_entity",
@@ -295,13 +292,13 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Relationships",
             "## Lifecycle / States",
         ),
-        guidance="Mô tả concept domain, thuộc tính, quan hệ và vòng đời.",
+        guidance="Describe domain concepts, attributes, relationships, and lifecycle.",
     ),
     "component": ArtifactOutputContract(
         artifact_type="component",
         format="markdown",
         required_headings=("## Component", "## Responsibilities", "## Interfaces", "## Dependencies", "## Constraints"),
-        guidance="Mô tả component kiến trúc, trách nhiệm và phụ thuộc.",
+        guidance="Describe architecture components, responsibilities, and dependencies.",
     ),
     "interface": ArtifactOutputContract(
         artifact_type="interface",
@@ -313,7 +310,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Error Cases",
             "## Compatibility Notes",
         ),
-        guidance="Mô tả contract giữa provider/consumer, dữ liệu, lỗi và compatibility.",
+        guidance="Describe provider/consumer contract, data, errors, and compatibility.",
     ),
     "tech_decision": ArtifactOutputContract(
         artifact_type="tech_decision",
@@ -325,7 +322,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Decision",
             "## Consequences",
         ),
-        guidance="ADR-style Markdown cho quyết định kỹ thuật, lựa chọn và hệ quả.",
+        guidance="ADR-style Markdown for technical decisions, options, and consequences.",
     ),
 }
 
@@ -334,16 +331,16 @@ def get_config(artifact_type: str) -> DocumentTypeConfig:
     try:
         return _BY_TYPE[artifact_type]
     except KeyError as exc:
-        raise ValueError(f"Document artifact type không hỗ trợ: {artifact_type}") from exc
+        raise ValueError(f"Unsupported document artifact type: {artifact_type}") from exc
 
 
 def output_contract(item_type: str) -> ArtifactOutputContract:
     if item_type not in all_item_types():
-        raise ValueError(f"{item_type} không phải document item")
+        raise ValueError(f"{item_type} is not a document item")
     try:
         return _OUTPUT_CONTRACTS[item_type]
     except KeyError as exc:
-        raise ValueError(f"Document item chưa có output contract: {item_type}") from exc
+        raise ValueError(f"Document item has no output contract: {item_type}") from exc
 
 
 def container_for(item_type: str) -> str | None:
@@ -353,7 +350,7 @@ def container_for(item_type: str) -> str | None:
 def children_of(container_type: str) -> tuple[str, ...]:
     config = get_config(container_type)
     if not config.is_container:
-        raise ValueError(f"{container_type} không phải document container")
+        raise ValueError(f"{container_type} is not a document container")
     return config.children
 
 

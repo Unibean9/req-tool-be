@@ -6,8 +6,8 @@ HTTP-resume) and R3 (idempotency-key collision) risks.
 
 Unit tests (T1–T5) call the tool impls directly with `interrupt` patched. T6 exercises the
 real ToolNode dispatch + interrupt/resume through a minimal compiled graph (analyze_node
-cannot emit native tool_calls until Phase 4's bind_tools, so the HTTP driver path cannot
-reach the tools yet — a seeded AIMessage is the Phase-2 precedent for tool-path coverage).
+cannot emit native tool_calls without bind_tools, so the HTTP driver path cannot
+reach the tools yet — a seeded AIMessage seeds tool-path coverage).
 """
 
 import hashlib
@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
+from app.graphs.decision_graph import create_node, render_view
 from app.models.agent import (
     AgentMessage,
     AgentSession,
@@ -34,6 +35,19 @@ from tests.integration.test_graph_nodes import (
     _session_factory,
     _state,
 )
+
+
+def _set_graph_draft(state: dict, statement: str = "draft") -> str:
+    state["artifact_type"] = "brd"
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement=statement,
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    return render_view(state["decision_nodes"], state["artifact_type"])
 
 
 async def _project(client) -> uuid.UUID:
@@ -87,8 +101,8 @@ async def test_ask_user_tool_idempotent_on_resume(mock_interrupt, client, db_ses
     config["configurable"]["session_factory"] = _session_factory()
 
     # Resume re-executes the tool body from the top: same ToolCall.id + content twice.
-    await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_abc")
-    await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_abc")
+    await _ask_user_impl("Ban muon xay gi?", state, config, "call_abc")
+    await _ask_user_impl("Ban muon xay gi?", state, config, "call_abc")
 
     async with TestSessionFactory() as db:
         msgs = (
@@ -116,7 +130,7 @@ async def test_ask_user_tool_uses_shared_helper(client, db_session):
     config["configurable"]["session_factory"] = _session_factory()
 
     with patch.object(nodes, "_save_and_interrupt_ask", new=AsyncMock(return_value="ok")) as helper:
-        command = await _ask_user_impl("Bạn muốn xây gì?", state, config, "call_1")
+        command = await _ask_user_impl("Ban muon xay gi?", state, config, "call_1")
 
     helper.assert_awaited_once()
     assert command.update["messages"][0].content == "ok"
@@ -149,8 +163,8 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    await _write_draft_impl("Tiêu đề", "Thân bài", state, config, "call_1")
-    await _write_draft_impl("Tiêu đề", "Thân bài", state, config, "call_1")
+    await _write_draft_impl("Title", "Than bai", state, config, "call_1")
+    await _write_draft_impl("Title", "Than bai", state, config, "call_1")
 
     async with TestSessionFactory() as db:
         rows = (
@@ -186,12 +200,12 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    command = await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
-    await _write_draft_impl("Tiêu đề", "Thân bài section", state, config, "call_1")
+    command = await _write_draft_impl("Title", "Than bai section", state, config, "call_1")
+    await _write_draft_impl("Title", "Than bai section", state, config, "call_1")
     state["focused_artifact_id"] = str(focused_b.id)
-    await _write_draft_impl("Tiêu đề 2", "Thân bài section 2", state, config, "call_2")
+    await _write_draft_impl("Title 2", "Than bai section 2", state, config, "call_2")
 
-    assert command.update["draft_body"] == "Thân bài section"
+    assert command.update["draft_body"] == "Than bai section"
     async with TestSessionFactory() as db:
         rows = (
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
@@ -217,8 +231,8 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     current = ArtifactVersion(
         artifact_id=focused.id,
         version_number=1,
-        title="Vision cũ",
-        body="Body cũ",
+        title="Vision cu",
+        body="Body cu",
         status=VersionStatus.DRAFT,
         change_source=ChangeSource.MANUAL,
         extra_metadata={},
@@ -234,8 +248,8 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["assumptions"] = [{"statement": "Metric retention đã được user xác nhận", "source": "user", "status": "confirmed"}]
-    state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
+    state["assumptions"] = [{"statement": "Retention metric confirmed by the user", "source": "user", "status": "confirmed"}]
+    state["open_questions"] = [{"question": "Specific target needs confirmation", "domain": "metrics"}]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -246,8 +260,8 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
         metadata = row.input_snapshot["synthesis_metadata"]
         assert row.input_snapshot["base_version_id"] == str(current.id)
         assert metadata["base_version_id"] == str(current.id)
-        assert metadata["confirmed_assumptions"] == ["Metric retention đã được user xác nhận"]
-        assert metadata["pending_assumptions"] == ["Target cụ thể cần xác nhận"]
+        assert metadata["confirmed_assumptions"] == ["Retention metric confirmed by the user"]
+        assert metadata["pending_assumptions"] == ["Specific target needs confirmation"]
 
 
 @pytest.mark.asyncio
@@ -266,14 +280,14 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["open_questions"] = [{"question": "Target cụ thể cần xác nhận", "domain": "metrics"}]
+    state["open_questions"] = [{"question": "Specific target needs confirmation", "domain": "metrics"}]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
     body = "\n\n".join(
         [
-            "## Vision\nTăng retention.",
-            "## Objectives\n- Cải thiện activation.",
-            "## Success Metrics\n- Retention target đang thiếu.",
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
+            "## Success Metrics\n- Retention target is missing.",
         ]
     )
 
@@ -303,7 +317,7 @@ async def test_write_draft_missing_focus_returns_recoverable_observation(client,
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    command = await _write_draft_impl("Vision", "## Vision\nNội dung", state, config, "call_1")
+    command = await _write_draft_impl("Vision", "## Vision\nContent", state, config, "call_1")
 
     assert command.update["tool_errors"][0]["classification"] == "recoverable"
     assert command.update["tool_errors"][0]["code"] == "missing_focused_artifact"
@@ -323,15 +337,15 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     state = _state(artifact_type="brd")
-    state["working_draft"] = "draft"
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    await _finalize_impl("Đã hoàn tất.", state, config, "call_1")
+    await _finalize_impl("Da hoan tat.", state, config, "call_1")
 
     mock_interrupt.assert_called_once()
     async with TestSessionFactory() as db:
@@ -344,15 +358,15 @@ async def test_finalize_tool_raises_interrupt(mock_interrupt, client, db_session
 def test_finalize_not_available_when_candidate_readiness_is_not_sufficient():
     from app.graphs.agent_tools import get_available_tools
 
-    state = _state(artifact_type="vision_objectives")
-    state["working_draft"] = "draft"
+    state = _state(artifact_type="brd")
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}
     state["candidate_readiness"] = {
         "state": "well_structured_but_incomplete",
         "can_persist": False,
-        "blocking_reasons": ["Thiếu target cần xác nhận"],
+        "blocking_reasons": ["Missing target needing confirmation"],
     }
 
     tool_names = {tool.name for tool in get_available_tools(state)}
@@ -378,7 +392,7 @@ async def test_ask_user_uses_tool_call_id_not_state_run_id(client, db_session):
     config["configurable"]["session_factory"] = _session_factory()
 
     with patch.object(nodes, "_save_and_interrupt_ask", new=AsyncMock(return_value="ok")) as helper:
-        await _ask_user_impl("Bạn muốn xây gì?", state, config, "new-tool-call-id")
+        await _ask_user_impl("Ban muon xay gi?", state, config, "new-tool-call-id")
 
     run_id = helper.await_args.kwargs["run_id"]
     assert "new-tool-call-id" in str(run_id)
@@ -424,7 +438,7 @@ async def test_ask_user_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
-    state["messages"] = [_ai_tool_call("ask_user", {"message": "Bạn muốn xây gì?"})]
+    state["messages"] = [_ai_tool_call("ask_user", {"message": "Ban muon xay gi?"})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -442,7 +456,7 @@ async def test_ask_user_tool_call_scenario(client, db_session):
         assert session_row.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
 
     # Resume round-trip: a second invoke with the user's reply must complete, no crash.
-    resumed = await graph.ainvoke(Command(resume={"content": "Một app lịch nhóm"}), config)
+    resumed = await graph.ainvoke(Command(resume={"content": "Mot app lich nhom"}), config)
     assert "__interrupt__" not in resumed
 
 
@@ -461,10 +475,10 @@ async def test_write_draft_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
-    state["user_confirmed"] = True  # artifact phase mở: write_draft mới dispatch thay vì self-reject
+    state["user_confirmed"] = True  # artifact phase mo: write_draft new dispatch thay vi self-reject
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["messages"] = [_ai_tool_call("write_draft", {"title": "Mục tiêu", "body": "Nội dung"})]
+    state["messages"] = [_ai_tool_call("write_draft", {"title": "Goal", "body": "Content"})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -494,12 +508,12 @@ async def test_finalize_tool_call_scenario(client, db_session):
 
     graph = _tool_graph()
     state = _state()
-    state["working_draft"] = "draft"
+    body = _set_graph_draft(state, "draft")
     state["critique_rounds"] = 1
-    state["last_critiqued_draft_hash"] = hashlib.md5(b"draft").hexdigest()[:8]
+    state["last_critiqued_draft_hash"] = hashlib.md5(body.encode()).hexdigest()[:8]
     state["quality_report"] = {"quality_gate_result": "pass"}  # finalize now requires a passing gate
     state["candidate_readiness"] = {"state": "sufficient", "can_persist": True}
-    state["messages"] = [_ai_tool_call("finalize", {"summary": "Đã hoàn tất."})]
+    state["messages"] = [_ai_tool_call("finalize", {"summary": "Da hoan tat."})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -550,13 +564,13 @@ async def test_read_artifact_returns_current_body(client, db_session):
     from app.graphs.agent_tools import _read_artifact_impl
 
     project_id = await _project(client)
-    artifact = await _artifact_with_body(db_session, project_id, "## Vision\nNội dung gốc.")
+    artifact = await _artifact_with_body(db_session, project_id, "## Vision\nContent goc.")
     config = _config(str(uuid.uuid4()), str(project_id))
 
     command = await _read_artifact_impl(str(artifact.id), config, "call_1")
 
     msg = command.update["messages"][0]
-    assert "Nội dung gốc" in msg.content
+    assert "Content goc" in msg.content
     assert msg.tool_call_id == "call_1"
 
 
@@ -569,7 +583,7 @@ async def test_read_artifact_not_found_returns_observation(client):
 
     command = await _read_artifact_impl(str(uuid.uuid4()), config, "call_1")
 
-    assert "không tìm thấy" in command.update["messages"][0].content
+    assert "artifact not found" in command.update["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -581,7 +595,7 @@ async def test_read_artifact_invalid_id_returns_observation(client):
 
     command = await _read_artifact_impl("not-a-uuid", config, "call_1")
 
-    assert "không hợp lệ" in command.update["messages"][0].content
+    assert "invalid id" in command.update["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -594,7 +608,7 @@ async def test_read_artifact_truncates_large_body(client, db_session):
 
     command = await _read_artifact_impl(str(artifact.id), config, "call_1")
 
-    assert "đã cắt bớt" in command.update["messages"][0].content
+    assert "remaining content truncated" in command.update["messages"][0].content
 
 
 @pytest.mark.asyncio
@@ -604,9 +618,9 @@ async def test_read_artifact_scoped_to_project(client, db_session):
 
     project_a = await _project(client)
     project_b = await _project(client)
-    artifact = await _artifact_with_body(db_session, project_b, "body bí mật")
+    artifact = await _artifact_with_body(db_session, project_b, "body bi mat")
     config = _config(str(uuid.uuid4()), str(project_a))
 
     command = await _read_artifact_impl(str(artifact.id), config, "call_1")
 
-    assert "không tìm thấy" in command.update["messages"][0].content
+    assert "artifact not found" in command.update["messages"][0].content
