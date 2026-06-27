@@ -76,12 +76,20 @@ async def _invoke_judge(body: str, mode: str, llm_client: Any = None) -> dict[st
     if llm_client is None:
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": ["no_llm_client"]}
 
-    result, _usage = await llm_client.generate(
-        messages=[{"role": "user", "content": _build_judge_prompt(body, mode)}],
-        system=_JUDGE_SYSTEM,
-        max_tokens=1024,
-        response_format=JUDGE_SCHEMA,
-    )
+    try:
+        result, _usage = await llm_client.generate(
+            messages=[{"role": "user", "content": _build_judge_prompt(body, mode)}],
+            system=_JUDGE_SYSTEM,
+            # Verbose locale critiques (e.g. Vietnamese) run ~2x tokens; an undersized budget
+            # truncates the JSON mid-string and makes it unparseable.
+            max_tokens=4096,
+            response_format=JUDGE_SCHEMA,
+        )
+    except ValueError:
+        # Per this module's contract the judge must never crash the tool-loop. A parse failure
+        # (truncation, prose-wrapping the provider's instruction-only schema could not prevent)
+        # degrades to an empty report so the turn proceeds instead of failing.
+        return {"mode": mode, "score": 0.0, "findings": [], "suggestions": ["judge_unparseable"]}
     if not isinstance(result, dict):
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": []}
     return {
