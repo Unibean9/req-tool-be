@@ -1,7 +1,7 @@
 """Shared eval helpers for scenario tests.
 
 Default mode uses a mock judge (deterministic, no API key). The integration
-variant reuses the real LLM judge from tests/eval when JUDGE_API_KEY is set.
+variant reuses the real LLM judge from tests/eval when LLM_API_KEY is set.
 """
 
 from typing import Any

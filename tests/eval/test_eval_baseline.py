@@ -7,7 +7,7 @@ thresholds at this stage — the goal is to print the baseline, not gate quality
 - Mock test (default): no real LLM call, verifies the harness runs with the
   right shape.
 - Integration test (marker `integration`): uses a real LLM judge, only runs
-  when the JUDGE_API_KEY environment variable is set.
+  when the shared LLM_API_KEY environment variable is set.
 """
 
 import json
@@ -89,7 +89,7 @@ async def test_baseline_with_real_judge(capsys):
     from tests.eval.config import judge_settings
 
     if not judge_settings.judge_api_key:
-        pytest.skip("JUDGE_API_KEY is required in .env.test to run the real judge")
+        pytest.skip("LLM_API_KEY is required in .env.test to run the real judge")
 
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
