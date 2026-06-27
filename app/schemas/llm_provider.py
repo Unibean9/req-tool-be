@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from app.models.llm_provider import LLMProviderStatus, ProviderType
 
@@ -15,6 +15,20 @@ class LLMProviderKeyRequest(BaseModel):
     region: str | None = Field(default=None, min_length=1, max_length=64)
     model_name: str | None = Field(default=None, min_length=1, max_length=255)
     strong_model_name: str | None = Field(default=None, min_length=1, max_length=255)
+
+
+class LLMProviderUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    region: str | None = Field(default=None, min_length=1, max_length=64)
+    model_name: str | None = Field(default=None, min_length=1, max_length=255)
+    strong_model_name: str | None = Field(default=None, min_length=1, max_length=255)
+
+    @model_validator(mode="after")
+    def require_update_field(self) -> "LLMProviderUpdateRequest":
+        if not self.model_fields_set:
+            raise ValueError("At least one model configuration field is required")
+        return self
 
 
 class LLMProviderConfigRead(BaseModel):
