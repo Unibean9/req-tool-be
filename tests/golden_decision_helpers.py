@@ -39,6 +39,8 @@ def make_decision_node(
     superseded_by: str | None = None,
     blocks: list[str] | None = None,
     answer: str | None = None,
+    section: str | None = None,
+    fields: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Construct one schema-complete DecisionNode dict.
 
@@ -60,6 +62,8 @@ def make_decision_node(
         "superseded_by": superseded_by,
         "blocks": list(blocks or []),
         "answer": answer,
+        "section": section,
+        "fields": dict(fields) if fields else None,
     }
 
 

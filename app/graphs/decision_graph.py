@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from app.documents.registry import all_item_types, output_contract
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
@@ -40,10 +41,14 @@ def create_node(
     blocks: list[str] | None = None,
     supersedes: str | None = None,
     node_id: str | None = None,
+    section: str | None = None,
+    fields: dict[str, str] | None = None,
 ) -> DecisionNode:
     """Build a complete DecisionNode; status defaults to proposed.
 
     node_id lets the caller assign a stable short id for later cross-references; omit to auto-generate uuid.
+    section/fields drive the contract-aware view: section is the required_heading the node renders under;
+    fields carries column values for a table section.
     """
     if status not in VALID_STATUSES:
         raise ValueError(f"invalid status: {status!r}")
@@ -58,6 +63,8 @@ def create_node(
         "superseded_by": None,
         "blocks": list(blocks or []),
         "answer": None,
+        "section": section,
+        "fields": dict(fields) if fields else None,
     }
 
 
@@ -142,6 +149,8 @@ def supersede_node(
         origin=origin,
         depends_on=list(result[old_id].get("depends_on", [])),
         supersedes=old_id,
+        section=result[old_id].get("section"),
+        fields=result[old_id].get("fields"),
     )
     result[new_node["id"]] = new_node
     result[old_id]["status"] = "superseded"
@@ -417,11 +426,107 @@ _PRD_SECTIONS = [
     ("Open Questions", ("open_question",)),
 ]
 _SECTION_TEMPLATES = {"prd": _PRD_SECTIONS}
+_ITEM_TYPES = set(all_item_types())
+_KIND_HEADING_HINTS = {
+    "objective": ("objective", "goal", "vision"),
+    "scope": ("scope", "capability"),
+    "assumption": ("assumption",),
+    "decision": ("decision", "rule"),
+    "risk": ("risk", "issue", "mitigation"),
+    "open_question": ("question", "validation"),
+    "fact": ("fact", "context"),
+}
 
 
 def _render_line(node: dict[str, Any]) -> str:
     marker = " ⟨needs_confirmation⟩" if node.get("status") == "needs_confirmation" else ""
     return f"- {node.get('statement', '')}{marker}"
+
+
+def _strip_heading_marks(heading: str) -> str:
+    return str(heading or "").lstrip("#").strip()
+
+
+def _resolve_contract_heading(node: dict[str, Any], required_headings: tuple[str, ...]) -> str:
+    section = str(node.get("section") or "").strip()
+    if section:
+        section_key = _strip_heading_marks(section).lower()
+        for heading in required_headings:
+            if section == heading or section_key == _strip_heading_marks(heading).lower():
+                return heading
+
+    kind = str(node.get("kind") or "")
+    hints = _KIND_HEADING_HINTS.get(kind, ())
+    for heading in required_headings:
+        normalized = heading.lower()
+        if any(hint in normalized for hint in hints):
+            return heading
+    return required_headings[0]
+
+
+def _markdown_cell(value: Any) -> str:
+    return str(value or "").replace("|", "\\|").replace("\n", "<br>").strip()
+
+
+def _field_value(fields: dict[str, Any], column: str) -> Any:
+    if column in fields:
+        return fields[column]
+    normalized = {str(key).strip().lower(): value for key, value in fields.items()}
+    return normalized.get(column.lower(), "")
+
+
+def _apply_table_status_marker(cells: list[str], node: dict[str, Any]) -> None:
+    if node.get("status") != "needs_confirmation":
+        return
+    marker = " ⚠️ needs confirmation"
+    if any("needs confirmation" in cell.lower() or "needs_confirmation" in cell.lower() for cell in cells):
+        return
+    for index, cell in reversed(list(enumerate(cells))):
+        if cell:
+            cells[index] = f"{cell}{marker}"
+            return
+    if cells:
+        cells[0] = marker.strip()
+
+
+def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...]) -> str:
+    header = "| " + " | ".join(columns) + " |"
+    separator = "| " + " | ".join("---" for _ in columns) + " |"
+    rows = []
+    for node in nodes:
+        fields = node.get("fields") or {}
+        cells = [_markdown_cell(_field_value(fields, column)) for column in columns]
+        if not any(cells) and cells:
+            cells[0] = _markdown_cell(node.get("statement", ""))
+        _apply_table_status_marker(cells, node)
+        rows.append("| " + " | ".join(cells) + " |")
+    return "\n".join([header, separator, *rows])
+
+
+def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:
+    contract = output_contract(artifact_type)
+    active = [n for n in decision_nodes.values() if n.get("status") in _ACTIVE_STATUSES]
+    parked = [n for n in decision_nodes.values() if n.get("status") == "parked"]
+    by_heading = {heading: [] for heading in contract.required_headings}
+    for node in active:
+        by_heading[_resolve_contract_heading(node, contract.required_headings)].append(node)
+
+    blocks: list[str] = []
+    for heading in contract.required_headings:
+        section_nodes = by_heading[heading]
+        if not section_nodes:
+            continue
+        if contract.table_columns and any(node.get("fields") for node in section_nodes):
+            body = _render_table(section_nodes, contract.table_columns)
+        else:
+            body = "\n".join(_render_line(node) for node in section_nodes)
+        blocks.append(f"{heading}\n{body}")
+
+    if parked:
+        lines = [_render_line(n) for n in parked]
+        blocks.append("## Parked\n" + "\n".join(lines))
+
+    return "\n\n".join(blocks)
 
 
 def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:
@@ -431,6 +536,9 @@ def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> 
     hides superseded entirely, and folds parked nodes into a trailing Parked section. Empty graph →
     a valid (mostly empty) string, never a crash.
     """
+    if artifact_type in _ITEM_TYPES:
+        return _render_contract_view(decision_nodes, artifact_type)
+
     sections = _SECTION_TEMPLATES.get(artifact_type, _BRD_SECTIONS)
     active = [n for n in decision_nodes.values() if n.get("status") in _ACTIVE_STATUSES]
     parked = [n for n in decision_nodes.values() if n.get("status") == "parked"]
@@ -443,6 +551,6 @@ def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> 
 
     if parked:
         lines = [_render_line(n) for n in parked]
-        blocks.append("## Parked (tạm gác)\n" + "\n".join(lines))
+        blocks.append("## Parked\n" + "\n".join(lines))
 
     return "\n\n".join(blocks)

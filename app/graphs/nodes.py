@@ -449,6 +449,13 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         for tc in (getattr(ai_message, "tool_calls", None) or [])
     ]
     gated_tools = _gate_selected_tools(effective_state, raw_tools)
+    dropped_tools = _dropped_tool_names(raw_tools, gated_tools)
+    # One-shot: clear the previous turn's notice (already rendered into this turn's prompt) and stage
+    # this turn's drops for the next prompt — so the model sees its dropped tools exactly once.
+    next_feedback = dict(effective_state.get("feedback_summary") or {})
+    next_feedback.pop("dropped_tools", None)
+    if dropped_tools:
+        next_feedback["dropped_tools"] = dropped_tools
 
     # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
     # (default vi). Drafts of record flow through decision_nodes and write_draft.
@@ -491,12 +498,15 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # Multi-angle (S2): the mode_hint is a one-shot steer. It has already been folded into
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
+        "feedback_summary": next_feedback,
         **focus_reset_update,
         **coverage,
     }
     # Emit the gated tools as AIMessage(tool_calls=[...]) so route_node dispatches to the ToolNode.
-    # tool_call.id = "{run_id}:{i}" — unique per call in the same turn for LangGraph ToolNode
-    # uniqueness. DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
+    # tool_call.id = "{run_id}-{i}" — unique per call in the same turn for LangGraph ToolNode
+    # uniqueness. The separator must be "-" not ":" — Anthropic on Bedrock validates tool_use.id
+    # against ^[a-zA-Z0-9_-]+$ and rejects ":" when the message history is replayed next turn.
+    # DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
     # Empty tool_calls means the analyst is done: emit a plain AIMessage carrying its final text.
     if gated_tools:
         tool_calls = []
@@ -512,7 +522,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                 if _response_message_incomplete(args.get("message")):
                     args["message"] = _RESPOND_FALLBACK
                 args["mode"] = args.get("mode") or "critique"
-            tool_calls.append({"id": f"{run_id}:{i}", "name": tool, "args": args})
+            tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
         result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
     else:
         result["messages"] = [AIMessage(content=(getattr(ai_message, "content", None) or "").strip())]
@@ -911,6 +921,26 @@ _INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset({
 _SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
 
 
+def _dropped_tool_names(requested: list[dict], kept: list[dict]) -> list[str]:
+    """Names the gate removed from the model's selection this turn.
+
+    Closes the feedback loop: a silently dropped tool gives the model no ground truth to self-correct,
+    so it keeps re-pairing the same tools. The diff is a name-multiset subtraction (the gate never
+    substitutes a tool, only drops), surfaced next turn via feedback_summary['dropped_tools'].
+    """
+    from collections import Counter
+
+    kept_counts = Counter(item.get("name") or "" for item in kept)
+    dropped: list[str] = []
+    for item in requested:
+        name = item.get("name") or ""
+        if kept_counts.get(name, 0) > 0:
+            kept_counts[name] -= 1
+        else:
+            dropped.append(name)
+    return dropped
+
+
 def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
     """Enforce the ToolNode safety invariant without picking a tool on the model's behalf.
 
@@ -1056,6 +1086,12 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
         parts.append(f"- created_parked_questions: {rendered}")
     if feedback_summary.get("stale_warning"):
         parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
+    dropped = feedback_summary.get("dropped_tools") or []
+    if dropped:
+        parts.append(
+            "- bị bỏ qua turn trước (KHÔNG chạy vì đi kèm tool interrupt nên phải chạy riêng); "
+            f"gọi lại ở turn riêng nếu vẫn cần: {_compact_list(dropped)}"
+        )
 
     if not parts:
         return ""

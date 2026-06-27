@@ -1,3 +1,4 @@
+import operator
 from typing import Annotated, Any, TypedDict
 
 from langgraph.graph import add_messages
@@ -55,6 +56,32 @@ class DecisionNode(TypedDict):
     superseded_by: str | None
     blocks: list[str]
     answer: str | None
+    # Which output-contract required_heading this node renders under (e.g. "## Objectives"). The 7 kinds
+    # don't map 1:1 to contract sections (a vision and an objective are both kind=objective), so the
+    # node carries its target section explicitly. None → render_view falls back to a kind heuristic.
+    section: str | None
+    # Column values for a table section, keyed by the contract's table_columns (e.g.
+    # {"goal": ..., "metric": ..., "target": ...}). A single free-text statement cannot fill an N-column
+    # table; fields carries that structure. A section renders as a table when its nodes carry fields.
+    fields: dict[str, str] | None
+
+
+def merge_decision_nodes(
+    left: dict[str, "DecisionNode"] | None, right: dict[str, "DecisionNode"] | None
+) -> dict[str, "DecisionNode"]:
+    """Merge decision-graph updates per node-id instead of replacing the whole dict.
+
+    Two decision tools in one turn each receive the pre-turn snapshot via InjectedState and each return
+    the full graph; a plain-replace channel would let the second clobber the first's new node. Per-id
+    merge keeps both: a key present only in `left` survives because `right` (built from the same
+    snapshot) simply does not mention it. The graph is non-destructive — no tool ever removes a node —
+    so a merge can never resurrect deleted history.
+    """
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
 
 
 class MethodProfile(TypedDict):
@@ -178,12 +205,14 @@ class WorkflowState(TypedDict):
     # agent to critique/explore/etc.; analyze_node consumes it and clears it the same turn.
     mode_hint: str | None
     # Count of successful elicit() calls this session. Drives the cold-start hard gate: a fresh
-    # project must run at least one elicitation before write_draft is offered. Resets per session
-    # (not persisted across resume) — each new session re-explores before drafting.
-    session_elicit_count: int
+    # project must run at least one elicitation before write_draft is offered. Each elicit emits a +1
+    # delta; the additive reducer accumulates them so two elicits in one turn don't collide
+    # (INVALID_CONCURRENT_GRAPH_UPDATE). Persists across resume within a session.
+    session_elicit_count: Annotated[int, operator.add]
     # Decision graph keyed by node id — source of truth for the artifact. Old sessions missing this key
-    # default to {} on load without migration or crash.
-    decision_nodes: dict[str, DecisionNode]
+    # default to {} on load without migration or crash. The merge reducer keeps concurrent same-turn
+    # node writes from clobbering each other (see merge_decision_nodes).
+    decision_nodes: Annotated[dict[str, DecisionNode], merge_decision_nodes]
 
 
 def build_initial_workflow_state(

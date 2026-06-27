@@ -314,6 +314,42 @@ def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     return body
 
 
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        normalized = str(item or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _graph_assumption_signals(decision_nodes: dict) -> tuple[list[str], list[str]]:
+    """Derive (confirmed, pending) assumption-like statements from the decision graph.
+
+    The readiness gate must see assumptions the model recorded as nodes, not only those captured via
+    the legacy note tools — otherwise a graph-only session reports SUFFICIENT while unresolved nodes
+    remain (the dual-source-of-truth divergence). Pending = anything still awaiting the user:
+    needs_confirmation nodes plus open_questions that are neither parked (deferred on purpose) nor
+    already resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
+    """
+    confirmed: list[str] = []
+    pending: list[str] = []
+    for node in (decision_nodes or {}).values():
+        status = node.get("status")
+        kind = node.get("kind")
+        statement = node.get("statement") or ""
+        if status == "needs_confirmation":
+            pending.append(statement)
+        elif kind == "open_question" and status in {"proposed", None}:
+            pending.append(statement)
+        elif kind == "assumption" and status == "confirmed":
+            confirmed.append(statement)
+    return confirmed, pending
+
+
 def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     if state.get("decision_nodes"):
         return False
@@ -387,14 +423,19 @@ async def _write_draft_impl(
         if existing_tool_call:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
         else:
+            graph_confirmed, graph_pending = _graph_assumption_signals(state.get("decision_nodes") or {})
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
                 base_version_id=focused.current_version_id,
                 evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
                 inference_level="medium",
-                confirmed_assumptions=[a["statement"] for a in (state.get("assumptions") or [])],
-                pending_assumptions=[q["question"] for q in (state.get("open_questions") or [])],
+                confirmed_assumptions=_dedupe_keep_order(
+                    [a["statement"] for a in (state.get("assumptions") or [])] + graph_confirmed
+                ),
+                pending_assumptions=_dedupe_keep_order(
+                    [q["question"] for q in (state.get("open_questions") or [])] + graph_pending
+                ),
             )
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
@@ -628,6 +669,7 @@ async def _create_decision_node_impl(
     kind: str, statement: str, depends_on: list[str] | None, technique: str | None,
     state: WorkflowState, tool_call_id: str, node_id: str | None = None,
     status: str | None = None, blocks: list[str] | None = None,
+    section: str | None = None, fields: dict[str, str] | None = None,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("create_decision_node", tool_call_id)
@@ -653,6 +695,7 @@ async def _create_decision_node_impl(
     node = create_node(
         kind=kind, statement=statement, origin=_node_origin(state, technique),
         depends_on=depends_on, node_id=node_id, status=status or "proposed", blocks=blocks,
+        section=section, fields=fields,
     )
     if node["id"] in nodes_state:
         return _tool_not_available_update(
@@ -670,6 +713,7 @@ async def _create_decision_node_impl(
 
 async def _update_decision_node_impl(
     node_id: str, status: str | None, statement: str | None, state: WorkflowState, tool_call_id: str,
+    section: str | None = None, fields: dict[str, str] | None = None,
 ) -> Command:
     if not settings.decision_graph_enabled:
         return _decision_graph_off_update("update_decision_node", tool_call_id)
@@ -688,7 +732,16 @@ async def _update_decision_node_impl(
             tool_call_id,
         )
 
-    updates = {k: v for k, v in {"status": status, "statement": statement}.items() if v is not None}
+    updates = {
+        k: v
+        for k, v in {
+            "status": status,
+            "statement": statement,
+            "section": section,
+            "fields": fields,
+        }.items()
+        if v is not None
+    }
     if not updates:
         return _missing_required_arg_update("update_decision_node", "status hoặc statement", tool_call_id)
     updated = update_node(nodes_state, node_id, **updates)
@@ -745,6 +798,14 @@ async def create_decision_node(
         list[str] | None,
         "For parked open_question nodes: ids currently blocked by this question.",
     ] = None,
+    section: Annotated[
+        str | None,
+        "Target heading in the output contract, e.g. '## Objectives' or '## Success Metrics'.",
+    ] = None,
+    fields: Annotated[
+        dict[str, str] | None,
+        "Column values when the section renders as a table; keys must match the output contract table_columns.",
+    ] = None,
 ) -> Command:
     """Record a new decision-graph node (objective, decision, risk, ...) with provenance.
 
@@ -752,7 +813,7 @@ async def create_decision_node(
     why it exists (origin) and what it builds on (depends_on) so later reversals can ripple correctly.
     """
     return await _create_decision_node_impl(
-        kind, statement, depends_on, technique, state, tool_call_id, node_id, status, blocks
+        kind, statement, depends_on, technique, state, tool_call_id, node_id, status, blocks, section, fields
     )
 
 
@@ -763,13 +824,21 @@ async def update_decision_node(
     tool_call_id: Annotated[str, InjectedToolCallId],
     status: Annotated[str | None, "New status: proposed|confirmed|inferred|needs_confirmation|parked."] = None,
     statement: Annotated[str | None, "Revised statement (a local edit, NOT a reversal)."] = None,
+    section: Annotated[
+        str | None,
+        "New target heading in the output contract, e.g. '## Objectives' or '## Success Metrics'.",
+    ] = None,
+    fields: Annotated[
+        dict[str, str] | None,
+        "New column values for the section table; keys must match the output contract table_columns.",
+    ] = None,
 ) -> Command:
     """Update a node's status or statement in place — a local edit that does not rewrite history.
 
     Use to confirm a proposed node or refine its wording. To reverse a decision (keep history + ripple
     to dependents) use supersede_decision_node instead.
     """
-    return await _update_decision_node_impl(node_id, status, statement, state, tool_call_id)
+    return await _update_decision_node_impl(node_id, status, statement, state, tool_call_id, section, fields)
 
 
 @tool
@@ -1553,10 +1622,13 @@ async def elicit_tool(
             RecoverableToolError(code="elicit_unknown_technique", message=str(exc), user_fixable=True),
             tool_call_id,
         )
-    count = (state.get("session_elicit_count") or 0) + 1
+    # Emit a DELTA (+1), not an absolute count: the channel uses an additive reducer so two elicits in
+    # one turn accumulate correctly. Returning state+1 from both (the same pre-turn snapshot) would
+    # either collide (no reducer) or double-count (absolute + add). _ = state kept for signature parity.
+    _ = state
     return Command(
         update={
-            "session_elicit_count": count,
+            "session_elicit_count": 1,
             "messages": [ToolMessage(content=json.dumps(result, ensure_ascii=False), tool_call_id=tool_call_id)],
         }
     )

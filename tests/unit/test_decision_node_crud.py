@@ -29,6 +29,7 @@ pytestmark = pytest.mark.xfail(
 _DECISION_NODE_KEYS = {
     "id", "kind", "statement", "status", "origin",
     "depends_on", "supersedes", "superseded_by", "blocks", "answer",
+    "section", "fields",
 }
 
 
@@ -45,6 +46,8 @@ def test_create_node_valid_schema():
     assert node["superseded_by"] is None
     assert node["blocks"] == []
     assert node["answer"] is None
+    assert node["section"] is None
+    assert node["fields"] is None
 
     other = create_node(kind="objective", statement="Khác", origin=_origin(), depends_on=[])
     assert node["id"] and node["id"] != other["id"]

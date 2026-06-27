@@ -100,6 +100,87 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     assert len(await driver.executed_artifacts()) == 0
 
 
+async def test_tool_loop_composite_two_decision_nodes_both_survive(client, scenario_env, scenario_project):
+    """Two create_decision_node calls in ONE turn must both persist (merge reducer, not last-writer-wins).
+
+    Both tools receive the same pre-turn snapshot via InjectedState and each return the full graph; a
+    plain-replace channel would drop the first node. The merge reducer keeps both.
+    """
+    headers, project = scenario_project
+    project_id = uuid.UUID(project["id"])
+
+    llm = ScriptedLLM(tool_brain=[
+        {
+            "tools": [
+                {"name": "create_decision_node",
+                 "args": {"kind": "decision", "statement": "v1 = vận hành-first", "node_id": "N1"}},
+                {"name": "create_decision_node",
+                 "args": {"kind": "risk", "statement": "nhân viên ngại nhập công thức", "node_id": "N2"}},
+            ],
+            "active_mode": "discovery",
+        },
+        tool_select("confirm_intent",
+                    summary="Điều phối lịch học nhóm cho sinh viên.", active_mode="discovery"),
+        tool_select("write_draft", title="Mục tiêu", body=_GOAL_BODY, active_mode="structuring"),
+    ])
+    scenario = Scenario(
+        name="tool-loop-composite-decision-nodes",
+        artifact_type="goal",
+        llm=llm,
+        actions=[
+            {"type": "send", "content": "Tôi muốn làm app quản lý quán cà phê."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục."},
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
+    await driver.run()
+
+    nodes = await scenario_env.get_checkpoint_field(driver.session_id, "decision_nodes")
+    assert "N1" in (nodes or {}) and "N2" in (nodes or {}), (
+        f"merge reducer dropped a same-turn node: got {sorted((nodes or {}).keys())}"
+    )
+
+
+async def test_tool_loop_two_elicits_one_turn_accumulate(client, scenario_env, scenario_project):
+    """Two elicit calls in ONE turn must not crash and must accumulate session_elicit_count to 2.
+
+    Without an additive reducer, two concurrent session_elicit_count writes raise
+    INVALID_CONCURRENT_GRAPH_UPDATE — the bug that killed live multi-technique cold-start turns.
+    """
+    headers, project = scenario_project
+    project_id = uuid.UUID(project["id"])
+
+    llm = ScriptedLLM(tool_brain=[
+        {
+            "tools": [
+                {"name": "elicit", "args": {"technique": "comparable_products", "seed": "app quán cà phê"}},
+                {"name": "elicit", "args": {"technique": "5_whys", "seed": "hụt nguyên liệu"}},
+            ],
+            "active_mode": "discovery",
+        },
+        tool_select("confirm_intent", summary="App định lượng cho quán cà phê.", active_mode="discovery"),
+        tool_select("write_draft", title="Mục tiêu", body=_GOAL_BODY, active_mode="structuring"),
+    ])
+    scenario = Scenario(
+        name="tool-loop-two-elicits",
+        artifact_type="goal",
+        llm=llm,
+        actions=[
+            {"type": "send", "content": "Tôi muốn làm app quản lý quán cà phê."},
+            {"type": "send", "content": "Đúng rồi, tiếp tục."},
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+    driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
+    await driver.run()
+
+    count = await scenario_env.get_checkpoint_field(driver.session_id, "session_elicit_count")
+    assert count == 2, f"two elicits in one turn should accumulate to 2, got {count}"
+
+
 async def test_tool_loop_composite_two_note_tools(client, scenario_env, scenario_project):
     """Composite dispatch: brain returns [explore_note, critique_note] in one turn.
 

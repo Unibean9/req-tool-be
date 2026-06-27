@@ -45,6 +45,31 @@ async def test_create_writes_node_to_state(graph_on):
 
 
 @pytest.mark.asyncio
+async def test_create_records_section_and_fields(graph_on):
+    state = {"messages": [], "user_confirmed": True, "turn_count": 2, "decision_nodes": {}}
+
+    command = await _create_decision_node_impl(
+        "objective",
+        "Measure successful group scheduling rate.",
+        [],
+        "moscow",
+        state,
+        "tc1",
+        status="needs_confirmation",
+        section="## Success Metrics",
+        fields={
+            "goal": "Schedule study groups",
+            "metric": "Successful scheduling rate",
+            "target": "80%",
+        },
+    )
+
+    node = next(iter(command.update["decision_nodes"].values()))
+    assert node["section"] == "## Success Metrics"
+    assert node["fields"]["metric"] == "Successful scheduling rate"
+
+
+@pytest.mark.asyncio
 async def test_create_noop_when_flag_off(graph_off):
     state = {"messages": [], "decision_nodes": {}}
 
@@ -102,6 +127,29 @@ async def test_update_changes_status_in_state(graph_on, decision_graph_factory):
     command = await _update_decision_node_impl("N1", "confirmed", None, state, "tc1")
 
     assert command.update["decision_nodes"]["N1"]["status"] == "confirmed"
+
+
+@pytest.mark.asyncio
+async def test_update_records_section_and_fields(graph_on, decision_graph_factory):
+    state = {"messages": [], "decision_nodes": decision_graph_factory({"id": "N1", "status": "confirmed"})}
+
+    command = await _update_decision_node_impl(
+        "N1",
+        None,
+        None,
+        state,
+        "tc1",
+        section="## Success Metrics",
+        fields={
+            "goal": "Schedule study groups",
+            "metric": "Successful scheduling rate",
+            "target": "80%",
+        },
+    )
+
+    node = command.update["decision_nodes"]["N1"]
+    assert node["section"] == "## Success Metrics"
+    assert node["fields"]["target"] == "80%"
 
 
 @pytest.mark.asyncio

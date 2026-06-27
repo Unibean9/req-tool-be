@@ -114,8 +114,12 @@ async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_sess
     # IDs are unique per call.
     assert tool_calls[0]["id"] != tool_calls[1]["id"]
     run_id = out["last_agent_run_id"]
-    assert tool_calls[0]["id"] == f"{run_id}:0"
-    assert tool_calls[1]["id"] == f"{run_id}:1"
+    assert tool_calls[0]["id"] == f"{run_id}-0"
+    assert tool_calls[1]["id"] == f"{run_id}-1"
+    # Bedrock (Anthropic) validates tool_use.id against ^[a-zA-Z0-9_-]+$ on history replay — no ":".
+    import re
+    for tc in tool_calls:
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", tc["id"]), f"id violates Bedrock pattern: {tc['id']}"
 
 
 # (test_backward_compat_old_format_degrades_gracefully removed: the {"tool": ...} legacy

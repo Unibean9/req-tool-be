@@ -8,7 +8,7 @@ Planning is progressive: brainstorm → brief → prd → readiness checks. Matc
 
 The artifact is NOT a block of Markdown you write. It is a graph of decision nodes, and the BRD/PRD/brief the user sees is a *view rendered from that graph*. Record content by creating nodes, never by hand-writing the document body.
 
-- Capture every objective, scope item, assumption, decision, risk, open question, and fact as its own node via `create_decision_node`, each with a `kind` and a `status` (`proposed` | `confirmed` | `inferred` | `needs_confirmation` | `parked`).
+- Capture every objective, scope item, assumption, decision, risk, open question, and fact as its own node via `create_decision_node`; each node must include `kind`, `status` (`proposed` | `confirmed` | `inferred` | `needs_confirmation` | `parked`), `section` matching the focused item's required heading, and `fields` when that section renders as a table.
 - Confirm or refine a node in place with `update_decision_node`; reverse a direction with `supersede_decision_node` (keeps history, ripples to dependents). Park a blocked question with `status=parked` and `blocks`.
 - `write_draft` does NOT author content — it renders the current graph into the view for the user to approve. Its `body` argument is ignored once any node exists. So the path to a richer artifact is more/better nodes, not a longer body string.
 - A node's `statement` carries the quality bar: specific, evidence-based, measurable. Depth lives in the statements and their `depends_on` edges, not in prose.

@@ -4,7 +4,7 @@ The view is derived, never the source: superseded hidden, parked folded into its
 active nodes (confirmed/inferred/needs_confirmation) shown. brd and prd use distinct templates.
 """
 
-from app.graphs.decision_graph import render_view
+from app.graphs.decision_graph import create_node, render_view
 
 
 def test_render_view_shows_confirmed_and_inferred(decision_graph_factory):
@@ -71,3 +71,49 @@ def test_render_view_empty_graph_returns_valid_string():
     out = render_view({}, "brd")
 
     assert isinstance(out, str)
+
+
+def test_render_view_document_item_uses_contract_headings_and_table():
+    nodes = {
+        "V1": create_node(
+            kind="objective",
+            statement="Help students schedule study groups faster.",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="V1",
+            section="## Vision",
+        ),
+        "O1": create_node(
+            kind="objective",
+            statement="Reduce schedule agreement time below 10 minutes.",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="O1",
+            section="## Objectives",
+        ),
+        "M1": create_node(
+            kind="objective",
+            statement="Measure successful group scheduling rate.",
+            origin={"source": "test"},
+            status="needs_confirmation",
+            node_id="M1",
+            section="## Success Metrics",
+            fields={
+                "goal": "Schedule study groups",
+                "user/business value": "Students reduce coordination loops",
+                "metric": "Successful scheduling rate",
+                "target": "80%",
+                "timeframe": "First semester",
+            },
+        ),
+    }
+
+    out = render_view(nodes, "vision_objectives")
+
+    assert "## Vision" in out
+    assert "## Objectives" in out
+    assert "## Success Metrics" in out
+    assert "## Vision & Objectives" not in out
+    assert "| goal | user/business value | metric | target | timeframe |" in out
+    assert "| Schedule study groups | Students reduce coordination loops | Successful scheduling rate | 80% | First semester ⚠️ needs confirmation |" in out
+    assert out.index("## Vision") < out.index("## Objectives") < out.index("## Success Metrics")

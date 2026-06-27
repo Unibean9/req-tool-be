@@ -137,6 +137,121 @@ async def test_live_cold_start_does_not_draft_on_thin_input(
     assert "finalize" not in tools, f"Real LLM finalized with no draft; got {tools}"
 
 
+def _dump_transcript(label: str, messages, decision_nodes, analysis) -> None:
+    """Print the full message thread + tool calls + decision graph for a live turn."""
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    print(f"\n========== {label} — FULL TRANSCRIPT ==========")
+    for i, m in enumerate(messages or []):
+        if isinstance(m, HumanMessage):
+            print(f"[{i}] 🧑 USER: {m.content}")
+        elif isinstance(m, AIMessage):
+            text = (m.content or "").strip()
+            calls = getattr(m, "tool_calls", None) or []
+            if text:
+                print(f"[{i}] 🤖 AGENT(text): {text}")
+            for c in calls:
+                print(f"[{i}] 🛠  TOOL_CALL: {c.get('name')}  args={c.get('args')}")
+            if not text and not calls:
+                print(f"[{i}] 🤖 AGENT(empty)")
+        elif isinstance(m, ToolMessage):
+            content = str(m.content or "")
+            preview = content if len(content) <= 300 else content[:300] + "…"
+            print(f"[{i}] ◀ TOOL_RESULT[{m.tool_call_id}]: {preview}")
+        else:
+            role = getattr(m, "type", type(m).__name__)
+            print(f"[{i}] {role}: {getattr(m, 'content', '')}")
+
+    print(f"\n--- analysis_result.tools (last turn): {_tools_last_turn(analysis)}")
+    print(f"--- decision_nodes ({len(decision_nodes or {})}):")
+    for nid, n in (decision_nodes or {}).items():
+        print(f"    {nid} [{n.get('kind')}/{n.get('status')}] {n.get('statement', '')}")
+    print("=" * 52)
+
+
+async def test_live_cold_start_full_transcript(
+    client, scenario_env, scenario_project, graph_flag_on
+):
+    """Scenario 1 (golden Phần 1): empty project + thin input → agent explores, does not draft.
+
+    Dumps the full message thread + every tool call/result + the decision graph, then asserts the
+    cold-start invariant (no write_draft / finalize on the first thin turn).
+    """
+    _skip_without_key()
+    analyst = _real_analyst()
+    scenario_env.set_llm(analyst)
+
+    headers, proj = scenario_project
+    session_id = await _open_session(client, headers, proj["id"])
+
+    await _send(client, headers, proj["id"], session_id, "Tôi muốn làm app quản lý quán cà phê.")
+    await scenario_env.drain(session_id)
+
+    messages = await scenario_env.get_checkpoint_field(session_id, "messages")
+    decision_nodes = await scenario_env.get_checkpoint_field(session_id, "decision_nodes")
+    analysis = await scenario_env.get_checkpoint_field(session_id, "analysis_result")
+    _dump_transcript("SCENARIO 1 COLD-START", messages, decision_nodes, analysis)
+
+    # User-facing chat output (AgentMessage table) — what the user actually sees, not the tool thread.
+    resp = await client.get(
+        f"{BASE}/projects/{proj['id']}/agent-sessions/{session_id}/messages", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+    print("\n========== USER-FACING MESSAGES ==========")
+    for m in resp.json()["data"]:
+        print(f"[{m.get('role')}] {m.get('content')}")
+        if m.get("payload"):
+            print(f"      payload={m['payload']}")
+    print("=" * 42)
+
+    tools = _tools_last_turn(analysis)
+    assert "write_draft" not in tools, f"Drafted on thin cold-start; got {tools}"
+    assert "finalize" not in tools, f"Finalized with no draft; got {tools}"
+
+
+async def _user_facing(client, headers, project_id, session_id) -> list[dict]:
+    resp = await client.get(
+        f"{BASE}/projects/{project_id}/agent-sessions/{session_id}/messages", headers=headers
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["data"]
+
+
+async def test_live_cold_start_through_draft_full(
+    client, scenario_env, scenario_project, graph_flag_on
+):
+    """Full golden Phần 1→2: cold-start exploration primed across turns until the agent drafts.
+
+    Dumps the user-facing chat each turn, then the full tool thread + decision graph + draft body.
+    Lenient on whether the draft lands on the exact turn (real LLM is non-deterministic); the point
+    is to show the complete block through to the draft.
+    """
+    _skip_without_key()
+    analyst = _real_analyst()
+    scenario_env.set_llm(analyst)
+
+    headers, proj = scenario_project
+    session_id = await _open_session(client, headers, proj["id"])
+
+    for idx, content in enumerate(_PRIME_TURNS):
+        await _send(client, headers, proj["id"], session_id, content)
+        await scenario_env.drain(session_id)
+        analysis = await scenario_env.get_checkpoint_field(session_id, "analysis_result")
+        print(f"\n----- TURN {idx + 1}: user={content[:60]!r} -> tools={_tools_last_turn(analysis)}")
+        for m in await _user_facing(client, headers, proj["id"], session_id):
+            if m.get("role") == "agent":
+                print(f"   [agent] {m.get('content')}")
+
+    messages = await scenario_env.get_checkpoint_field(session_id, "messages")
+    decision_nodes = await scenario_env.get_checkpoint_field(session_id, "decision_nodes")
+    analysis = await scenario_env.get_checkpoint_field(session_id, "analysis_result")
+    draft_body = await scenario_env.get_checkpoint_field(session_id, "draft_body")
+    _dump_transcript("COLD-START → DRAFT", messages, decision_nodes, analysis)
+    print("\n========== DRAFT BODY (rendered from graph) ==========")
+    print(draft_body or "(chưa có draft_body — agent chưa write_draft)")
+    print("=" * 54)
+
+
 # ---------------------------------------------------------------------------
 # B2 — Decision reversal: harness preserves old node (non-destructive supersede invariant)
 # ---------------------------------------------------------------------------
