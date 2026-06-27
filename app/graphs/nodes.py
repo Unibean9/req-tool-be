@@ -1135,6 +1135,16 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
+    # When the contract carries an id_prefix the first column is an auto-assigned trace tag the agent
+    # must not fill; other artifacts reference an entry by that tag instead of restating it.
+    id_rule = (
+        "\nEvery node must fill all of these fields; if a value is genuinely unknown, set it to "
+        "'(needs confirmation)' rather than leaving it empty.\n"
+        f"The 'id' column is assigned automatically as {contract.id_prefix}-NN — do not set it. Reference "
+        f"another requirement by its id (e.g. {contract.id_prefix}-01) instead of restating its text.\n"
+        if contract.id_prefix
+        else ""
+    )
     # Graph-first: the artifact view renders from decision nodes, so the contract is a coverage target
     # for the nodes to fill — not a Markdown body to hand-write. Only the flag-off rollback path still
     # authors a body directly, so keep the body-shape contract for that case.
@@ -1146,6 +1156,7 @@ def _build_output_contract_block(state: WorkflowState) -> str:
             "create nodes to fill it, do not hand-write the Markdown body):\n"
             f"{headings}\n"
             f"Table columns when using a table: {columns}\n"
+            f"{id_rule}"
             "Prioritize current/accepted artifact versions and accepted predecessors over chat history."
         )
     return (

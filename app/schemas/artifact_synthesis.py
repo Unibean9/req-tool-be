@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, computed_field
 
-from app.documents.registry import output_contract
+from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, output_contract
 
 InferenceLevel = Literal["low", "medium", "high"]
 SynthesisSource = Literal["bmad_synthesis"]
@@ -131,6 +131,15 @@ def evaluate_candidate_readiness(
             missing=missing_headings,
             blocking_reasons=[
                 f"Candidate is missing required headings from the output contract: {', '.join(missing_headings)}"
+            ],
+        )
+
+    if INCOMPLETE_CELL_PLACEHOLDER in body:
+        return ArtifactCandidateReadiness(
+            state=ArtifactReadinessState.WELL_STRUCTURED_BUT_INCOMPLETE,
+            blocking_reasons=[
+                "Candidate has empty required table cells. Fill every column, or mark an unknown value "
+                "as needing confirmation — do not leave it blank."
             ],
         )
 

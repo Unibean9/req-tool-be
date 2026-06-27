@@ -52,6 +52,29 @@ def test_strip_preserves_real_assumptions_content_heading():
     assert strip_synthesis_assumptions(body) == body
 
 
+def test_candidate_readiness_blocks_when_table_has_empty_cells():
+    metadata = ArtifactSynthesisMetadata(
+        artifact_type="functional_requirement",
+        focused_artifact_id=uuid.uuid4(),
+    )
+    body = (
+        "## Functional Requirements\n"
+        "| id | requirement | behavior | inputs/outputs | acceptance signal | priority |\n"
+        "| --- | --- | --- | --- | --- | --- |\n"
+        "| FR-01 | Scan QR | _(cần bổ sung)_ | _(cần bổ sung)_ | within 30s | Must |"
+    )
+
+    readiness = evaluate_candidate_readiness(
+        artifact_type="functional_requirement",
+        body=body,
+        synthesis_metadata=metadata,
+    )
+
+    assert readiness.state == ArtifactReadinessState.WELL_STRUCTURED_BUT_INCOMPLETE
+    assert readiness.can_persist is False
+    assert readiness.blocking_reasons
+
+
 def test_all_document_items_have_markdown_output_contracts():
     for item_type in all_item_types():
         contract = output_contract(item_type)
