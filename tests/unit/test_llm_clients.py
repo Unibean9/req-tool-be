@@ -183,6 +183,24 @@ def test_parse_generate_text_accepts_tool_args_prompt_alias():
     assert result == payload
 
 
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        'Here is the JSON:\n{"answer": "ok"}',
+        '{"answer": "ok"}\n\nLet me know if you need more.',
+        'Sure — ```json\n{"answer": "ok"}\n``` done.',
+        '{"answer": "ok with a } brace inside"}',
+    ],
+)
+def test_parse_generate_text_recovers_object_wrapped_in_prose(wrapped):
+    schema = {"type": "object", "properties": {"answer": {"type": "string"}}, "required": ["answer"]}
+
+    result = _parse_generate_text(wrapped, schema)
+
+    assert result == {"answer": result["answer"]}
+    assert result["answer"].startswith("ok")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("client_class", "provider_payload"),
