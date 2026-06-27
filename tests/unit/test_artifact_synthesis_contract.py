@@ -8,8 +8,48 @@ from app.schemas.artifact_synthesis import (
     ArtifactCandidateReadiness,
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
+    canonical_artifact_body,
     evaluate_candidate_readiness,
+    strip_synthesis_assumptions,
 )
+
+
+def _metadata_with_pending() -> ArtifactSynthesisMetadata:
+    return ArtifactSynthesisMetadata(
+        artifact_type="problem_statement",
+        focused_artifact_id=uuid.uuid4(),
+        base_version_id=None,
+        evidence_refs=[],
+        inference_level="medium",
+        confirmed_assumptions=["Users have smartphones"],
+        pending_assumptions=["Target retention needs confirmation"],
+    )
+
+
+def test_strip_removes_synthesis_block_written_with_marker():
+    body = canonical_artifact_body(body="## Problem\nSlow.", synthesis_metadata=_metadata_with_pending())
+    assert "## Assumptions" in body  # present at the artifact level
+
+    stripped = strip_synthesis_assumptions(body)
+
+    assert "## Assumptions" not in stripped
+    assert "needs confirmation" not in stripped.lower()
+    assert "## Problem" in stripped
+
+
+def test_strip_removes_legacy_synthesis_block_without_marker():
+    legacy = "## Problem\nSlow.\n\n## Assumptions\n### Needs Confirmation\n- Target ⚠️ needs confirmation"
+
+    stripped = strip_synthesis_assumptions(legacy)
+
+    assert stripped == "## Problem\nSlow."
+
+
+def test_strip_preserves_real_assumptions_content_heading():
+    body = (
+        "## Constraints\n- Mobile only.\n\n## Assumptions\n- Students own a smartphone.\n\n## Validation Plan\n- Pilot."
+    )
+    assert strip_synthesis_assumptions(body) == body
 
 
 def test_all_document_items_have_markdown_output_contracts():
@@ -37,6 +77,7 @@ def test_synthesis_metadata_requires_stable_provenance_shape():
     )
 
     dumped = metadata.model_dump(mode="json")
+    assert "contract_version" not in dumped
     assert dumped["synthesis_source"] == "bmad_synthesis"
     assert dumped["inference_level"] == "medium"
 
@@ -129,7 +170,33 @@ def test_candidate_readiness_needs_confirmation_when_pending_assumption_is_marke
     )
 
     assert readiness.state == ArtifactReadinessState.NEEDS_CONFIRMATION
-    assert readiness.can_persist is False
+    assert readiness.can_persist is True
+    assert readiness.needs_confirmation == ["Target retention 15%"]
+    assert readiness.blocking_reasons == []
+
+
+def test_candidate_readiness_needs_confirmation_accepts_locale_marker():
+    metadata = ArtifactSynthesisMetadata(
+        artifact_type="vision_objectives",
+        focused_artifact_id=uuid.uuid4(),
+        pending_assumptions=["Target retention 15%"],
+    )
+    body = "\n\n".join(
+        [
+            "## Vision\nTang retention.",
+            "## Objectives\n- Cai thien activation.",
+            "## Success Metrics\n- Retention target 15% ⚠️ cần xác nhận.",
+        ]
+    )
+
+    readiness = evaluate_candidate_readiness(
+        artifact_type="vision_objectives",
+        body=body,
+        synthesis_metadata=metadata,
+    )
+
+    assert readiness.state == ArtifactReadinessState.NEEDS_CONFIRMATION
+    assert readiness.can_persist is True
     assert readiness.needs_confirmation == ["Target retention 15%"]
 
 
