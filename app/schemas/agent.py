@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.models.agent import (
     AgentMessageRole,
@@ -70,6 +70,18 @@ class AgentMessageResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+def public_tool_call_input_snapshot(snapshot: Any) -> Any:
+    if not isinstance(snapshot, dict):
+        return snapshot
+    sanitized = dict(snapshot)
+    metadata = sanitized.get("synthesis_metadata")
+    if isinstance(metadata, dict):
+        public_metadata = dict(metadata)
+        public_metadata.pop("contract_version", None)
+        sanitized["synthesis_metadata"] = public_metadata
+    return sanitized
+
+
 class AgentToolCallResponse(BaseModel):
     id: uuid.UUID
     run_id: uuid.UUID
@@ -81,6 +93,11 @@ class AgentToolCallResponse(BaseModel):
     resolved_at: datetime | None
     created_at: datetime | None
     updated_at: datetime | None
+
+    @field_validator("input_snapshot", mode="before")
+    @classmethod
+    def sanitize_input_snapshot(cls, value: Any) -> Any:
+        return public_tool_call_input_snapshot(value)
 
     model_config = {"from_attributes": True}
 

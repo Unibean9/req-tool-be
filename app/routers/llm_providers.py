@@ -7,7 +7,12 @@ from app.core.responses import created, ok
 from app.database import get_db
 from app.deps import current_user
 from app.models.user import User
-from app.schemas.llm_provider import LLMProviderConfigRead, LLMProviderHealthCheckResult, LLMProviderKeyRequest
+from app.schemas.llm_provider import (
+    LLMProviderConfigRead,
+    LLMProviderHealthCheckResult,
+    LLMProviderKeyRequest,
+    LLMProviderUpdateRequest,
+)
 from app.schemas.response import ApiResponse
 from app.services.llm_provider_service import CooldownError, LLMProviderService, ProviderUnavailableError
 
@@ -43,7 +48,7 @@ async def get_llm_provider_config(
 @router.patch("/{config_id}", response_model=ApiResponse[LLMProviderConfigRead])
 async def update_llm_provider_config(
     config_id: uuid.UUID,
-    body: LLMProviderKeyRequest,
+    body: LLMProviderUpdateRequest,
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ):

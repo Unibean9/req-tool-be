@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.crypto import decrypt_token, encrypt_token
 from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
-from app.schemas.llm_provider import LLMProviderHealthCheckResult, LLMProviderKeyRequest
+from app.schemas.llm_provider import LLMProviderHealthCheckResult, LLMProviderKeyRequest, LLMProviderUpdateRequest
 from app.services.llm_clients import DEFAULT_MODEL_BY_PROVIDER, LLMClientFactory
 
 
@@ -113,9 +113,9 @@ class LLMProviderService:
         *,
         user_id: uuid.UUID,
         config_id: uuid.UUID,
-        body: LLMProviderKeyRequest | dict[str, Any],
+        body: LLMProviderUpdateRequest | dict[str, Any],
     ) -> LLMProviderConfig:
-        schema = self._key_schema(body)
+        schema = self._update_schema(body)
         config = await self.get(user_id=user_id, config_id=config_id)
         values = {
             "status": LLMProviderStatus.DRAFT,
@@ -123,7 +123,7 @@ class LLMProviderService:
             "last_check_error": None,
             "is_default": True,
         }
-        values.update(self._values_from_key_request(schema))
+        values.update(self._values_from_update_request(schema, config))
         await self._unset_user_default(user_id, exclude_id=config_id)
         if values:
             await self.db.execute(
@@ -203,6 +203,11 @@ class LLMProviderService:
             return body
         return LLMProviderKeyRequest.model_validate(body)
 
+    def _update_schema(self, body: LLMProviderUpdateRequest | dict[str, Any]) -> LLMProviderUpdateRequest:
+        if isinstance(body, LLMProviderUpdateRequest):
+            return body
+        return LLMProviderUpdateRequest.model_validate(body)
+
     def _values_from_key_request(self, body: LLMProviderKeyRequest) -> dict[str, Any]:
         provider_type = body.provider_type or DEFAULT_PROVIDER_TYPE
         provider_name = provider_type.value
@@ -216,6 +221,19 @@ class LLMProviderService:
             "encrypted_api_key": encrypt_token(body.api_key),
             "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
         }
+        return values
+
+    def _values_from_update_request(
+        self, body: LLMProviderUpdateRequest, config: LLMProviderConfig
+    ) -> dict[str, Any]:
+        sent_fields = body.model_fields_set
+        values: dict[str, Any] = {}
+        if "region" in sent_fields:
+            values["region"] = body.region
+        if "model_name" in sent_fields:
+            values["model_name"] = body.model_name or DEFAULT_MODEL_BY_PROVIDER[config.provider_type]
+        if "strong_model_name" in sent_fields:
+            values["strong_model_name"] = body.strong_model_name
         return values
 
 

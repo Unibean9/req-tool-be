@@ -230,3 +230,18 @@ async def test_run_critique_invokes_llm_when_present():
 
     assert result["score"] == 0.8
     assert result["findings"] == ["missing metric"]
+
+
+@pytest.mark.asyncio
+async def test_run_critique_degrades_when_output_unparseable():
+    """A parse failure (e.g. truncated JSON) must degrade, not crash the tool-loop."""
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.generate = AsyncMock(side_effect=ValueError("Could not parse JSON from LLM response"))
+
+    result = await _invoke_judge("body", "completeness", llm_client=client)
+
+    assert set(result) == {"mode", "score", "findings", "suggestions"}
+    assert result["score"] == 0.0
+    assert result["suggestions"] == ["judge_unparseable"]

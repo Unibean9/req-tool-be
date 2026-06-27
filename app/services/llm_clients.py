@@ -806,16 +806,59 @@ def _parse_generate_text(text: str | None, response_format: dict[str, Any] | Non
     if not response_format:
         return text
 
+    stripped = _strip_json_fence(text)
     try:
-        parsed = json.loads(_strip_json_fence(text))
+        parsed = json.loads(stripped)
     except json.JSONDecodeError as exc:
-        raise ValueError("Could not parse JSON from LLM response") from exc
+        # Instruction-based structured output (Anthropic/Bedrock) is not a hard
+        # constraint, so the model may wrap the object in prose or a partial fence.
+        # Recover the first balanced JSON object before giving up.
+        candidate = _extract_json_object(stripped)
+        if candidate is None:
+            raise ValueError("Could not parse JSON from LLM response") from exc
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            raise ValueError("Could not parse JSON from LLM response") from exc
     if not isinstance(parsed, dict):
         raise ValueError("Could not parse JSON object from LLM response")
     schema = _parse_validation_schema(response_format)
     if schema:
         _validate_json_schema(parsed, schema)
     return parsed
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Return the first balanced top-level JSON object substring, or None.
+
+    Scans from the first '{' to its matching '}', tracking string literals so
+    braces inside string values do not unbalance the count.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : index + 1]
+    return None
 
 
 def _strip_json_fence(text: str) -> str:

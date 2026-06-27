@@ -69,6 +69,17 @@ def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
     return schemas
 
 
+def _model_tool_calls(ai_message: AIMessage) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": tc.get("id"),
+            "name": tc.get("name") or "",
+            "args": dict(tc.get("args") or {}),
+        }
+        for tc in (getattr(ai_message, "tool_calls", None) or [])
+    ]
+
+
 def _normalize_planning_track(track: Any) -> str:
     raw = str(track or "").strip().lower()
     return raw if raw in _PLANNING_TRACKS else "quick"
@@ -448,10 +459,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     latency_ms = int((time.monotonic() - started_at) * 1000)
 
     # Post-LLM gate keeps only the solo invariant; availability is enforced by the state-driven tool surface.
-    raw_tools = [
-        {"name": tc.get("name") or "", "args": dict(tc.get("args") or {})}
-        for tc in (getattr(ai_message, "tool_calls", None) or [])
-    ]
+    model_tool_calls = _model_tool_calls(ai_message)
+    raw_tools = [{"name": tc["name"], "args": dict(tc["args"])} for tc in model_tool_calls]
     gated_tools = _gate_selected_tools(effective_state, raw_tools)
     dropped_tools = _dropped_tool_names(raw_tools, gated_tools)
     # One-shot: clear the previous turn's notice (already rendered into this turn's prompt) and stage
@@ -465,8 +474,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # (default vi). Drafts of record flow through decision_nodes and write_draft.
     locale = effective_state.get("locale") or "vi"
 
-    analysis_result: dict[str, Any] = {
+    analysis_result_base: dict[str, Any] = {
         "tools": gated_tools,
+        "model_tool_calls": model_tool_calls,
+        "raw_model_tool_calls": model_tool_calls,
+        "dropped_tool_calls": dropped_tools,
+        "available_tools": [tool.name for tool in available_tools],
         "locale": locale,
         "coverage_complete": coverage["coverage_complete"],
     }
@@ -474,13 +487,39 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     async with session_factory() as db:
         run = AgentRun(
             session_id=session_id,
-            analysis_result=analysis_result,
+            analysis_result=analysis_result_base,
             token_usage=usage,
             latency_ms=latency_ms,
         )
         db.add(run)
-        await db.commit()
+        await db.flush()
         run_id = str(run.id)
+        dispatched_tool_calls: list[dict[str, Any]] = []
+        dispatched_tools: list[dict[str, Any]] = []
+        if gated_tools:
+            for i, item in enumerate(gated_tools):
+                tool = item.get("name") or ""
+                args = dict(item.get("args") or {})
+                # Per-tool post-processing (coercions that must happen at dispatch time).
+                if tool == "ask_user" and not str(args.get("message") or "").strip():
+                    # Prefer the gate-set message (names the gated tool) over the generic fallback.
+                    gate_msg = str(analysis_result_base.get("message") or "")
+                    args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK_BY_LOCALE.get(
+                        locale, _COERCED_ASK_FALLBACK_BY_LOCALE["en"]
+                    )
+                if tool == "respond":
+                    if _response_message_incomplete(args.get("message")):
+                        args["message"] = _RESPOND_FALLBACK_BY_LOCALE.get(locale, _RESPOND_FALLBACK_BY_LOCALE["en"])
+                    args["mode"] = args.get("mode") or "critique"
+                dispatched_tools.append({"name": tool, "args": args})
+                dispatched_tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
+        analysis_result = {
+            **analysis_result_base,
+            "tools": dispatched_tools,
+            "dispatched_tool_calls": dispatched_tool_calls,
+        }
+        run.analysis_result = analysis_result
+        await db.commit()
 
     # BMAD method profile: workflow_mode is inferred from coverage (no longer LLM-reported);
     # planning_track normalized to quick on miss. Merge so other profile fields persist.
@@ -512,24 +551,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # against ^[a-zA-Z0-9_-]+$ and rejects ":" when the message history is replayed next turn.
     # DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
     # Empty tool_calls means the analyst is done: emit a plain AIMessage carrying its final text.
-    if gated_tools:
-        tool_calls = []
-        for i, item in enumerate(gated_tools):
-            tool = item.get("name") or ""
-            args = dict(item.get("args") or {})
-            # Per-tool post-processing (coercions that must happen at dispatch time).
-            if tool == "ask_user" and not str(args.get("message") or "").strip():
-                # Prefer the gate-set message (names the gated tool) over the generic fallback.
-                gate_msg = str(analysis_result.get("message") or "")
-                args["message"] = gate_msg.strip() or _COERCED_ASK_FALLBACK_BY_LOCALE.get(
-                    locale, _COERCED_ASK_FALLBACK_BY_LOCALE["en"]
-                )
-            if tool == "respond":
-                if _response_message_incomplete(args.get("message")):
-                    args["message"] = _RESPOND_FALLBACK_BY_LOCALE.get(locale, _RESPOND_FALLBACK_BY_LOCALE["en"])
-                args["mode"] = args.get("mode") or "critique"
-            tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
-        result["messages"] = [AIMessage(content="", tool_calls=tool_calls)]
+    if dispatched_tool_calls:
+        result["messages"] = [AIMessage(content="", tool_calls=dispatched_tool_calls)]
     else:
         result["messages"] = [AIMessage(content=(getattr(ai_message, "content", None) or "").strip())]
     return result
@@ -1135,6 +1158,16 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
+    # When the contract carries an id_prefix the first column is an auto-assigned trace tag the agent
+    # must not fill; other artifacts reference an entry by that tag instead of restating it.
+    id_rule = (
+        "\nEvery node must fill all of these fields; if a value is genuinely unknown, set it to "
+        "'(needs confirmation)' rather than leaving it empty.\n"
+        f"The 'id' column is assigned automatically as {contract.id_prefix}-NN — do not set it. Reference "
+        f"another requirement by its id (e.g. {contract.id_prefix}-01) instead of restating its text.\n"
+        if contract.id_prefix
+        else ""
+    )
     # Graph-first: the artifact view renders from decision nodes, so the contract is a coverage target
     # for the nodes to fill — not a Markdown body to hand-write. Only the flag-off rollback path still
     # authors a body directly, so keep the body-shape contract for that case.
@@ -1146,6 +1179,7 @@ def _build_output_contract_block(state: WorkflowState) -> str:
             "create nodes to fill it, do not hand-write the Markdown body):\n"
             f"{headings}\n"
             f"Table columns when using a table: {columns}\n"
+            f"{id_rule}"
             "Prioritize current/accepted artifact versions and accepted predecessors over chat history."
         )
     return (

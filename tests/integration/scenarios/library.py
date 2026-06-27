@@ -58,50 +58,35 @@ _GOAL_BODY = (
     "- Payments, advanced attendance management, and long-term learning analytics."
 )
 
-# Functional requirement — concrete, measurable behavior.
+# Functional requirement — concrete, measurable behavior in the id-tagged table form.
 _FR_BODY = (
-    "## Functional Requirement\n"
-    "The system must allow members to connect personal calendars and extract busy slots.\n\n"
-    "## Behavior\n"
-    "When the group leader requests it, the system computes overlapping free slots and returns common time slots.\n\n"
-    "## Inputs and Outputs\n"
-    "- Input: personal calendars, member list, target time range.\n"
-    "- Output: khung gio chung kem so thanh vien ranh tuong ung.\n\n"
-    "## Acceptance Signals\n"
-    "- Ket qua cap nhat trong vong 5 giay sau when co thay doi lich."
+    "## Functional Requirements\n"
+    "| id | requirement | behavior | inputs/outputs | acceptance signal | priority |\n"
+    "| --- | --- | --- | --- | --- | --- |\n"
+    "| FR-01 | Members connect personal calendars | System extracts busy slots and computes overlaps "
+    "when the group leader requests it | Input: calendars, member list, target range; "
+    "Output: khung gio chung kem so thanh vien ranh | Ket qua cap nhat trong vong 5 giay sau khi doi lich | Must |"
 )
 
-# Non-functional requirement — quality attributes with thresholds.
+# Non-functional requirement — quality attributes with thresholds, id-tagged table form.
 _NFR_BODY = (
-    "## Quality Attribute\n"
-    "Performance and security for personal calendar data.\n\n"
-    "## Requirement\n"
-    "Compute common time slots for groups up to 8 members with p95 response under 2 seconds.\n\n"
-    "## Measurement\n"
-    "- Load test 500 concurrent active groups with CPU not exceeding 70%.\n"
-    "- Verify calendar data is encrypted at rest.\n\n"
-    "## Scope and Tradeoffs\n"
-    "Prioritize fast responses for small groups; return clear errors when a group exceeds MVP limits."
+    "## Non-Functional Requirements\n"
+    "| id | quality attribute | requirement | measurement | scope/tradeoff |\n"
+    "| --- | --- | --- | --- | --- |\n"
+    "| NFR-01 | Performance | Compute common slots for up to 8 members with p95 under 2s | "
+    "Load test 500 concurrent active groups with CPU under 70% | Prioritize fast responses for small groups |\n"
+    "| NFR-02 | Security | Encrypt personal calendar data at rest | Verify encryption in a storage audit | "
+    "Clear errors when a group exceeds MVP limits |"
 )
 
-# Epic must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.
+# Epic maps to use_case (driver), now framed as a Business Capability — brief, no flow detail.
 _EPIC_BODY = (
-    "## Use Case\n"
-    "Dong bo va doi chieu lich nhom de goi y buoi hoc.\n\n"
-    "## Actors\n"
-    "- Truong nhom\n"
-    "- Member nhom\n\n"
-    "## Preconditions\n"
-    "Members have joined the group and can connect personal calendars.\n\n"
-    "## Main Flow\n"
-    "1. Member dong bo lich.\n"
-    "2. Group leader requests common time slots.\n"
-    "3. System returns available time slots.\n"
-    "4. Truong nhom chot buoi hoc.\n\n"
-    "## Alternate / Exception Flows\n"
-    "- If there is no common slot, the system suggests the nearest slot with absent members.\n\n"
-    "## Postconditions\n"
-    "The study session is finalized or there is a clear reason why it cannot be finalized."
+    "## Business Capabilities\n"
+    "### BC-01: Dong bo va doi chieu lich nhom\n"
+    "- **goal:** Tim khung gio ranh chung de nhom chot buoi hoc nhanh hon\n"
+    "- **users:** Truong nhom va member nhom\n"
+    "- **value:** Giam thoi gian orchestration tu 30 phut xuong duoi 10 phut moi tuan\n"
+    "- **scope:** Dong bo lich ca nhan va goi y khung gio chung; chi tiet luong de o user stories"
 )
 
 # Story must carry INVEST "testable" signals such as acceptance criteria / Given-When-Then.

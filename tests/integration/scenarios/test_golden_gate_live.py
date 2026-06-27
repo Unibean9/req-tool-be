@@ -10,7 +10,7 @@ Three scenarios from golden-conversation.md:
   B3 — Sufficient context leads to draft: real LLM reaches write_draft when primed.
 
 Run: pytest -m "integration and live" -s tests/integration/scenarios/test_golden_gate_live.py
-Needs JUDGE_API_KEY (or equivalent) in .env.test.
+Needs LLM_API_KEY (or equivalent) in .env.test.
 """
 
 import sys
@@ -31,22 +31,22 @@ pytestmark = [pytest.mark.integration, pytest.mark.live, pytest.mark.asyncio]
 
 
 def _real_analyst():
-    """Build a real LLM client from the judge credentials in .env.test."""
+    """Build a real analyst client from the shared test credentials in .env.test."""
     from app.models.llm_provider import ProviderType
     from app.services.llm_clients import LLMClientFactory
 
     return LLMClientFactory.create(
-        provider_type=ProviderType(judge_settings.judge_provider),
-        api_key=judge_settings.judge_api_key,
-        model=judge_settings.judge_model,
-        region=judge_settings.judge_region,
-        secret_key=judge_settings.judge_secret_key or None,
+        provider_type=ProviderType(judge_settings.llm_provider_type),
+        api_key=judge_settings.llm_api_key,
+        model=judge_settings.llm_model_name,
+        region=judge_settings.llm_region,
+        secret_key=judge_settings.llm_secret_key or None,
     )
 
 
 def _skip_without_key():
-    if not judge_settings.judge_api_key:
-        pytest.skip("JUDGE_API_KEY is required in .env.test to run the live LLM")
+    if not judge_settings.llm_api_key:
+        pytest.skip("LLM_API_KEY is required in .env.test to run the live LLM")
 
 
 # ---------------------------------------------------------------------------

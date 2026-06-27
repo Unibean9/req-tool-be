@@ -54,6 +54,7 @@ from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
+    canonical_artifact_body,
     evaluate_candidate_readiness,
 )
 from app.services.artifact_service import ArtifactLinkService
@@ -442,6 +443,7 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                     [q["question"] for q in (state.get("open_questions") or [])] + graph_pending
                 ),
             )
+            body = canonical_artifact_body(body=body, synthesis_metadata=metadata)
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
                 body=body,

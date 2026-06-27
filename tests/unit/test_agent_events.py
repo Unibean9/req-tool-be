@@ -68,7 +68,15 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
         AgentToolCall(
             run_id=run.id,
             tool_name="create_artifact",
-            input_snapshot={"artifact_type": "goal", "title": "Goal"},
+            input_snapshot={
+                "artifact_type": "goal",
+                "title": "Goal",
+                "synthesis_metadata": {
+                    "contract_version": "2026-06-23",
+                    "evidence_refs": ["agent_run:1"],
+                },
+                "candidate_readiness": {"state": "sufficient"},
+            },
             status=AgentToolCallStatus.PROPOSED,
         )
     )
@@ -86,6 +94,10 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
     assert "graph_checkpoint" not in snapshot["session"]
     assert snapshot["messages"][0]["content"] == "Artifact proposal needs approval."
     assert snapshot["tool_calls"][0]["tool_name"] == "create_artifact"
+    public_snapshot = snapshot["tool_calls"][0]["input_snapshot"]
+    assert "contract_version" not in public_snapshot["synthesis_metadata"]
+    assert public_snapshot["synthesis_metadata"]["evidence_refs"] == ["agent_run:1"]
+    assert public_snapshot["candidate_readiness"] == {"state": "sufficient"}
 
 
 @pytest.mark.asyncio

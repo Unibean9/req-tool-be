@@ -117,3 +117,56 @@ def test_render_view_document_item_uses_contract_headings_and_table():
     assert "| goal | user/business value | metric | target | timeframe |" in out
     assert "| Schedule study groups | Students reduce coordination loops | Successful scheduling rate | 80% | First semester ⚠️ needs confirmation |" in out
     assert out.index("## Vision") < out.index("## Objectives") < out.index("## Success Metrics")
+
+
+def test_render_view_functional_requirement_assigns_trace_ids_and_placeholders():
+    nodes = {
+        "F1": create_node(
+            kind="decision",
+            statement="Scan QR to check in",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="F1",
+            fields={"requirement": "Scan rotating QR", "behavior": "Validate within 30s", "priority": "Must"},
+        ),
+        "F2": create_node(
+            kind="decision",
+            statement="Verify GPS",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="F2",
+            fields={"requirement": "Check geofence"},
+        ),
+    }
+
+    out = render_view(nodes, "functional_requirement")
+
+    assert "## Functional Requirements" in out
+    assert "| id | requirement | behavior | inputs/outputs | acceptance signal | priority |" in out
+    # First column is an auto-assigned trace tag the agent never supplies.
+    assert "| FR-01 |" in out
+    assert "| FR-02 |" in out
+    # Columns the node left unfilled render a visible placeholder so the gate can block them.
+    assert "_(cần bổ sung)_" in out
+
+
+def test_render_view_business_capability_renders_id_tagged_entries():
+    nodes = {
+        "U1": create_node(
+            kind="fact",
+            statement="Attendance check-in",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="U1",
+            fields={"goal": "Let students check in fast", "users": "Students"},
+        ),
+    }
+
+    out = render_view(nodes, "use_case")
+
+    assert "## Business Capabilities" in out
+    assert "### BC-01: Attendance check-in" in out
+    assert "- **goal:** Let students check in fast" in out
+    assert "- **users:** Students" in out
+    # Unfilled brief fields still placeholder so the gate can flag them.
+    assert "- **value:** _(cần bổ sung)_" in out

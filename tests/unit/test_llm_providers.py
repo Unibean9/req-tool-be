@@ -373,7 +373,7 @@ async def test_health_check_cooldown_rejects(client, db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rotate_key_resets_status_to_draft(client, db_session, monkeypatch):
+async def test_update_model_resets_status_to_draft_without_rotating_key(client, db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()
     headers = await make_auth_headers(client)
@@ -383,10 +383,11 @@ async def test_rotate_key_resets_status_to_draft(client, db_session, monkeypatch
     row.status = LLMProviderStatus.ACTIVE
     await db_session.flush()
 
-    updated = await service.update(user_id=user_id, config_id=row.id, body={"api_key": "sk-new"})
+    updated = await service.update(user_id=user_id, config_id=row.id, body={"model_name": "gpt-4.1-mini"})
 
     assert updated.status == LLMProviderStatus.DRAFT
-    assert _resolve_api_key(updated) == "sk-new"
+    assert updated.model_name == "gpt-4.1-mini"
+    assert _resolve_api_key(updated) == "sk-old"
 
 
 @pytest.mark.asyncio
@@ -402,15 +403,32 @@ async def test_update_config_stores_user_selected_model_name(client, db_session,
         user_id=user_id,
         config_id=row.id,
         body={
-            "provider_type": "openai",
-            "api_key": "sk-new",
             "model_name": "gpt-4.1-mini",
         },
     )
 
     assert updated.status == LLMProviderStatus.DRAFT
     assert updated.model_name == "gpt-4.1-mini"
-    assert _resolve_api_key(updated) == "sk-new"
+    assert _resolve_api_key(updated) == "sk-old"
+
+
+@pytest.mark.asyncio
+async def test_update_config_stores_region(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(
+        user_id=user_id,
+        body={"provider_type": "bedrock", "api_key": "AKIATEST", "secret_key": "aws-secret", "region": "us-east-1"},
+    )
+
+    updated = await service.update(user_id=user_id, config_id=row.id, body={"region": "ap-southeast-1"})
+
+    assert updated.status == LLMProviderStatus.DRAFT
+    assert updated.region == "ap-southeast-1"
+    assert _resolve_api_key(updated) == "AKIATEST"
 
 
 @pytest.mark.asyncio
@@ -493,11 +511,57 @@ async def test_patch_another_users_config_returns_404(client, db_session, monkey
 
     resp = await client.patch(
         f"{BASE}/users/me/llm-provider-configs/{config_id}",
-        json={"api_key": "sk-new"},
+        json={"model_name": "gpt-4.1-mini"},
         headers=headers_b,
     )
 
     assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_credential_and_provider_fields(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    create_resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json=_create_body(api_key="sk-1"),
+        headers=headers,
+    )
+    config_id = create_resp.json()["data"]["id"]
+
+    resp = await client.patch(
+        f"{BASE}/users/me/llm-provider-configs/{config_id}",
+        json={
+            "api_key": "sk-new",
+            "secret_key": "secret-new",
+            "provider_type": "bedrock",
+        },
+        headers=headers,
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_patch_rejects_empty_model_update(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    create_resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json=_create_body(api_key="sk-1"),
+        headers=headers,
+    )
+    config_id = create_resp.json()["data"]["id"]
+
+    resp = await client.patch(
+        f"{BASE}/users/me/llm-provider-configs/{config_id}",
+        json={},
+        headers=headers,
+    )
+
+    assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -611,7 +675,7 @@ def test_health_check_timeout_error_message_is_not_empty():
 
 
 @pytest.mark.asyncio
-async def test_full_lifecycle_create_check_rotate(client, monkeypatch):
+async def test_full_lifecycle_create_check_update_model(client, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()
     headers = await make_auth_headers(client)
@@ -628,12 +692,13 @@ async def test_full_lifecycle_create_check_rotate(client, monkeypatch):
     health_resp = await client.post(f"{BASE}/users/me/llm-provider-configs/{config_id}/health-check", headers=headers)
     patch_resp = await client.patch(
         f"{BASE}/users/me/llm-provider-configs/{config_id}",
-        json={"api_key": "sk-2"},
+        json={"model_name": "gpt-4.1-mini"},
         headers=headers,
     )
 
     assert health_resp.status_code == 200
     assert patch_resp.json()["data"]["status"] == "draft"
+    assert patch_resp.json()["data"]["model_name"] == "gpt-4.1-mini"
 
 
 @pytest.mark.asyncio
@@ -657,13 +722,16 @@ async def test_response_body_never_contains_key(client, monkeypatch):
     create_resp = await client.post(f"{BASE}/users/me/llm-provider-configs", json=_create_body(api_key="sk-no-leak"), headers=headers)
     config_id = create_resp.json()["data"]["id"]
     get_resp = await client.get(f"{BASE}/users/me/llm-provider-configs/{config_id}", headers=headers)
-    patch_resp = await client.patch(f"{BASE}/users/me/llm-provider-configs/{config_id}", json={"api_key": "sk-new-no-leak"}, headers=headers)
+    patch_resp = await client.patch(
+        f"{BASE}/users/me/llm-provider-configs/{config_id}",
+        json={"model_name": "gpt-4.1-mini"},
+        headers=headers,
+    )
 
     for resp in (create_resp, get_resp, patch_resp):
         body = resp.text
         assert "encrypted_api_key" not in body
         assert "sk-no-leak" not in body
-        assert "sk-new-no-leak" not in body
         assert "api_key" not in resp.json()["data"]
 
 

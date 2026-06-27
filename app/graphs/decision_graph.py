@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.documents.registry import all_item_types, output_contract
+from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, output_contract
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
@@ -482,18 +482,49 @@ def _apply_table_status_marker(cells: list[str], node: dict[str, Any]) -> None:
         cells[0] = marker.strip()
 
 
-def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...]) -> str:
+def _is_auto_id(column: str, id_prefix: str) -> bool:
+    return bool(id_prefix) and column == "id"
+
+
+def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...], id_prefix: str = "") -> str:
     header = "| " + " | ".join(columns) + " |"
     separator = "| " + " | ".join("---" for _ in columns) + " |"
     rows = []
-    for node in nodes:
+    for index, node in enumerate(nodes, start=1):
         fields = node.get("fields") or {}
-        cells = [_markdown_cell(_field_value(fields, column)) for column in columns]
-        if not any(cells) and cells:
-            cells[0] = _markdown_cell(node.get("statement", ""))
+        cells = [
+            f"{id_prefix}-{index:02d}" if _is_auto_id(column, id_prefix) else _markdown_cell(_field_value(fields, column))
+            for column in columns
+        ]
+        content_indexes = [i for i, column in enumerate(columns) if not _is_auto_id(column, id_prefix)]
+        if content_indexes and not any(cells[i] for i in content_indexes):
+            # Node carries only a statement (no per-column fields): surface it in the first
+            # content column so the row is not all placeholders.
+            cells[content_indexes[0]] = _markdown_cell(node.get("statement", ""))
+        # A blank required cell makes the report non-rigorous; render a visible placeholder so the
+        # gap reads as "needs input", and so candidate_readiness can detect and block it.
+        cells = [cell or INCOMPLETE_CELL_PLACEHOLDER for cell in cells]
         _apply_table_status_marker(cells, node)
         rows.append("| " + " | ".join(cells) + " |")
     return "\n".join([header, separator, *rows])
+
+
+def _render_entries(nodes: list[DecisionNode], fields_order: tuple[str, ...], id_prefix: str) -> str:
+    """Project each node as an id-tagged sub-section: a "### <PREFIX>-NN: <title>" heading followed
+    by one labeled line per field. Used for items whose fields (e.g. a multi-step flow) do not fit a
+    table cell, while still carrying a stable trace tag.
+    """
+    blocks: list[str] = []
+    for index, node in enumerate(nodes, start=1):
+        fields = node.get("fields") or {}
+        marker = " ⚠️ needs confirmation" if node.get("status") == "needs_confirmation" else ""
+        title = _markdown_cell(node.get("statement", "")) or INCOMPLETE_CELL_PLACEHOLDER
+        lines = [f"### {id_prefix}-{index:02d}: {title}{marker}"]
+        for column in fields_order:
+            value = _markdown_cell(_field_value(fields, column)) or INCOMPLETE_CELL_PLACEHOLDER
+            lines.append(f"- **{column}:** {value}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:
@@ -509,8 +540,12 @@ def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type
         section_nodes = by_heading[heading]
         if not section_nodes:
             continue
-        if contract.table_columns and any(node.get("fields") for node in section_nodes):
-            body = _render_table(section_nodes, contract.table_columns)
+        if contract.id_prefix and contract.render_style == "entries":
+            body = _render_entries(section_nodes, contract.table_columns, contract.id_prefix)
+        elif contract.table_columns and (contract.id_prefix or any(node.get("fields") for node in section_nodes)):
+            # id-tagged contracts always render the table (even with no fields yet) so empty columns
+            # surface as placeholders the gate can block on, keeping the report rigorous.
+            body = _render_table(section_nodes, contract.table_columns, contract.id_prefix)
         else:
             body = "\n".join(_render_line(node) for node in section_nodes)
         blocks.append(f"{heading}\n{body}")
