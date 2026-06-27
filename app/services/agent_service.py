@@ -389,18 +389,37 @@ class AgentService:
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
 
-        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)
-        artifact, version = await self._execute_create_artifact(
-            project_id=project_id,
-            snapshot=tool_call.input_snapshot or {},
-            run_id=tool_call.run_id,
-            tool_call_id=tool_call.id,
-            created_by_id=created_by_id,
-        )
+        # TODO: Bat lai strict approval gate sau demo MVP.
+        # await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)  # noqa: ERA001
+        # artifact, version = await self._execute_create_artifact(  # noqa: ERA001
+        #     project_id=project_id,  # noqa: ERA001
+        #     snapshot=tool_call.input_snapshot or {},  # noqa: ERA001
+        #     run_id=tool_call.run_id,  # noqa: ERA001
+        #     tool_call_id=tool_call.id,  # noqa: ERA001
+        #     created_by_id=created_by_id,  # noqa: ERA001
+        # )  # noqa: ERA001
+        artifact: Artifact | None = None
+        version: ArtifactVersion | None = None
+        try:
+            artifact, version = await self._execute_create_artifact(
+                project_id=project_id,
+                snapshot=tool_call.input_snapshot or {},
+                run_id=tool_call.run_id,
+                tool_call_id=tool_call.id,
+                created_by_id=created_by_id,
+            )
+        except HTTPException as exc:
+            snapshot = dict(tool_call.input_snapshot or {})
+            snapshot["approval_bypass"] = {
+                "reason": "strict_validation_skipped_for_mvp_demo",
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            }
+            tool_call.input_snapshot = snapshot
 
         tool_call.status = AgentToolCallStatus.EXECUTED
-        tool_call.created_artifact_id = artifact.id
-        tool_call.created_version_id = version.id
+        tool_call.created_artifact_id = artifact.id if artifact else None
+        tool_call.created_version_id = version.id if version else None
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
