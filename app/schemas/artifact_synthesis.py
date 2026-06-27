@@ -87,28 +87,27 @@ def canonical_artifact_body(
         blocks.append("### Confirmed\n" + "\n".join(f"- {item}" for item in confirmed))
     if pending:
         blocks.append("### Needs Confirmation\n" + "\n".join(f"- {item} ⚠️ needs confirmation" for item in pending))
-    # Sentinel precedes the appended block so export can drop it precisely without touching a
-    # real "## Assumptions" content section (e.g. constraints_assumptions).
-    appendix = SYNTHESIS_ASSUMPTIONS_MARKER + "\n## Assumptions\n" + "\n\n".join(blocks)
+    # The appended block is structurally distinct — a "## Assumptions" section opening with a
+    # "### Confirmed" / "### Needs Confirmation" subsection — so export can drop it by structure
+    # without polluting the persisted body with a marker, and without touching a real
+    # "## Assumptions" content section (e.g. constraints_assumptions, which opens with a table).
+    appendix = "## Assumptions\n" + "\n\n".join(blocks)
     return "\n\n".join(part for part in (base, appendix) if part)
 
 
-# Marks the agent-tracking assumptions block appended by canonical_artifact_body. It belongs to the
-# artifact view (what still needs confirmation), not to a BRD/PRD deliverable, so exports strip it.
+# Retained only to strip the marker out of bodies persisted before it was dropped from the appendix.
 SYNTHESIS_ASSUMPTIONS_MARKER = "<!-- synthesis-assumptions -->"
 
 
 def strip_synthesis_assumptions(body: str) -> str:
     """Remove the synthesis assumptions appendix so an exported report omits internal tracking."""
-    text = str(body or "")
-    marker_at = text.find(SYNTHESIS_ASSUMPTIONS_MARKER)
-    if marker_at != -1:
-        return text[:marker_at].rstrip()
-    # Legacy artifacts (written before the sentinel): the appendix is the trailing "## Assumptions"
-    # section that opens with a "### Confirmed" / "### Needs Confirmation" subsection.
-    legacy = re.search(r"\n##\s+Assumptions\s*\n###\s+(?:Confirmed|Needs Confirmation)", text)
-    if legacy:
-        return text[: legacy.start()].rstrip()
+    text = str(body or "").replace(SYNTHESIS_ASSUMPTIONS_MARKER + "\n", "").replace(SYNTHESIS_ASSUMPTIONS_MARKER, "")
+    # The appendix is the trailing "## Assumptions" section opening with a "### Confirmed" /
+    # "### Needs Confirmation" subsection — matched by structure so a real content "## Assumptions"
+    # (followed by a table or prose) is left intact.
+    synthesis = re.search(r"\n##\s+Assumptions\s*\n###\s+(?:Confirmed|Needs Confirmation)", text)
+    if synthesis:
+        return text[: synthesis.start()].rstrip()
     return text
 
 

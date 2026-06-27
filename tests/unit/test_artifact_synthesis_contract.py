@@ -26,9 +26,10 @@ def _metadata_with_pending() -> ArtifactSynthesisMetadata:
     )
 
 
-def test_strip_removes_synthesis_block_written_with_marker():
+def test_canonical_body_does_not_leak_marker_and_strip_removes_synthesis_block():
     body = canonical_artifact_body(body="## Problem\nSlow.", synthesis_metadata=_metadata_with_pending())
     assert "## Assumptions" in body  # present at the artifact level
+    assert "<!-- synthesis-assumptions -->" not in body  # marker must not pollute the persisted body
 
     stripped = strip_synthesis_assumptions(body)
 
@@ -37,12 +38,21 @@ def test_strip_removes_synthesis_block_written_with_marker():
     assert "## Problem" in stripped
 
 
-def test_strip_removes_legacy_synthesis_block_without_marker():
-    legacy = "## Problem\nSlow.\n\n## Assumptions\n### Needs Confirmation\n- Target ⚠️ needs confirmation"
+def test_strip_removes_synthesis_block_by_structure():
+    body = "## Problem\nSlow.\n\n## Assumptions\n### Needs Confirmation\n- Target ⚠️ needs confirmation"
+
+    stripped = strip_synthesis_assumptions(body)
+
+    assert stripped == "## Problem\nSlow."
+
+
+def test_strip_cleans_leftover_marker_from_legacy_body():
+    legacy = "## Problem\nSlow.\n\n<!-- synthesis-assumptions -->\n## Assumptions\n### Confirmed\n- Done"
 
     stripped = strip_synthesis_assumptions(legacy)
 
     assert stripped == "## Problem\nSlow."
+    assert "<!-- synthesis-assumptions -->" not in stripped
 
 
 def test_strip_preserves_real_assumptions_content_heading():
