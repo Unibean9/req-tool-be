@@ -1,0 +1,314 @@
+{
+  "scenario": "stakeholder-propose-approve",
+  "summary": {
+    "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+    "artifact_type": "stakeholder",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 1,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "stakeholder"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "0b0829dc-b08b-4869-8745-1d69328f757c",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "user",
+            "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "53d4b1e2-7c5b-4dc5-a726-8f182a83a2d7",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Có, tạo đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "0b0829dc-b08b-4869-8745-1d69328f757c",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "user",
+            "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "53d4b1e2-7c5b-4dc5-a726-8f182a83a2d7",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "987ebcbd-e42a-40e2-b80b-7a2e6f0f09c8",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "8b1b91ec-c28a-43bc-9cb0-4183f597766e",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên"
+                  ]
+                }
+              ],
+              "run_id": "5a7cb7fe-f874-4083-be19-1cd038346409"
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "51d644ae-8963-4035-9f08-f3f98708c28d",
+            "run_id": "5a7cb7fe-f874-4083-be19-1cd038346409",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "stakeholder",
+              "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+              "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "51d644ae-8963-4035-9f08-f3f98708c28d",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "0b0829dc-b08b-4869-8745-1d69328f757c",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "user",
+            "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "53d4b1e2-7c5b-4dc5-a726-8f182a83a2d7",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "987ebcbd-e42a-40e2-b80b-7a2e6f0f09c8",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "8b1b91ec-c28a-43bc-9cb0-4183f597766e",
+            "session_id": "3811d2bc-aa3e-49d3-8d0f-d0f30a355347",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên"
+                  ]
+                }
+              ],
+              "run_id": "5a7cb7fe-f874-4083-be19-1cd038346409"
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "51d644ae-8963-4035-9f08-f3f98708c28d",
+            "run_id": "5a7cb7fe-f874-4083-be19-1cd038346409",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "stakeholder",
+              "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+              "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "ed69774c-d7c2-408e-8fb2-41c87e2b89bb",
+            "created_version_id": "bd9e7000-d092-4591-88e7-e1aab5c204e2",
+            "resolved_at": "2026-06-21T00:48:20.995853",
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "stakeholder",
+      "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+      "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}

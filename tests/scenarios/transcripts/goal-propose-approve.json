@@ -1,0 +1,314 @@
+{
+  "scenario": "goal-propose-approve",
+  "summary": {
+    "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+    "artifact_type": "goal",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 1,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "goal"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "0cc99451-060b-4d19-b9be-832c3e0a4c9c",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "user",
+            "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "a8ff52f5-4d2e-43a4-951e-e41d1dd6a2c8",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Có, tạo đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "0cc99451-060b-4d19-b9be-832c3e0a4c9c",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "user",
+            "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "a8ff52f5-4d2e-43a4-951e-e41d1dd6a2c8",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "a8cc74e8-3791-420e-897e-ca6d0f0540f5",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "cee9d9fd-9f23-46a5-8abd-d880832edb38",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia"
+                  ]
+                }
+              ],
+              "run_id": "63e3b545-ef4b-4926-8aba-8c9d54a792c3"
+            },
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "c016ed24-2564-4838-8f4e-f5911264f487",
+            "run_id": "63e3b545-ef4b-4926-8aba-8c9d54a792c3",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "goal",
+              "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+              "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          }
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "c016ed24-2564-4838-8f4e-f5911264f487",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "0cc99451-060b-4d19-b9be-832c3e0a4c9c",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "user",
+            "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "a8ff52f5-4d2e-43a4-951e-e41d1dd6a2c8",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "a8cc74e8-3791-420e-897e-ca6d0f0540f5",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          },
+          {
+            "id": "cee9d9fd-9f23-46a5-8abd-d880832edb38",
+            "session_id": "50fc79c5-84a9-45ca-bfa9-e733df0da8c5",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia"
+                  ]
+                }
+              ],
+              "run_id": "63e3b545-ef4b-4926-8aba-8c9d54a792c3"
+            },
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "c016ed24-2564-4838-8f4e-f5911264f487",
+            "run_id": "63e3b545-ef4b-4926-8aba-8c9d54a792c3",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "goal",
+              "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+              "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "6a2b65be-29e9-41cb-b728-f795e2d51c8f",
+            "created_version_id": "7e3cedde-48b8-4e12-9480-5d7e64810aa8",
+            "resolved_at": "2026-06-21T00:48:21.324714",
+            "created_at": "2026-06-21T00:48:21",
+            "updated_at": "2026-06-21T00:48:21"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "goal",
+      "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+      "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}

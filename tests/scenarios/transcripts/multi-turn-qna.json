@@ -1,0 +1,564 @@
+{
+  "scenario": "multi-turn-qna",
+  "summary": {
+    "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+    "artifact_type": "intent",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 3,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "intent"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "3796ac7a-b95d-4bd4-a032-96fa240f0af3",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "949f6c04-7db3-47f8-a872-bf265b01ef36",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Đối tượng người dùng chính của công cụ là ai?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "c98231ce-f606-49da-9cc6-3f3a71479b82"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Chủ yếu là sinh viên đại học học theo nhóm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "3796ac7a-b95d-4bd4-a032-96fa240f0af3",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "949f6c04-7db3-47f8-a872-bf265b01ef36",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Đối tượng người dùng chính của công cụ là ai?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "c98231ce-f606-49da-9cc6-3f3a71479b82"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e74bb84a-246b-47ba-a44f-5715d2e82ecb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Chủ yếu là sinh viên đại học học theo nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0c34cc2d-5d23-4784-87f8-d08492964a00",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Rõ rồi, là sinh viên. Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "fd29a7e2-69f6-4881-86e5-e2995721ba9d"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "send",
+        "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "3796ac7a-b95d-4bd4-a032-96fa240f0af3",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "949f6c04-7db3-47f8-a872-bf265b01ef36",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Đối tượng người dùng chính của công cụ là ai?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "c98231ce-f606-49da-9cc6-3f3a71479b82"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e74bb84a-246b-47ba-a44f-5715d2e82ecb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Chủ yếu là sinh viên đại học học theo nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0c34cc2d-5d23-4784-87f8-d08492964a00",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Rõ rồi, là sinh viên. Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "fd29a7e2-69f6-4881-86e5-e2995721ba9d"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "2b05fa65-38e3-4652-baab-dad8b823c089",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "db60dd2e-d95f-4a0e-b699-7d702b1e77bc",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 5,
+      "action": {
+        "type": "send",
+        "content": "Ok, tạo intent đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "3796ac7a-b95d-4bd4-a032-96fa240f0af3",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "949f6c04-7db3-47f8-a872-bf265b01ef36",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Đối tượng người dùng chính của công cụ là ai?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "c98231ce-f606-49da-9cc6-3f3a71479b82"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e74bb84a-246b-47ba-a44f-5715d2e82ecb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Chủ yếu là sinh viên đại học học theo nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0c34cc2d-5d23-4784-87f8-d08492964a00",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Rõ rồi, là sinh viên. Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "fd29a7e2-69f6-4881-86e5-e2995721ba9d"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "2b05fa65-38e3-4652-baab-dad8b823c089",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "db60dd2e-d95f-4a0e-b699-7d702b1e77bc",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "92d802da-a46f-4be8-a88f-03ca4419a290",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Ok, tạo intent đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "d0f23bda-5f6e-4eb8-996d-98d28d698bdb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Điều phối lịch học nhóm cho sinh viên",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Điều phối lịch học nhóm cho sinh viên"
+                  ]
+                }
+              ],
+              "run_id": "699a7d64-c301-4ac7-bade-02c794bb4a3e"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "2578dc1a-f9cd-4fd9-9e1e-42293e8467dc",
+            "run_id": "699a7d64-c301-4ac7-bade-02c794bb4a3e",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Điều phối lịch học nhóm cho sinh viên",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ]
+      }
+    },
+    {
+      "step": 6,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "2578dc1a-f9cd-4fd9-9e1e-42293e8467dc",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "3796ac7a-b95d-4bd4-a032-96fa240f0af3",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Tôi có một ý tưởng sản phẩm nhưng chưa rõ ràng lắm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "949f6c04-7db3-47f8-a872-bf265b01ef36",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Đối tượng người dùng chính của công cụ là ai?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "c98231ce-f606-49da-9cc6-3f3a71479b82"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e74bb84a-246b-47ba-a44f-5715d2e82ecb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Chủ yếu là sinh viên đại học học theo nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0c34cc2d-5d23-4784-87f8-d08492964a00",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Rõ rồi, là sinh viên. Vấn đề lớn nhất họ đang gặp khi điều phối lịch là gì?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "fd29a7e2-69f6-4881-86e5-e2995721ba9d"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "2b05fa65-38e3-4652-baab-dad8b823c089",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Họ bị trùng lịch và hay bỏ buổi học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "db60dd2e-d95f-4a0e-b699-7d702b1e77bc",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "92d802da-a46f-4be8-a88f-03ca4419a290",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "user",
+            "content": "Ok, tạo intent đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "d0f23bda-5f6e-4eb8-996d-98d28d698bdb",
+            "session_id": "68023bda-d2ee-4263-bcb4-0632f7881f78",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Điều phối lịch học nhóm cho sinh viên",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Điều phối lịch học nhóm cho sinh viên"
+                  ]
+                }
+              ],
+              "run_id": "699a7d64-c301-4ac7-bade-02c794bb4a3e"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "2578dc1a-f9cd-4fd9-9e1e-42293e8467dc",
+            "run_id": "699a7d64-c301-4ac7-bade-02c794bb4a3e",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Điều phối lịch học nhóm cho sinh viên",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "64e53199-8ff6-4717-b2a3-d5f28a7a2878",
+            "created_version_id": "4b23590b-eff3-4f98-920f-61dca790152e",
+            "resolved_at": "2026-06-21T00:48:19.658858",
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "intent",
+      "title": "Intent: Điều phối lịch học nhóm cho sinh viên",
+      "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}

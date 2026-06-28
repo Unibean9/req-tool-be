@@ -1,0 +1,314 @@
+{
+  "scenario": "intent-propose-approve",
+  "summary": {
+    "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+    "artifact_type": "intent",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 1,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "intent"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "3464e936-46f4-4be6-9623-85d0092b0c22",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "user",
+            "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "29e2f105-10af-4b32-8215-c4273e1df8dd",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Có, tạo đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "3464e936-46f4-4be6-9623-85d0092b0c22",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "user",
+            "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "29e2f105-10af-4b32-8215-c4273e1df8dd",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "70e68303-cdb8-4892-a3f3-6d5c71efeb47",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "54a157cf-3f7d-4038-b869-c21d00f8a989",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Công cụ điều phối lịch học nhóm",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Công cụ điều phối lịch học nhóm"
+                  ]
+                }
+              ],
+              "run_id": "d5e51453-9061-42b4-a4bf-471fa13526fe"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "246eb75a-573b-4307-a24e-272d36e3741c",
+            "run_id": "d5e51453-9061-42b4-a4bf-471fa13526fe",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Công cụ điều phối lịch học nhóm",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "246eb75a-573b-4307-a24e-272d36e3741c",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "3464e936-46f4-4be6-9623-85d0092b0c22",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "user",
+            "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "29e2f105-10af-4b32-8215-c4273e1df8dd",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "70e68303-cdb8-4892-a3f3-6d5c71efeb47",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "54a157cf-3f7d-4038-b869-c21d00f8a989",
+            "session_id": "0a200c79-9b7b-4bc2-86ad-d1eaacd05dda",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Công cụ điều phối lịch học nhóm",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Công cụ điều phối lịch học nhóm"
+                  ]
+                }
+              ],
+              "run_id": "d5e51453-9061-42b4-a4bf-471fa13526fe"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "246eb75a-573b-4307-a24e-272d36e3741c",
+            "run_id": "d5e51453-9061-42b4-a4bf-471fa13526fe",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Công cụ điều phối lịch học nhóm",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "c03f52e6-34b8-4f2c-bb49-7269254acb89",
+            "created_version_id": "e646d609-f4a9-496f-b046-94e9a943b2e4",
+            "resolved_at": "2026-06-21T00:48:19.291180",
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "intent",
+      "title": "Intent: Công cụ điều phối lịch học nhóm",
+      "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}

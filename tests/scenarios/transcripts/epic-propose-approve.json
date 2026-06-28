@@ -1,0 +1,314 @@
+{
+  "scenario": "epic-propose-approve",
+  "summary": {
+    "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+    "artifact_type": "epic",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 1,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "epic"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "75f16272-310a-447f-a05b-47b60e266e51",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "user",
+            "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "8cf03106-0ec3-4c13-ba5a-839d9ae3df18",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Có, tạo đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "75f16272-310a-447f-a05b-47b60e266e51",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "user",
+            "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "8cf03106-0ec3-4c13-ba5a-839d9ae3df18",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "8bee5382-dc93-43fd-82f4-9f48ef26dfe8",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "7cfc67bf-86a5-48ad-959e-d5d6f868aa1e",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Epic: Đồng bộ và đối chiếu lịch nhóm",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Epic: Đồng bộ và đối chiếu lịch nhóm"
+                  ]
+                }
+              ],
+              "run_id": "33cc932a-b0bd-4919-9cf6-8fdfcc7d0535"
+            },
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "6a480a67-b679-4e72-aa0f-15b6ade691b3",
+            "run_id": "33cc932a-b0bd-4919-9cf6-8fdfcc7d0535",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "epic",
+              "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+              "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          }
+        ]
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "6a480a67-b679-4e72-aa0f-15b6ade691b3",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "75f16272-310a-447f-a05b-47b60e266e51",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "user",
+            "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "8cf03106-0ec3-4c13-ba5a-839d9ae3df18",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "8bee5382-dc93-43fd-82f4-9f48ef26dfe8",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "user",
+            "content": "Có, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          },
+          {
+            "id": "7cfc67bf-86a5-48ad-959e-d5d6f868aa1e",
+            "session_id": "2ffc9690-746a-491f-9508-e923fa4db0cf",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Epic: Đồng bộ và đối chiếu lịch nhóm",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Epic: Đồng bộ và đối chiếu lịch nhóm"
+                  ]
+                }
+              ],
+              "run_id": "33cc932a-b0bd-4919-9cf6-8fdfcc7d0535"
+            },
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "6a480a67-b679-4e72-aa0f-15b6ade691b3",
+            "run_id": "33cc932a-b0bd-4919-9cf6-8fdfcc7d0535",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "epic",
+              "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+              "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "3212ecdc-31bc-466c-a4fb-24f35e95b134",
+            "created_version_id": "bbda54d5-e5dd-4279-9134-dfa7f713fee7",
+            "resolved_at": "2026-06-21T00:48:22.285295",
+            "created_at": "2026-06-21T00:48:22",
+            "updated_at": "2026-06-21T00:48:22"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "epic",
+      "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+      "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}
