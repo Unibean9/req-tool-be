@@ -1,0 +1,539 @@
+{
+  "scenario": "reject-then-explore",
+  "summary": {
+    "session_id": "fd186397-8d02-4433-b518-32210f034124",
+    "artifact_type": "intent",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 3,
+    "artifacts_produced": 1,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "intent"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "c960e142-90aa-4d80-900b-6e27faaf2299",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e152eb32-d012-4f83-9470-9df88a641a6a",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Chưa, tôi muốn khám phá thêm đã.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "c960e142-90aa-4d80-900b-6e27faaf2299",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e152eb32-d012-4f83-9470-9df88a641a6a",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "5b150589-dbb0-4433-9837-7fc06794fbeb",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Chưa, tôi muốn khám phá thêm đã.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "72ca8ba1-8e8d-4d5d-9b97-0f2e7b088b82",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "b223ce50-1390-4874-be35-f024ae1e57c9"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "send",
+        "content": "Hãy làm rõ phạm vi MVP giúp tôi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "ask_human"
+        },
+        "messages": [
+          {
+            "id": "c960e142-90aa-4d80-900b-6e27faaf2299",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e152eb32-d012-4f83-9470-9df88a641a6a",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "5b150589-dbb0-4433-9837-7fc06794fbeb",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Chưa, tôi muốn khám phá thêm đã.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "72ca8ba1-8e8d-4d5d-9b97-0f2e7b088b82",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "b223ce50-1390-4874-be35-f024ae1e57c9"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "3c536774-5147-4ab4-bb2c-d01d72ff67fc",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Hãy làm rõ phạm vi MVP giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          }
+        ],
+        "tool_calls": []
+      }
+    },
+    {
+      "step": 5,
+      "action": {
+        "type": "send",
+        "content": "Được rồi, tạo đi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "c960e142-90aa-4d80-900b-6e27faaf2299",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e152eb32-d012-4f83-9470-9df88a641a6a",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "5b150589-dbb0-4433-9837-7fc06794fbeb",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Chưa, tôi muốn khám phá thêm đã.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "72ca8ba1-8e8d-4d5d-9b97-0f2e7b088b82",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "b223ce50-1390-4874-be35-f024ae1e57c9"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "3c536774-5147-4ab4-bb2c-d01d72ff67fc",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Hãy làm rõ phạm vi MVP giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0fdf73bc-e250-4693-8312-f526e0bdf27b",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Được rồi, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "1e34cef7-3b0f-4c0b-8e00-f2ebe7b98d12",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)"
+                  ]
+                }
+              ],
+              "run_id": "91cb4590-9425-4a8b-b8fa-65166c6af74a"
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "6f45257e-39f2-49db-8dca-83c042409cb8",
+            "run_id": "91cb4590-9425-4a8b-b8fa-65166c6af74a",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ]
+      }
+    },
+    {
+      "step": 6,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "6f45257e-39f2-49db-8dca-83c042409cb8",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "c960e142-90aa-4d80-900b-6e27faaf2299",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Tôi muốn tạo intent cho sản phẩm điều phối lịch học nhóm.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "e152eb32-d012-4f83-9470-9df88a641a6a",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+            "payload": {
+              "kind": "confirm",
+              "locale": "vi",
+              "options": [
+                {
+                  "id": "create",
+                  "label": "Tạo artifact",
+                  "value": "create"
+                },
+                {
+                  "id": "explore",
+                  "label": "Khám phá thêm",
+                  "value": "explore"
+                }
+              ],
+              "blocks": []
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "5b150589-dbb0-4433-9837-7fc06794fbeb",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Chưa, tôi muốn khám phá thêm đã.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "72ca8ba1-8e8d-4d5d-9b97-0f2e7b088b82",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Bạn muốn khám phá thêm khía cạnh nào — đối tượng, phạm vi hay giá trị mang lại?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "b223ce50-1390-4874-be35-f024ae1e57c9"
+            },
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "3c536774-5147-4ab4-bb2c-d01d72ff67fc",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Hãy làm rõ phạm vi MVP giúp tôi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:19",
+            "updated_at": "2026-06-21T00:48:19"
+          },
+          {
+            "id": "0fdf73bc-e250-4693-8312-f526e0bdf27b",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "user",
+            "content": "Được rồi, tạo đi.",
+            "payload": null,
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          },
+          {
+            "id": "1e34cef7-3b0f-4c0b-8e00-f2ebe7b98d12",
+            "session_id": "fd186397-8d02-4433-b518-32210f034124",
+            "role": "agent",
+            "content": "Tôi đề xuất các artifact sau\n- Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+            "payload": {
+              "kind": "proposal",
+              "locale": "vi",
+              "options": [],
+              "blocks": [
+                {
+                  "type": "heading",
+                  "text": "Tôi đề xuất các artifact sau"
+                },
+                {
+                  "type": "list",
+                  "items": [
+                    "Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)"
+                  ]
+                }
+              ],
+              "run_id": "91cb4590-9425-4a8b-b8fa-65166c6af74a"
+            },
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "6f45257e-39f2-49db-8dca-83c042409cb8",
+            "run_id": "91cb4590-9425-4a8b-b8fa-65166c6af74a",
+            "tool_name": "create_artifact",
+            "input_snapshot": {
+              "artifact_type": "intent",
+              "title": "Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+              "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+              "rationale": ""
+            },
+            "status": "executed",
+            "created_artifact_id": "c1da9932-a6d2-4487-a29c-6009500ed0dd",
+            "created_version_id": "19f958da-3360-428a-9dba-88f7c7dcb96f",
+            "resolved_at": "2026-06-21T00:48:20.039105",
+            "created_at": "2026-06-21T00:48:20",
+            "updated_at": "2026-06-21T00:48:20"
+          }
+        ]
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "intent",
+      "title": "Intent: Điều phối lịch học nhóm (đã làm rõ phạm vi)",
+      "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}

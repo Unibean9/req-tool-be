@@ -1,0 +1,2502 @@
+{
+  "scenario": "document-brd-prd",
+  "summary": {
+    "document": "BRD/PRD",
+    "artifact_types": [
+      "epic",
+      "functional_requirement",
+      "goal",
+      "intent",
+      "non_functional_requirement",
+      "problem",
+      "stakeholder",
+      "story"
+    ],
+    "artifacts_total": 8,
+    "mean_overall": 0.82
+  },
+  "steps": [
+    {
+      "session": "intent-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "intent"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "7637f78e-a1cb-44ff-90b8-b2e3fde58e5d",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "user",
+                "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "c060d840-77cb-4c07-8e23-fd906fcf0b61",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "7637f78e-a1cb-44ff-90b8-b2e3fde58e5d",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "user",
+                "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "c060d840-77cb-4c07-8e23-fd906fcf0b61",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "c9211159-53ce-4cf7-8037-4e6e2caf6954",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "bfcccfad-4016-4287-a316-369aeb8f6bb6",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Intent: Công cụ điều phối lịch học nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Intent: Công cụ điều phối lịch học nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "b37db139-3227-44cf-ad4e-2e68bf373958"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "26ff7bc1-343c-4490-bf95-4715a0ef8b5a",
+                "run_id": "b37db139-3227-44cf-ad4e-2e68bf373958",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "intent",
+                  "title": "Intent: Công cụ điều phối lịch học nhóm",
+                  "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "26ff7bc1-343c-4490-bf95-4715a0ef8b5a",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "7637f78e-a1cb-44ff-90b8-b2e3fde58e5d",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "user",
+                "content": "Tôi muốn xây một công cụ giúp sinh viên điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "c060d840-77cb-4c07-8e23-fd906fcf0b61",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **intent**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "c9211159-53ce-4cf7-8037-4e6e2caf6954",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "bfcccfad-4016-4287-a316-369aeb8f6bb6",
+                "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Intent: Công cụ điều phối lịch học nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Intent: Công cụ điều phối lịch học nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "b37db139-3227-44cf-ad4e-2e68bf373958"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "26ff7bc1-343c-4490-bf95-4715a0ef8b5a",
+                "run_id": "b37db139-3227-44cf-ad4e-2e68bf373958",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "intent",
+                  "title": "Intent: Công cụ điều phối lịch học nhóm",
+                  "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "12c0c7df-c8b5-46c3-a77d-6b0de8d11584",
+                "created_version_id": "e034ca5c-44bc-4c29-84eb-36af2edd61ea",
+                "resolved_at": "2026-06-21T00:48:18.375674",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "4b3e0d7b-18dd-445f-a9d8-fbcf3f94384a",
+        "artifact_type": "intent",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "problem-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "problem"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "54a806bb-c8ae-4df0-a4e9-16a3493db447",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "user",
+                "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "dec46466-8d00-49f3-86a7-767d8c8a03e7",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **problem**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "54a806bb-c8ae-4df0-a4e9-16a3493db447",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "user",
+                "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "dec46466-8d00-49f3-86a7-767d8c8a03e7",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **problem**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5023eaa8-1d5a-46d7-a265-0715f82b0fdb",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "1cadc38e-8721-42d1-a3f8-3e93383ef31f",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Vấn đề: Điều phối lịch học nhóm thủ công",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Vấn đề: Điều phối lịch học nhóm thủ công"
+                      ]
+                    }
+                  ],
+                  "run_id": "4f9d33df-7990-427e-83c5-2ca127794dd6"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "3ee4fa84-6e32-403d-9d48-1fc6f06c62e4",
+                "run_id": "4f9d33df-7990-427e-83c5-2ca127794dd6",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "problem",
+                  "title": "Vấn đề: Điều phối lịch học nhóm thủ công",
+                  "body": "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi. Tần suất: mỗi tuần mỗi nhóm mất ~30 phút điều phối. Tác động: tỉ lệ tham gia buổi nhóm dưới 60%.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "3ee4fa84-6e32-403d-9d48-1fc6f06c62e4",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "54a806bb-c8ae-4df0-a4e9-16a3493db447",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "user",
+                "content": "Vấn đề là sinh viên sắp lịch học nhóm thủ công nên hay trùng lịch.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "dec46466-8d00-49f3-86a7-767d8c8a03e7",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **problem**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5023eaa8-1d5a-46d7-a265-0715f82b0fdb",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "1cadc38e-8721-42d1-a3f8-3e93383ef31f",
+                "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Vấn đề: Điều phối lịch học nhóm thủ công",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Vấn đề: Điều phối lịch học nhóm thủ công"
+                      ]
+                    }
+                  ],
+                  "run_id": "4f9d33df-7990-427e-83c5-2ca127794dd6"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "3ee4fa84-6e32-403d-9d48-1fc6f06c62e4",
+                "run_id": "4f9d33df-7990-427e-83c5-2ca127794dd6",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "problem",
+                  "title": "Vấn đề: Điều phối lịch học nhóm thủ công",
+                  "body": "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi. Tần suất: mỗi tuần mỗi nhóm mất ~30 phút điều phối. Tác động: tỉ lệ tham gia buổi nhóm dưới 60%.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "452cba41-1554-4f37-a34c-5ecdd894f932",
+                "created_version_id": "1ff78e32-ffd4-4a03-9b2b-af09ff11f1ce",
+                "resolved_at": "2026-06-21T00:48:18.464558",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "15772868-bc85-4461-a2b7-8cddc93789c8",
+        "artifact_type": "problem",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "stakeholder-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "stakeholder"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "df453203-6116-45ec-aed7-7cbfc127e8bb",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "user",
+                "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "a99bef0c-8774-479f-a424-90c848531f8c",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "df453203-6116-45ec-aed7-7cbfc127e8bb",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "user",
+                "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "a99bef0c-8774-479f-a424-90c848531f8c",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "b4d4acb9-3b7b-447f-abb4-96f07627f345",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "cb0c707c-7ce9-44a3-816a-a39a9a960700",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên"
+                      ]
+                    }
+                  ],
+                  "run_id": "f451a58c-dc73-4015-8e53-51f7f177cff8"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "3c757ed6-1451-47dc-ba8f-5b74b3df8050",
+                "run_id": "f451a58c-dc73-4015-8e53-51f7f177cff8",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "stakeholder",
+                  "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+                  "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "3c757ed6-1451-47dc-ba8f-5b74b3df8050",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "df453203-6116-45ec-aed7-7cbfc127e8bb",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "user",
+                "content": "Liệt kê các bên liên quan cho công cụ điều phối lịch học nhóm giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "a99bef0c-8774-479f-a424-90c848531f8c",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **stakeholder**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "b4d4acb9-3b7b-447f-abb4-96f07627f345",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "cb0c707c-7ce9-44a3-816a-a39a9a960700",
+                "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên"
+                      ]
+                    }
+                  ],
+                  "run_id": "f451a58c-dc73-4015-8e53-51f7f177cff8"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "3c757ed6-1451-47dc-ba8f-5b74b3df8050",
+                "run_id": "f451a58c-dc73-4015-8e53-51f7f177cff8",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "stakeholder",
+                  "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+                  "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "61929079-42bf-4506-bcb1-2d13ef1673f7",
+                "created_version_id": "d779bc37-def1-49a7-a5de-604c6fa50973",
+                "resolved_at": "2026-06-21T00:48:18.548241",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "7b7cf1d4-8957-4380-8bd1-77f201a46d7b",
+        "artifact_type": "stakeholder",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "goal-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "goal"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "d17dff12-3960-44e2-b126-ba2381192d6a",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "user",
+                "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "ad03207f-5379-42a7-ac92-7810ffbff1f5",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "d17dff12-3960-44e2-b126-ba2381192d6a",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "user",
+                "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "ad03207f-5379-42a7-ac92-7810ffbff1f5",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "eba5b50d-b87d-4eef-8a66-de21daf7164c",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "f367a214-390a-4e18-aa57-66ea25959403",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia"
+                      ]
+                    }
+                  ],
+                  "run_id": "213e63c9-2b26-445c-94c6-170e134b88c7"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "11d1e3aa-03b9-4682-976a-233a6d9936fe",
+                "run_id": "213e63c9-2b26-445c-94c6-170e134b88c7",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "goal",
+                  "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+                  "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "11d1e3aa-03b9-4682-976a-233a6d9936fe",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "d17dff12-3960-44e2-b126-ba2381192d6a",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "user",
+                "content": "Đặt mục tiêu đo lường được cho sản phẩm điều phối lịch học nhóm.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "ad03207f-5379-42a7-ac92-7810ffbff1f5",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **goal**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "eba5b50d-b87d-4eef-8a66-de21daf7164c",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "f367a214-390a-4e18-aa57-66ea25959403",
+                "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia"
+                      ]
+                    }
+                  ],
+                  "run_id": "213e63c9-2b26-445c-94c6-170e134b88c7"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "11d1e3aa-03b9-4682-976a-233a6d9936fe",
+                "run_id": "213e63c9-2b26-445c-94c6-170e134b88c7",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "goal",
+                  "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+                  "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "a136ba9c-28da-4b07-b262-ee3b375ce5b4",
+                "created_version_id": "c639e9bf-9cfa-4a57-9c62-2e7573f983d2",
+                "resolved_at": "2026-06-21T00:48:18.631620",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "58132f15-45dc-4637-bc01-4db9d0a441c2",
+        "artifact_type": "goal",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "functional-requirement-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "functional_requirement"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Viết yêu cầu chức năng cho tính năng tìm khung giờ rảnh chung.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "4f66d92a-164c-4628-a0ba-c11286c4ffba",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "user",
+                "content": "Viết yêu cầu chức năng cho tính năng tìm khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "3e1b9c66-2002-4594-ac1c-ebdc8766f2f2",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "4f66d92a-164c-4628-a0ba-c11286c4ffba",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "user",
+                "content": "Viết yêu cầu chức năng cho tính năng tìm khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "3e1b9c66-2002-4594-ac1c-ebdc8766f2f2",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "bf16364c-dc53-4b42-a363-126d521587b4",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "fb93aa10-ef68-4c66-9c65-2f4c9f86ff15",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "61a0169a-3d39-4eb8-953a-944cc9ecd046"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "f7914bef-4050-4593-b369-6f8dd129af44",
+                "run_id": "61a0169a-3d39-4eb8-953a-944cc9ecd046",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "functional_requirement",
+                  "title": "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+                  "body": "Hệ thống phải cho phép thành viên kết nối lịch cá nhân (Google Calendar) và trích xuất các khung giờ bận. Khi trưởng nhóm yêu cầu, hệ thống tính giao của các khung rảnh và trả về danh sách khung giờ chung kèm số thành viên rảnh tương ứng. Kết quả cập nhật lại trong vòng 5 giây sau khi có thay đổi lịch.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "f7914bef-4050-4593-b369-6f8dd129af44",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "4f66d92a-164c-4628-a0ba-c11286c4ffba",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "user",
+                "content": "Viết yêu cầu chức năng cho tính năng tìm khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "3e1b9c66-2002-4594-ac1c-ebdc8766f2f2",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "bf16364c-dc53-4b42-a363-126d521587b4",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "fb93aa10-ef68-4c66-9c65-2f4c9f86ff15",
+                "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "61a0169a-3d39-4eb8-953a-944cc9ecd046"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "f7914bef-4050-4593-b369-6f8dd129af44",
+                "run_id": "61a0169a-3d39-4eb8-953a-944cc9ecd046",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "functional_requirement",
+                  "title": "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+                  "body": "Hệ thống phải cho phép thành viên kết nối lịch cá nhân (Google Calendar) và trích xuất các khung giờ bận. Khi trưởng nhóm yêu cầu, hệ thống tính giao của các khung rảnh và trả về danh sách khung giờ chung kèm số thành viên rảnh tương ứng. Kết quả cập nhật lại trong vòng 5 giây sau khi có thay đổi lịch.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "86d15697-422f-4c5c-9190-0b5a2d17dda0",
+                "created_version_id": "1a93f875-531d-4bc5-8c89-96eac184b560",
+                "resolved_at": "2026-06-21T00:48:18.721055",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "47d1b3a2-1604-4e48-ad2e-e62db935302c",
+        "artifact_type": "functional_requirement",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "non-functional-requirement-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "non_functional_requirement"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Nêu các yêu cầu phi chức năng về hiệu năng và bảo mật cho hệ thống.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "f5464425-d0df-480e-80c8-3adf7f861f31",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "user",
+                "content": "Nêu các yêu cầu phi chức năng về hiệu năng và bảo mật cho hệ thống.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5fbb9dd8-c9d0-4a12-8021-2f5286b9d4c0",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **non_functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "f5464425-d0df-480e-80c8-3adf7f861f31",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "user",
+                "content": "Nêu các yêu cầu phi chức năng về hiệu năng và bảo mật cho hệ thống.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5fbb9dd8-c9d0-4a12-8021-2f5286b9d4c0",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **non_functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "66be2a26-5bd8-4c57-9ff3-53e0ed5ec47e",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "6e5eb061-4991-4370-9495-8a949798626d",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "ee0da550-3b3d-43aa-8522-ad32db7a769c"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "8137ec4d-c98a-4599-8a3d-c8781807e976",
+                "run_id": "ee0da550-3b3d-43aa-8522-ad32db7a769c",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "non_functional_requirement",
+                  "title": "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+                  "body": "Thời gian phản hồi khi tính khung giờ chung cho nhóm tối đa 8 thành viên phải dưới 2 giây ở phân vị 95. Hệ thống phục vụ đồng thời 500 nhóm hoạt động mà không vượt 70% CPU. Dữ liệu lịch cá nhân được mã hoá khi lưu và chỉ trưởng nhóm xem được bản tổng hợp.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "8137ec4d-c98a-4599-8a3d-c8781807e976",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "f5464425-d0df-480e-80c8-3adf7f861f31",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "user",
+                "content": "Nêu các yêu cầu phi chức năng về hiệu năng và bảo mật cho hệ thống.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5fbb9dd8-c9d0-4a12-8021-2f5286b9d4c0",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **non_functional_requirement**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "66be2a26-5bd8-4c57-9ff3-53e0ed5ec47e",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "6e5eb061-4991-4370-9495-8a949798626d",
+                "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "ee0da550-3b3d-43aa-8522-ad32db7a769c"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "8137ec4d-c98a-4599-8a3d-c8781807e976",
+                "run_id": "ee0da550-3b3d-43aa-8522-ad32db7a769c",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "non_functional_requirement",
+                  "title": "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+                  "body": "Thời gian phản hồi khi tính khung giờ chung cho nhóm tối đa 8 thành viên phải dưới 2 giây ở phân vị 95. Hệ thống phục vụ đồng thời 500 nhóm hoạt động mà không vượt 70% CPU. Dữ liệu lịch cá nhân được mã hoá khi lưu và chỉ trưởng nhóm xem được bản tổng hợp.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "ff8dc54f-5f74-4528-a9e9-deef8520526c",
+                "created_version_id": "49f2d4a3-4cf3-4a40-86e9-5259f19ab97b",
+                "resolved_at": "2026-06-21T00:48:18.805209",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "873c7c96-511e-4c3b-9ee3-5104f34836bd",
+        "artifact_type": "non_functional_requirement",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "epic-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "epic"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "3f1304ba-9adb-4d1c-8586-ea58b27f265d",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "user",
+                "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5531d6ed-e8dd-4d27-8380-735100c97067",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "3f1304ba-9adb-4d1c-8586-ea58b27f265d",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "user",
+                "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5531d6ed-e8dd-4d27-8380-735100c97067",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "28172685-f135-435c-95c8-e651b27457aa",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "f59c95c7-bf70-4cbb-84f4-7e9d4d59b474",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Epic: Đồng bộ và đối chiếu lịch nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Epic: Đồng bộ và đối chiếu lịch nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "5c41705c-ea75-4e13-a110-a7173c93039d"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "91a91f4a-f72c-4326-ba66-ec2b4f463799",
+                "run_id": "5c41705c-ea75-4e13-a110-a7173c93039d",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "epic",
+                  "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+                  "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "91a91f4a-f72c-4326-ba66-ec2b4f463799",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "3f1304ba-9adb-4d1c-8586-ea58b27f265d",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "user",
+                "content": "Gom các tính năng lịch nhóm thành một epic giúp tôi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "5531d6ed-e8dd-4d27-8380-735100c97067",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **epic**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "28172685-f135-435c-95c8-e651b27457aa",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "f59c95c7-bf70-4cbb-84f4-7e9d4d59b474",
+                "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Epic: Đồng bộ và đối chiếu lịch nhóm",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Epic: Đồng bộ và đối chiếu lịch nhóm"
+                      ]
+                    }
+                  ],
+                  "run_id": "5c41705c-ea75-4e13-a110-a7173c93039d"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "91a91f4a-f72c-4326-ba66-ec2b4f463799",
+                "run_id": "5c41705c-ea75-4e13-a110-a7173c93039d",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "epic",
+                  "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+                  "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "c102c209-2ad6-4150-8bdb-6731c900fe9a",
+                "created_version_id": "a02a1db3-06cf-4e21-a97b-ad9b1b0a5e25",
+                "resolved_at": "2026-06-21T00:48:18.886187",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "638d629e-8264-4f94-a3f4-9807f3ddc82e",
+        "artifact_type": "epic",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    },
+    {
+      "session": "story-propose-approve",
+      "steps": [
+        {
+          "step": 1,
+          "action": {
+            "type": "create_session",
+            "artifact_type": "story"
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": null
+            },
+            "messages": [],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 2,
+          "action": {
+            "type": "send",
+            "content": "Viết user story cho việc trưởng nhóm xem khung giờ rảnh chung.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "ask_human"
+            },
+            "messages": [
+              {
+                "id": "53a8f73e-279b-451c-9899-47d883cfe71e",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "user",
+                "content": "Viết user story cho việc trưởng nhóm xem khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "6b2dc761-3301-47db-8b64-708c27c7bb7a",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **story**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": []
+          }
+        },
+        {
+          "step": 3,
+          "action": {
+            "type": "send",
+            "content": "Có, tạo đi.",
+            "http_status": 200
+          },
+          "snapshot": {
+            "session": {
+              "status": "waiting_for_human",
+              "interrupt_type": "propose_artifacts"
+            },
+            "messages": [
+              {
+                "id": "53a8f73e-279b-451c-9899-47d883cfe71e",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "user",
+                "content": "Viết user story cho việc trưởng nhóm xem khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "6b2dc761-3301-47db-8b64-708c27c7bb7a",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **story**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "64c7687d-4a68-48b0-928b-222248d05ff1",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "97209c4f-0c5f-488e-9f97-b4b6e858f649",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Story: trưởng nhóm xem khung giờ rảnh chung",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Story: trưởng nhóm xem khung giờ rảnh chung"
+                      ]
+                    }
+                  ],
+                  "run_id": "f088b2e9-37d5-4943-8d3a-29abba6943b9"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "0acb501f-4061-4a82-a7e0-85819625b242",
+                "run_id": "f088b2e9-37d5-4943-8d3a-29abba6943b9",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "story",
+                  "title": "Story: trưởng nhóm xem khung giờ rảnh chung",
+                  "body": "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học mà không phải hỏi từng người.\nTiêu chí chấp nhận (acceptance):\n- Khi tất cả thành viên đã đồng bộ lịch, thì hệ thống hiển thị tối thiểu 3 khung giờ trùng rảnh trong tuần.\n- Khi không có khung giờ chung, thì hệ thống gợi ý khung gần nhất kèm số thành viên vắng.",
+                  "rationale": ""
+                },
+                "status": "proposed",
+                "created_artifact_id": null,
+                "created_version_id": null,
+                "resolved_at": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        },
+        {
+          "step": 4,
+          "action": {
+            "type": "approve_all",
+            "resolved": [
+              {
+                "tool_call_id": "0acb501f-4061-4a82-a7e0-85819625b242",
+                "decision": "approve",
+                "http_status": 200
+              }
+            ]
+          },
+          "snapshot": {
+            "session": {
+              "status": "completed",
+              "interrupt_type": null
+            },
+            "messages": [
+              {
+                "id": "53a8f73e-279b-451c-9899-47d883cfe71e",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "user",
+                "content": "Viết user story cho việc trưởng nhóm xem khung giờ rảnh chung.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "6b2dc761-3301-47db-8b64-708c27c7bb7a",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "agent",
+                "content": "Tôi đã có đủ thông tin để tạo **story**. Bạn có muốn tôi tiến hành tạo không?\n\nNếu chưa, hãy cho tôi biết góc độ nào bạn muốn khám phá thêm.",
+                "payload": {
+                  "kind": "confirm",
+                  "locale": "vi",
+                  "options": [
+                    {
+                      "id": "create",
+                      "label": "Tạo artifact",
+                      "value": "create"
+                    },
+                    {
+                      "id": "explore",
+                      "label": "Khám phá thêm",
+                      "value": "explore"
+                    }
+                  ],
+                  "blocks": []
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "64c7687d-4a68-48b0-928b-222248d05ff1",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "user",
+                "content": "Có, tạo đi.",
+                "payload": null,
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              },
+              {
+                "id": "97209c4f-0c5f-488e-9f97-b4b6e858f649",
+                "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+                "role": "agent",
+                "content": "Tôi đề xuất các artifact sau\n- Story: trưởng nhóm xem khung giờ rảnh chung",
+                "payload": {
+                  "kind": "proposal",
+                  "locale": "vi",
+                  "options": [],
+                  "blocks": [
+                    {
+                      "type": "heading",
+                      "text": "Tôi đề xuất các artifact sau"
+                    },
+                    {
+                      "type": "list",
+                      "items": [
+                        "Story: trưởng nhóm xem khung giờ rảnh chung"
+                      ]
+                    }
+                  ],
+                  "run_id": "f088b2e9-37d5-4943-8d3a-29abba6943b9"
+                },
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ],
+            "tool_calls": [
+              {
+                "id": "0acb501f-4061-4a82-a7e0-85819625b242",
+                "run_id": "f088b2e9-37d5-4943-8d3a-29abba6943b9",
+                "tool_name": "create_artifact",
+                "input_snapshot": {
+                  "artifact_type": "story",
+                  "title": "Story: trưởng nhóm xem khung giờ rảnh chung",
+                  "body": "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học mà không phải hỏi từng người.\nTiêu chí chấp nhận (acceptance):\n- Khi tất cả thành viên đã đồng bộ lịch, thì hệ thống hiển thị tối thiểu 3 khung giờ trùng rảnh trong tuần.\n- Khi không có khung giờ chung, thì hệ thống gợi ý khung gần nhất kèm số thành viên vắng.",
+                  "rationale": ""
+                },
+                "status": "executed",
+                "created_artifact_id": "9b395f02-2567-469d-a823-ac4e6b08df9d",
+                "created_version_id": "bf5035a9-00a9-4df2-9075-48a640eea122",
+                "resolved_at": "2026-06-21T00:48:18.970035",
+                "created_at": "2026-06-21T00:48:18",
+                "updated_at": "2026-06-21T00:48:18"
+              }
+            ]
+          }
+        }
+      ],
+      "summary": {
+        "session_id": "9f80b111-9f95-4665-bcbe-b8a146609842",
+        "artifact_type": "story",
+        "final_status": "completed",
+        "final_interrupt": null,
+        "brain_turns_consumed": 1
+      }
+    }
+  ],
+  "eval": [
+    {
+      "artifact_type": "intent",
+      "title": "Intent: Công cụ điều phối lịch học nhóm",
+      "body": "Sản phẩm nhắm tới các nhóm sinh viên cần một công cụ quản lý lịch học chung. Mục đích: giảm xung đột lịch và tăng tỉ lệ tham gia buổi học nhóm. Phạm vi MVP: tạo nhóm, đồng bộ lịch cá nhân, gợi ý khung giờ rảnh chung.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "problem",
+      "title": "Vấn đề: Điều phối lịch học nhóm thủ công",
+      "body": "Sinh viên hiện sắp lịch học nhóm thủ công qua chat, dẫn tới trùng lịch và bỏ buổi. Tần suất: mỗi tuần mỗi nhóm mất ~30 phút điều phối. Tác động: tỉ lệ tham gia buổi nhóm dưới 60%.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "stakeholder",
+      "title": "Các bên liên quan: nhóm học, trưởng nhóm, giảng viên",
+      "body": "Các bên liên quan chính: (1) Trưởng nhóm — tạo nhóm và chốt buổi học; (2) Thành viên — đồng bộ lịch cá nhân và xác nhận khung giờ; (3) Giảng viên — theo dõi tiến độ buổi nhóm. Mỗi nhóm có 4–6 thành viên. Trưởng nhóm cần quyền chỉnh lịch chung, thành viên chỉ xem và xác nhận khung giờ rảnh của mình.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "goal",
+      "title": "Mục tiêu: giảm thời gian điều phối và tăng tỉ lệ tham gia",
+      "body": "Trong vòng 3 tháng sau khi ra mắt MVP, giảm thời gian điều phối lịch học nhóm từ 30 phút xuống dưới 10 phút mỗi tuần, và nâng tỉ lệ tham gia buổi nhóm từ 60% lên 80%. Đo bằng log thao tác trong hệ thống và khảo sát cuối kỳ.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "functional_requirement",
+      "title": "Yêu cầu chức năng: tính khung giờ rảnh chung của nhóm",
+      "body": "Hệ thống phải cho phép thành viên kết nối lịch cá nhân (Google Calendar) và trích xuất các khung giờ bận. Khi trưởng nhóm yêu cầu, hệ thống tính giao của các khung rảnh và trả về danh sách khung giờ chung kèm số thành viên rảnh tương ứng. Kết quả cập nhật lại trong vòng 5 giây sau khi có thay đổi lịch.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "non_functional_requirement",
+      "title": "Yêu cầu phi chức năng: hiệu năng và bảo mật lịch nhóm",
+      "body": "Thời gian phản hồi khi tính khung giờ chung cho nhóm tối đa 8 thành viên phải dưới 2 giây ở phân vị 95. Hệ thống phục vụ đồng thời 500 nhóm hoạt động mà không vượt 70% CPU. Dữ liệu lịch cá nhân được mã hoá khi lưu và chỉ trưởng nhóm xem được bản tổng hợp.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "epic",
+      "title": "Epic: Đồng bộ và đối chiếu lịch nhóm",
+      "body": "Đồng bộ và đối chiếu lịch nhóm: kết nối lịch cá nhân, phát hiện khung giờ trùng rảnh, gợi ý buổi học. Tiêu chí hoàn thành: khi một nhóm 5 thành viên đồng bộ lịch, thì hệ thống tính được khung giờ chung trong dưới 5 giây và cho phép trưởng nhóm chốt buổi.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    },
+    {
+      "artifact_type": "story",
+      "title": "Story: trưởng nhóm xem khung giờ rảnh chung",
+      "body": "Là trưởng nhóm, tôi muốn xem khung giờ rảnh chung của cả nhóm để chốt buổi học mà không phải hỏi từng người.\nTiêu chí chấp nhận (acceptance):\n- Khi tất cả thành viên đã đồng bộ lịch, thì hệ thống hiển thị tối thiểu 3 khung giờ trùng rảnh trong tuần.\n- Khi không có khung giờ chung, thì hệ thống gợi ý khung gần nhất kèm số thành viên vắng.",
+      "score": {
+        "scores": {
+          "unambiguous": 0.85,
+          "verifiable": 0.8,
+          "complete": 0.85,
+          "consistent": 0.85,
+          "traceable": 0.75,
+          "feasible": 0.8,
+          "invest": null,
+          "smart": null
+        },
+        "overall": 0.82,
+        "rationale": "Artifact rõ ràng, có phạm vi và tác động cụ thể."
+      }
+    }
+  ]
+}
