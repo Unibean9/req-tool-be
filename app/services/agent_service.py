@@ -525,8 +525,7 @@ class AgentService:
             raise HTTPException(422, detail="Tool call metadata synthesis is invalid") from exc
         body = canonical_artifact_body(body=str(body or ""), synthesis_metadata=synthesis_metadata)
         snapshot["body"] = body
-        # TODO: Bat lai readiness gate sau demo MVP; tam thoi skip de approve van tao artifact.
-        # self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)  # noqa: ERA001
+        self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 
         try:
             artifact, version = await DocumentService(self.db).create_item_version(

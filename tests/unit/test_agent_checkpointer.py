@@ -115,6 +115,25 @@ async def test_aput_falls_back_to_session_id_when_config_has_no_thread_id(client
     assert config["configurable"]["thread_id"] == str(session.id)
 
 
+@pytest.mark.asyncio
+async def test_write_paths_lock_session_row(client, db_session, monkeypatch):
+    session = await _create_agent_session(client, db_session)
+    checkpointer = AgentSessionCheckpointer(session_id=str(session.id), session_factory=_session_factory())
+    original_get_session = checkpointer._get_session
+    flags = []
+
+    async def tracked_get_session(db, *, for_update=False):
+        flags.append(for_update)
+        return await original_get_session(db, for_update=for_update)
+
+    monkeypatch.setattr(checkpointer, "_get_session", tracked_get_session)
+
+    config = await checkpointer.aput(_config(session.id), _checkpoint(), {}, {})
+    await checkpointer.aput_writes(config, [("messages", [{"role": "user", "content": "ok"}])], task_id="task-1")
+
+    assert flags == [True, True]
+
+
 async def _create_agent_session(client, db_session) -> AgentSession:
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)

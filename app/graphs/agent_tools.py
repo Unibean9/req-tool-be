@@ -25,7 +25,7 @@ from langgraph.types import Command, interrupt
 from sqlalchemy import exists, func, select
 
 from app.config import settings
-from app.documents.registry import children_of, status_score
+from app.documents.registry import children_of, output_contract, status_score
 from app.graphs import nodes
 from app.graphs.decision_graph import (
     VALID_KINDS,
@@ -309,16 +309,32 @@ async def confirm_intent(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
-    """Body write_draft proposes for approval.
+def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
+    try:
+        contract = output_contract(artifact_type)
+    except ValueError:
+        return []
+    return [heading for heading in contract.required_headings if heading not in str(body or "")]
 
-    With the decision graph as source of truth the proposal is the rendered view, not the
-    model-supplied string. Empty graph falls back to the tool body so the user can still draft before
-    any nodes exist.
-    """
+
+def _has_complete_required_headings(artifact_type: str, body: str) -> bool:
+    return bool(str(body or "").strip()) and not _missing_required_headings(artifact_type, body)
+
+
+def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
+    """Pick the proposal body that is safe to canonicalize and persist."""
     decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        return render_view(decision_nodes, state.get("artifact_type") or "brd")
+    if not decision_nodes:
+        return body
+    artifact_type = state.get("artifact_type") or "brd"
+    rendered = render_view(decision_nodes, artifact_type)
+    if not _missing_required_headings(artifact_type, rendered):
+        return rendered
+    if _has_complete_required_headings(artifact_type, body):
+        return body
+    draft_body = state.get("draft_body") or ""
+    if _has_complete_required_headings(artifact_type, draft_body):
+        return draft_body
     return body
 
 
@@ -489,7 +505,7 @@ async def write_draft(
         str,
         "Full draft body in Markdown following the artifact's output contract (required headings); "
         "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump. "
-        "Ignored once decision nodes exist — the proposal is rendered from the graph.",
+        "Used when the decision graph is still partial; a complete graph-rendered view takes precedence.",
     ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -499,8 +515,9 @@ async def write_draft(
 
     Use once enough confirmed information exists to produce a structured draft. Available only in the
     artifact phase (after confirm_intent). This is the propose/approval gate: when decision nodes
-    exist the proposal is the view rendered from the graph (record content via the decision-node tools,
-    not here). Without a graph, supply the body — it grows incrementally, never rewritten from scratch.
+    exist and cover the contract, the proposal is the view rendered from the graph (record content via
+    the decision-node tools, not here). Without a complete graph, supply the body — it grows
+    incrementally, never rewritten from scratch.
     """
     return await _write_draft_impl(title, body, state, config, tool_call_id)
 

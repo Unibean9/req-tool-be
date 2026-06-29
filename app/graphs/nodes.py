@@ -1,3 +1,4 @@
+import hashlib
 import time
 import uuid
 from typing import Any
@@ -46,6 +47,19 @@ _TOOL_REQUIRED_ARGS = {
     "run_critique": ["mode"],
     "confirm_intent": ["summary"],
 }
+_AUDIT_TEXT_ARG_KEYS = frozenset(
+    {
+        "body",
+        "message",
+        "content",
+        "summary",
+        "statement",
+        "title",
+        "question",
+        "change_description",
+        "seed",
+    }
+)
 
 # Injected tool params are runtime wiring (LangGraph fills them), never LLM-visible args — strip
 # them from the schema passed to the provider so the model only sees real arguments.
@@ -78,6 +92,83 @@ def _model_tool_calls(ai_message: AIMessage) -> list[dict[str, Any]]:
         }
         for tc in (getattr(ai_message, "tool_calls", None) or [])
     ]
+
+
+def _audit_text_value(value: str) -> dict[str, Any]:
+    encoded = value.encode("utf-8")
+    return {
+        "omitted": True,
+        "length": len(value),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+
+
+def _audit_arg_value(key: str, value: Any) -> Any:
+    if isinstance(value, str) and key in _AUDIT_TEXT_ARG_KEYS:
+        return _audit_text_value(value)
+    if isinstance(value, dict):
+        return {
+            nested_key: _audit_arg_value(str(nested_key), nested_value)
+            for nested_key, nested_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_audit_arg_value(key, item) for item in value]
+    return value
+
+
+def _audit_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
+    args = dict(tool_call.get("args") or {})
+    audited = {
+        "name": tool_call.get("name") or "",
+        "args": {key: _audit_arg_value(str(key), value) for key, value in args.items()},
+    }
+    if tool_call.get("id") is not None:
+        audited["id"] = tool_call.get("id")
+    return audited
+
+
+def _ai_text_content(ai_message: AIMessage) -> str:
+    content = getattr(ai_message, "content", "")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                text = block.get("text") or block.get("content")
+                if text:
+                    parts.append(str(text))
+        return "\n".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _looks_like_question(text: str) -> bool:
+    lowered = text.lower().strip()
+    if not lowered:
+        return False
+    if "?" in lowered or "？" in lowered:
+        return True
+    starters = (
+        "bạn ",
+        "anh/chị ",
+        "vui lòng ",
+        "hãy ",
+        "can you ",
+        "could you ",
+        "what ",
+        "which ",
+        "how ",
+        "do you ",
+    )
+    return any(lowered.startswith(prefix) for prefix in starters)
+
+
+def _plain_response_tool(ai_message: AIMessage, locale: str) -> dict[str, Any]:
+    content = _ai_text_content(ai_message)
+    if _looks_like_question(content):
+        return {"name": "ask_user", "args": {"message": content}}
+    message = content or _RESPOND_FALLBACK_BY_LOCALE.get(locale, _RESPOND_FALLBACK_BY_LOCALE["en"])
+    return {"name": "respond", "args": {"message": message, "mode": "critique"}}
 
 
 def _normalize_planning_track(track: Any) -> str:
@@ -360,7 +451,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
     project_id = uuid.UUID(cfg["project_id"])
-    llm_client = cfg.get("strong_llm_client") or cfg["llm_client"]
+    llm_client = cfg["llm_client"]
     if llm_client is None:
         raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
@@ -475,9 +566,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     locale = effective_state.get("locale") or "vi"
 
     analysis_result_base: dict[str, Any] = {
-        "tools": gated_tools,
-        "model_tool_calls": model_tool_calls,
-        "raw_model_tool_calls": model_tool_calls,
+        "tools": [_audit_tool_call(item) for item in gated_tools],
+        "model_tool_calls": [_audit_tool_call(item) for item in model_tool_calls],
+        "raw_model_tool_calls": [_audit_tool_call(item) for item in model_tool_calls],
         "dropped_tool_calls": dropped_tools,
         "available_tools": [tool.name for tool in available_tools],
         "locale": locale,
@@ -513,10 +604,14 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
                     args["mode"] = args.get("mode") or "critique"
                 dispatched_tools.append({"name": tool, "args": args})
                 dispatched_tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
+        if not dispatched_tool_calls and _ai_text_content(ai_message):
+            fallback_tool = _plain_response_tool(ai_message, locale)
+            dispatched_tools.append(fallback_tool)
+            dispatched_tool_calls.append({"id": f"{run_id}-fallback", **fallback_tool})
         analysis_result = {
             **analysis_result_base,
-            "tools": dispatched_tools,
-            "dispatched_tool_calls": dispatched_tool_calls,
+            "tools": [_audit_tool_call(item) for item in dispatched_tools],
+            "dispatched_tool_calls": [_audit_tool_call(item) for item in dispatched_tool_calls],
         }
         run.analysis_result = analysis_result
         await db.commit()
@@ -545,16 +640,12 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         **focus_reset_update,
         **coverage,
     }
-    # Emit the gated tools as AIMessage(tool_calls=[...]) so route_node dispatches to the ToolNode.
-    # tool_call.id = "{run_id}-{i}" — unique per call in the same turn for LangGraph ToolNode
-    # uniqueness. The separator must be "-" not ":" — Anthropic on Bedrock validates tool_use.id
-    # against ^[a-zA-Z0-9_-]+$ and rejects ":" when the message history is replayed next turn.
-    # DB idempotency keys are handled per-tool by write_draft/(run_id, tool_name).
-    # Empty tool_calls means the analyst is done: emit a plain AIMessage carrying its final text.
+    # User-facing text must pass through tools so service persistence/interrupt handling owns delivery.
+    # Bedrock Anthropic rejects ":" in replayed tool_use ids; keep ids within ^[a-zA-Z0-9_-]+$.
     if dispatched_tool_calls:
         result["messages"] = [AIMessage(content="", tool_calls=dispatched_tool_calls)]
     else:
-        result["messages"] = [AIMessage(content=(getattr(ai_message, "content", None) or "").strip())]
+        result["messages"] = [AIMessage(content="")]
     return result
 
 
@@ -593,9 +684,11 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
 
 def route_before_analyze(state: WorkflowState) -> str:
     messages = state.get("messages") or []
+    if not messages or not _is_human_turn(messages[-1]):
+        return "analyze"
     trigger = settings.summary_trigger_every
-    messages_after_initial_user = max(0, len(messages) - 1)
-    if trigger > 0 and messages_after_initial_user > 0 and messages_after_initial_user % trigger == 0:
+    human_turns_after_initial = max(0, sum(1 for message in messages if _is_human_turn(message)) - 1)
+    if trigger > 0 and human_turns_after_initial > 0 and human_turns_after_initial % trigger == 0:
         return "summarize"
     return "analyze"
 
@@ -718,13 +811,64 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
     """
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
-    for raw in state.get("messages") or []:
+    for raw in _analyzer_history_messages(state):
         message = _client_message_from_state(raw, tool_names_by_id)
         if message is not None:
             _append_client_message(messages, message)
     _append_analyzer_prompt(messages, prompt)
     _append_latest_user_emphasis(messages, _latest_human_text(state))
     return messages
+
+
+def _analyzer_history_messages(state: WorkflowState) -> list[Any]:
+    raw_messages = list(state.get("messages") or [])
+    if not (state.get("conversation_summary") or "").strip():
+        return raw_messages
+    return raw_messages[_summary_compaction_start(raw_messages) :]
+
+
+def _summary_compaction_start(messages: list[Any]) -> int:
+    latest_human_index = next(
+        (idx for idx in range(len(messages) - 1, -1, -1) if _is_human_turn(messages[idx])),
+        None,
+    )
+    if latest_human_index is None:
+        return 0
+    if latest_human_index == 0:
+        return 0
+    previous_tool_call_id = _message_tool_call_id(messages[latest_human_index - 1])
+    if previous_tool_call_id:
+        return _matching_tool_use_index(messages, previous_tool_call_id, latest_human_index - 1)
+    if _is_plain_assistant_turn(messages[latest_human_index - 1]):
+        return latest_human_index - 1
+    return latest_human_index
+
+
+def _message_tool_call_id(message: Any) -> str:
+    if isinstance(message, dict):
+        return str(message.get("tool_call_id") or "")
+    return str(getattr(message, "tool_call_id", None) or "")
+
+
+def _message_tool_calls(message: Any) -> list[dict[str, Any]]:
+    if isinstance(message, dict):
+        return [dict(call) for call in (message.get("tool_calls") or []) if isinstance(call, dict)]
+    return [dict(call) for call in (getattr(message, "tool_calls", None) or []) if isinstance(call, dict)]
+
+
+def _is_plain_assistant_turn(message: Any) -> bool:
+    if _message_tool_calls(message):
+        return False
+    if isinstance(message, dict):
+        return str(message.get("role") or "") in {"assistant", "ai"}
+    return getattr(message, "type", "") in {"assistant", "ai"}
+
+
+def _matching_tool_use_index(messages: list[Any], tool_call_id: str, before_index: int) -> int:
+    for idx in range(before_index - 1, -1, -1):
+        if any(str(call.get("id") or "") == tool_call_id for call in _message_tool_calls(messages[idx])):
+            return idx
+    return before_index
 
 
 def _is_human_turn(message: Any) -> bool:
@@ -901,6 +1045,22 @@ def _build_decision_view_block(state: WorkflowState) -> str:
     return f"\n\nDRAFT IN PROGRESS (incrementally updated - reflects clarified points):\n{view}"
 
 
+def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
+    try:
+        contract = output_contract(artifact_type)
+    except ValueError:
+        return []
+    return [heading for heading in contract.required_headings if heading not in body]
+
+
+def _decision_view_can_hide_draft(state: WorkflowState, decision_view_block: str, draft_body: str | None) -> bool:
+    if not decision_view_block or not settings.decision_graph_enabled:
+        return False
+    if not draft_body:
+        return True
+    return not _missing_required_headings(state.get("artifact_type") or "brd", decision_view_block)
+
+
 def _last_message_has_tool_calls(state: WorkflowState) -> bool:
     """Whether the most recent message carries tool_calls (a tool-loop dispatch signal)."""
     messages = state.get("messages") or []
@@ -1038,8 +1198,12 @@ def _build_tool_selection_prompt(
     )
 
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
-    draft_block = _build_draft_block(state, draft_body)
     decision_view_block = _build_decision_view_block(state)
+    draft_block = (
+        ""
+        if _decision_view_can_hide_draft(state, decision_view_block, draft_body)
+        else _build_draft_block(state, draft_body)
+    )
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
     # Taxonomy chain + section-coverage contract are no longer here — they moved to the system prompt

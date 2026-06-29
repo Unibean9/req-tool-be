@@ -184,6 +184,38 @@ async def test_analyze_node_records_raw_model_tool_calls_before_gate(client, db_
 
 
 @pytest.mark.asyncio
+async def test_analyze_node_audit_omits_tool_body_from_agent_run(client, db_session):
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    model_body = "## Vision\nBi mat proposal body.\n\n## Objectives\n- Tang toc.\n\n## Success Metrics\n- 99%."
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "write_draft", "args": {"title": "Vision", "body": model_body}}
+    ]), None))
+
+    state = _state(artifact_type="vision_objectives")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    runtime_call = result["messages"][0].tool_calls[0]
+    assert runtime_call["args"]["body"] == model_body
+    assert result["analysis_result"]["model_tool_calls"][0]["args"]["body"]["omitted"] is True
+    assert model_body not in str(result["analysis_result"])
+
+    async with TestSessionFactory() as db:
+        run = await db.get(AgentRun, uuid.UUID(result["last_agent_run_id"]))
+        assert model_body not in str(run.analysis_result)
+
+
+@pytest.mark.asyncio
 async def test_analyze_node_binds_only_available_tool_schemas(client, db_session, monkeypatch):
     """Tool schema sent to the LLM must match the state menu, not bind the full registry."""
     from app.graphs.nodes import analyze_node
@@ -328,7 +360,7 @@ def test_output_contract_block_lists_sections_for_graph_view():
     # Graph-first per-turn block carries only artifact-specific sections + framing; the
     # recording/status/no-fabrication policy lives in the system prompt (layers 05/10), not here.
     assert "decision graph" in block
-    assert "KHONG tu viet body" in block
+    assert "do not hand-write the Markdown body" in block
     assert "## Vision" in block
 
 
@@ -375,7 +407,7 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
 
 
 @pytest.mark.asyncio
-async def test_analyze_uses_strong_client_when_present(client, db_session):
+async def test_analyze_uses_default_client_even_when_strong_present(client, db_session):
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -385,14 +417,14 @@ async def test_analyze_uses_strong_client_when_present(client, db_session):
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     default_llm = AsyncMock()
-    default_llm.generate = AsyncMock()
-    strong_llm = AsyncMock()
-    strong_llm.generate = AsyncMock(return_value=({
+    default_llm.generate = AsyncMock(return_value=({
         "next_action": "done",
         "confidence": 0.9,
         "gaps": [],
         "proposals": [],
     }, None))
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock()
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), default_llm)
@@ -400,8 +432,8 @@ async def test_analyze_uses_strong_client_when_present(client, db_session):
 
     await analyze_node(state, config)
 
-    strong_llm.generate.assert_called_once()
-    default_llm.generate.assert_not_called()
+    default_llm.generate.assert_called_once()
+    strong_llm.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -504,6 +536,24 @@ def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
     }
 
 
+def test_summarize_skips_tool_only_loop_even_at_human_threshold(monkeypatch):
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from app.graphs.nodes import route_before_analyze
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 2)
+    state = _state()
+    state["messages"] = [
+        {"role": "user", "content": "A"},
+        {"role": "user", "content": "B"},
+        {"role": "user", "content": "C"},
+        AIMessage(content="", tool_calls=[{"id": "call-1", "name": "explore_note", "args": {"content": "fact"}}]),
+        ToolMessage(content="Da ghi nhan", tool_call_id="call-1"),
+    ]
+
+    assert route_before_analyze(state) == "analyze"
+
+
 @pytest.mark.asyncio
 async def test_summarize_skipped_below_threshold(monkeypatch):
     from app.graphs.nodes import route_before_analyze, summarize_node
@@ -531,7 +581,7 @@ async def test_summary_preserves_constraints_verbatim(monkeypatch):
     state["messages"] = [
         {"role": "user", "content": "Tao MVP"},
         {"role": "user", "content": "Ngan sach toi da 50 trieu"},
-        {"role": "assistant", "content": "Da ghi nhan"},
+        {"role": "user", "content": "Deadline 2 thang"},
     ]
     summary = (
         "Confirmed requirements\n- Lam MVP\n"
@@ -558,6 +608,7 @@ async def test_summarize_node_uses_default_client(monkeypatch):
         {"role": "user", "content": "A"},
         {"role": "assistant", "content": "B"},
         {"role": "user", "content": "C"},
+        {"role": "user", "content": "D"},
     ]
     default_llm = AsyncMock()
     default_llm.generate = AsyncMock(return_value=("Tom tat", None))
@@ -601,6 +652,70 @@ def test_build_prompt_omits_conversation_when_no_summary():
     assert not any(f"Tin nhan {i}" in prompt for i in range(6))
 
 
+def test_analyzer_messages_summary_replaces_old_transcript():
+    from app.graphs.nodes import _build_analyzer_messages
+
+    state = _state()
+    state["conversation_summary"] = "Tom tat: ngan sach toi da 50 trieu"
+    state["messages"] = [
+        {"role": "user", "content": "LUOT USER CU KHONG DUOC GUI"},
+        {"role": "assistant", "content": "LUOT ASSISTANT CU KHONG DUOC GUI"},
+        {"role": "user", "content": "Thong tin trung gian"},
+        {"role": "assistant", "content": "Ban muon tao artifact nao?"},
+        {"role": "user", "content": "Moi nhat: hay tao PRD"},
+    ]
+
+    messages = _build_analyzer_messages(state, "WORKSPACE co summary")
+    rendered = str(messages)
+
+    assert "LUOT USER CU KHONG DUOC GUI" not in rendered
+    assert "LUOT ASSISTANT CU KHONG DUOC GUI" not in rendered
+    assert "Ban muon tao artifact nao?" in rendered
+    assert "Moi nhat: hay tao PRD" in rendered
+
+
+def test_analyzer_summary_compaction_keeps_matching_tool_use():
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    from app.graphs.nodes import _build_analyzer_messages
+
+    state = _state()
+    state["conversation_summary"] = "Tom tat cu"
+    state["messages"] = [
+        {"role": "user", "content": "LUOT USER CU KHONG DUOC GUI"},
+        AIMessage(content="", tool_calls=[{"id": "call-1", "name": "ask_user", "args": {"message": "Pain chinh?"}}]),
+        ToolMessage(content="Hut nguyen lieu", tool_call_id="call-1"),
+        {"role": "user", "content": "Hut nguyen lieu"},
+    ]
+
+    messages = _build_analyzer_messages(state, "WORKSPACE")
+
+    assert "LUOT USER CU KHONG DUOC GUI" not in str(messages)
+    assert messages[0]["role"] == "assistant"
+    assert messages[0]["content"][0]["type"] == "tool_use"
+    assert messages[0]["content"][0]["id"] == "call-1"
+    assert messages[1]["content"][0]["type"] == "tool_result"
+
+
+def test_analyzer_summary_compaction_keeps_immediate_assistant_context():
+    from app.graphs.nodes import _build_analyzer_messages
+
+    state = _state()
+    state["conversation_summary"] = "Tom tat cu"
+    state["messages"] = [
+        {"role": "user", "content": "LUOT USER CU KHONG DUOC GUI"},
+        {"role": "assistant", "content": "Thi truong muc tieu la gi?"},
+        {"role": "user", "content": "Sinh vien nam 2"},
+    ]
+
+    messages = _build_analyzer_messages(state, "WORKSPACE")
+    rendered = str(messages)
+
+    assert "LUOT USER CU KHONG DUOC GUI" not in rendered
+    assert "Thi truong muc tieu la gi?" in rendered
+    assert "Sinh vien nam 2" in rendered
+
+
 def test_build_prompt_excludes_static_policy():
     """Static policy (tool semantics, synthesis depth) lives in the instruction layers now, so the
     per-turn payload must NOT restate it."""
@@ -612,7 +727,7 @@ def test_build_prompt_excludes_static_policy():
     assert "DO SAU NOI DUNG" not in prompt
     assert "critique note" not in prompt
     # It still names the tools available this turn so the model knows the current menu.
-    assert "Available tools" in prompt
+    assert "Tools available this turn" in prompt
 
 
 def test_coverage_hint_injected_in_prompt_when_incomplete():
@@ -628,9 +743,9 @@ def test_coverage_hint_injected_in_prompt_when_incomplete():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Do phu section" in prompt
+    assert "Section coverage" in prompt
     # Gap-inventory marker — lists weak sections, not a single pinned question.
-    assert "cac khia canh con missing" in prompt
+    assert "aspects still missing or unclear" in prompt
     # Harness voice: advance the artifact, not "ask one main question".
     assert "advance" in prompt
     assert "one main question" not in prompt
@@ -645,7 +760,7 @@ def test_no_coverage_hint_when_complete():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "Do phu section" not in prompt
+    assert "Section coverage" not in prompt
 
 
 @pytest.mark.asyncio
@@ -1010,13 +1125,13 @@ def test_build_prompt_includes_draft_body_block_when_present():
     body = "User: student. Obstacle: study group schedule conflict."
     prompt = _build_tool_selection_prompt(state, [], draft_body=body)
 
-    assert "DRAFT DANG CO" in prompt
+    assert "CURRENT DRAFT" in prompt
     assert body in prompt
     # The anti-re-ask / mine-the-delta policy is static (question-policy layer), so the per-turn
     # payload carries the draft as data without restating the imperative.
     assert "do not ask again" not in prompt.lower()
     # draft block must precede the language lock (kept last by contract)
-    assert prompt.index("DRAFT DANG CO") < prompt.index("ngon ngu 'vi'")
+    assert prompt.index("CURRENT DRAFT") < prompt.index("language 'vi'")
 
 
 def test_build_prompt_no_draft_block_when_absent():
@@ -1027,7 +1142,7 @@ def test_build_prompt_no_draft_block_when_absent():
     baseline = _build_tool_selection_prompt(state, [])
     with_none = _build_tool_selection_prompt(state, [], draft_body=None)
 
-    assert "DRAFT DANG CO" not in with_none
+    assert "CURRENT DRAFT" not in with_none
     assert with_none == baseline
 
 
@@ -1128,7 +1243,7 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert draft_body in prompt, "Existing draft body must be injected as context"
-    assert "DRAFT DANG CO" in prompt
+    assert "CURRENT DRAFT" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -1151,10 +1266,72 @@ def test_build_prompt_includes_decision_view_block_when_nodes_present():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert "DRAFT DANG XAY DUNG" in prompt
+    assert "DRAFT IN PROGRESS" in prompt
     assert "Sinh vien trung study scheduling voi gio lam them." in prompt
     # The running draft must precede the language lock (kept last by contract).
-    assert prompt.index("DRAFT DANG XAY DUNG") < prompt.index("ngon ngu 'vi'")
+    assert prompt.index("DRAFT IN PROGRESS") < prompt.index("language 'vi'")
+
+
+def test_build_prompt_hides_persisted_draft_when_decision_view_covers_contract():
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    state = _state(artifact_type="vision_objectives")
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement="Sinh vien can xem ton kho realtime.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Vision",
+        ),
+        "N2": create_node(
+            kind="objective",
+            statement="Giam thoi gian kiem tra hang ton.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Objectives",
+        ),
+        "N3": create_node(
+            kind="objective",
+            statement="Do thoi gian lay du lieu ton kho.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Success Metrics",
+        ),
+    }
+
+    prompt = _build_tool_selection_prompt(state, [], "NOI DUNG DRAFT CU KHONG DUOC GUI")
+
+    assert "Sinh vien can xem ton kho realtime." in prompt
+    assert "NOI DUNG DRAFT CU KHONG DUOC GUI" not in prompt
+
+
+def test_build_prompt_keeps_persisted_draft_when_decision_view_is_partial():
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    state = _state(artifact_type="vision_objectives")
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement="Sinh vien can xem ton kho realtime.",
+            origin={"source": "test"},
+            status="confirmed",
+            section="## Vision",
+        )
+    }
+    draft_body = "\n\n".join(
+        [
+            "## Vision\nVersion 2 vision.",
+            "## Objectives\nVersion 2 objectives.",
+            "## Success Metrics\nVersion 2 metrics.",
+        ]
+    )
+
+    prompt = _build_tool_selection_prompt(state, [], draft_body)
+
+    assert "Sinh vien can xem ton kho realtime." in prompt
+    assert "CURRENT DRAFT" in prompt
+    assert draft_body in prompt
 
 
 def test_build_prompt_no_decision_view_block_when_nodes_absent():
@@ -1164,7 +1341,7 @@ def test_build_prompt_no_decision_view_block_when_nodes_absent():
     state = _state(artifact_type="problem")
     baseline = _build_tool_selection_prompt(state, [])
 
-    assert "DRAFT DANG XAY DUNG" not in _build_tool_selection_prompt(state, [])
+    assert "DRAFT IN PROGRESS" not in _build_tool_selection_prompt(state, [])
     assert _build_tool_selection_prompt(state, []) == baseline
 
 
@@ -1249,13 +1426,13 @@ async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
         "content": "Da ghi nhan key fact.",
     }
     assert sent_messages[2]["content"][1]["type"] == "text"
-    assert "Ban la analyst" in sent_messages[2]["content"][1]["text"]
+    assert "You are the analyst" in sent_messages[2]["content"][1]["text"]
 
 
 @pytest.mark.asyncio
 async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, db_session):
     """Terminal text must not be written to legacy state; graph/write_draft is the draft source."""
-    from app.graphs.nodes import analyze_node
+    from app.graphs.nodes import analyze_node, route_node
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -1264,12 +1441,9 @@ async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, d
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=({
-        "next_action": "ask",
-        "confidence": 0.3,
-        "gaps": [],
-        "message": "What else do you need?",
-    }, None))
+    mock_llm.generate = AsyncMock(
+        return_value=(AIMessage(content="Ban can bo sung thong tin ton kho nao?", tool_calls=[]), None)
+    )
 
     state = _state(artifact_type="goal")
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -1279,6 +1453,8 @@ async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, d
 
     assert "working_draft" not in result
     assert "draft_update" not in result["analysis_result"]
+    assert result["messages"][0].tool_calls[0]["name"] == "ask_user"
+    assert route_node({**state, **result}) == "tools"
 
 
 # ---------------------------------------------------------------------------
@@ -1312,7 +1488,7 @@ async def test_analysis_result_has_no_active_mode(client, db_session):
 
 @pytest.mark.asyncio
 async def test_respond_colon_terminated_message_uses_fallback(client, db_session):
-    from app.graphs.nodes import _RESPOND_FALLBACK, analyze_node
+    from app.graphs.nodes import _RESPOND_FALLBACK_BY_LOCALE, analyze_node
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -1333,7 +1509,7 @@ async def test_respond_colon_terminated_message_uses_fallback(client, db_session
 
     tool_call = result["messages"][0].tool_calls[0]
     assert tool_call["name"] == "respond"
-    assert tool_call["args"]["message"] == _RESPOND_FALLBACK
+    assert tool_call["args"]["message"] == _RESPOND_FALLBACK_BY_LOCALE["vi"]
     assert tool_call["args"]["mode"] == "critique"
 
 
@@ -1396,7 +1572,7 @@ def test_proactive_rule_lives_in_instruction_layer_not_payload():
     state = _state(artifact_type="goal")
     state["mode_hint"] = None
     prompt = _build_tool_selection_prompt(state, [])
-    assert "YEU CAU MODE" not in prompt
+    assert "MODE REQUEST" not in prompt
 
 
 def test_mode_hint_precedes_language_lock():
@@ -1409,7 +1585,7 @@ def test_mode_hint_precedes_language_lock():
 
     prompt = _build_tool_selection_prompt(state, [])
 
-    assert prompt.index("explore") < prompt.index("ngon ngu 'vi'")
+    assert prompt.index("explore") < prompt.index("language 'vi'")
 
 
 @pytest.mark.asyncio
@@ -1454,15 +1630,15 @@ def test_artifact_contract_block_carries_sections_and_taxonomy():
     from app.graphs.nodes import _build_artifact_contract_block, _build_tool_selection_prompt
 
     block = _build_artifact_contract_block(_state(artifact_type="vision_objectives"))
-    assert "SECTION CAN PHU" in block
+    assert "SECTION COVERAGE REQUIRED" in block
     assert "## Vision" in block
     assert "## Objectives" in block
-    assert "render tu decision graph" in block
-    assert "LOAI ARTIFACT" in block  # taxonomy chain moved here too
+    assert "view rendered from the decision graph" in block
+    assert "ARTIFACT TYPE" in block  # taxonomy chain moved here too
 
     # And it is no longer duplicated in the per-turn payload.
     prompt = _build_tool_selection_prompt(_state(artifact_type="vision_objectives"), [])
-    assert "SECTION CAN PHU" not in prompt
+    assert "SECTION COVERAGE REQUIRED" not in prompt
 
 
 def _final_block_text(message: dict) -> str:

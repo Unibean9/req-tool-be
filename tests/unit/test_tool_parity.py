@@ -221,7 +221,7 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
-async def test_write_draft_snapshot_keeps_single_canonical_body_when_graph_render_wins(mock_interrupt, client, db_session):
+async def test_write_draft_snapshot_keeps_complete_body_when_graph_render_is_partial(mock_interrupt, client, db_session):
     from app.graphs.agent_tools import _write_draft_impl
 
     project_id = await _project(client)
@@ -258,7 +258,8 @@ async def test_write_draft_snapshot_keeps_single_canonical_body_when_graph_rende
 
     async with TestSessionFactory() as db:
         row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
-        assert row.input_snapshot["body"] == render_view(state["decision_nodes"], "vision_objectives")
+        assert "Model-authored vision." in row.input_snapshot["body"]
+        assert "## Success Metrics" in row.input_snapshot["body"]
         assert "model_body" not in row.input_snapshot
         assert "body_source" not in row.input_snapshot
 
