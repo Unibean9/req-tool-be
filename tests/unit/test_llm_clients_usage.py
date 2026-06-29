@@ -1,12 +1,16 @@
 import httpx
 import pytest
 
+from app.services import llm_clients as llm_client_module
 from app.services.llm_clients import (
     AnthropicLLMClient,
     BedrockLLMClient,
+    DeepSeekLLMClient,
     GoogleLLMClient,
     LLMClientConfig,
+    MistralLLMClient,
     OpenAILLMClient,
+    OpenRouterLLMClient,
 )
 
 # Payload with usage for each provider — all normalize to {"input": 11, "output": 22, "total": 33}
@@ -27,6 +31,18 @@ _PAYLOAD_WITH_USAGE = {
         "output": {"message": {"content": [{"text": "raw answer"}]}},
         "usage": {"inputTokens": 11, "outputTokens": 22, "totalTokens": 33},
     },
+    DeepSeekLLMClient: {
+        "choices": [{"message": {"content": "raw answer"}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
+    },
+    MistralLLMClient: {
+        "choices": [{"message": {"content": "raw answer"}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
+    },
+    OpenRouterLLMClient: {
+        "choices": [{"message": {"content": "raw answer"}}],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
+    },
 }
 
 # Payload without usage for each provider
@@ -35,6 +51,9 @@ _PAYLOAD_NO_USAGE = {
     AnthropicLLMClient: {"content": [{"type": "text", "text": "raw answer"}]},
     GoogleLLMClient: {"candidates": [{"content": {"parts": [{"text": "raw answer"}]}}]},
     BedrockLLMClient: {"output": {"message": {"content": [{"text": "raw answer"}]}}},
+    DeepSeekLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
+    MistralLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
+    OpenRouterLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
 }
 
 
@@ -76,7 +95,27 @@ def _install_httpx_recorder(monkeypatch, payload):
     def client_class(*args, **kwargs):
         return _RecordingAsyncClient(payload)
 
+    def openai_client(**_kwargs):
+        return _RecordingOpenAIClient(payload)
+
+    def openai_chat_client(**_kwargs):
+        return _RecordingOpenAIChatClient(payload)
+
+    def anthropic_client(**_kwargs):
+        return _RecordingAnthropicClient(payload)
+
+    def google_client(**_kwargs):
+        return _RecordingGoogleClient(payload)
+
+    def mistral_client(**_kwargs):
+        return _RecordingMistralClient(payload)
+
     monkeypatch.setattr(httpx, "AsyncClient", client_class)
+    monkeypatch.setattr(llm_client_module, "_create_openai_sdk", openai_client)
+    monkeypatch.setattr(llm_client_module, "_create_openai_chat_sdk", openai_chat_client)
+    monkeypatch.setattr(llm_client_module, "_create_anthropic_sdk", anthropic_client)
+    monkeypatch.setattr(llm_client_module, "_create_google_sdk", google_client)
+    monkeypatch.setattr(llm_client_module, "_create_mistral_sdk", mistral_client)
 
 
 class _RecordingAsyncClient:
@@ -91,3 +130,86 @@ class _RecordingAsyncClient:
 
     async def post(self, url, **kwargs):
         return httpx.Response(200, json=self.payload, request=httpx.Request("POST", url))
+
+
+class _RecordingOpenAIClient:
+    def __init__(self, payload):
+        self.responses = _RecordingSDKResource(payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingOpenAIChatClient:
+    def __init__(self, payload):
+        self.chat = _RecordingChatNamespace(payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingAnthropicClient:
+    def __init__(self, payload):
+        self.messages = _RecordingSDKResource(payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingSDKResource:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def create(self, **kwargs):
+        return self.payload
+
+
+class _RecordingChatNamespace:
+    def __init__(self, payload):
+        self.completions = _RecordingSDKResource(payload)
+
+
+class _RecordingMistralClient:
+    def __init__(self, payload):
+        self.chat = _RecordingMistralChat(payload)
+
+
+class _RecordingMistralChat:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def complete(self, **kwargs):
+        return self.payload
+
+
+class _RecordingGoogleClient:
+    def __init__(self, payload):
+        self.aio = _RecordingGoogleAsyncClient(payload)
+
+
+class _RecordingGoogleAsyncClient:
+    def __init__(self, payload):
+        self.models = _RecordingGoogleModels(payload)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingGoogleModels:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def generate_content(self, *, model, contents, config=None):
+        return self.payload

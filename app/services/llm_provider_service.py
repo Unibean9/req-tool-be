@@ -24,8 +24,13 @@ class ProviderUnavailableError(Exception):
     pass
 
 
+class ProviderCapabilityError(Exception):
+    pass
+
+
 SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
 DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
+TOOL_CALLING_REQUIRED_MESSAGE = "Model khong ho tro tool calling"
 
 
 def _sanitize_error(exc: Exception) -> str:
@@ -158,6 +163,12 @@ class LLMProviderService:
             config.last_check_error = _sanitize_error(exc)
             await self.db.flush()
             raise ProviderUnavailableError(config.last_check_error) from exc
+        if tool_calling_supported is not True:
+            config.status = LLMProviderStatus.ERROR
+            config.last_checked_at = now
+            config.last_check_error = TOOL_CALLING_REQUIRED_MESSAGE
+            await self.db.flush()
+            raise ProviderCapabilityError(TOOL_CALLING_REQUIRED_MESSAGE)
         config.status = LLMProviderStatus.ACTIVE
         config.last_checked_at = now
         config.last_check_error = None

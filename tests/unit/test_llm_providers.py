@@ -10,9 +10,12 @@ from app.config import settings
 from app.core import crypto
 from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
 from app.schemas.llm_provider import LLMProviderConfigRead, LLMProviderHealthCheckResult
+from app.services.llm_clients import DEFAULT_MODEL_BY_PROVIDER
 from app.services.llm_provider_service import (
+    TOOL_CALLING_REQUIRED_MESSAGE,
     CooldownError,
     LLMProviderService,
+    ProviderCapabilityError,
     ProviderUnavailableError,
     _resolve_api_key,
     _sanitize_error,
@@ -86,7 +89,7 @@ async def test_create_config_stores_encrypted_key(client, db_session, monkeypatc
     assert row.encrypted_api_key != "sk-secret-value"
     assert row.provider_type == ProviderType.OPENAI
     assert row.name == "openai"
-    assert row.model_name == "gpt-4o-mini"
+    assert row.model_name == DEFAULT_MODEL_BY_PROVIDER[ProviderType.OPENAI]
     assert row.is_default is True
 
 
@@ -187,7 +190,7 @@ async def test_create_rejects_secret_ref_payload(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_type", ["bedrock", "openai", "google", "anthropic"])
+@pytest.mark.parametrize("provider_type", ["bedrock", "openai", "google", "anthropic", "deepseek", "mistral", "openrouter"])
 async def test_supported_provider_types_are_accepted(client, provider_type):
     headers = await make_auth_headers(client)
 
@@ -315,6 +318,35 @@ async def test_health_check_api_key_success(client, db_session, monkeypatch):
     assert checked.config.last_checked_at is not None
     assert checked.response_time_ms == 123
     assert checked.provider_reply == "pong"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_calling_supported", [False, None])
+async def test_health_check_requires_tool_calling_support(
+    client,
+    db_session,
+    monkeypatch,
+    tool_calling_supported,
+):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(user_id=user_id, body=_create_body(api_key="sk-health"))
+
+    monkeypatch.setattr(
+        "app.services.llm_provider_service._ping_provider",
+        lambda _config: _async_reply(("pong", tool_calling_supported)),
+    )
+
+    with pytest.raises(ProviderCapabilityError, match=TOOL_CALLING_REQUIRED_MESSAGE):
+        await service.health_check(user_id=user_id, config_id=row.id)
+    await db_session.refresh(row)
+
+    assert row.status == LLMProviderStatus.ERROR
+    assert row.last_checked_at is not None
+    assert row.last_check_error == TOOL_CALLING_REQUIRED_MESSAGE
 
 
 @pytest.mark.asyncio
@@ -620,6 +652,25 @@ async def test_health_check_endpoint_returns_503_on_provider_failure(client, mon
 
     assert resp.status_code == 503
     assert resp.json()["detail"] == "Provider loi"
+
+
+@pytest.mark.asyncio
+async def test_health_check_endpoint_returns_422_when_model_lacks_tool_calling(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    create_resp = await client.post(f"{BASE}/users/me/llm-provider-configs", json=_create_body(api_key="sk-1"), headers=headers)
+    config_id = create_resp.json()["data"]["id"]
+
+    async def fake_health_check(self, user_id, config_id):
+        raise ProviderCapabilityError(TOOL_CALLING_REQUIRED_MESSAGE)
+
+    monkeypatch.setattr(LLMProviderService, "health_check", fake_health_check)
+
+    resp = await client.post(f"{BASE}/users/me/llm-provider-configs/{config_id}/health-check", headers=headers)
+
+    assert resp.status_code == 422
+    assert resp.json()["detail"] == TOOL_CALLING_REQUIRED_MESSAGE
 
 
 @pytest.mark.asyncio

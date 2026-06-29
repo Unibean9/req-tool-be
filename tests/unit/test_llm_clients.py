@@ -5,16 +5,21 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.models.llm_provider import ProviderType
+from app.services import llm_clients as llm_client_module
 from app.services.llm_clients import (
     DEFAULT_MODEL_BY_PROVIDER,
     AnthropicLLMClient,
     BedrockLLMClient,
+    DeepSeekLLMClient,
     GoogleLLMClient,
     LLMClientConfig,
     LLMClientFactory,
+    MistralLLMClient,
     OpenAILLMClient,
+    OpenRouterLLMClient,
     _extract_bedrock_text,
     _parse_generate_text,
+    _plain_dict,
     _responses_json_schema_format,
 )
 
@@ -40,6 +45,11 @@ ANALYSIS_RESULT = {
 }
 
 
+CHAT_JSON_OK = {"choices": [{"message": {"content": '{"answer": "ok"}'}}]}
+CHAT_RAW_ANSWER = {"choices": [{"message": {"content": "raw answer"}}]}
+CHAT_INVALID_JSON = {"choices": [{"message": {"content": "not json"}}]}
+
+
 @pytest.mark.parametrize(
     ("provider_type", "client_class"),
     [
@@ -47,6 +57,9 @@ ANALYSIS_RESULT = {
         (ProviderType.OPENAI, OpenAILLMClient),
         (ProviderType.GOOGLE, GoogleLLMClient),
         (ProviderType.ANTHROPIC, AnthropicLLMClient),
+        (ProviderType.DEEPSEEK, DeepSeekLLMClient),
+        (ProviderType.MISTRAL, MistralLLMClient),
+        (ProviderType.OPENROUTER, OpenRouterLLMClient),
     ],
 )
 def test_llm_client_factory_supports_current_provider_types(provider_type, client_class):
@@ -90,6 +103,9 @@ def test_extract_bedrock_text_returns_first_content_text():
             {"candidates": [{"content": {"parts": [{"text": '{"answer": "ok"}'}]}}]},
         ),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": '{"answer": "ok"}'}]}}}),
+        (DeepSeekLLMClient, CHAT_JSON_OK),
+        (MistralLLMClient, CHAT_JSON_OK),
+        (OpenRouterLLMClient, CHAT_JSON_OK),
     ],
 )
 async def test_generate_with_response_format_returns_dict(monkeypatch, client_class, provider_payload):
@@ -146,6 +162,16 @@ def test_openai_responses_schema_makes_optional_fields_nullable_and_required():
     assert formatted["schema"]["additionalProperties"] is False
     assert formatted["schema"]["required"] == ["tool", "message"]
     assert formatted["schema"]["properties"]["message"]["type"] == ["string", "null"]
+
+
+def test_plain_dict_preserves_openai_sdk_output_text_property():
+    class ResponseLike:
+        output_text = "pong"
+
+        def model_dump(self, **_kwargs):
+            return {"output": []}
+
+    assert _plain_dict(ResponseLike())["output_text"] == "pong"
 
 
 @pytest.mark.parametrize(
@@ -209,6 +235,9 @@ def test_parse_generate_text_recovers_object_wrapped_in_prose(wrapped):
         (AnthropicLLMClient, {"content": [{"type": "text", "text": "not json"}]}),
         (GoogleLLMClient, {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": "not json"}]}}}),
+        (DeepSeekLLMClient, CHAT_INVALID_JSON),
+        (MistralLLMClient, CHAT_INVALID_JSON),
+        (OpenRouterLLMClient, CHAT_INVALID_JSON),
     ],
 )
 async def test_generate_with_response_format_rejects_invalid_json(monkeypatch, client_class, provider_payload):
@@ -232,6 +261,9 @@ async def test_generate_with_response_format_rejects_invalid_json(monkeypatch, c
         (AnthropicLLMClient, {"content": [{"type": "text", "text": "raw answer"}]}),
         (GoogleLLMClient, {"candidates": [{"content": {"parts": [{"text": "raw answer"}]}}]}),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": "raw answer"}]}}}),
+        (DeepSeekLLMClient, CHAT_RAW_ANSWER),
+        (MistralLLMClient, CHAT_RAW_ANSWER),
+        (OpenRouterLLMClient, CHAT_RAW_ANSWER),
     ],
 )
 async def test_generate_without_response_format_returns_raw_text_and_no_extra_params(monkeypatch, client_class, provider_payload):
@@ -254,7 +286,10 @@ async def test_generate_without_response_format_returns_raw_text_and_no_extra_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_class", [AnthropicLLMClient, BedrockLLMClient])
+@pytest.mark.parametrize(
+    "client_class",
+    [AnthropicLLMClient, BedrockLLMClient, DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient],
+)
 async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, client_class):
     recorder = _install_httpx_recorder(
         monkeypatch,
@@ -264,6 +299,11 @@ async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, c
         recorder = _install_httpx_recorder(
             monkeypatch,
             {"output": {"message": {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}},
+        )
+    elif client_class in {DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient}:
+        recorder = _install_httpx_recorder(
+            monkeypatch,
+            {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
         )
     client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
 
@@ -291,6 +331,18 @@ async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, c
             {"candidates": [{"content": {"parts": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}]},
         ),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}}),
+        (
+            DeepSeekLLMClient,
+            {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
+        ),
+        (
+            MistralLLMClient,
+            {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
+        ),
+        (
+            OpenRouterLLMClient,
+            {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
+        ),
     ],
 )
 async def test_generate_parses_analysis_result_schema_for_each_provider(monkeypatch, client_class, provider_payload):
@@ -310,6 +362,11 @@ async def test_generate_parses_analysis_result_schema_for_each_provider(monkeypa
 def _install_httpx_recorder(monkeypatch, payload):
     recorder = _HttpxRecorder(payload)
     monkeypatch.setattr(httpx, "AsyncClient", recorder.client_class)
+    monkeypatch.setattr(llm_client_module, "_create_openai_sdk", recorder.openai_client)
+    monkeypatch.setattr(llm_client_module, "_create_openai_chat_sdk", recorder.openai_chat_client)
+    monkeypatch.setattr(llm_client_module, "_create_anthropic_sdk", recorder.anthropic_client)
+    monkeypatch.setattr(llm_client_module, "_create_google_sdk", recorder.google_client)
+    monkeypatch.setattr(llm_client_module, "_create_mistral_sdk", recorder.mistral_client)
     return recorder
 
 
@@ -339,7 +396,14 @@ _TOOL_RESPONSE_BY_PROVIDER = {
     },
     GoogleLLMClient: {
         "candidates": [
-            {"content": {"parts": [{"text": "draft text"}, {"functionCall": {"name": "ask_user", "args": {"message": "hi"}}}]}}
+            {
+                "content": {
+                    "parts": [
+                        {"text": "draft text"},
+                        {"functionCall": {"id": "g1", "name": "ask_user", "args": {"message": "hi"}}},
+                    ]
+                }
+            }
         ]
     },
     BedrockLLMClient: {
@@ -347,6 +411,54 @@ _TOOL_RESPONSE_BY_PROVIDER = {
             {"text": "draft text"},
             {"toolUse": {"toolUseId": "b1", "name": "ask_user", "input": {"message": "hi"}}},
         ]}}
+    },
+    DeepSeekLLMClient: {
+        "choices": [
+            {
+                "message": {
+                    "content": "draft text",
+                    "tool_calls": [
+                        {
+                            "id": "d1",
+                            "type": "function",
+                            "function": {"name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    },
+    MistralLLMClient: {
+        "choices": [
+            {
+                "message": {
+                    "content": "draft text",
+                    "tool_calls": [
+                        {
+                            "id": "m1",
+                            "type": "function",
+                            "function": {"name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    },
+    OpenRouterLLMClient: {
+        "choices": [
+            {
+                "message": {
+                    "content": "draft text",
+                    "tool_calls": [
+                        {
+                            "id": "or1",
+                            "type": "function",
+                            "function": {"name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+                        }
+                    ],
+                }
+            }
+        ]
     },
 }
 
@@ -369,6 +481,7 @@ async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class)
 
     assert isinstance(result, AIMessage)
     assert [tc["name"] for tc in result.tool_calls] == ["ask_user"]
+    assert result.tool_calls[0]["id"]
     assert result.tool_calls[0]["args"] == {"message": "hi"}
     assert result.content == "draft text"  # client surfaces the text verbatim; analyze_node treats it as reasoning, not a draft
     # The request carried the tool config (so a real provider would force the call).
@@ -441,13 +554,33 @@ async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, cl
     elif client_class is GoogleLLMClient:
         assert body["contents"][1]["parts"][1] == {
             "functionCall": {
+                "id": "call_1",
                 "name": "explore_note",
                 "args": {"content": "Primary users are study group students."},
             }
         }
         assert body["contents"][2]["parts"][0] == {
-            "functionResponse": {"name": "explore_note", "response": {"content": "Da ghi nhan key fact."}}
+            "functionResponse": {
+                "id": "call_1",
+                "name": "explore_note",
+                "response": {"content": "Da ghi nhan key fact."},
+            }
         }
+    elif client_class in {DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient}:
+        assert body["messages"][2]["tool_calls"][0] == {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "explore_note",
+                "arguments": "{\"content\": \"Primary users are study group students.\"}",
+            },
+        }
+        assert body["messages"][3] == {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "Da ghi nhan key fact.",
+        }
+        assert body["messages"][4] == {"role": "user", "content": "Continue analysis from that fact."}
     else:
         assert body["messages"][1]["content"][1] == {
             "toolUse": {
@@ -514,6 +647,35 @@ async def test_google_tool_choice_required_sends_mode_any(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", [DeepSeekLLMClient, OpenRouterLLMClient])
+async def test_openai_compatible_chat_tool_choice_required_sends_required(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
+    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(
+        messages=[{"role": "user", "content": "x"}],
+        system=None,
+        max_tokens=16,
+        tools=[_ASK_TOOL],
+        tool_choice="required",
+    )
+    assert recorder.requests[0]["json"]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_mistral_tool_choice_required_sends_any(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[MistralLLMClient])
+    client = MistralLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(
+        messages=[{"role": "user", "content": "x"}],
+        system=None,
+        max_tokens=16,
+        tools=[_ASK_TOOL],
+        tool_choice="required",
+    )
+    assert recorder.requests[0]["json"]["tool_choice"] == "any"
+
+
+@pytest.mark.asyncio
 async def test_bedrock_tool_choice_auto_omits_tool_choice_field(monkeypatch):
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
     client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
@@ -546,6 +708,21 @@ class _HttpxRecorder:
     def client_class(self, *args, **kwargs):
         return _RecordingAsyncClient(self)
 
+    def openai_client(self, *args, **kwargs):
+        return _RecordingOpenAIClient(self)
+
+    def openai_chat_client(self, *args, **kwargs):
+        return _RecordingOpenAIChatClient(self)
+
+    def anthropic_client(self, *args, **kwargs):
+        return _RecordingAnthropicClient(self)
+
+    def google_client(self, *args, **kwargs):
+        return _RecordingGoogleClient(self)
+
+    def mistral_client(self, *args, **kwargs):
+        return _RecordingMistralClient(self)
+
 
 class _RecordingAsyncClient:
     def __init__(self, recorder):
@@ -560,3 +737,89 @@ class _RecordingAsyncClient:
     async def post(self, url, **kwargs):
         self.recorder.requests.append({"url": url, **kwargs})
         return httpx.Response(200, json=self.recorder.payload, request=httpx.Request("POST", url))
+
+
+class _RecordingOpenAIClient:
+    def __init__(self, recorder):
+        self.responses = _RecordingSDKResource(recorder)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingOpenAIChatClient:
+    def __init__(self, recorder):
+        self.chat = _RecordingChatNamespace(recorder)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingAnthropicClient:
+    def __init__(self, recorder):
+        self.messages = _RecordingSDKResource(recorder)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingSDKResource:
+    def __init__(self, recorder):
+        self.recorder = recorder
+
+    async def create(self, **kwargs):
+        self.recorder.requests.append({"json": kwargs})
+        return self.recorder.payload
+
+
+class _RecordingChatNamespace:
+    def __init__(self, recorder):
+        self.completions = _RecordingSDKResource(recorder)
+
+
+class _RecordingMistralClient:
+    def __init__(self, recorder):
+        self.chat = _RecordingMistralChat(recorder)
+
+
+class _RecordingMistralChat:
+    def __init__(self, recorder):
+        self.recorder = recorder
+
+    def complete(self, **kwargs):
+        self.recorder.requests.append({"json": kwargs})
+        return self.recorder.payload
+
+
+class _RecordingGoogleClient:
+    def __init__(self, recorder):
+        self.aio = _RecordingGoogleAsyncClient(recorder)
+
+
+class _RecordingGoogleAsyncClient:
+    def __init__(self, recorder):
+        self.models = _RecordingGoogleModels(recorder)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
+
+
+class _RecordingGoogleModels:
+    def __init__(self, recorder):
+        self.recorder = recorder
+
+    async def generate_content(self, *, model, contents, config=None):
+        self.recorder.requests.append({"json": {"model": model, "contents": contents, **(config or {})}})
+        return self.recorder.payload

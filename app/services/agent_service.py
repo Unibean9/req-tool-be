@@ -268,15 +268,15 @@ class AgentService:
 
         is_first_message = session.interrupt_type is None
 
+        strong_llm_client = None
+        if llm_client is None:
+            llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
+
         msg = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content)
         self.db.add(msg)
         session.status = AgentSessionStatus.ACTIVE
         session.interrupt_type = None
         await self.db.commit()
-
-        strong_llm_client = None
-        if llm_client is None:
-            llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
 
         if is_first_message:
             initial_state = build_initial_workflow_state(
@@ -905,7 +905,7 @@ class AgentService:
         if not provider_config_id:
             return None, None
         from app.core.crypto import decrypt_token
-        from app.models.llm_provider import LLMProviderConfig
+        from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus
         from app.services.llm_clients import LLMClientFactory
 
         config_row = (
@@ -913,6 +913,8 @@ class AgentService:
         ).scalar_one_or_none()
         if not config_row or not config_row.encrypted_api_key:
             return None, None
+        if config_row.status != LLMProviderStatus.ACTIVE:
+            raise HTTPException(422, detail="LLM provider config must pass health check before use")
         api_key = decrypt_token(config_row.encrypted_api_key)
         if not api_key:
             raise ValueError("API key cannot be decrypted - key rotation may be out of sync")

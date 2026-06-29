@@ -26,7 +26,7 @@ from app.models.artifact import (
     ArtifactType,
     ArtifactVersion,
 )
-from app.models.llm_provider import LLMProviderConfig, ProviderType
+from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -112,6 +112,7 @@ async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypa
             encrypted_secret_key=encrypt_token("aws-secret"),
             region="us-east-1",
             model_name="amazon.nova-lite-v1:0",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -157,6 +158,7 @@ async def test_resolve_llm_client_returns_strong_when_configured(db_session, mon
             region="us-east-1",
             model_name="amazon.nova-lite-v1:0",
             strong_model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -201,6 +203,7 @@ async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch
             name="OpenAI",
             encrypted_api_key=encrypt_token("sk-test"),
             model_name="gpt-4o-mini",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -210,6 +213,92 @@ async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch
         assert default_client is created[0][1]
         assert strong_client is None
         assert len(created) == 1
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_rejects_unchecked_config(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.OPENAI,
+            name="OpenAI",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="gpt-4o-mini",
+            status=LLMProviderStatus.DRAFT,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == "LLM provider config must pass health check before use"
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_rejects_unchecked_config_before_session_side_effects(
+    client,
+    db_session,
+    monkeypatch,
+):
+    project_id = await _setup(client)
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.OPENAI,
+            name="OpenAI",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="gpt-4o-mini",
+            status=LLMProviderStatus.DRAFT,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        svc = _make_service(db_session)
+        session_payload = await svc.create_session(
+            project_id=project_id,
+            artifact_type="goal",
+            provider_config_id=config.id,
+        )
+        session_id = uuid.UUID(session_payload["session_id"])
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.handle_user_message(project_id=project_id, session_id=session_id, content="Xin chao")
+
+        session = await svc.get_session(project_id=project_id, session_id=session_id)
+        messages = (
+            await db_session.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.USER,
+                )
+            )
+        ).scalars().all()
+
+        assert exc_info.value.status_code == 422
+        assert session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+        assert messages == []
     finally:
         monkeypatch.setattr(settings, "encryption_key", original_key)
         monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
