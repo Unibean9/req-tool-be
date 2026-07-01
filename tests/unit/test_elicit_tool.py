@@ -71,6 +71,49 @@ def test_elicit_comparable_products_falls_back_to_model_knowledge():
     assert out["source"] == "model_knowledge"
 
 
+def test_elicit_pre_mortem_returns_failure_causes():
+    out = elicit(technique="pre_mortem", seed="new checkout flow")
+
+    assert out["technique"] == "pre_mortem"
+    assert isinstance(out["failure_causes"], list)
+    assert len(out["failure_causes"]) >= 3
+    for item in out["failure_causes"]:
+        assert isinstance(item["cause"], str)
+        assert isinstance(item["prevention_hint"], str)
+
+
+def test_elicit_tree_of_thought_returns_branches():
+    out = elicit(technique="tree_of_thought", seed="pricing strategy")
+
+    assert out["technique"] == "tree_of_thought"
+    assert isinstance(out["branches"], list)
+    assert len(out["branches"]) >= 3
+    for branch in out["branches"]:
+        assert isinstance(branch["path"], str)
+        assert isinstance(branch["outcome_hint"], str)
+
+
+def test_elicit_socratic_questioning_returns_questions():
+    out = elicit(technique="socratic_questioning", seed="user onboarding flow")
+
+    assert out["technique"] == "socratic_questioning"
+    assert isinstance(out["questions"], list)
+    assert len(out["questions"]) >= 3
+    for item in out["questions"]:
+        assert isinstance(item["probe"], str)
+
+
+def test_elicit_challenge_assumptions_returns_counter_arguments():
+    out = elicit(technique="challenge_assumptions", seed="single admin role is enough")
+
+    assert out["technique"] == "challenge_assumptions"
+    assert isinstance(out["assumptions_to_challenge"], list)
+    assert out["assumptions_to_challenge"]
+    for item in out["assumptions_to_challenge"]:
+        assert isinstance(item["counter_argument"], str)
+        assert isinstance(item["revised_statement"], str)
+
+
 def test_elicit_unknown_technique_raises_value_error():
     with pytest.raises(ValueError, match="unknown_xyz"):
         elicit(technique="unknown_xyz", seed="...")

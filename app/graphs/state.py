@@ -227,6 +227,18 @@ class WorkflowState(TypedDict):
     # detect N consecutive identical calls and exit the analyze/tools cycle early. Plain replace-on-write
     # (like turn_count) — no special merge needed since it's written at a single site per turn.
     recent_tool_calls: list[str]
+    # System-selected thinking mode for this turn ("structuring" | "challenging" | "synthesizing" |
+    # "risk_probing"), written every turn by orchestrator_node's heuristic diagnosis step and read by
+    # analyze_node's prompt builder. Plain replace-on-write, mirroring mode_hint's placement — the
+    # system-driven sibling of the user-driven mode_hint steer. None when adaptive diagnosis is
+    # disabled (enable_adaptive_diagnosis=False).
+    thinking_mode: str | None
+    # Diagnosis result backing thinking_mode: {"risk_level": "low"|"high", "signals": [...]}. Plain
+    # replace-on-write, fully overwritten each turn — no accumulation semantics.
+    diagnosis_signal: dict[str, Any] | None
+    # Count of LLM judge calls spent escalating a high-risk diagnosis, session-lifetime. Plain
+    # replace-on-write; compared against DIAGNOSIS_JUDGE_CALLS_MAX to gate further escalation.
+    diagnosis_judge_calls_used: int
 
 
 def build_initial_workflow_state(
@@ -279,4 +291,7 @@ def build_initial_workflow_state(
         "session_elicit_count": 0,
         "decision_nodes": {},
         "recent_tool_calls": [],
+        "thinking_mode": None,
+        "diagnosis_signal": None,
+        "diagnosis_judge_calls_used": 0,
     }

@@ -1516,12 +1516,26 @@ async def read_artifact(
 # Sourced from config (max_critique_rounds) so the reflection-round cap is a single tunable.
 CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
+# Cap on LLM judge calls the orchestrator's diagnosis step may spend per turn escalating a
+# heuristic high-risk classification (adaptive analysis loop, Phase 4).
+DIAGNOSIS_JUDGE_CALLS_MAX = settings.max_diagnosis_judge_calls
+
 
 # ---------------------------------------------------------------------------
 # Elicitation surface — BMAD technique scaffolds + external knowledge
 # ---------------------------------------------------------------------------
 
-ELICIT_TECHNIQUES = ("5_whys", "reverse", "moscow", "first_principles", "comparable_products")
+ELICIT_TECHNIQUES = (
+    "5_whys",
+    "reverse",
+    "moscow",
+    "first_principles",
+    "comparable_products",
+    "pre_mortem",
+    "tree_of_thought",
+    "socratic_questioning",
+    "challenge_assumptions",
+)
 
 
 def _duckduckgo_search(query: str) -> list[dict]:
@@ -1643,6 +1657,58 @@ def _elicit_comparable_products(seed: str, search_client) -> dict:
     return {"technique": "comparable_products", "seed": seed, "products": products, "source": "web_search"}
 
 
+def _elicit_pre_mortem(seed: str) -> dict:
+    return {
+        "technique": "pre_mortem",
+        "seed": seed,
+        "premise": f"Imagine '{seed}' has already failed six months from now.",
+        "failure_causes": [
+            {"cause": "Most likely cause of failure", "prevention_hint": "Turn into a guarded precondition."},
+            {"cause": "Second most likely cause of failure", "prevention_hint": "Turn into a guarded precondition."},
+            {"cause": "Overlooked/silent cause of failure", "prevention_hint": "Turn into a monitored assumption."},
+        ],
+    }
+
+
+def _elicit_tree_of_thought(seed: str) -> dict:
+    return {
+        "technique": "tree_of_thought",
+        "seed": seed,
+        "branches": [
+            {"path": "Conservative approach", "outcome_hint": "Lower risk, slower/narrower payoff."},
+            {"path": "Aggressive approach", "outcome_hint": "Higher risk, faster/broader payoff."},
+            {"path": "Hybrid approach", "outcome_hint": "Combine strengths, watch for added complexity."},
+        ],
+        "evaluation_hint": "Score each branch against feasibility and value, then pick or merge.",
+    }
+
+
+def _elicit_socratic_questioning(seed: str) -> dict:
+    return {
+        "technique": "socratic_questioning",
+        "seed": seed,
+        "questions": [
+            {"probe": f"What does '{seed}' actually mean in this context?", "targets": "clarification"},
+            {"probe": "What evidence supports this being true?", "targets": "assumption"},
+            {"probe": "What would change if this were false?", "targets": "implication"},
+        ],
+    }
+
+
+def _elicit_challenge_assumptions(seed: str) -> dict:
+    return {
+        "technique": "challenge_assumptions",
+        "seed": seed,
+        "assumptions_to_challenge": [
+            {
+                "assumption": f"Implicit assumption behind '{seed}'",
+                "counter_argument": "State the strongest case against it.",
+                "revised_statement": "Rewrite the requirement so it holds even if the assumption is false.",
+            },
+        ],
+    }
+
+
 def elicit(technique: str, seed: str, *, search_client=None) -> dict:
     """Apply a BMAD elicitation technique to a seed, returning a structured frame.
 
@@ -1660,7 +1726,15 @@ def elicit(technique: str, seed: str, *, search_client=None) -> dict:
         return _elicit_moscow(seed)
     if technique == "first_principles":
         return _elicit_first_principles(seed)
-    return _elicit_comparable_products(seed, search_client)
+    if technique == "comparable_products":
+        return _elicit_comparable_products(seed, search_client)
+    if technique == "pre_mortem":
+        return _elicit_pre_mortem(seed)
+    if technique == "tree_of_thought":
+        return _elicit_tree_of_thought(seed)
+    if technique == "socratic_questioning":
+        return _elicit_socratic_questioning(seed)
+    return _elicit_challenge_assumptions(seed)
 
 
 @tool("web_search")
@@ -1682,7 +1756,17 @@ async def web_search_tool(
 @tool("elicit")
 async def elicit_tool(
     technique: Annotated[
-        Literal["5_whys", "reverse", "moscow", "first_principles", "comparable_products"],
+        Literal[
+            "5_whys",
+            "reverse",
+            "moscow",
+            "first_principles",
+            "comparable_products",
+            "pre_mortem",
+            "tree_of_thought",
+            "socratic_questioning",
+            "challenge_assumptions",
+        ],
         "BMAD elicitation technique applied to the seed.",
     ],
     seed: Annotated[str, "Seed/topic to apply the technique to."],

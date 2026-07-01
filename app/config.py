@@ -62,6 +62,14 @@ class Settings(BaseSettings):
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
 
+    # Adaptive diagnosis loop (orchestrator_node -> analyze_node): heuristic-gated thinking-mode
+    # selection. Operator-facing rollback path — flip to False to restore pre-plan behavior
+    # (no diagnosis, no prompt suffix, no judge escalation) without a code revert.
+    enable_adaptive_diagnosis: bool = True
+    # Cap on LLM judge calls the diagnosis step may spend per turn escalating a heuristic
+    # high-risk classification. Mirrors max_critique_rounds' role as a cost ceiling.
+    max_diagnosis_judge_calls: int = 1
+
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000
 

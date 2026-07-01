@@ -172,6 +172,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "session_elicit_count",
         "decision_nodes",
         "recent_tool_calls",
+        "thinking_mode",
+        "diagnosis_signal",
+        "diagnosis_judge_calls_used",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 

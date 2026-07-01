@@ -457,6 +457,99 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
     }
 
 
+# Thinking modes the diagnosis heuristic can select. Mapping: low risk -> structuring (cold
+# start/early section) or synthesizing (section mostly filled); high risk -> challenging (weak
+# coverage on a non-empty draft) or risk_probing (a prior quality-gate failure on top of weak
+# coverage).
+_THINKING_MODES = ("structuring", "challenging", "synthesizing", "risk_probing")
+
+# Below this coverage ratio a section counts as "low coverage" for the diagnosis conjunction.
+# Named constant (not a soft score) so a single weak signal can't silently escalate every section.
+_LOW_COVERAGE_RATIO = 0.34
+_COVERAGE_SCORES = {"filled": 1.0, "needs_review": 0.5, "partial": 0.5, "missing": 0.0}
+
+
+def _diagnose_section(state: WorkflowState) -> dict[str, Any]:
+    """Cheap, LLM-free risk/ambiguity diagnosis for the current section (Phase 1 of the adaptive
+    analysis loop). Never calls an LLM — pure function of state already available in-turn.
+
+    Cold start (no coverage data yet, e.g. turn 1): defaults to low risk / "structuring" rather
+    than erroring or guessing high risk. This is intentional, not an overlooked edge case —
+    adaptivity kicks in from turn 2 once coverage/quality data exists.
+    """
+    coverage = state.get("section_coverage")
+    if not coverage:
+        return {"risk_level": "low", "signals": [], "thinking_mode": "structuring"}
+
+    ratios = [_COVERAGE_SCORES.get(value, 0.0) for value in coverage.values()]
+    coverage_ratio = sum(ratios) / len(ratios) if ratios else 0.0
+    low_coverage = coverage_ratio < _LOW_COVERAGE_RATIO
+
+    quality_report = state.get("quality_report") or {}
+    quality_gate_failed = quality_report.get("quality_gate_result") == "fail"
+
+    draft_body = state.get("draft_body")
+    sparse_draft = not str(draft_body or "").strip()
+
+    signals: list[str] = []
+    if low_coverage:
+        signals.append("low_coverage")
+    if quality_gate_failed:
+        signals.append("quality_gate_failed")
+    if sparse_draft:
+        signals.append("sparse_draft")
+
+    # Named conjunction of concrete signals, not a single unbounded soft score: a lone weak signal
+    # (e.g. low coverage alone on a fresh section) never escalates risk on its own.
+    high_risk = (low_coverage and quality_gate_failed) or (low_coverage and sparse_draft)
+
+    if high_risk:
+        thinking_mode = "risk_probing" if quality_gate_failed else "challenging"
+        return {"risk_level": "high", "signals": signals, "thinking_mode": thinking_mode}
+
+    thinking_mode = "synthesizing" if coverage_ratio >= 0.6 else "structuring"
+    return {"risk_level": "low", "signals": signals, "thinking_mode": thinking_mode}
+
+
+def _diagnosis_llm_client(config: RunnableConfig | None) -> Any:
+    """Tolerant LLM-client extraction for orchestrator_node's diagnosis step.
+
+    Unlike analyze_node's strict config["configurable"]["llm_client"] access, orchestrator_node
+    may run with config=None or config={} (existing test suite already exercises this), so a
+    missing client must degrade to None rather than raise -- _invoke_judge already handles a
+    None client gracefully.
+    """
+    if not config:
+        return None
+    cfg = config.get("configurable") or {}
+    return cfg.get("strong_llm_client") or cfg.get("llm_client")
+
+
+async def _apply_judge_escalation(
+    diagnosis: dict[str, Any], state: WorkflowState, config: RunnableConfig | None
+) -> dict[str, Any]:
+    """Escalate a heuristic high-risk diagnosis to an LLM judge call, budget-gated (Phase 4).
+
+    Low-risk sections never reach the judge. High-risk sections spend one judge call per turn up
+    to DIAGNOSIS_JUDGE_CALLS_MAX; once the budget is exhausted the call is skipped with a distinct
+    "escalation_skipped_budget" signal rather than silently degrading like "not_needed".
+    """
+    calls_used = state.get("diagnosis_judge_calls_used") or 0
+    if diagnosis["risk_level"] != "high":
+        return {"escalation": "not_needed", "judge_calls_used": calls_used}
+
+    from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX
+
+    if calls_used >= DIAGNOSIS_JUDGE_CALLS_MAX:
+        return {"escalation": "escalation_skipped_budget", "judge_calls_used": calls_used}
+
+    from app.graphs.critique import _invoke_judge
+
+    llm_client = _diagnosis_llm_client(config)
+    judge_result = await _invoke_judge(state.get("draft_body") or "", "risk_review", llm_client)
+    return {"escalation": "escalated", "judge_calls_used": calls_used + 1, "judge_result": judge_result}
+
+
 def _should_run_completeness_sweep(state: WorkflowState) -> bool:
     feedback = state.get("feedback_summary") or {}
     if state.get("completeness_sweep_requested") or state.get("user_requested_prd_descent"):
@@ -470,7 +563,25 @@ def _should_run_completeness_sweep(state: WorkflowState) -> bool:
 
 async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None = None) -> dict[str, Any]:
     """Pre-analyst orchestration: resurface parked blockers and run completeness sweep when triggered."""
-    _ = config
+    if settings.enable_adaptive_diagnosis:
+        diagnosis = _diagnose_section(state)
+        escalation = await _apply_judge_escalation(diagnosis, state, config)
+        diagnosis_signal: dict[str, Any] = {
+            "risk_level": diagnosis["risk_level"],
+            "signals": diagnosis["signals"],
+            "escalation": escalation["escalation"],
+        }
+        if "judge_result" in escalation:
+            diagnosis_signal["judge_result"] = escalation["judge_result"]
+        diagnosis_update: dict[str, Any] = {
+            "thinking_mode": diagnosis["thinking_mode"],
+            "diagnosis_signal": diagnosis_signal,
+            "diagnosis_judge_calls_used": escalation["judge_calls_used"],
+        }
+    else:
+        # Kill switch: no-op defaults, identical to a never-diagnosed session.
+        diagnosis_update = {"thinking_mode": None, "diagnosis_signal": None}
+
     decision_nodes = state.get("decision_nodes") or {}
     feedback = dict(state.get("feedback_summary") or {})
     resurfaced = scan_parked_questions(decision_nodes)
@@ -482,7 +593,7 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
     else:
         feedback.pop("resurfaced_questions", None)
 
-    update: dict[str, Any] = {"feedback_summary": feedback}
+    update: dict[str, Any] = {"feedback_summary": feedback, **diagnosis_update}
     if _should_run_completeness_sweep(state):
         gaps = completeness_sweep(decision_nodes, state.get("artifact_type") or "brd")
         updated_nodes, created = add_parked_questions_for_gaps(
@@ -592,6 +703,8 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     # Artifact-type shape (taxonomy chain + section-coverage contract) belongs with the static policy
     # in L1, not the per-turn payload — appended last so the static prefix stays cache-friendly.
     system_prompt = (system_prompt or "") + _build_artifact_contract_block(effective_state)
+    system_prompt = system_prompt + _build_thinking_mode_block(effective_state)
+    system_prompt = system_prompt + _build_stuck_escalation_block(effective_state)
     from app.graphs.agent_tools import get_available_tools
 
     available_tools = get_available_tools(effective_state)
@@ -1441,6 +1554,73 @@ def _compact_list(values: list[Any], limit: int = 3) -> str:
     if len(values) > limit:
         rendered.append(f"... (+{len(values) - limit})")
     return "; ".join(rendered)
+
+
+# Technique hints per thinking mode. Widened after Phase 3 landed (elicit_tool's registry now
+# includes pre_mortem/challenge_assumptions) -- every name here must exist in ELICIT_TECHNIQUES.
+_THINKING_MODE_TECHNIQUE_HINTS: dict[str, tuple[str, ...]] = {
+    "challenging": ("reverse", "first_principles", "challenge_assumptions"),
+    "risk_probing": ("5_whys", "reverse", "pre_mortem"),
+}
+_THINKING_MODE_RATIONALE: dict[str, str] = {
+    "challenging": (
+        "Diagnosis flagged this section as low-coverage on a non-empty draft -- challenge "
+        "existing assumptions before accepting the current shape."
+    ),
+    "risk_probing": (
+        "Diagnosis flagged this section as low-coverage after a failed quality gate -- probe "
+        "root causes and risks before proposing content."
+    ),
+}
+
+
+def _build_thinking_mode_block(state: WorkflowState) -> str:
+    """Thinking-mode guidance appended to the system prompt after the artifact contract block.
+
+    Returns "" for an unset or low-risk thinking mode so the fast path's prompt stays
+    byte-identical to pre-plan behavior. get_instruction()'s cached, role-keyed assembly is never
+    touched -- this is a per-turn suffix, same mechanism as _build_artifact_contract_block.
+    """
+    thinking_mode = state.get("thinking_mode")
+    techniques = _THINKING_MODE_TECHNIQUE_HINTS.get(thinking_mode or "")
+    if not techniques:
+        return ""
+    rationale = _THINKING_MODE_RATIONALE.get(thinking_mode, "")
+    return (
+        f"\n\nTHINKING MODE: {thinking_mode}\n{rationale}\n"
+        f"Favor these elicit() techniques this turn: {', '.join(techniques)}."
+    )
+
+
+def _is_near_stuck(recent_tool_calls: list[str]) -> bool:
+    """True one repeat before route_node's hard-stop threshold fires (Phase 4 safety valve).
+
+    Mirrors _has_repeated_tool_calls's tail-identity check but at _REPEATED_TOOL_CALL_EXIT_THRESHOLD
+    - 1 fingerprints, so the model can be warned to change course before route_node exits the loop.
+    Purely advisory -- never itself ends the turn; route_node's threshold and logic are unchanged.
+    """
+    threshold = _REPEATED_TOOL_CALL_EXIT_THRESHOLD - 1
+    if len(recent_tool_calls) < threshold:
+        return False
+    tail = recent_tool_calls[-threshold:]
+    return len(set(tail)) == 1
+
+
+def _build_stuck_escalation_block(state: WorkflowState) -> str:
+    """Prompt suffix warning the model it is one repeat away from route_node's early exit.
+
+    Returns "" when adaptive diagnosis is disabled or the model is not near-stuck, keeping the
+    fast path byte-identical to pre-plan behavior.
+    """
+    if not settings.enable_adaptive_diagnosis:
+        return ""
+    if not _is_near_stuck(state.get("recent_tool_calls") or []):
+        return ""
+    return (
+        "\n\nLOOP WARNING: You have called the same tool with the same arguments twice in a row. "
+        "One more identical call will end this turn's analysis early. Change your approach -- use "
+        "a different tool, different arguments, or write_draft/ask_user -- to make progress."
+    )
 
 
 def _build_artifact_contract_block(state: WorkflowState) -> str:
