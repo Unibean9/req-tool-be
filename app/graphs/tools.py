@@ -17,10 +17,16 @@ async def read_artifacts(
     *,
     db: AsyncSession,
     project_id: uuid.UUID,
-    artifact_type: str | None = None,
+    artifact_type: str | list[str] | None = None,
 ) -> list[dict]:
     query = select(Artifact).where(Artifact.project_id == project_id)
-    if artifact_type:
+    if isinstance(artifact_type, list):
+        # Batch the whole ancestor-type chain into one round trip instead of one query per type.
+        known_types = [item for item in artifact_type if _is_known_artifact_type(item)]
+        if not known_types:
+            return []
+        query = query.where(Artifact.type.in_(known_types))
+    elif artifact_type:
         if not _is_known_artifact_type(artifact_type):
             return []
         query = query.where(Artifact.type == artifact_type)
