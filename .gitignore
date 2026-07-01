@@ -74,6 +74,8 @@ claude.md
 AGENTS.md
 agents.md
 .ck.json
-.my-skills.lock.json
 session-data/
 .mcp.json 
+
+# forge generated files
+.forge.lock.json
