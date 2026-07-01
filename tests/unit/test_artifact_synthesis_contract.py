@@ -8,34 +8,9 @@ from app.schemas.artifact_synthesis import (
     ArtifactCandidateReadiness,
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
-    canonical_artifact_body,
     evaluate_candidate_readiness,
     strip_synthesis_assumptions,
 )
-
-
-def _metadata_with_pending() -> ArtifactSynthesisMetadata:
-    return ArtifactSynthesisMetadata(
-        artifact_type="problem_statement",
-        focused_artifact_id=uuid.uuid4(),
-        base_version_id=None,
-        evidence_refs=[],
-        inference_level="medium",
-        confirmed_assumptions=["Users have smartphones"],
-        pending_assumptions=["Target retention needs confirmation"],
-    )
-
-
-def test_canonical_body_does_not_leak_marker_and_strip_removes_synthesis_block():
-    body = canonical_artifact_body(body="## Problem\nSlow.", synthesis_metadata=_metadata_with_pending())
-    assert "## Assumptions" in body  # present at the artifact level
-    assert "<!-- synthesis-assumptions -->" not in body  # marker must not pollute the persisted body
-
-    stripped = strip_synthesis_assumptions(body)
-
-    assert "## Assumptions" not in stripped
-    assert "needs confirmation" not in stripped.lower()
-    assert "## Problem" in stripped
 
 
 def test_strip_removes_synthesis_block_by_structure():

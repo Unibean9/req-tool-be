@@ -32,7 +32,6 @@ from app.models.artifact import (
 )
 from app.schemas.agent import AgentSessionResponse
 from app.schemas.artifact_synthesis import (
-    canonical_artifact_body,
     evaluate_candidate_readiness,
     synthesis_metadata_dict,
     synthesis_metadata_from_snapshot,
@@ -85,15 +84,9 @@ class AgentService:
         created_by_id: uuid.UUID | None = None,
         focused_artifact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
+        # Soft gate: missing predecessors no longer block session creation — every artifact stays
+        # navigable, and `missing_context` (already returned in the response) carries the warning.
         missing = await self._check_predecessors(project_id, artifact_type)
-        if missing:
-            raise HTTPException(
-                409,
-                detail={
-                    "detail": "Predecessor artifact is not accepted",
-                    "missing_context": missing,
-                },
-            )
         if focused_artifact_id is not None:
             focused = await self.db.get(Artifact, focused_artifact_id)
             if focused is None or focused.project_id != project_id:
@@ -523,7 +516,7 @@ class AgentService:
             synthesis_metadata = synthesis_metadata_dict(snapshot)
         except ValueError as exc:
             raise HTTPException(422, detail="Tool call metadata synthesis is invalid") from exc
-        body = canonical_artifact_body(body=str(body or ""), synthesis_metadata=synthesis_metadata)
+        body = str(body or "").strip()
         snapshot["body"] = body
         self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 

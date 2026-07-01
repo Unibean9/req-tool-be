@@ -14,6 +14,7 @@ status update — so it needs no key.
 import hashlib
 import json
 import logging
+import re
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -54,7 +55,6 @@ from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
-    canonical_artifact_body,
     evaluate_candidate_readiness,
 )
 from app.services.artifact_service import ArtifactLinkService
@@ -350,6 +350,29 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return result
 
 
+def _normalize_for_fact_match(text: str) -> str:
+    return re.sub(r"[^\w\s]", "", str(text or "").lower()).strip()
+
+
+def _drop_statements_already_facts(statements: list[str], key_facts: list[dict]) -> list[str]:
+    """Exclude an assumption/open-question statement the user already stated as a key fact.
+
+    A confirmed key_fact supersedes an assumption about the same thing — surfacing both would show
+    the agent "assuming" something the user has already told it.
+    """
+    fact_texts = [_normalize_for_fact_match(f.get("statement") or "") for f in (key_facts or [])]
+    fact_texts = [text for text in fact_texts if text]
+    if not fact_texts:
+        return statements
+    kept: list[str] = []
+    for statement in statements:
+        normalized = _normalize_for_fact_match(statement)
+        if normalized and any(normalized in fact or fact in normalized for fact in fact_texts):
+            continue
+        kept.append(statement)
+    return kept
+
+
 def _graph_assumption_signals(decision_nodes: dict) -> tuple[list[str], list[str]]:
     """Derive (confirmed, pending) assumption-like statements from the decision graph.
 
@@ -446,6 +469,7 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
         else:
             graph_confirmed, graph_pending = _graph_assumption_signals(state.get("decision_nodes") or {})
+            key_facts = state.get("key_facts") or []
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
@@ -453,13 +477,16 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                 evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
                 inference_level="medium",
                 confirmed_assumptions=_dedupe_keep_order(
-                    [a["statement"] for a in (state.get("assumptions") or [])] + graph_confirmed
+                    _drop_statements_already_facts(
+                        [a["statement"] for a in (state.get("assumptions") or [])] + graph_confirmed, key_facts
+                    )
                 ),
                 pending_assumptions=_dedupe_keep_order(
-                    [q["question"] for q in (state.get("open_questions") or [])] + graph_pending
+                    _drop_statements_already_facts(
+                        [q["question"] for q in (state.get("open_questions") or [])] + graph_pending, key_facts
+                    )
                 ),
             )
-            body = canonical_artifact_body(body=body, synthesis_metadata=metadata)
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
                 body=body,

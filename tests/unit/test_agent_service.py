@@ -344,7 +344,7 @@ async def test_create_session_intent_has_no_predecessors(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_create_session_blocks_when_predecessor_not_accepted(client, db_session):
+async def test_create_session_warns_when_predecessor_not_accepted(client, db_session):
     project_id = await _setup(client)
     db_session.add(
         Artifact(
@@ -357,11 +357,9 @@ async def test_create_session_blocks_when_predecessor_not_accepted(client, db_se
     )
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
+    result = await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["missing_context"] == ["brd"]
+    assert result["missing_context"] == ["brd"]
 
 
 @pytest.mark.asyncio
@@ -1213,7 +1211,7 @@ async def test_feedback_loop_many_edits_only_persists_final_ready_version(client
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_normalizes_unmarked_pending_assumptions_before_persist(client, db_session):
+async def test_approve_tool_call_rejects_unmarked_pending_assumptions(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
@@ -1234,13 +1232,11 @@ async def test_approve_tool_call_normalizes_unmarked_pending_assumptions_before_
     }
     await db_session.flush()
 
-    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
 
-    version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))).scalar_one()
-    assert "## Assumptions" in version.body
-    assert "- Students use study groups weekly" in version.body
-    assert "- Target retention 15% ⚠️ needs confirmation" in version.body
-    assert tc.created_version_id == version.id
+    assert exc_info.value.status_code == 422
+    assert "not ready enough to persist" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

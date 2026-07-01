@@ -66,36 +66,8 @@ def synthesis_metadata_dict(snapshot: dict[str, Any]) -> dict[str, Any]:
     return synthesis_metadata_from_snapshot(snapshot).model_dump(mode="json")
 
 
-def canonical_artifact_body(
-    *,
-    body: str,
-    synthesis_metadata: ArtifactSynthesisMetadata | dict[str, Any],
-) -> str:
-    metadata = (
-        synthesis_metadata
-        if isinstance(synthesis_metadata, ArtifactSynthesisMetadata)
-        else ArtifactSynthesisMetadata.model_validate(synthesis_metadata)
-    )
-    base = str(body or "").strip()
-    confirmed = _missing_body_items(base, metadata.confirmed_assumptions)
-    pending = _missing_body_items(base, metadata.pending_assumptions)
-    if not confirmed and not pending:
-        return base
-
-    blocks: list[str] = []
-    if confirmed:
-        blocks.append("### Confirmed\n" + "\n".join(f"- {item}" for item in confirmed))
-    if pending:
-        blocks.append("### Needs Confirmation\n" + "\n".join(f"- {item} ⚠️ needs confirmation" for item in pending))
-    # The appended block is structurally distinct — a "## Assumptions" section opening with a
-    # "### Confirmed" / "### Needs Confirmation" subsection — so export can drop it by structure
-    # without polluting the persisted body with a marker, and without touching a real
-    # "## Assumptions" content section (e.g. constraints_assumptions, which opens with a table).
-    appendix = "## Assumptions\n" + "\n\n".join(blocks)
-    return "\n\n".join(part for part in (base, appendix) if part)
-
-
-# Retained only to strip the marker out of bodies persisted before it was dropped from the appendix.
+# Retained only to strip the marker/appendix out of bodies persisted before assumptions/facts were
+# dropped as a separate synthesis appendix in favor of the real "constraints_assumptions" section.
 SYNTHESIS_ASSUMPTIONS_MARKER = "<!-- synthesis-assumptions -->"
 
 
@@ -184,8 +156,3 @@ def _extract_marked_lines(body: str, markers: tuple[str, ...]) -> list[str]:
         if any(marker in normalized for marker in markers):
             marked.append(line.strip())
     return marked
-
-
-def _missing_body_items(body: str, items: list[str]) -> list[str]:
-    normalized_body = body.lower()
-    return [item for item in items if item and item.lower() not in normalized_body]
