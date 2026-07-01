@@ -631,6 +631,36 @@ async def test_anthropic_tool_choice_required_sends_type_any(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_anthropic_generate_with_tools_marks_system_as_ephemeral_cache_block(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[AnthropicLLMClient])
+    client = AnthropicLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(
+        messages=[{"role": "user", "content": "x"}],
+        system="Static analyst policy contract.",
+        max_tokens=16,
+        tools=[_ASK_TOOL],
+    )
+    assert recorder.requests[0]["json"]["system"] == [
+        {"type": "text", "text": "Static analyst policy contract.", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_anthropic_generate_without_tools_marks_system_as_ephemeral_cache_block(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, {"content": [{"type": "text", "text": "raw answer"}]})
+    client = AnthropicLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    await client.generate(
+        messages=[{"role": "user", "content": "x"}],
+        system="You are a BA.",
+        max_tokens=16,
+        response_format=None,
+    )
+    assert recorder.requests[0]["json"]["system"] == [
+        {"type": "text", "text": "You are a BA.", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_google_tool_choice_auto_sends_mode_auto(monkeypatch):
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[GoogleLLMClient])
     client = GoogleLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
@@ -698,6 +728,69 @@ async def test_bedrock_ping_tool_calling_forces_any_tool_choice(monkeypatch):
 
     assert await client.ping_tool_calling() is True
     assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
+
+
+@pytest.mark.asyncio
+async def test_bedrock_iam_key_generate_reuses_boto3_client_across_calls(monkeypatch):
+    call_count = {"n": 0}
+
+    class _FakeBotoClient:
+        def converse(self, **kwargs):
+            return _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient]
+
+    def _fake_boto3_client(*args, **kwargs):
+        call_count["n"] += 1
+        return _FakeBotoClient()
+
+    monkeypatch.setattr("boto3.client", _fake_boto3_client)
+    client = BedrockLLMClient(
+        LLMClientConfig(api_key="AKIATEST", model="model-test", secret_key="secret-test")
+    )
+
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16)
+    await client.generate(messages=[{"role": "user", "content": "y"}], system=None, max_tokens=16)
+
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_bedrock_iam_key_ping_reuses_boto3_client_across_calls(monkeypatch):
+    call_count = {"n": 0}
+
+    class _FakeBotoClient:
+        def converse(self, **kwargs):
+            return {"output": {"message": {"content": [{"text": "pong"}]}}}
+
+    def _fake_boto3_client(*args, **kwargs):
+        call_count["n"] += 1
+        return _FakeBotoClient()
+
+    monkeypatch.setattr("boto3.client", _fake_boto3_client)
+    client = BedrockLLMClient(
+        LLMClientConfig(api_key="AKIATEST", model="model-test", secret_key="secret-test")
+    )
+
+    await client.ping()
+    await client.ping()
+
+    assert call_count["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_mistral_generate_reuses_sdk_client_across_calls(monkeypatch):
+    create_count = {"n": 0}
+
+    def _counting_create_mistral_sdk(*, api_key, timeout):
+        create_count["n"] += 1
+        return _RecordingMistralClient(_HttpxRecorder(CHAT_JSON_OK))
+
+    monkeypatch.setattr(llm_client_module, "_create_mistral_sdk", _counting_create_mistral_sdk)
+    client = MistralLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16)
+    await client.generate(messages=[{"role": "user", "content": "y"}], system=None, max_tokens=16)
+
+    assert create_count["n"] == 1
 
 
 class _HttpxRecorder:

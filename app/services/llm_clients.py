@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
@@ -260,10 +261,12 @@ async def _openai_create_chat_completion(
     return _plain_dict(response)
 
 
-async def _mistral_create_chat_completion(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+async def _mistral_create_chat_completion(
+    api_key: str, timeout: float, body: dict[str, Any], *, client: Any = None
+) -> dict[str, Any]:
     def _complete() -> dict[str, Any]:
-        client = _create_mistral_sdk(api_key=api_key, timeout=timeout)
-        return _plain_dict(client.chat.complete(**body))
+        sdk_client = client if client is not None else _create_mistral_sdk(api_key=api_key, timeout=timeout)
+        return _plain_dict(sdk_client.chat.complete(**body))
 
     return await asyncio.to_thread(_complete)
 
@@ -471,8 +474,14 @@ class DeepSeekLLMClient(ChatCompletionsLLMClient):
 class MistralLLMClient(ChatCompletionsLLMClient):
     required_tool_choice = "any"
 
+    def __init__(self, config: LLMClientConfig):
+        super().__init__(config)
+        self._sdk_client: Any = None
+
     async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
-        return await _mistral_create_chat_completion(self.config.api_key, timeout, body)
+        if self._sdk_client is None:
+            self._sdk_client = _create_mistral_sdk(api_key=self.config.api_key, timeout=timeout)
+        return await _mistral_create_chat_completion(self.config.api_key, timeout, body, client=self._sdk_client)
 
 
 class OpenRouterLLMClient(ChatCompletionsLLMClient):
@@ -636,7 +645,7 @@ class AnthropicLLMClient:
         }
         final_system = _system_with_schema_instruction(system, response_format)
         if final_system:
-            body["system"] = final_system
+            body["system"] = _anthropic_system_blocks(final_system)
 
         data = await _anthropic_create_message(self.config.api_key, 30.0, body)
 
@@ -661,7 +670,7 @@ class AnthropicLLMClient:
             "tool_choice": _ANTHROPIC_CHOICE.get(tool_choice, {"type": "auto"}),
         }
         if system:
-            body["system"] = system
+            body["system"] = _anthropic_system_blocks(system)
         data = await _anthropic_create_message(self.config.api_key, 30.0, body)
         return _parse_anthropic_tool_response(data), _extract_anthropic_usage(data)
 
@@ -669,6 +678,25 @@ class AnthropicLLMClient:
 class BedrockLLMClient:
     def __init__(self, config: LLMClientConfig):
         self.config = config
+        self._iam_boto3_client: Any = None
+        self._iam_boto3_client_lock = threading.Lock()
+
+    def _get_iam_boto3_client(self) -> Any:
+        # Runs inside asyncio.to_thread() worker threads — run_critique can dispatch more than
+        # one concurrently via LangGraph's gather-based ToolNode, so the lazy-init check-then-set
+        # needs a real thread lock, not just an asyncio-level guard.
+        if self._iam_boto3_client is None:
+            with self._iam_boto3_client_lock:
+                if self._iam_boto3_client is None:
+                    import boto3
+
+                    self._iam_boto3_client = boto3.client(
+                        "bedrock-runtime",
+                        region_name=self.config.region or "us-east-1",
+                        aws_access_key_id=self.config.api_key,
+                        aws_secret_access_key=self.config.secret_key,
+                    )
+        return self._iam_boto3_client
 
     async def ping(self) -> str | None:
         if self.config.secret_key:
@@ -705,14 +733,7 @@ class BedrockLLMClient:
 
     async def _ping_with_iam_keys(self) -> str | None:
         def _ping() -> str | None:
-            import boto3
-
-            client_kwargs: dict[str, Any] = {
-                "region_name": self.config.region or "us-east-1",
-                "aws_access_key_id": self.config.api_key,
-                "aws_secret_access_key": self.config.secret_key,
-            }
-            client = boto3.client("bedrock-runtime", **client_kwargs)
+            client = self._get_iam_boto3_client()
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "ping"}]}],
@@ -742,14 +763,7 @@ class BedrockLLMClient:
 
     async def _ping_tool_calling_with_iam_keys(self) -> bool:
         def _check() -> bool:
-            import boto3
-
-            client = boto3.client(
-                "bedrock-runtime",
-                region_name=self.config.region or "us-east-1",
-                aws_access_key_id=self.config.api_key,
-                aws_secret_access_key=self.config.secret_key,
-            )
+            client = self._get_iam_boto3_client()
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "ok"}]}],
@@ -793,14 +807,7 @@ class BedrockLLMClient:
         tool_choice: str = "auto",
     ) -> dict[str, Any]:
         def _generate() -> dict[str, Any]:
-            import boto3
-
-            client_kwargs: dict[str, Any] = {
-                "region_name": self.config.region or "us-east-1",
-                "aws_access_key_id": self.config.api_key,
-                "aws_secret_access_key": self.config.secret_key,
-            }
-            client = boto3.client("bedrock-runtime", **client_kwargs)
+            client = self._get_iam_boto3_client()
             converse_kwargs: dict[str, Any] = {
                 "modelId": self.config.model,
                 "messages": _bedrock_messages(messages),
@@ -1366,6 +1373,16 @@ def _anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         }
         for item in messages
     ]
+
+
+def _anthropic_system_blocks(system: str) -> list[dict[str, Any]]:
+    """Wrap the system prompt as a single cache-eligible block.
+
+    `system` (get_instruction + artifact contract) is stable for the lifetime of a session, so
+    marking it with an ephemeral cache breakpoint lets Anthropic serve it from cache on turn 2+
+    instead of re-billing it as fresh input tokens every call.
+    """
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
 
 
 def _extract_anthropic_text(data: dict[str, Any]) -> str | None:
