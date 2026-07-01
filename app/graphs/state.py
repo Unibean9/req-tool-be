@@ -222,6 +222,11 @@ class WorkflowState(TypedDict):
     # default to {} on load without migration or crash. The merge reducer keeps concurrent same-turn
     # node writes from clobbering each other (see merge_decision_nodes).
     decision_nodes: Annotated[dict[str, DecisionNode], merge_decision_nodes]
+    # Bounded fingerprint history of dispatched tool calls (name + sorted-args), newest last. Populated
+    # once per turn in analyze_node at the same site dispatched_tools is built; read by route_node to
+    # detect N consecutive identical calls and exit the analyze/tools cycle early. Plain replace-on-write
+    # (like turn_count) — no special merge needed since it's written at a single site per turn.
+    recent_tool_calls: list[str]
 
 
 def build_initial_workflow_state(
@@ -273,4 +278,5 @@ def build_initial_workflow_state(
         "mode_hint": mode_hint,
         "session_elicit_count": 0,
         "decision_nodes": {},
+        "recent_tool_calls": [],
     }

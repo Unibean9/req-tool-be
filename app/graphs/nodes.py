@@ -1,3 +1,4 @@
+import difflib
 import hashlib
 import time
 import uuid
@@ -65,6 +66,15 @@ _AUDIT_TEXT_ARG_KEYS = frozenset(
 # them from the schema passed to the provider so the model only sees real arguments.
 _INJECTED_TOOL_PARAMS = frozenset({"state", "config", "tool_call_id"})
 
+# Number of consecutive identical (name + args) tool-call fingerprints that trigger route_node's
+# early exit. 3 (not 1 or 2) is conservative enough to tolerate a legitimate one-off repeat (e.g. the
+# model re-issuing the same idempotent call after a transient tool error) while still catching a model
+# stuck looping well before the 30-turn max_agent_turns ceiling.
+_REPEATED_TOOL_CALL_EXIT_THRESHOLD = 3
+# Only the last N fingerprints are ever needed to test the threshold; bounding the list keeps the
+# checkpointed WorkflowState field small regardless of session length.
+_RECENT_TOOL_CALLS_MAXLEN = _REPEATED_TOOL_CALL_EXIT_THRESHOLD
+
 
 def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
     """Remove injected params (state, config, tool_call_id) from a tool's JSON-Schema properties."""
@@ -94,6 +104,19 @@ def _model_tool_calls(ai_message: AIMessage) -> list[dict[str, Any]]:
     ]
 
 
+def _tool_call_fingerprint(name: str, args: dict[str, Any]) -> str:
+    """Fingerprint a dispatched tool call by name + sorted-args, not the full payload (P9)."""
+    return f"{name}:{sorted(args.items())!r}"
+
+
+def _has_repeated_tool_calls(recent_tool_calls: list[str]) -> bool:
+    """True when the last N fingerprints are all identical (P9 early-exit trigger)."""
+    if len(recent_tool_calls) < _REPEATED_TOOL_CALL_EXIT_THRESHOLD:
+        return False
+    tail = recent_tool_calls[-_REPEATED_TOOL_CALL_EXIT_THRESHOLD:]
+    return len(set(tail)) == 1
+
+
 def _audit_text_value(value: str) -> dict[str, Any]:
     encoded = value.encode("utf-8")
     return {
@@ -114,6 +137,37 @@ def _audit_arg_value(key: str, value: Any) -> Any:
     if isinstance(value, list):
         return [_audit_arg_value(key, item) for item in value]
     return value
+
+
+# P10: the LLM API returns only aggregate input/output/total token counts, never a per-component
+# split, so per-component figures here are a proxy, not an exact count. We use a uniform
+# chars-to-tokens ratio (4 chars/token — the commonly cited average for English/mixed-language text;
+# no tokenizer is exposed by our LLM client interface, and adding a tiktoken dependency purely for an
+# estimate would be disproportionate). Applied identically to every component, so the four figures are
+# comparable to each other even though none of them is individually precise.
+_CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _estimate_tokens(text: str) -> int:
+    return max(0, len(text)) // _CHARS_PER_TOKEN_ESTIMATE
+
+
+def _estimate_token_breakdown(
+    *,
+    system_prompt: str,
+    messages: list[dict[str, Any]],
+    tool_schemas: list[dict[str, Any]],
+    draft_body: str | None,
+) -> dict[str, int]:
+    """Additive per-component token estimate (P10) — system/history/tools/draft, char-proxy based."""
+    history_text = "\n".join(str(message.get("content") or "") for message in messages)
+    tools_text = "\n".join(str(schema) for schema in tool_schemas)
+    return {
+        "system": _estimate_tokens(system_prompt),
+        "history": _estimate_tokens(history_text),
+        "tools": _estimate_tokens(tools_text),
+        "draft": _estimate_tokens(draft_body or ""),
+    }
 
 
 def _audit_tool_call(tool_call: dict[str, Any]) -> dict[str, Any]:
@@ -451,7 +505,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
     project_id = uuid.UUID(cfg["project_id"])
-    llm_client = cfg["llm_client"]
+    llm_client = cfg.get("strong_llm_client") or cfg["llm_client"]
     if llm_client is None:
         raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
@@ -486,16 +540,13 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             }
             effective_state = {**state, **focus_reset_update}
 
-        artifacts: list[dict[str, Any]] = []
-        for context_type in context_types:
-            artifacts.extend(
-                await read_artifacts(
-                    db=db,
-                    project_id=project_id,
-                    artifact_type=context_type,
-                    context={"workflow_area": effective_state["workflow_area"]},
-                )
-            )
+        # Batched into one query for the whole ancestor-type chain instead of one round trip per type.
+        artifacts = await read_artifacts(
+            db=db,
+            project_id=project_id,
+            artifact_type=context_types,
+            context={"workflow_area": effective_state["workflow_area"]},
+        )
         # Load the current draft body for this artifact_type so the analyst can mine
         # the delta instead of re-asking what the draft already records (M7/M8).
         draft = await read_current_body(
@@ -523,9 +574,15 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         else:
             coverage["section_coverage_stall_count"] = (effective_state.get("section_coverage_stall_count") or 0) + 1
         effective_state = {**effective_state, **coverage}
+    # Captured before the freshly-read draft below shadows it: state["draft_body"] on entry is
+    # exactly what this node persisted as "draft_body" last turn (see the result dict further
+    # down), so it doubles as the "last sent to the model" snapshot the diff needs at zero cost.
+    previous_draft_body = state.get("draft_body")
     draft_body = draft["body"] if draft else None
 
-    prompt = _build_tool_selection_prompt(effective_state, artifacts, draft_body)
+    prompt = _build_tool_selection_prompt(
+        effective_state, artifacts, draft_body, previous_draft_body, str(session_id)
+    )
     system_prompt = get_instruction(
         artifact_type=effective_state["artifact_type"],
         workflow_area=effective_state["workflow_area"],
@@ -539,15 +596,26 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
 
     available_tools = get_available_tools(effective_state)
     tool_schemas = _build_tool_schemas(available_tools)
+    analyzer_messages = _build_analyzer_messages(effective_state, prompt)
     started_at = time.monotonic()
     ai_message, usage = await llm_client.generate(
-        messages=_build_analyzer_messages(effective_state, prompt),
+        messages=analyzer_messages,
         system=system_prompt,
         max_tokens=settings.analyze_max_tokens,
         tools=tool_schemas,
         tool_choice=settings.tool_choice_mode,
     )
     latency_ms = int((time.monotonic() - started_at) * 1000)
+    # P10: additive per-component estimate, alongside (never replacing) whatever keys the client's
+    # usage dict already carries.
+    token_usage = dict(usage) if isinstance(usage, dict) else usage
+    if isinstance(token_usage, dict):
+        token_usage["by_component"] = _estimate_token_breakdown(
+            system_prompt=system_prompt or "",
+            messages=analyzer_messages,
+            tool_schemas=tool_schemas,
+            draft_body=draft_body,
+        )
 
     # Post-LLM gate keeps only the solo invariant; availability is enforced by the state-driven tool surface.
     model_tool_calls = _model_tool_calls(ai_message)
@@ -579,7 +647,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         run = AgentRun(
             session_id=session_id,
             analysis_result=analysis_result_base,
-            token_usage=usage,
+            token_usage=token_usage,
             latency_ms=latency_ms,
         )
         db.add(run)
@@ -622,6 +690,18 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     method_profile["current_workflow"] = _infer_workflow_mode(effective_state)
     method_profile["planning_track"] = _normalize_planning_track(method_profile.get("planning_track"))
 
+    # P9: append one fingerprint per turn (not per dispatched call) summarizing this turn's whole
+    # dispatched-tool batch, so route_node's threshold means "N consecutive turns", not "N dispatched
+    # calls" — a turn that dispatches several identical tool calls at once must not be mistaken for a
+    # multi-turn stuck loop.
+    recent_tool_calls = list(effective_state.get("recent_tool_calls") or [])
+    if dispatched_tools:
+        turn_fingerprint = "|".join(
+            sorted(_tool_call_fingerprint(item["name"], item["args"]) for item in dispatched_tools)
+        )
+        recent_tool_calls.append(turn_fingerprint)
+    recent_tool_calls = recent_tool_calls[-_RECENT_TOOL_CALLS_MAXLEN:]
+
     result = {
         "analysis_result": analysis_result,
         "turn_count": effective_state["turn_count"] + 1,
@@ -637,6 +717,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
         "feedback_summary": next_feedback,
+        "recent_tool_calls": recent_tool_calls,
         **focus_reset_update,
         **coverage,
     }
@@ -695,6 +776,11 @@ def route_before_analyze(state: WorkflowState) -> str:
 
 def route_node(state: WorkflowState) -> str:
     if state["turn_count"] >= settings.max_agent_turns:
+        return END
+    # P9: the model repeating the same (name + args) tool call N times in a row is stuck, not making
+    # progress — exit the analyze/tools cycle via the same path the turn-count ceiling uses rather than
+    # waiting for max_agent_turns (which stays 30; this is an earlier, narrower exit condition).
+    if _has_repeated_tool_calls(state.get("recent_tool_calls") or []):
         return END
     # analyze_node emitted an AIMessage; dispatch on its tool_calls. No tool_calls means the loop
     # has nothing to run this turn -> finish. The finalize hard-gate and the coverage signal live in
@@ -823,8 +909,19 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
 def _analyzer_history_messages(state: WorkflowState) -> list[Any]:
     raw_messages = list(state.get("messages") or [])
     if not (state.get("conversation_summary") or "").strip():
-        return raw_messages
+        return raw_messages[_bounded_history_start(raw_messages) :]
     return raw_messages[_summary_compaction_start(raw_messages) :]
+
+
+def _bounded_history_start(messages: list[Any]) -> int:
+    """Cap the pre-summary history window to the same recent-turn count `summary_trigger_every`
+    is meant to bound, so a long conversation that hasn't triggered a summary yet doesn't resend
+    every turn since session start.
+    """
+    human_indices = [idx for idx, message in enumerate(messages) if _is_human_turn(message)]
+    if len(human_indices) <= settings.summary_trigger_every:
+        return 0
+    return human_indices[-settings.summary_trigger_every]
 
 
 def _summary_compaction_start(messages: list[Any]) -> int:
@@ -1023,6 +1120,34 @@ def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     return f"\n\nCURRENT DRAFT for type '{state['artifact_type']}':\n{draft_body}"
 
 
+def _build_draft_delta_block(
+    state: WorkflowState, draft_body: str | None, previous_draft_body: str | None
+) -> str:
+    """Draft block for turns after the first: send only what changed since the last turn.
+
+    Full-body resend every turn was the token-heavy default; the previous turn's body is already
+    available for free via state["draft_body"] (see analyze_node), so this diffs against it instead.
+    Falls back to the full body when there is no previous body to diff against (first turn / draft
+    just created), which is the safety net the diffing-correctness risk mitigation calls for.
+    """
+    if not previous_draft_body:
+        return _build_draft_block(state, draft_body)
+    if draft_body == previous_draft_body:
+        return ""
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_draft_body.splitlines(),
+            (draft_body or "").splitlines(),
+            lineterm="",
+        )
+    )
+    diff_text = "\n".join(diff_lines)
+    return (
+        f"\n\nCURRENT DRAFT for type '{state['artifact_type']}' has changed since last turn "
+        f"(unified diff, not the full body):\n{diff_text}"
+    )
+
+
 def _build_key_facts_block(state: WorkflowState) -> str:
     """Accumulated key facts: confirmed data points the analyst must not re-ask or contradict."""
     facts = state.get("key_facts") or []
@@ -1032,17 +1157,48 @@ def _build_key_facts_block(state: WorkflowState) -> str:
     return f"\n\nConfirmed key facts (do not ask again):\n{lines}"
 
 
-def _build_decision_view_block(state: WorkflowState) -> str:
-    """Rendered decision-graph view shown as the live draft target."""
+# P7: cross-turn cache for the rendered decision-view block, keyed by (session_id, content
+# fingerprint). The fingerprint is an md5 of the serialized decision_nodes, so ANY change to the
+# graph produces a different key — invalidation is automatic and foolproof, no separate "invalidate
+# on mutation" bookkeeping is needed. In-process, module-level dict only: it does NOT survive process
+# restarts and does NOT help across multiple worker processes; it only skips redundant re-renders for
+# a session that stays warm within one process's lifetime. Bounded via simple FIFO eviction so a
+# long-running process can't grow this unboundedly across many sessions.
+_DECISION_VIEW_CACHE: dict[tuple[str, str], str] = {}
+_DECISION_VIEW_CACHE_MAX_ENTRIES = 512
+
+
+def _decision_nodes_fingerprint(decision_nodes: dict[str, Any]) -> str:
+    import json
+
+    return hashlib.md5(json.dumps(decision_nodes, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _build_decision_view_block(state: WorkflowState, session_id: str | None = None) -> str:
+    """Rendered decision-graph view shown as the live draft target.
+
+    Cross-turn cached per session_id when provided (P7) — render_view is skipped when this session's
+    decision_nodes are byte-identical to the last time this block was rendered for it. session_id is
+    optional so callers without a session context (e.g. unit tests) still get correct, uncached output.
+    """
     decision_nodes = state.get("decision_nodes") or {}
     if not decision_nodes:
         return ""
+
+    cache_key = (session_id, _decision_nodes_fingerprint(decision_nodes)) if session_id else None
+    if cache_key is not None and cache_key in _DECISION_VIEW_CACHE:
+        return _DECISION_VIEW_CACHE[cache_key]
+
     from app.graphs.decision_graph import render_view
 
     view = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
-    if not view:
-        return ""
-    return f"\n\nDRAFT IN PROGRESS (incrementally updated - reflects clarified points):\n{view}"
+    block = f"\n\nDRAFT IN PROGRESS (incrementally updated - reflects clarified points):\n{view}" if view else ""
+
+    if cache_key is not None:
+        if len(_DECISION_VIEW_CACHE) >= _DECISION_VIEW_CACHE_MAX_ENTRIES:
+            _DECISION_VIEW_CACHE.pop(next(iter(_DECISION_VIEW_CACHE)))
+        _DECISION_VIEW_CACHE[cache_key] = block
+    return block
 
 
 def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
@@ -1169,6 +1325,8 @@ def _build_tool_selection_prompt(
     state: WorkflowState,
     artifacts: list[dict],
     draft_body: str | None = None,
+    previous_draft_body: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
@@ -1198,11 +1356,11 @@ def _build_tool_selection_prompt(
     )
 
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
-    decision_view_block = _build_decision_view_block(state)
+    decision_view_block = _build_decision_view_block(state, session_id)
     draft_block = (
         ""
         if _decision_view_can_hide_draft(state, decision_view_block, draft_body)
-        else _build_draft_block(state, draft_body)
+        else _build_draft_delta_block(state, draft_body, previous_draft_body)
     )
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)

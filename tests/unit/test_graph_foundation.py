@@ -171,6 +171,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "feedback_summary",
         "session_elicit_count",
         "decision_nodes",
+        "recent_tool_calls",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 
