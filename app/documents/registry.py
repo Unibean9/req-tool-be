@@ -72,6 +72,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         artifact_type="brd",
         label="Business Requirements Document",
         children=(
+            "executive_summary",
             "vision_objectives",
             "problem_statement",
             "stakeholder_register",
@@ -87,8 +88,8 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         artifact_type="prd",
         label="Product Requirements Document",
         children=(
-            "functional_requirement",
             "use_case",
+            "functional_requirement",
             "non_functional_requirement",
             "acceptance_criteria",
         ),
@@ -98,9 +99,20 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     DocumentTypeConfig(
         artifact_type="sad",
         label="Software Architecture Document",
-        children=("domain_entity", "component", "interface", "tech_decision"),
+        children=("tech_stack", "domain_entity", "component", "interface", "tech_decision"),
         is_container=True,
         description="Architecture domains, components, interfaces, and technical decisions.",
+    ),
+    _item(
+        "executive_summary",
+        "Executive Summary",
+        "A one-paragraph summary of what the project is, why it matters, and its expected outcome.",
+        sub_dimensions={
+            "what": "What the project is, in plain terms.",
+            "why": "Why the project matters now.",
+            "expected_outcome": "The outcome expected if the project succeeds.",
+        },
+        threshold=0.8,
     ),
     _item(
         "vision_objectives",
@@ -190,14 +202,23 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         },
         threshold=0.75,
     ),
-    _item("functional_requirement", "Functional Requirement", "A testable product behavior."),
+    _item("functional_requirement", "Functional Requirements", "A testable product behavior."),
     _item(
         "use_case",
         "Business Capabilities",
         "A business capability: the boundary of a domain or a major business flow.",
+        sub_dimensions={
+            "business_value": "Business value the capability delivers, not the mechanics of using it.",
+            "user_segment": "Target user segment or persona the capability serves.",
+        },
     ),
-    _item("non_functional_requirement", "Non-Functional Requirement", "A measurable quality constraint."),
+    _item("non_functional_requirement", "Non-Functional Requirements", "A measurable quality constraint."),
     _item("acceptance_criteria", "Acceptance Criteria", "Conditions that prove a requirement is met."),
+    _item(
+        "tech_stack",
+        "Tech Stack",
+        "The definitive technology selection: options considered, the chosen technology, and pinned version.",
+    ),
     _item("domain_entity", "Domain Entity", "A core domain concept and its responsibilities."),
     _item("component", "Component", "A deployable or logical architecture component."),
     _item("interface", "Interface", "A contract between architecture components."),
@@ -210,6 +231,12 @@ _CONTAINER_BY_ITEM = {
 }
 
 _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
+    "executive_summary": ArtifactOutputContract(
+        artifact_type="executive_summary",
+        format="markdown",
+        required_headings=("## Executive Summary",),
+        guidance="One short paragraph: what the project is, why it matters, and its expected outcome.",
+    ),
     "vision_objectives": ArtifactOutputContract(
         artifact_type="vision_objectives",
         format="markdown",
@@ -267,8 +294,19 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         artifact_type="functional_requirement",
         format="markdown",
         required_headings=("## Functional Requirements",),
-        guidance="One row per testable behavior; reference use cases by their UC id where relevant.",
-        table_columns=("id", "requirement", "behavior", "inputs/outputs", "acceptance signal", "priority"),
+        guidance=(
+            "One row per testable behavior; reference use cases by their UC id where relevant. "
+            "The dependencies column lists FR ids this requirement depends on, as free text."
+        ),
+        table_columns=(
+            "id",
+            "requirement",
+            "behavior",
+            "inputs/outputs",
+            "acceptance signal",
+            "priority",
+            "dependencies",
+        ),
         id_prefix="FR",
     ),
     "use_case": ArtifactOutputContract(
@@ -276,11 +314,11 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         format="markdown",
         required_headings=("## Business Capabilities",),
         guidance=(
-            "List 3-8 business capabilities. Describe each briefly: the goal it solves, who uses it, "
-            "the value it delivers, and its main scope. Do not detail flows, preconditions, or exception "
-            "branches here — those belong to user stories and event storming."
+            "List 3-8 business capabilities. Describe each briefly: the goal it solves, the user segment "
+            "it serves, the business value it delivers, and its main scope. Do not detail flows, "
+            "preconditions, or exception branches here — those belong to user stories and event storming."
         ),
-        table_columns=("goal", "users", "value", "scope"),
+        table_columns=("goal", "user_segment", "business_value", "scope"),
         id_prefix="BC",
         render_style="entries",
     ),
@@ -299,6 +337,16 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         guidance="One Given/When/Then row per criterion; link each to its functional requirement by FR id.",
         table_columns=("id", "linked requirement", "given", "when", "then"),
         id_prefix="AC",
+    ),
+    "tech_stack": ArtifactOutputContract(
+        artifact_type="tech_stack",
+        format="markdown",
+        required_headings=("## Tech Stack",),
+        guidance=(
+            "One row per technology category (e.g. language, framework, database). List the options "
+            "considered, the chosen technology, the pinned version, and the rationale for the choice."
+        ),
+        table_columns=("category", "options considered", "choice", "version", "rationale"),
     ),
     "domain_entity": ArtifactOutputContract(
         artifact_type="domain_entity",

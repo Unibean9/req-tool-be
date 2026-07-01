@@ -31,6 +31,7 @@ class ArtifactType(enum.StrEnum):
     BRD = "brd"
     PRD = "prd"
     SAD = "sad"
+    EXECUTIVE_SUMMARY = "executive_summary"
     VISION_OBJECTIVES = "vision_objectives"
     PROBLEM_STATEMENT = "problem_statement"
     STAKEHOLDER_REGISTER = "stakeholder_register"
@@ -45,6 +46,7 @@ class ArtifactType(enum.StrEnum):
     COMPONENT = "component"
     INTERFACE = "interface"
     TECH_DECISION = "tech_decision"
+    TECH_STACK = "tech_stack"
     # Legacy delivery values retained because PostgreSQL enum members cannot be dropped in place.
     EPIC = "epic"
     STORY = "story"

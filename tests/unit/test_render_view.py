@@ -158,7 +158,7 @@ def test_render_view_business_capability_renders_id_tagged_entries():
             origin={"source": "test"},
             status="confirmed",
             node_id="U1",
-            fields={"goal": "Let students check in fast", "users": "Students"},
+            fields={"goal": "Let students check in fast", "user_segment": "Students"},
         ),
     }
 
@@ -167,6 +167,6 @@ def test_render_view_business_capability_renders_id_tagged_entries():
     assert "## Business Capabilities" in out
     assert "### BC-01: Attendance check-in" in out
     assert "- **goal:** Let students check in fast" in out
-    assert "- **users:** Students" in out
+    assert "- **user_segment:** Students" in out
     # Unfilled brief fields still placeholder so the gate can flag them.
-    assert "- **value:** _(cần bổ sung)_" in out
+    assert "- **business_value:** _(cần bổ sung)_" in out

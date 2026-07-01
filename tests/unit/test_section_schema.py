@@ -15,8 +15,9 @@ def test_registry_has_all_document_containers():
     assert all_container_types() == ("brd", "prd", "sad")
 
 
-def test_brd_registry_has_seven_items():
+def test_brd_registry_has_eight_items():
     assert children_of("brd") == (
+        "executive_summary",
         "vision_objectives",
         "problem_statement",
         "stakeholder_register",
@@ -29,15 +30,16 @@ def test_brd_registry_has_seven_items():
 
 def test_prd_registry_has_four_active_items():
     assert children_of("prd") == (
-        "functional_requirement",
         "use_case",
+        "functional_requirement",
         "non_functional_requirement",
         "acceptance_criteria",
     )
 
 
-def test_sad_registry_has_four_scaffold_items():
+def test_sad_registry_has_five_scaffold_items():
     assert children_of("sad") == (
+        "tech_stack",
         "domain_entity",
         "component",
         "interface",

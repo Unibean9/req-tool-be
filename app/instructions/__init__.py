@@ -29,6 +29,7 @@ _DEFAULT_ROLE = "business_analyst"
 ARTIFACT_ROLE_MAP: dict[str, str] = {
     # Business Analyst — discovery and problem framing
     "brd": "business_analyst",
+    "executive_summary": "business_analyst",
     "vision_objectives": "business_analyst",
     "problem_statement": "business_analyst",
     "stakeholder_register": "business_analyst",
@@ -44,6 +45,7 @@ ARTIFACT_ROLE_MAP: dict[str, str] = {
     "acceptance_criteria": "product_manager",
     # Architecture items currently reuse the product-manager overlay until a dedicated role lands.
     "sad": "product_manager",
+    "tech_stack": "product_manager",
     "domain_entity": "product_manager",
     "component": "product_manager",
     "interface": "product_manager",
