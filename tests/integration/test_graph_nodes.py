@@ -407,7 +407,7 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
 
 
 @pytest.mark.asyncio
-async def test_analyze_uses_default_client_even_when_strong_present(client, db_session):
+async def test_analyze_prefers_strong_client_when_present(client, db_session):
     from app.graphs.nodes import analyze_node
 
     headers = await make_auth_headers(client)
@@ -417,14 +417,14 @@ async def test_analyze_uses_default_client_even_when_strong_present(client, db_s
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     default_llm = AsyncMock()
-    default_llm.generate = AsyncMock(return_value=({
+    default_llm.generate = AsyncMock()
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock(return_value=({
         "next_action": "done",
         "confidence": 0.9,
         "gaps": [],
         "proposals": [],
     }, None))
-    strong_llm = AsyncMock()
-    strong_llm.generate = AsyncMock()
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), default_llm)
@@ -432,8 +432,8 @@ async def test_analyze_uses_default_client_even_when_strong_present(client, db_s
 
     await analyze_node(state, config)
 
-    default_llm.generate.assert_called_once()
-    strong_llm.generate.assert_not_called()
+    strong_llm.generate.assert_called_once()
+    default_llm.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -674,6 +674,39 @@ def test_analyzer_messages_summary_replaces_old_transcript():
     assert "Moi nhat: hay tao PRD" in rendered
 
 
+def test_analyzer_history_bounded_from_turn_one_without_summary(monkeypatch):
+    from app.graphs.nodes import _analyzer_history_messages
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+    state = _state()
+    state["conversation_summary"] = ""
+    state["messages"] = [
+        item
+        for i in range(10)
+        for item in ({"role": "user", "content": f"Tin nhan cu {i}"}, {"role": "assistant", "content": f"Tra loi {i}"})
+    ]
+
+    history = _analyzer_history_messages(state)
+    rendered = str(history)
+
+    assert len(history) < len(state["messages"])
+    assert "Tin nhan cu 0" not in rendered
+    assert "Tin nhan cu 9" in rendered
+
+
+def test_analyzer_history_unbounded_below_window_without_summary(monkeypatch):
+    from app.graphs.nodes import _analyzer_history_messages
+
+    monkeypatch.setattr("app.graphs.nodes.settings.summary_trigger_every", 6)
+    state = _state()
+    state["conversation_summary"] = ""
+    state["messages"] = [{"role": "user", "content": f"Tin nhan {i}"} for i in range(3)]
+
+    history = _analyzer_history_messages(state)
+
+    assert history == state["messages"]
+
+
 def test_analyzer_summary_compaction_keeps_matching_tool_use():
     from langchain_core.messages import AIMessage, ToolMessage
 
@@ -834,14 +867,82 @@ async def test_analyze_node_records_token_usage_and_latency(client, db_session):
     run_id = uuid.UUID(result["last_agent_run_id"])
     async with TestSessionFactory() as db:
         run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()
-        assert run.token_usage == {"input": 5, "output": 10, "total": 15}
+        # Pre-existing keys stay present, unchanged in meaning (P10 backward-compat).
+        assert run.token_usage["input"] == 5
+        assert run.token_usage["output"] == 10
+        assert run.token_usage["total"] == 15
         assert isinstance(run.latency_ms, int)
         assert run.latency_ms >= 0
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_token_usage_has_additive_component_breakdown(client, db_session):
+    """P10: token_usage gains a `by_component` key alongside pre-existing keys, never replacing them."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(
+        {"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []},
+        {"input": 5, "output": 10, "total": 15},
+    ))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    run_id = uuid.UUID(result["last_agent_run_id"])
+    async with TestSessionFactory() as db:
+        run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()
+        assert run.token_usage["input"] == 5
+        assert run.token_usage["output"] == 10
+        assert run.token_usage["total"] == 15
+        by_component = run.token_usage["by_component"]
+        assert set(by_component.keys()) == {"system", "history", "tools", "draft"}
+        assert all(isinstance(v, int) for v in by_component.values())
 
 
 # ---------------------------------------------------------------------------
 # route_node tests
 # ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_analyze_node_appends_one_fingerprint_per_turn_not_per_dispatched_call(client, db_session):
+    """P9: a single turn dispatching several identical tool calls at once must add exactly one
+    fingerprint to recent_tool_calls, not one per call — otherwise a legitimate multi-call turn would
+    be mistaken for several consecutive stuck turns and trip the early-exit threshold immediately."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    same_call = {"id": "1", "name": "explore_note", "args": {"content": "a"}}
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(
+        AIMessage(content="", tool_calls=[same_call, same_call, same_call]),
+        {"input": 5, "output": 10, "total": 15},
+    ))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert len(result["recent_tool_calls"]) == 1
+
 
 def test_route_node_max_turns_routes_to_end():
     from langgraph.graph import END
@@ -851,6 +952,38 @@ def test_route_node_max_turns_routes_to_end():
 
     state = _state(turn_count=settings.max_agent_turns, analysis_result={"next_action": "propose"})
     assert route_node(state) == END
+
+
+def test_route_node_exits_early_on_repeated_identical_tool_calls():
+    """P9: N (3) consecutive identical (name+args) tool-call fingerprints exit before max_agent_turns."""
+    from langgraph.graph import END
+
+    from app.graphs.nodes import _tool_call_fingerprint, route_node
+
+    fingerprint = _tool_call_fingerprint("write_draft", {"body": "same body"})
+    state = _state(turn_count=2)
+    state["recent_tool_calls"] = [fingerprint, fingerprint, fingerprint]
+    assert route_node(state) == END
+
+
+def test_route_node_does_not_exit_on_varying_or_below_threshold_repeats():
+    """P9 false-positive guard: varying calls, or fewer than N identical repeats, must not exit early."""
+    from app.graphs.nodes import _tool_call_fingerprint, route_node
+
+    varying_fp_a = _tool_call_fingerprint("explore_note", {"content": "a"})
+    varying_fp_b = _tool_call_fingerprint("explore_note", {"content": "b"})
+    state = _state(turn_count=2)
+    state["recent_tool_calls"] = [varying_fp_a, varying_fp_b, varying_fp_a]
+    state["messages"] = [AIMessage(content="", tool_calls=[{"id": "1", "name": "explore_note", "args": {"content": "a"}}])]
+    assert route_node(state) == "tools"
+
+    same_fp = _tool_call_fingerprint("write_draft", {"body": "same body"})
+    state_below_threshold = _state(turn_count=2)
+    state_below_threshold["recent_tool_calls"] = [same_fp, same_fp]
+    state_below_threshold["messages"] = [
+        AIMessage(content="", tool_calls=[{"id": "1", "name": "write_draft", "args": {"body": "same body"}}])
+    ]
+    assert route_node(state_below_threshold) == "tools"
 
 
 # ---------------------------------------------------------------------------
@@ -974,6 +1107,30 @@ async def test_triage_classifies_work_drops_reply():
     assert result["turn_type"] == "work"
     # reply is only carried for a conversational turn.
     assert result["triage_reply"] is None
+
+
+@pytest.mark.asyncio
+async def test_triage_uses_default_client_even_when_strong_present():
+    """triage_node stays on the default/cheap tier regardless of a configured strong tier —
+    analyze_node is the only node that prefers strong_llm_client."""
+    from app.graphs.nodes import triage_node
+
+    default_llm = AsyncMock()
+    default_llm.generate = AsyncMock(return_value=(
+        {"turn_type": "converse", "locale": "vi", "reply": "Hello, what do you want to build?"}, None
+    ))
+    strong_llm = AsyncMock()
+    strong_llm.generate = AsyncMock()
+
+    state = _state()
+    state["messages"] = [{"role": "user", "content": "hello"}]
+    config = _config(str(uuid.uuid4()), str(uuid.uuid4()), default_llm)
+    config["configurable"]["strong_llm_client"] = strong_llm
+
+    await triage_node(state, config)
+
+    default_llm.generate.assert_called_once()
+    strong_llm.generate.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -1193,6 +1350,55 @@ async def test_read_current_body_returns_none_without_current_version(client, db
 
 
 @pytest.mark.asyncio
+async def test_read_artifacts_with_type_list_issues_one_query(client, db_session):
+    """A list of artifact types must batch into a single query, not one per type."""
+    from app.graphs.tools import read_artifacts
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    await _add_artifact_with_version(db_session, project_id, "brd", "BRD", "body brd")
+    await _add_artifact_with_version(db_session, project_id, "epic", "Epic", "body epic")
+    await _add_artifact_with_version(db_session, project_id, "story", "Story", "body story")
+
+    async with TestSessionFactory() as db:
+        execute_spy = AsyncMock(wraps=db.execute)
+        with patch.object(db, "execute", execute_spy):
+            result = await read_artifacts(
+                db=db,
+                project_id=project_id,
+                artifact_type=["brd", "epic", "story"],
+                context={"workflow_area": "analysis"},
+            )
+
+    assert execute_spy.await_count == 1, "One call for the whole ancestor-type chain, not one per type"
+    assert {row["type"] for row in result} == {"brd", "epic", "story"}
+
+
+@pytest.mark.asyncio
+async def test_read_artifacts_with_str_type_keeps_existing_single_type_behavior(client, db_session):
+    """Widened signature must not change behavior for the existing str/None cases."""
+    from app.graphs.tools import read_artifacts
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    await _add_artifact_with_version(db_session, project_id, "brd", "BRD", "body brd")
+    await _add_artifact_with_version(db_session, project_id, "epic", "Epic", "body epic")
+
+    async with TestSessionFactory() as db:
+        result = await read_artifacts(
+            db=db, project_id=project_id, artifact_type="brd", context={"workflow_area": "analysis"}
+        )
+
+    assert [row["type"] for row in result] == ["brd"]
+
+
+@pytest.mark.asyncio
 async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_session):
     """A focused document item must expose its current draft in the prompt."""
     from app.graphs.nodes import analyze_node
@@ -1244,6 +1450,86 @@ async def test_analyze_node_loads_current_draft_body_into_prompt(client, db_sess
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert draft_body in prompt, "Existing draft body must be injected as context"
     assert "CURRENT DRAFT" in prompt
+
+
+async def _update_artifact_body(db_session, artifact, body: str) -> None:
+    """Add a new current version with `body`, mirroring how write_draft advances a draft."""
+    from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
+
+    version = ArtifactVersion(
+        artifact_id=artifact.id,
+        version_number=2,
+        title=artifact.title,
+        body=body,
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.AI_GENERATION,
+        extra_metadata={},
+    )
+    db_session.add(version)
+    await db_session.flush()
+    artifact.current_version_id = version.id
+    await db_session.commit()
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_sends_diff_then_omits_unchanged_draft_across_turns(client, db_session):
+    """Multi-field draft mutation across turns: full body, then diff-only, then no draft block."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+
+    turn1_body = "Doi tuong: sinh vien nam 2.\nTro ngai: study scheduling.\nMuc tieu: giam trung lich."
+    parent = await _add_artifact_with_version(db_session, project_id, "brd", "BRD", "Container")
+    child = await _add_artifact_with_version(
+        db_session, project_id, "problem_statement", "Problem Statement", turn1_body, parent_id=parent.id
+    )
+
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="problem_statement",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=child.id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(
+        return_value=({"next_action": "done", "confidence": 0.5, "gaps": [], "proposals": []}, None)
+    )
+    config = _config(str(session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    # Turn 1: no previous draft_body in state yet -> full body sent.
+    state = _state(artifact_type="problem_statement")
+    state["focused_artifact_id"] = str(child.id)
+    result1 = await analyze_node(state, config)
+    prompt1 = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert turn1_body in prompt1
+    assert result1["draft_body"] == turn1_body
+
+    # Turn 2: draft mutated across multiple fields; state carries turn 1's draft_body forward.
+    turn2_body = "Doi tuong: sinh vien nam 3.\nTro ngai: study scheduling hay bi trung gio lam them.\nMuc tieu: giam trung lich."
+    await _update_artifact_body(db_session, child, turn2_body)
+    state2 = {**state, "draft_body": result1["draft_body"], "turn_count": result1["turn_count"]}
+    result2 = await analyze_node(state2, config)
+    prompt2 = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert "unified diff" in prompt2.lower() or "diff" in prompt2.lower()
+    assert turn2_body not in prompt2, "Turn 2 must not resend the full (unchanged-shape) body"
+    assert "sinh vien nam 3" in prompt2, "Changed field must be present in the diff"
+    assert "study scheduling hay bi trung gio lam them" in prompt2, "Second changed field must be present in the diff"
+    assert result2["draft_body"] == turn2_body
+
+    # Turn 3: no further change -> draft block omitted entirely.
+    state3 = {**state, "draft_body": result2["draft_body"], "turn_count": result2["turn_count"]}
+    await analyze_node(state3, config)
+    prompt3 = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
+    assert "CURRENT DRAFT" not in prompt3
+    assert "diff" not in prompt3.lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1343,6 +1629,69 @@ def test_build_prompt_no_decision_view_block_when_nodes_absent():
 
     assert "DRAFT IN PROGRESS" not in _build_tool_selection_prompt(state, [])
     assert _build_tool_selection_prompt(state, []) == baseline
+
+
+# ---------------------------------------------------------------------------
+# P7: cross-turn cache for _build_decision_view_block
+# ---------------------------------------------------------------------------
+
+def _decision_state(statement: str) -> WorkflowState:
+    state = _state(artifact_type="problem")
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="fact",
+            statement=statement,
+            origin={"source": "test"},
+            status="confirmed",
+        )
+    }
+    return state
+
+
+def test_decision_view_block_cache_hit_skips_render_view():
+    from app.graphs import decision_graph
+    from app.graphs.nodes import _build_decision_view_block
+
+    session_id = f"cache-test-{uuid.uuid4()}"
+    state = _decision_state("Sinh vien can lich hoc linh hoat.")
+
+    with patch.object(decision_graph, "render_view", wraps=decision_graph.render_view) as spy:
+        first = _build_decision_view_block(state, session_id)
+        assert spy.call_count == 1
+        second = _build_decision_view_block(state, session_id)
+        assert spy.call_count == 1  # cache hit: render_view not called again
+        assert first == second
+
+
+def test_decision_view_block_mutation_invalidates_cache():
+    from app.graphs import decision_graph
+    from app.graphs.nodes import _build_decision_view_block
+
+    session_id = f"cache-test-{uuid.uuid4()}"
+    state = _decision_state("Sinh vien can lich hoc linh hoat.")
+
+    with patch.object(decision_graph, "render_view", wraps=decision_graph.render_view) as spy:
+        first = _build_decision_view_block(state, session_id)
+        assert spy.call_count == 1
+
+        mutated_state = _decision_state("Sinh vien can bao cao tien do hang tuan.")
+        second = _build_decision_view_block(mutated_state, session_id)
+        assert spy.call_count == 2  # content changed -> recompute, not a stale hit
+        assert first != second
+
+
+def test_decision_view_block_cached_output_matches_uncached_output():
+    """Parity: cached path renders byte-identical output to the uncached path for the same input."""
+    from app.graphs.nodes import _build_decision_view_block
+
+    state = _decision_state("Sinh vien can lich hoc linh hoat.")
+
+    uncached = _build_decision_view_block(state, None)
+    session_id = f"cache-test-{uuid.uuid4()}"
+    cached_first_call = _build_decision_view_block(state, session_id)
+    cached_second_call = _build_decision_view_block(state, session_id)
+
+    assert uncached == cached_first_call == cached_second_call
 
 
 @pytest.mark.asyncio
