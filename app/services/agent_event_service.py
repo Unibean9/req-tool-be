@@ -25,6 +25,10 @@ from app.schemas.agent import public_tool_call_input_snapshot
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
+# Idle keepalive: emit an SSE comment when no snapshot diff has fired for this long, so connections
+# survive idle proxy/load-balancer timeouts. Overridable per-call (tests use a short interval).
+HEARTBEAT_INTERVAL_SECONDS = 15.0
+
 
 class AgentEventService:
     def __init__(self, db: AsyncSession, session_factory: Any = None):
@@ -39,12 +43,14 @@ class AgentEventService:
         user_id: uuid.UUID,
         request: Request,
         interval_seconds: float = 0.5,
+        heartbeat_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
     ) -> AsyncIterator[str]:
         snapshot = await self.build_snapshot(project_id=project_id, session_id=session_id, user_id=user_id)
         yield _sse(event="snapshot", data=snapshot, event_id=_event_id(session_id, 0))
 
         sequence = 1
         fingerprint = _snapshot_fingerprint(snapshot)
+        idle_seconds = 0.0
         while not await request.is_disconnected():
             status = snapshot["session"]["status"]
             if status in {AgentSessionStatus.COMPLETED.value, AgentSessionStatus.FAILED.value}:
@@ -67,6 +73,12 @@ class AgentEventService:
                 yield _sse(event="snapshot", data=next_snapshot, event_id=_event_id(session_id, sequence))
                 snapshot = next_snapshot
                 fingerprint = next_fingerprint
+                idle_seconds = 0.0
+            else:
+                idle_seconds += interval_seconds
+                if idle_seconds >= heartbeat_seconds:
+                    yield ": keepalive\n\n"
+                    idle_seconds = 0.0
 
     async def build_snapshot(
         self,

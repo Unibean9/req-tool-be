@@ -404,8 +404,12 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
 
 
 def route_after_triage(state: WorkflowState) -> str:
-    """Conversational turns peel off to converse_node; everything else goes to the analyst."""
-    return "converse" if state.get("turn_type") == "converse" else "analyze"
+    """Conversational turns peel off to converse_node; everything else goes to the analyst.
+
+    Non-converse turns enter via `orchestrator` (which flows into analyze); the label matches its
+    target node name.
+    """
+    return "converse" if state.get("turn_type") == "converse" else "orchestrator"
 
 
 async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
@@ -566,6 +570,14 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
     if settings.enable_adaptive_diagnosis:
         diagnosis = _diagnose_section(state)
         escalation = await _apply_judge_escalation(diagnosis, state, config)
+        from app.graphs.gate_logging import log_gate_decision
+
+        log_gate_decision(
+            "diagnosis",
+            diagnosis["risk_level"],
+            reason=escalation["escalation"],
+            extra={"signals": diagnosis["signals"]},
+        )
         diagnosis_signal: dict[str, Any] = {
             "risk_level": diagnosis["risk_level"],
             "signals": diagnosis["signals"],
@@ -877,14 +889,15 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
 
 
 def route_before_analyze(state: WorkflowState) -> str:
+    # "orchestrator" is the analyst-loop entry (orchestrator -> analyze); the label matches its target.
     messages = state.get("messages") or []
     if not messages or not _is_human_turn(messages[-1]):
-        return "analyze"
+        return "orchestrator"
     trigger = settings.summary_trigger_every
     human_turns_after_initial = max(0, sum(1 for message in messages if _is_human_turn(message)) - 1)
     if trigger > 0 and human_turns_after_initial > 0 and human_turns_after_initial % trigger == 0:
         return "summarize"
-    return "analyze"
+    return "orchestrator"
 
 
 def route_node(state: WorkflowState) -> str:

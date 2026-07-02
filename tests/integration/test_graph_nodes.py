@@ -511,7 +511,7 @@ async def test_triage_degrades_to_work_turn_when_response_not_schema_conformant(
     result = await triage_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
     assert result["turn_type"] == "work"
-    assert route_after_triage({**state, **result}) == "analyze"
+    assert route_after_triage({**state, **result}) == "orchestrator"
 
 
 def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
@@ -526,12 +526,12 @@ def test_summarize_triggers_on_real_ask_loop_message_counts(monkeypatch):
         routes[count] = route_before_analyze(state)
 
     assert routes == {
-        1: "analyze",
-        3: "analyze",
-        5: "analyze",
+        1: "orchestrator",
+        3: "orchestrator",
+        5: "orchestrator",
         7: "summarize",
-        9: "analyze",
-        11: "analyze",
+        9: "orchestrator",
+        11: "orchestrator",
         13: "summarize",
     }
 
@@ -551,7 +551,7 @@ def test_summarize_skips_tool_only_loop_even_at_human_threshold(monkeypatch):
         ToolMessage(content="Da ghi nhan", tool_call_id="call-1"),
     ]
 
-    assert route_before_analyze(state) == "analyze"
+    assert route_before_analyze(state) == "orchestrator"
 
 
 @pytest.mark.asyncio
@@ -567,7 +567,7 @@ async def test_summarize_skipped_below_threshold(monkeypatch):
 
     result = await summarize_node(state, _config(str(uuid.uuid4()), str(uuid.uuid4()), llm))
 
-    assert route_before_analyze(state) == "analyze"
+    assert route_before_analyze(state) == "orchestrator"
     assert result["conversation_summary"] == "Tom tat cu"
     llm.generate.assert_not_called()
 
@@ -1150,9 +1150,9 @@ def test_route_after_triage_splits_converse_from_work():
     from app.graphs.nodes import route_after_triage
 
     assert route_after_triage({"turn_type": "converse"}) == "converse"
-    assert route_after_triage({"turn_type": "work"}) == "analyze"
+    assert route_after_triage({"turn_type": "work"}) == "orchestrator"
     # Missing/unknown defaults to the analyst, never silently skips work.
-    assert route_after_triage({}) == "analyze"
+    assert route_after_triage({}) == "orchestrator"
 
 
 @pytest.mark.asyncio

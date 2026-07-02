@@ -42,7 +42,9 @@ from app.graphs.decision_graph import (
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import QualityReport, WorkflowState
+from app.graphs.gate_logging import log_gate_decision
 from app.graphs.tools import read_current_body
+from app.graphs.validators import validate_proposal
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
@@ -468,6 +470,34 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
         if existing_tool_call:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
         else:
+            # Deterministic quality gate before the LLM path: violations block the proposal (no
+            # PROPOSE_ARTIFACTS interrupt) and are returned for the model's repair loop; warnings ride
+            # the synthesis metadata for the critique judge. Escape hatch: enforce_deterministic_gate.
+            gate = validate_proposal(focused.type.value, {"title": title, "body": body})
+            if settings.enforce_deterministic_gate and gate.violations:
+                log_gate_decision(
+                    "deterministic_proposal",
+                    "blocked",
+                    reason="; ".join(gate.violations),
+                    session_id=str(session_id),
+                )
+                return _recoverable_tool_update(
+                    RecoverableToolError(
+                        code="deterministic_gate_failed",
+                        message=(
+                            "Draft blocked by the deterministic quality gate. Fix these before proposing: "
+                            + "; ".join(gate.violations)
+                        ),
+                        user_fixable=True,
+                    ),
+                    tool_call_id,
+                )
+            log_gate_decision(
+                "deterministic_proposal",
+                "pass",
+                reason=f"{len(gate.warnings)} warning(s)" if gate.warnings else None,
+                session_id=str(session_id),
+            )
             graph_confirmed, graph_pending = _graph_assumption_signals(state.get("decision_nodes") or {})
             key_facts = state.get("key_facts") or []
             metadata = ArtifactSynthesisMetadata(
@@ -486,6 +516,7 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                         [q["question"] for q in (state.get("open_questions") or [])] + graph_pending, key_facts
                     )
                 ),
+                deterministic_warnings=gate.warnings,
             )
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
@@ -1212,6 +1243,13 @@ async def _run_critique_impl(
     else:
         recommended_next_action = "revise"
 
+    log_gate_decision(
+        "critique",
+        quality_gate_result,
+        score=score,
+        reason=recommended_next_action,
+        session_id=cfg.get("thread_id"),
+    )
     report: QualityReport = {
         "mode": judged["mode"],
         "score": score,
@@ -1419,6 +1457,13 @@ async def _run_readiness_check_impl(
     readiness["blocking_gaps"] = report["blocking_gaps"]
     readiness["recommended_next_step"] = report["recommended_next_step"]
     summary = f"run_readiness_check -> ready={report['ready']} score={report['readiness_score']:.2f}"
+    log_gate_decision(
+        "readiness",
+        "ready" if report["ready"] else "not_ready",
+        score=report["readiness_score"],
+        reason=report["recommended_next_step"],
+        session_id=cfg.get("thread_id"),
+    )
     return Command(
         update={
             "readiness": readiness,
@@ -1650,11 +1695,18 @@ def _elicit_comparable_products(seed: str, search_client) -> dict:
                 }
             ],
             "source": "model_knowledge",
+            "evidence_source": "model_knowledge",
         }
     products = [
         {"name": r.get("title", ""), "model": r.get("snippet", ""), "relevance": f"Related to: {seed}"} for r in results
     ]
-    return {"technique": "comparable_products", "seed": seed, "products": products, "source": "web_search"}
+    return {
+        "technique": "comparable_products",
+        "seed": seed,
+        "products": products,
+        "source": "web_search",
+        "evidence_source": "web",
+    }
 
 
 def _elicit_pre_mortem(seed: str) -> dict:
@@ -1832,14 +1884,21 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     """
     report = state.get("quality_report")
     if not report or report.get("quality_gate_result") != "pass":
+        log_gate_decision("finalize", "blocked", reason="critique_not_passed")
         return False
     readiness = state.get("candidate_readiness")
     if not isinstance(readiness, dict) or readiness.get("state") != ArtifactReadinessState.SUFFICIENT:
+        log_gate_decision("finalize", "blocked", reason="readiness_not_sufficient")
         return False
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
+        log_gate_decision("finalize", "open", reason="rounds_cap")
         return True
     current_hash = hashlib.md5(_cached_draft_body(state).encode()).hexdigest()[:8]
-    return current_hash == state.get("last_critiqued_draft_hash")
+    if current_hash != state.get("last_critiqued_draft_hash"):
+        log_gate_decision("finalize", "blocked", reason="stale_draft")
+        return False
+    log_gate_decision("finalize", "open")
+    return True
 
 
 def get_available_tools(state: WorkflowState) -> list:

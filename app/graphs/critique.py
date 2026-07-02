@@ -1,4 +1,4 @@
-"""Production judge logic for the in-loop run_critique tool (spec §6.6, §9.3).
+"""Production judge logic for the in-loop run_critique tool.
 
 Imports only app.graphs.rubric — never nodes/agent_tools (no cycle) and never tests/ (production
 must not depend on test infrastructure). tests/eval may import from here, not the reverse.
@@ -85,10 +85,13 @@ async def _invoke_judge(body: str, mode: str, llm_client: Any = None) -> dict[st
             max_tokens=4096,
             response_format=JUDGE_SCHEMA,
         )
-    except ValueError:
+    except ValueError as exc:
         # Per this module's contract the judge must never crash the tool-loop. A parse failure
         # (truncation, prose-wrapping the provider's instruction-only schema could not prevent)
         # degrades to an empty report so the turn proceeds instead of failing.
+        from app.graphs.gate_logging import log_gate_decision
+
+        log_gate_decision("judge_unparseable", "degraded", reason=type(exc).__name__)
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": ["judge_unparseable"]}
     if not isinstance(result, dict):
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": []}

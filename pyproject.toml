@@ -24,6 +24,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "sqlalchemy[asyncio]>=2.0.40",
     "uvicorn[standard]>=0.34.0",
+    "jsonschema>=4.26.0",
 ]
 
 [dependency-groups]

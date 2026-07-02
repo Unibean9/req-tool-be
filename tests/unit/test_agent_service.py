@@ -481,8 +481,9 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
     command = svc._resume_command(session, {"content": "Co"})
 
     assert command.resume == {INTERRUPT_ID: {"content": "Co"}}
-    # Every human resume resets the per-request silent-loop counter so conversations are unbounded.
-    assert command.update == {"turn_count": 0}
+    # Every human resume resets the per-request silent-loop counter so conversations are unbounded,
+    # and the per-turn diagnosis judge budget so a later turn can escalate again.
+    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0}
 
 
 @pytest.mark.asyncio
@@ -496,7 +497,7 @@ async def test_resume_command_merges_turn_count_reset_with_state_update(db_sessi
 
     command = svc._resume_command(session, {"content": "Co"}, state_update={"mode_hint": "critique"})
 
-    assert command.update == {"turn_count": 0, "mode_hint": "critique"}
+    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0, "mode_hint": "critique"}
 
 
 @pytest.mark.asyncio

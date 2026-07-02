@@ -237,21 +237,21 @@ class AgentService:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
-        # A queued message carries only its content; a mode_hint on it is intentionally not
-        # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
+        # The queue row carries the message content AND its mode_hint so the drained turn replays the
+        # user's requested mode exactly as a fresh message would.
         #
         # Exception: ACTIVE + STREAM_RESPONSE means the graph halted via interrupt() while keeping
         # status=ACTIVE (conversational Q&A). This is not a "busy" session — it is waiting for a
         # reply. Fall through to the resume path below rather than queuing.
         if session.status == AgentSessionStatus.ACTIVE:
             if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
-                return await self._queue_message(session.id, content)
+                return await self._queue_message(session.id, content, mode_hint)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
             raise HTTPException(400, detail="Session has ended and cannot accept more messages")
         # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
-            return await self._queue_message(session.id, content)
+            return await self._queue_message(session.id, content, mode_hint)
         if session.interrupt_type not in (
             AgentSessionInterruptType.ASK_HUMAN,
             AgentSessionInterruptType.STREAM_RESPONSE,
@@ -307,16 +307,22 @@ class AgentService:
 
         return msg
 
-    async def _queue_message(self, session_id: uuid.UUID, content: str) -> AgentMessage:
+    async def _queue_message(
+        self, session_id: uuid.UUID, content: str, mode_hint: str | None = None
+    ) -> AgentMessage:
         """Persist a user message as queued (payload.queued=True) without starting a graph turn.
 
-        Drained later by _drain_queue once the current turn ends COMPLETED/FAILED.
+        The mode_hint (if any) rides the payload so _drain_queue can replay it. Drained later by
+        _drain_queue once the current turn ends COMPLETED/FAILED.
         """
+        payload: dict[str, Any] = {"queued": True}
+        if mode_hint:
+            payload["mode_hint"] = mode_hint
         msg = AgentMessage(
             session_id=session_id,
             role=AgentMessageRole.USER,
             content=content,
-            payload={"queued": True},
+            payload=payload,
         )
         self.db.add(msg)
         await self.db.commit()
@@ -550,6 +556,14 @@ class AgentService:
         )
         if readiness.can_persist:
             return
+        from app.graphs.gate_logging import log_gate_decision
+
+        log_gate_decision(
+            "candidate_readiness_persist",
+            "rejected_422",
+            reason=readiness.state.value,
+            extra={"focused_artifact_id": snapshot.get("focused_artifact_id")},
+        )
         raise HTTPException(
             422,
             detail={
@@ -800,6 +814,7 @@ class AgentService:
             new_payload["queued"] = False
             queued.payload = new_payload
             content = queued.content
+            queued_mode_hint = new_payload.get("mode_hint")
 
             session_row.status = AgentSessionStatus.ACTIVE
             session_row.interrupt_type = None
@@ -812,7 +827,7 @@ class AgentService:
             messages=[{"role": "user", "content": content}],
             missing_context=missing_context,
             focused_artifact_id=session_row.focused_artifact_id,
-            mode_hint=None,
+            mode_hint=queued_mode_hint,
         )
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
@@ -859,9 +874,11 @@ class AgentService:
         resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
         # A resume is a human-in-the-loop boundary (reply or approval), so the silent-loop circuit
         # breaker resets here: turn_count counts internal steps per request, not across the session.
+        # The diagnosis judge budget is per-turn (not cumulative), so it resets on the same boundary —
+        # otherwise only the first high-risk section in a session could ever escalate.
         # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        return Command(resume=resume, update={"turn_count": 0, **(state_update or {})})
+        return Command(resume=resume, update={"turn_count": 0, "diagnosis_judge_calls_used": 0, **(state_update or {})})
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}

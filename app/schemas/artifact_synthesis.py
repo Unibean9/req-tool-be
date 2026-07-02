@@ -19,6 +19,9 @@ class ArtifactSynthesisMetadata(BaseModel):
     inference_level: InferenceLevel = "medium"
     confirmed_assumptions: list[str] = Field(default_factory=list)
     pending_assumptions: list[str] = Field(default_factory=list)
+    # Non-blocking findings from the deterministic proposal gate (validators.validate_proposal),
+    # surfaced so the LLM critique judge can reference them. Violations block earlier and never reach here.
+    deterministic_warnings: list[str] = Field(default_factory=list)
     synthesis_source: SynthesisSource = "bmad_synthesis"
 
 

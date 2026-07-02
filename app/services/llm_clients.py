@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
+import jsonschema
 from langchain_core.messages import AIMessage
 
 from app.models.llm_provider import ProviderType
@@ -1112,51 +1113,18 @@ def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return nullable
 
 
-def _validate_json_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
-    expected_type = schema.get("type")
-    if expected_type is not None and not _matches_json_type(value, expected_type):
-        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong type")
-    enum = schema.get("enum")
-    if enum is not None and value not in enum:
-        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong enum")
-    if value is None:
-        return
-    if isinstance(value, dict):
-        properties = schema.get("properties") or {}
-        required = schema.get("required") or []
-        missing = [key for key in required if key not in value]
-        if missing:
-            raise ValueError(f"LLM response does not match JSON Schema at {path}: missing {missing[0]}")
-        if schema.get("additionalProperties") is False:
-            extra = [key for key in value if key not in properties]
-            if extra:
-                raise ValueError(f"LLM response does not match JSON Schema at {path}: extra {extra[0]}")
-        for key, child_schema in properties.items():
-            if key in value:
-                _validate_json_schema(value[key], child_schema, f"{path}.{key}")
-    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
-        for index, item in enumerate(value):
-            _validate_json_schema(item, schema["items"], f"{path}[{index}]")
+def _validate_json_schema(value: Any, schema: dict[str, Any]) -> None:
+    """Validate a parsed LLM payload against `schema` via the `jsonschema` library.
 
-
-def _matches_json_type(value: Any, expected_type: str | list[str]) -> bool:
-    if isinstance(expected_type, list):
-        return any(_matches_json_type(value, item) for item in expected_type)
-    if expected_type == "null":
-        return value is None
-    if expected_type == "object":
-        return isinstance(value, dict)
-    if expected_type == "array":
-        return isinstance(value, list)
-    if expected_type == "string":
-        return isinstance(value, str)
-    if expected_type == "number":
-        return isinstance(value, int | float) and not isinstance(value, bool)
-    if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected_type == "boolean":
-        return isinstance(value, bool)
-    return True
+    Raises `ValueError` (not `jsonschema.ValidationError`) so the retry-on-mismatch paths that catch
+    `ValueError` are unchanged. Replaces a hand-rolled walker that silently ignored constraints such
+    as numeric bounds, nested `oneOf`, and other keywords, degrading judge output without explanation.
+    """
+    try:
+        jsonschema.validate(value, schema)
+    except jsonschema.ValidationError as exc:
+        location = "$" + "".join(f"[{part!r}]" if isinstance(part, str) else f"[{part}]" for part in exc.absolute_path)
+        raise ValueError(f"LLM response does not match JSON Schema at {location}: {exc.message}") from exc
 
 
 def _system_with_schema_instruction(system: str | None, response_format: dict[str, Any] | None) -> str | None:

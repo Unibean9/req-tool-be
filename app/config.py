@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
 
+    # Deterministic proposal gate (validators.validate_proposal) runs before candidate readiness
+    # in write_draft. Operator rollback path — flip to False to disable the deterministic gate on
+    # draft proposals without a code revert. Mirrors enable_adaptive_diagnosis.
+    enforce_deterministic_gate: bool = True
+
     # Adaptive diagnosis loop (orchestrator_node -> analyze_node): heuristic-gated thinking-mode
     # selection. Operator-facing rollback path — flip to False to restore pre-plan behavior
     # (no diagnosis, no prompt suffix, no judge escalation) without a code revert.
