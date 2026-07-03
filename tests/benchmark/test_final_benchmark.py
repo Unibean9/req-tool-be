@@ -3,31 +3,24 @@
 Run explicitly with `pytest -m benchmark tests/benchmark/test_final_benchmark.py -s -q`.
 """
 
-import json
-import re
-from pathlib import Path
-
 import pytest
 
-from tests.benchmark.fixture import FIXTURE_JOURNEY_COUNT, METRIC_NAMES, aggregate_runs, run_fixture
+from tests.benchmark.fixture import (
+    FIXTURE_JOURNEY_COUNT,
+    METRIC_NAMES,
+    aggregate_runs,
+    evidence_dir,
+    load_recorded_runs,
+    raw_runs_block,
+    record_runs,
+)
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.evidence]
 
 RUNS = 3
-EVIDENCE_DIR = Path(__file__).resolve().parents[2] / "plans" / "260701-optimize-latency-token" / "evidence"
+EVIDENCE_DIR = evidence_dir()
 BASELINE_PATH = EVIDENCE_DIR / "benchmark-baseline.md"
 FINAL_PATH = EVIDENCE_DIR / "benchmark-final.md"
-
-
-def _load_baseline_aggregate() -> dict[str, dict[str, float]]:
-    """Re-derive the baseline aggregate from its recorded raw per-run JSON, so the
-    comparison is computed the same way on both sides rather than re-parsing a rendered table."""
-    text = BASELINE_PATH.read_text(encoding="utf-8")
-    match = re.search(r"```json\n(.*?)\n```", text, re.DOTALL)
-    if not match:
-        raise AssertionError(f"could not find raw JSON block in {BASELINE_PATH}")
-    baseline_runs = json.loads(match.group(1))
-    return aggregate_runs(baseline_runs)
 
 
 def _delta(baseline: dict[str, dict[str, float]], final: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
@@ -102,32 +95,16 @@ def _render_report(
         "evidence-gathering, reporting the measured delta honestly (including any regression), not a "
         "gate.",
         "",
-        "## Raw per-run, per-journey data (final)",
-        "",
-        "```json",
+        *raw_runs_block(all_runs, "Raw per-run, per-journey data (final)"),
     ]
-    lines.append(json.dumps(all_runs, indent=2))
-    lines.append("```")
-    lines.append("")
     return "\n".join(lines)
 
 
 @pytest.mark.asyncio
 async def test_record_final_benchmark(client, scenario_env, scenario_project):
-    all_runs = []
-    for _ in range(RUNS):
-        metrics = await run_fixture(client, scenario_env, scenario_project)
-        assert len(metrics) == FIXTURE_JOURNEY_COUNT
-        all_runs.append(metrics)
-
+    all_runs = await record_runs(client, scenario_env, scenario_project, RUNS)
     final_agg = aggregate_runs(all_runs)
-    baseline_agg = _load_baseline_aggregate()
+    baseline_agg = aggregate_runs(load_recorded_runs(BASELINE_PATH))
     delta = _delta(baseline_agg, final_agg)
     report = _render_report(baseline_agg, final_agg, delta, all_runs)
     FINAL_PATH.write_text(report, encoding="utf-8")
-
-    for run in all_runs:
-        for journey in run:
-            assert journey["final_status"] == "completed"
-            assert journey["total_latency_ms"] >= 0
-            assert journey["total_tokens"] > 0

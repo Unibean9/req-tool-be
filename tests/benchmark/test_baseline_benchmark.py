@@ -5,16 +5,20 @@ The final benchmark re-runs the same journey fixture and writes the before/after
 delta.
 """
 
-from pathlib import Path
-
 import pytest
 
-from tests.benchmark.fixture import FIXTURE_JOURNEY_COUNT, aggregate_runs, run_fixture
+from tests.benchmark.fixture import (
+    FIXTURE_JOURNEY_COUNT,
+    aggregate_runs,
+    evidence_dir,
+    raw_runs_block,
+    record_runs,
+)
 
 pytestmark = [pytest.mark.benchmark, pytest.mark.evidence]
 
 RUNS = 3
-EVIDENCE_PATH = Path(__file__).resolve().parents[2] / "plans" / "260701-optimize-latency-token" / "evidence" / "benchmark-baseline.md"
+EVIDENCE_PATH = evidence_dir() / "benchmark-baseline.md"
 
 
 def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]]) -> str:
@@ -42,36 +46,13 @@ def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]])
     ]
     for name, stats in agg.items():
         lines.append(f"| {name} | {stats['min']:.0f} | {stats['median']:.0f} | {stats['max']:.0f} |")
-    lines += [
-        "",
-        "## Raw per-run, per-journey data",
-        "",
-        "```json",
-    ]
-    import json
-
-    lines.append(json.dumps(all_runs, indent=2))
-    lines.append("```")
-    lines.append("")
+    lines += ["", *raw_runs_block(all_runs, "Raw per-run, per-journey data")]
     return "\n".join(lines)
 
 
 @pytest.mark.asyncio
 async def test_record_baseline_benchmark(client, scenario_env, scenario_project):
-    all_runs = []
-    for _ in range(RUNS):
-        metrics = await run_fixture(client, scenario_env, scenario_project)
-        assert len(metrics) == FIXTURE_JOURNEY_COUNT
-        all_runs.append(metrics)
-
-    agg = aggregate_runs(all_runs)
-    report = _render_report(all_runs, agg)
+    all_runs = await record_runs(client, scenario_env, scenario_project, RUNS)
+    report = _render_report(all_runs, aggregate_runs(all_runs))
     EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     EVIDENCE_PATH.write_text(report, encoding="utf-8")
-
-    # Sanity: every journey recorded non-negative latency and a positive token estimate.
-    for run in all_runs:
-        for journey in run:
-            assert journey["final_status"] == "completed"
-            assert journey["total_latency_ms"] >= 0
-            assert journey["total_tokens"] > 0
