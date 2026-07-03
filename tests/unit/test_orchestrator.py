@@ -178,6 +178,41 @@ async def test_orchestrator_resurfaces_parked_question(decision_graph_factory):
 
 
 @pytest.mark.asyncio
+async def test_ignored_signal_counter_increments_while_resurfaced_persists(decision_graph_factory):
+    nodes = decision_graph_factory(
+        {"id": "N7", "kind": "fact", "status": "confirmed"},
+        {"id": "Q4", "kind": "open_question", "status": "parked", "blocks": ["N7"]},
+    )
+    state = {"decision_nodes": nodes, "artifact_type": "brd"}
+
+    update1 = await orchestrator_node(state, {})
+    assert update1["feedback_summary"]["ignored_counts"]["resurfaced_questions"] == 1
+
+    state2 = {"decision_nodes": nodes, "artifact_type": "brd", "feedback_summary": update1["feedback_summary"]}
+    update2 = await orchestrator_node(state2, {})
+    assert update2["feedback_summary"]["ignored_counts"]["resurfaced_questions"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ignored_signal_counter_resets_once_resolved(decision_graph_factory):
+    nodes = decision_graph_factory(
+        {"id": "N7", "kind": "fact", "status": "confirmed"},
+        {"id": "Q4", "kind": "open_question", "status": "parked", "blocks": ["N7"]},
+    )
+    state = {"decision_nodes": nodes, "artifact_type": "brd"}
+    update1 = await orchestrator_node(state, {})
+
+    resolved_nodes = {**nodes, "Q4": {**nodes["Q4"], "status": "confirmed"}}
+    state2 = {
+        "decision_nodes": resolved_nodes,
+        "artifact_type": "brd",
+        "feedback_summary": update1["feedback_summary"],
+    }
+    update2 = await orchestrator_node(state2, {})
+    assert "ignored_counts" not in update2["feedback_summary"]
+
+
+@pytest.mark.asyncio
 async def test_completeness_sweep_only_on_trigger(decision_graph_factory):
     nodes = decision_graph_factory(
         {"id": "N7", "kind": "objective", "status": "confirmed"},

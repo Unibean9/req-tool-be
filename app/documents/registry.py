@@ -34,6 +34,15 @@ class ArtifactOutputContract:
     id_prefix: str = ""
     render_style: str = "table"
     confirmation_note: str = "(agent-inferred, needs confirmation)"
+    # Per-artifact-type behavior WITHIN the universal phases (the DRAFT scaffold is already
+    # required_headings). All optional: an empty tuple/string means the type falls back to the generic
+    # phase behavior, so unmapped types and legacy callers are unchanged.
+    #   elicit_checklist  — key topics/questions to gather for this type (ELICIT phase).
+    #   elicit_technique  — a suggested BMAD technique name (must exist in agent_tools.ELICIT_TECHNIQUES).
+    #   review_criteria   — per-type critique criteria (REVIEW phase).
+    elicit_checklist: tuple[str, ...] = ()
+    elicit_technique: str = ""
+    review_criteria: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,6 +54,9 @@ class ArtifactOutputContract:
             "id_prefix": self.id_prefix,
             "render_style": self.render_style,
             "confirmation_note": self.confirmation_note,
+            "elicit_checklist": list(self.elicit_checklist),
+            "elicit_technique": self.elicit_technique,
+            "review_criteria": list(self.review_criteria),
         }
 
 
@@ -268,6 +280,18 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         required_headings=("## Scope", "## Capabilities", "## Out of Scope"),
         guidance="Separate scope, required capabilities, and exclusions clearly.",
         table_columns=("capability", "priority", "rationale", "dependency"),
+        elicit_checklist=(
+            "Which capabilities are in scope vs explicitly out of scope?",
+            "For each capability: priority and the rationale for that priority.",
+            "What dependencies exist between capabilities?",
+            "Where is the boundary that separates this release from later ones?",
+        ),
+        elicit_technique="moscow",
+        review_criteria=(
+            "Every capability carries a defensible priority (Must/Should/Could/Won't).",
+            "Out-of-scope items are stated explicitly, not merely omitted.",
+            "Dependencies between capabilities are captured.",
+        ),
     ),
     "business_rules": ArtifactOutputContract(
         artifact_type="business_rules",
@@ -275,6 +299,18 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         required_headings=("## Business Rules",),
         guidance="Each rule must include condition, trigger, outcome, scope, and exceptions.",
         table_columns=("rule id", "condition", "trigger", "outcome", "scope", "exception"),
+        elicit_checklist=(
+            "For each rule: the condition, the triggering event, and the resulting outcome.",
+            "What is the scope of the rule and who owns it?",
+            "What exceptions or edge cases override the rule?",
+            "Are any rules in conflict with each other?",
+        ),
+        elicit_technique="socratic_questioning",
+        review_criteria=(
+            "Each rule is testable: condition, trigger, and outcome are unambiguous.",
+            "Exceptions and edge cases are documented, not implied.",
+            "No two rules contradict each other.",
+        ),
     ),
     "constraints_assumptions": ArtifactOutputContract(
         artifact_type="constraints_assumptions",
@@ -289,6 +325,18 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         required_headings=("## Risks", "## Issues", "## Mitigation Plan"),
         guidance="Track risks/issues with likelihood, impact, and mitigation.",
         table_columns=("risk", "likelihood", "impact", "mitigation", "status"),
+        elicit_checklist=(
+            "What could cause this initiative to fail or slip?",
+            "For each risk: likelihood, impact, and an owner.",
+            "Which risks are already active issues today?",
+            "What is the mitigation or contingency for the top risks?",
+        ),
+        elicit_technique="pre_mortem",
+        review_criteria=(
+            "Every risk has a likelihood, an impact, and a concrete mitigation (not 'monitor').",
+            "Active issues are separated from potential risks.",
+            "No high-impact risk is left without an owner or contingency.",
+        ),
     ),
     "functional_requirement": ArtifactOutputContract(
         artifact_type="functional_requirement",
@@ -308,6 +356,18 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "dependencies",
         ),
         id_prefix="FR",
+        elicit_checklist=(
+            "For each behavior: the exact input, the expected output, and the observable acceptance signal.",
+            "Which use case (UC id) does each requirement serve?",
+            "Priority of each requirement and its dependencies on other FRs.",
+            "What are the boundary and error behaviors, not just the happy path?",
+        ),
+        elicit_technique="first_principles",
+        review_criteria=(
+            "Each requirement is independently testable via its acceptance signal.",
+            "Inputs and outputs are concrete, not vague ('handle X properly').",
+            "Error/boundary behavior is specified, not only the happy path.",
+        ),
     ),
     "use_case": ArtifactOutputContract(
         artifact_type="use_case",
@@ -337,6 +397,18 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         guidance="One Given/When/Then row per criterion; link each to its functional requirement by FR id.",
         table_columns=("id", "linked requirement", "given", "when", "then"),
         id_prefix="AC",
+        elicit_checklist=(
+            "For each criterion: the precondition (Given), the action (When), and the observable result (Then).",
+            "Which functional requirement (FR id) does each criterion verify?",
+            "What negative/failure cases must also be asserted?",
+            "Are the results measurable rather than subjective?",
+        ),
+        elicit_technique="reverse",
+        review_criteria=(
+            "Every criterion is a concrete Given/When/Then, not a restated requirement.",
+            "Each criterion links to a functional requirement by FR id.",
+            "Failure/negative cases are covered, not only success paths.",
+        ),
     ),
     "tech_stack": ArtifactOutputContract(
         artifact_type="tech_stack",

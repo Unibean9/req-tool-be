@@ -9,7 +9,7 @@ let policy crowd out the conversation). Three are shared (role-agnostic); the Ro
 per-role overlay. ``get_instruction`` assembles a single string — the call site in ``analyze_node``
 is unchanged:
 
-    [## Contract] + [## Role = overlay] + [## Decision & tools] + [## Output]
+    [## Contract] + [## Role = overlay] + [## Decision & tools] + [## Output] + [## Feedback Response]
 
 Each former responsibility layer survives as a ``###`` subsection inside one of these so the content
 is unchanged, only regrouped. The ``## Output`` section (critique/governance/output) is dropped
@@ -72,6 +72,7 @@ _LAYER_01 = "01-contract.md"
 _SHARED_LAYERS_AFTER_ROLE = (
     "02-decision-tools.md",
     "03-output.md",
+    "04-feedback-response.md",
 )
 
 _layer_cache: dict[str, str] = {}

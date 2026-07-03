@@ -24,9 +24,9 @@ from app.instructions import get_instruction
 # is per-turn suffix selection only and never touches get_instruction()'s (role, has_draft) cache.
 _PHASE_PROFILE_BLOCKS: dict[str, frozenset[str]] = {
     INTENT: frozenset(),
-    ELICIT: frozenset({"thinking_mode", "section_coverage", "batching", "section_repair"}),
+    ELICIT: frozenset({"thinking_mode", "section_coverage", "batching", "section_repair", "type_profile"}),
     DRAFT: frozenset({"artifact_contract", "section_coverage", "decision_view", "section_repair"}),
-    REVIEW: frozenset({"artifact_contract", "decision_view", "section_repair"}),
+    REVIEW: frozenset({"artifact_contract", "decision_view", "section_repair", "type_profile"}),
     FINALIZE: frozenset(),
 }
 
@@ -409,6 +409,11 @@ def _build_tool_selection_prompt(
     )
 
 
+# A signal that persists unaddressed for at least this many consecutive turns (feedback_summary's
+# ignored_counts) escalates its wording in the feedback block; below threshold wording is unchanged.
+_IGNORED_SIGNAL_THRESHOLD = 2
+
+
 def _build_feedback_control_block(state: WorkflowState) -> str:
     parts: list[str] = []
     report = state.get("quality_report") or {}
@@ -448,7 +453,11 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
     resurfaced = feedback_summary.get("resurfaced_questions") or []
     if resurfaced:
         rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in resurfaced[:3])
-        parts.append(f"- resurfaced_questions: {rendered}")
+        ignored_count = (feedback_summary.get("ignored_counts") or {}).get("resurfaced_questions") or 0
+        if ignored_count >= _IGNORED_SIGNAL_THRESHOLD:
+            parts.append(f"- resurfaced_questions: URGENT (ignored {ignored_count} turns): {rendered}")
+        else:
+            parts.append(f"- resurfaced_questions: {rendered}")
     if feedback_summary.get("depth_signal"):
         parts.append(f"- depth_signal: {feedback_summary['depth_signal']}")
     sweep_gaps = feedback_summary.get("sweep_gaps") or []
@@ -460,6 +469,13 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
         parts.append(f"- created_parked_questions: {rendered}")
     if feedback_summary.get("stale_warning"):
         parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
+    stale_base = feedback_summary.get("stale_base_version") or {}
+    if stale_base:
+        parts.append(
+            "- stale_base_version: the base artifact changed under you "
+            f"(base {stale_base.get('base_version_id')} -> current {stale_base.get('current_version_id')}); "
+            "re-read the artifact and rebase before drafting or finalizing."
+        )
     dropped = feedback_summary.get("dropped_tools") or []
     if dropped:
         parts.append(
@@ -474,6 +490,8 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
             f"{_compact_list(out_of_phase['dropped'])}"
         )
 
+    parts.extend(_repeated_tool_error_lines(state))
+
     if not parts:
         return ""
     return (
@@ -481,6 +499,35 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
         "- the signals below are orchestration priorities; choose suitable tools and order without ignoring them.\n"
         + "\n".join(parts)
     )
+
+
+# Same-code failures at or above this count escalate: a single failure is served by its ToolMessage,
+# a repeat means the model is looping on the same error and must change approach.
+_REPEATED_TOOL_ERROR_THRESHOLD = 2
+
+
+def _repeated_tool_error_lines(state: WorkflowState) -> list[str]:
+    """Escalation lines for tool errors whose `code` recurs (>= threshold) in the accumulated
+    `tool_errors` channel. Mirrors `_build_stuck_escalation_block`'s "change approach" steer, but
+    keyed on the error code rather than repeated identical tool calls. Empty when nothing recurs."""
+    errors = state.get("tool_errors") or []
+    counts: dict[str, int] = {}
+    recovery_by_code: dict[str, str] = {}
+    for entry in errors:
+        code = entry.get("code")
+        if not code:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+        if entry.get("recovery"):
+            recovery_by_code[code] = entry["recovery"]
+    lines: list[str] = []
+    for code, count in counts.items():
+        if count < _REPEATED_TOOL_ERROR_THRESHOLD:
+            continue
+        recovery = recovery_by_code.get(code)
+        steer = f" {recovery}" if recovery else " Change approach — do not repeat the same call."
+        lines.append(f"- repeated tool_errors: '{code}' has failed {count} times.{steer}")
+    return lines
 
 
 def _compact_list(values: list[Any], limit: int = 3) -> str:
@@ -718,7 +765,37 @@ def build_system_prompt(state: WorkflowState, agent_role: str | None, *, has_dra
         system_prompt = system_prompt + _build_batching_instruction_block(state)
     if _phase_includes(state, "section_repair"):
         system_prompt = system_prompt + _build_section_repair_block(state)
+    if _phase_includes(state, "type_profile"):
+        system_prompt = system_prompt + _build_type_profile_block(state)
     return system_prompt + _build_stuck_escalation_block(state)
+
+
+def _build_type_profile_block(state: WorkflowState) -> str:
+    """Per-artifact-type behavior within the current phase (data-driven, from the output contract).
+
+    ELICIT renders the type's elicitation checklist + suggested technique; REVIEW renders the type's
+    critique criteria. The DRAFT section scaffold is already carried by the artifact-contract block
+    (required_headings), so it is not repeated here. A type with no profile fields, or an unknown
+    type, yields "" — the phase behaves generically (no-op), preserving today's behavior.
+    """
+    try:
+        contract = output_contract(state["artifact_type"])
+    except ValueError:
+        return ""
+    phase = state.get("session_phase")
+    if phase == ELICIT:
+        lines = [f"- {item}" for item in contract.elicit_checklist]
+        if contract.elicit_technique:
+            lines.append(f"Suggested technique: elicit(technique='{contract.elicit_technique}').")
+        if not lines:
+            return ""
+        return "\n\nELICITATION FOCUS for this artifact type:\n" + "\n".join(lines)
+    if phase == REVIEW:
+        if not contract.review_criteria:
+            return ""
+        criteria = "\n".join(f"- {item}" for item in contract.review_criteria)
+        return "\n\nREVIEW CRITERIA for this artifact type:\n" + criteria
+    return ""
 
 
 def _build_section_repair_block(state: WorkflowState) -> str:

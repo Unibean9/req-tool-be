@@ -444,7 +444,25 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
-        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, base_version_id)
+        # request_edit resumes the graph, so a stale base is recovered in-loop rather than 409'd: the
+        # condition is seeded into feedback_summary so the resumed turn re-reads and rebases.
+        snapshot = tool_call.input_snapshot or {}
+        stale_detail = await self._guard_current_base_version(
+            project_id, snapshot, base_version_id, raise_on_stale=False
+        )
+        state_update: dict[str, Any] | None = None
+        if stale_detail is not None:
+            # Seeded as a single-key feedback_summary on the resume boundary. This replaces (not merges)
+            # the channel, but that is safe here: orchestrator_node rebuilds the transient signals
+            # (resurfaced_questions, sweep gaps, dropped/out-of-phase tools) every turn, and resetting
+            # the ignored-signal counter at a human edit boundary is intentional — the same rationale as
+            # the turn_count reset in _resume_command (a human just intervened, so "ignored for N turns"
+            # restarts). orchestrator_node preserves stale_base_version (it never pops the key).
+            state_update = {
+                "feedback_summary": {
+                    "stale_base_version": {**stale_detail, "artifact_id": snapshot.get("focused_artifact_id")}
+                }
+            }
 
         tool_call.status = AgentToolCallStatus.SUPERSEDED
         tool_call.resolved_at = datetime.now(UTC)
@@ -453,7 +471,9 @@ class AgentService:
         self.db.add(msg)
         await self.db.commit()
 
-        await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self._check_and_resume(
+            project_id=project_id, session_id=session_id, llm_client=llm_client, state_update=state_update
+        )
         await self.db.refresh(tool_call)
         return tool_call
 
@@ -577,7 +597,13 @@ class AgentService:
         project_id: uuid.UUID,
         snapshot: dict[str, Any],
         requested_base_version_id: uuid.UUID | None,
-    ) -> None:
+        *,
+        raise_on_stale: bool = True,
+    ) -> dict[str, Any] | None:
+        """Detect a stale base version. By default (``raise_on_stale=True``) raises a terminal 409 —
+        the backstop for the approve path, which has no in-loop recovery. With ``raise_on_stale=False``
+        it returns the stale detail (or None) so the caller can pull the condition into the loop
+        instead (see ``request_edit``), letting the agent re-read and rebase."""
         focused_artifact_id = snapshot.get("focused_artifact_id")
         if not focused_artifact_id:
             raise HTTPException(422, detail="Tool call missing focused_artifact_id")
@@ -595,10 +621,18 @@ class AgentService:
             requested_base_version_id=requested_base_version_id,
             current_version_id=focused.current_version_id,
         )
-        if detail is not None:
+        if detail is not None and raise_on_stale:
             raise HTTPException(409, detail=detail)
+        return detail
 
-    async def _check_and_resume(self, *, project_id: uuid.UUID, session_id: uuid.UUID, llm_client: Any = None) -> None:
+    async def _check_and_resume(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        llm_client: Any = None,
+        state_update: dict[str, Any] | None = None,
+    ) -> None:
         session_row = (
             await self.db.execute(select(AgentSession).where(AgentSession.id == session_id).with_for_update())
         ).scalar_one()
@@ -624,7 +658,7 @@ class AgentService:
         if llm_client is None:
             llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
 
-        resume_command = self._resume_command(session_row, {"all_resolved": True})
+        resume_command = self._resume_command(session_row, {"all_resolved": True}, state_update=state_update)
         session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
         await self.db.commit()

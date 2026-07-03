@@ -23,12 +23,12 @@ ABANDON_THRESHOLD = 2
 MAX_SWEEP_QUESTIONS = 5
 
 VALID_KINDS = {"objective", "scope", "assumption", "decision", "risk", "open_question", "fact"}
-VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded"}
+VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded", "dismissed"}
 
 _VALID_CASCADE_MODES = {"reconfirm", "abandon"}
 _RESOLVED_BLOCKER_STATUSES = {"confirmed", "inferred"}
 _BRD_STABLE_STATUSES = {"confirmed", "inferred"}
-_INACTIVE_STATUSES = {"parked", "superseded"}
+_INACTIVE_STATUSES = {"parked", "superseded", "dismissed"}
 
 
 def create_node(
@@ -83,6 +83,24 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
         raise ValueError(f"invalid status: {updates['status']!r}")
     result = _clone(nodes)
     result[node_id].update(updates)
+    return result
+
+
+def dismiss_node(
+    nodes: dict[str, DecisionNode], node_id: str, reason: str, audit: dict[str, Any]
+) -> dict[str, DecisionNode]:
+    """Mark an open_question node dismissed with an audit trail; never mutates the input dict.
+
+    Only open_question nodes are dismissible. The reason is stored as data on the node's `dismissal`
+    field for operator review — callers must never feed it back into a prompt as an instruction.
+    """
+    if node_id not in nodes:
+        raise KeyError(f"node {node_id!r} not found")
+    node = nodes[node_id]
+    if node.get("kind") != "open_question":
+        raise ValueError(f"node {node_id!r} is not an open_question; only open_questions can be dismissed")
+    result = update_node(nodes, node_id, status="dismissed")
+    result[node_id]["dismissal"] = {"reason": reason, "turn": audit.get("turn"), "dismissed_by": "agent"}
     return result
 
 
@@ -165,8 +183,9 @@ def supersede_node(
 
 
 # Statuses that keep a node "in play" for the derived assumption/open-question views. superseded is
-# frozen history; parked is deferred on purpose (folds into its own view via the graph, not here).
-_DERIVED_VIEW_STATUSES = VALID_STATUSES - {"superseded", "parked"}
+# frozen history; parked is deferred on purpose (folds into its own view via the graph, not here);
+# dismissed is a terminal non-answer (audited, not resurfaced).
+_DERIVED_VIEW_STATUSES = VALID_STATUSES - {"superseded", "parked", "dismissed"}
 
 
 def derive_assumptions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:

@@ -101,7 +101,8 @@ def test_bmad_method_layer_present_and_bounded():
     assert "BMAD Method" in instruction
     assert "brainstorm → brief → prd" in instruction
     # The whole static contract stays high-signal/short — a guard against re-bloating the system prompt.
-    assert len(instruction.split()) < 1700
+    # Ceiling re-baselined to 1900 when the deliberate 04-feedback-response layer was added; keep it tight.
+    assert len(instruction.split()) < 1900
 
 
 def test_get_instruction_falls_back_to_workflow_area():
@@ -134,6 +135,45 @@ def test_output_contract_carries_content_depth_rule():
     assert "evidence" in instruction
     assert "never paste the transcript" in instruction
     assert "needs_confirmation" in instruction
+
+
+# ---------------------------------------------------------------------------
+# Feedback response contract (04-feedback-response.md)
+# ---------------------------------------------------------------------------
+
+# Every signal key rendered by _build_feedback_control_block + the diagnosis block must have a
+# defined response row in the assembled contract. Kept in sync with prompt_assembly.py.
+_FEEDBACK_SIGNAL_MARKERS = (
+    "resurfaced_questions",
+    "depth_signal",
+    "sweep_gaps",
+    "created_parked_questions",
+    "stale_warning",
+    "stale_base_version",
+    "dropped tools",
+    "out-of-phase tools",
+    "diagnosis_risk",
+    "tool_errors",
+)
+
+
+def test_feedback_response_layer_present_for_every_role():
+    for instruction in (_ba(), _pm()):
+        assert "Feedback Response" in instruction
+        assert "FEEDBACK CONTROL:" in instruction
+
+
+def test_feedback_response_layer_covers_every_rendered_signal():
+    instruction = _ba()
+    for marker in _FEEDBACK_SIGNAL_MARKERS:
+        assert marker in instruction, marker
+
+
+def test_feedback_response_layer_survives_pre_draft():
+    """Feedback signals fire before a draft exists, so the layer is kept when has_draft is False."""
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    assert result is not None
+    assert "Feedback Response" in result
 
 
 # ---------------------------------------------------------------------------

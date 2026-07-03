@@ -32,10 +32,12 @@ from app.graphs.decision_graph import (
     VALID_KINDS,
     VALID_STATUSES,
     create_node,
+    dismiss_node,
     get_dependents,
     impact,
     infer_cascade_mode,
     render_view,
+    scan_parked_questions,
     supersede_node,
     synthesis_assumption_signals,
     update_node,
@@ -68,11 +70,16 @@ logger = logging.getLogger(__name__)
 
 
 class RecoverableToolError(Exception):
-    def __init__(self, *, code: str, message: str, user_fixable: bool = False) -> None:
+    def __init__(
+        self, *, code: str, message: str, user_fixable: bool = False, recovery: str | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.user_fixable = user_fixable
+        # A short, code-specific imperative telling the model how to recover. Optional: absent
+        # recovery keeps the legacy behavior (the message alone), so old checkpoints are unchanged.
+        self.recovery = recovery
 
 
 def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Command:
@@ -82,17 +89,20 @@ def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Co
         exc.user_fixable,
         exc.message,
     )
+    entry: dict[str, Any] = {
+        "code": exc.code,
+        "classification": "recoverable",
+        "user_fixable": exc.user_fixable,
+        "message": exc.message,
+    }
+    tool_message = exc.message
+    if exc.recovery:
+        entry["recovery"] = exc.recovery
+        tool_message = f"{exc.message} {exc.recovery}"
     return Command(
         update={
-            "tool_errors": [
-                {
-                    "code": exc.code,
-                    "classification": "recoverable",
-                    "user_fixable": exc.user_fixable,
-                    "message": exc.message,
-                }
-            ],
-            "messages": [ToolMessage(content=exc.message, tool_call_id=tool_call_id, status="error")],
+            "tool_errors": [entry],
+            "messages": [ToolMessage(content=tool_message, tool_call_id=tool_call_id, status="error")],
         }
     )
 
@@ -101,7 +111,8 @@ def _missing_required_arg_update(tool_name: str, arg_name: str, tool_call_id: st
     return _recoverable_tool_update(
         RecoverableToolError(
             code="missing_required_arg",
-            message=f"Cannot {tool_name}: missing required field '{arg_name}'. Call the tool again with a clear value.",
+            message=f"Cannot {tool_name}: missing required field '{arg_name}'.",
+            recovery=f"Provide '{arg_name}' and call {tool_name} again.",
         ),
         tool_call_id,
     )
@@ -112,6 +123,7 @@ def _tool_not_available_update(tool_name: str, message: str, tool_call_id: str) 
         RecoverableToolError(
             code="tool_not_available",
             message=f"Cannot {tool_name}: {message}",
+            recovery="This tool is not offered in the current phase; pick from the tools offered this turn.",
         ),
         tool_call_id,
     )
@@ -607,6 +619,21 @@ async def write_draft(
 # ---------------------------------------------------------------------------
 
 
+def _open_blocker_questions(state: WorkflowState) -> list[dict[str, Any]]:
+    """Parked open_questions whose blockers are resolved but the question itself is still unanswered.
+
+    These are the resurfaced/actionable questions (see scan_parked_questions); dismissed or answered
+    nodes are excluded by construction (dismiss sets status to "dismissed", never "parked").
+
+    Short-circuits when the decision graph is disabled: the only tools that clear a blocker
+    (update_decision_node / dismiss_question) are gated on the same flag, so gating finalize while
+    they are unavailable would wedge the session with no path out.
+    """
+    if not settings.decision_graph_enabled:
+        return []
+    return scan_parked_questions(state.get("decision_nodes") or {})
+
+
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(summary or "").strip():
         return _missing_required_arg_update("finalize", "summary", tool_call_id)
@@ -626,6 +653,23 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
             RecoverableToolError(
                 code="finalize_gate_blocked",
                 message=f"Cannot finalize: quality gate has not passed ({detail}).",
+            ),
+            tool_call_id,
+        )
+
+    # Loop-closure gate (pure state read, so it runs before any DB work): unresolved blocker-class
+    # parked questions must be answered or explicitly dismissed before finalize.
+    blockers = _open_blocker_questions(state)
+    if blockers:
+        offenders = "; ".join(f"{node['id']} ({node.get('statement', '')})" for node in blockers)
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="finalize_blocker_unresolved",
+                message=f"Cannot finalize: {len(blockers)} blocker question(s) are unresolved: {offenders}.",
+                recovery=(
+                    "Resolve each (answer + confirm its blocker) or call dismiss_question with a reason, "
+                    "then finalize."
+                ),
             ),
             tool_call_id,
         )
@@ -1035,6 +1079,60 @@ async def supersede_decision_node(
     update_decision_node for a local wording/status edit.
     """
     return await _supersede_decision_node_impl(node_id, new_statement, cascade_mode, state, tool_call_id)
+
+
+async def _dismiss_question_impl(
+    node_id: str,
+    reason: str,
+    state: WorkflowState,
+    tool_call_id: str,
+) -> Command:
+    if not settings.decision_graph_enabled:
+        return _decision_graph_off_update("dismiss_question", tool_call_id)
+    if not str(node_id or "").strip():
+        return _missing_required_arg_update("dismiss_question", "node_id", tool_call_id)
+    if not str(reason or "").strip():
+        return _missing_required_arg_update("dismiss_question", "reason", tool_call_id)
+
+    nodes_state = state.get("decision_nodes") or {}
+    node = nodes_state.get(node_id)
+    if node is None or node.get("kind") != "open_question":
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="dismiss_target_invalid",
+                message=f"Cannot dismiss '{node_id}': not a known open_question node.",
+                recovery="Pass the id of a parked open_question from the feedback signals.",
+            ),
+            tool_call_id,
+        )
+
+    origin = _node_origin(state, None)
+    updated = dismiss_node(nodes_state, node_id, reason, origin)
+    # SECURITY: `reason` is agent/user-supplied text persisted as data on the node's audit trail
+    # (dismiss_node). The confirmation below is a fixed string — the reason is never echoed back as
+    # an instruction.
+    return Command(
+        update={
+            "decision_nodes": updated,
+            "messages": [ToolMessage(content=f"Dismissed {node_id}.", tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def dismiss_question(
+    node_id: Annotated[str, "id of the parked open_question node to dismiss."],
+    reason: Annotated[str, "Substantive reason for dismissing the question, for the audit trail."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Dismiss a resurfaced open_question with an auditable reason instead of answering it.
+
+    Use when a parked question is no longer worth pursuing (superseded by other decisions, out of
+    scope, etc.) — not an escape hatch for work you should still do. The dismissal (reason + turn) is
+    recorded on the node and the question is removed from the resurfacing/blocker set.
+    """
+    return await _dismiss_question_impl(node_id, reason, state, tool_call_id)
 
 
 def _config_ids(config: RunnableConfig) -> tuple[uuid.UUID | None, uuid.UUID | None, Any]:
@@ -1933,6 +2031,7 @@ def get_all_analyzer_tools() -> list:
         create_decision_node,
         update_decision_node,
         supersede_decision_node,
+        dismiss_question,
         run_impact_analysis,
         read_artifact_graph_tool,
         create_artifact_link_tool,
@@ -2039,6 +2138,9 @@ def _decision_graph_menu(state: WorkflowState) -> list:
     if not settings.decision_graph_enabled:
         return []
     menu = [create_decision_node]
-    if state.get("decision_nodes"):
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
         menu.extend([update_decision_node, supersede_decision_node])
+    if any(n.get("kind") == "open_question" and n.get("status") == "parked" for n in decision_nodes.values()):
+        menu.append(dismiss_question)
     return menu

@@ -492,6 +492,19 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
     else:
         feedback.pop("resurfaced_questions", None)
 
+    # Ignored-signal escalation: a per-signal counter of consecutive turns the signal has surfaced
+    # unaddressed. Incremented while present, dropped (not zeroed) once resolved/dismissed so the key
+    # is absent for legacy checkpoints and for sessions that never trip the signal.
+    ignored_counts = dict(feedback.get("ignored_counts") or {})
+    if resurfaced:
+        ignored_counts["resurfaced_questions"] = ignored_counts.get("resurfaced_questions", 0) + 1
+    else:
+        ignored_counts.pop("resurfaced_questions", None)
+    if ignored_counts:
+        feedback["ignored_counts"] = ignored_counts
+    else:
+        feedback.pop("ignored_counts", None)
+
     update: dict[str, Any] = {
         "feedback_summary": feedback,
         "session_phase": session_phase,

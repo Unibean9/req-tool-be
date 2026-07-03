@@ -54,7 +54,7 @@ class DecisionNode(TypedDict):
     id: str
     kind: str  # objective | scope | assumption | decision | risk | open_question | fact
     statement: str
-    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded
+    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded | dismissed
     origin: dict[str, Any]  # {turn, by, technique, source} — why this node exists
     depends_on: list[str]
     supersedes: str | None
@@ -69,6 +69,9 @@ class DecisionNode(TypedDict):
     # {"goal": ..., "metric": ..., "target": ...}). A single free-text statement cannot fill an N-column
     # table; fields carries that structure. A section renders as a table when its nodes carry fields.
     fields: dict[str, str] | None
+    # Audit trail set only when status becomes "dismissed": {reason, turn, dismissed_by}. Absent on
+    # every other node (backward-compatible: legacy checkpoints have no dismissed nodes at all).
+    dismissal: dict[str, Any] | None
 
 
 def merge_decision_nodes(

@@ -1575,7 +1575,12 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 
 
 @pytest.mark.asyncio
-async def test_request_edit_rejects_stale_base_version(client, db_session, _no_background_tasks):
+async def test_request_edit_recovers_stale_base_version_in_loop(client, db_session, _no_background_tasks):
+    """request_edit resumes the graph, so a stale base is pulled into the loop (seeded into
+    feedback_summary for the resumed turn to re-read + rebase) instead of a terminal 409.
+    The 409 backstop stays on the approve path (test_approve_tool_call_rejects_stale_base_version)."""
+    from unittest.mock import AsyncMock
+
     from app.models.artifact import ChangeSource, VersionStatus
 
     project_id = await _setup(client)
@@ -1607,12 +1612,32 @@ async def test_request_edit_rejects_stale_base_version(client, db_session, _no_b
     tc.input_snapshot = {**tc.input_snapshot, "base_version_id": str(old_version.id)}
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
+    svc._check_and_resume = AsyncMock()
+    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["current_version_id"] == str(current_version.id)
-    _no_background_tasks.assert_not_called()
+    await db_session.refresh(tc)
+    assert tc.status == AgentToolCallStatus.SUPERSEDED
+    svc._check_and_resume.assert_awaited_once()
+    seed = svc._check_and_resume.await_args.kwargs["state_update"]
+    stale = seed["feedback_summary"]["stale_base_version"]
+    assert stale["current_version_id"] == str(current_version.id)
+    assert stale["artifact_id"] == str(focused.id)
+
+
+@pytest.mark.asyncio
+async def test_request_edit_without_stale_seeds_no_state_update(client, db_session, _no_background_tasks):
+    """Non-stale request_edit preserves the legacy resume: no stale seed threaded to the resume."""
+    from unittest.mock import AsyncMock
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+
+    svc._check_and_resume = AsyncMock()
+    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
+
+    svc._check_and_resume.assert_awaited_once()
+    assert svc._check_and_resume.await_args.kwargs["state_update"] is None
 
 
 # ---------------------------------------------------------------------------

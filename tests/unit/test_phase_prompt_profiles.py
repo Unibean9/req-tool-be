@@ -229,6 +229,40 @@ def test_payload_tells_model_to_read_named_context_artifact_before_asking():
     assert "before asking" in prompt
 
 
+# --- per-artifact-type profile block (Phase 4) ------------------------------
+
+_ELICIT_FOCUS_MARKER = "ELICITATION FOCUS"
+_REVIEW_CRITERIA_MARKER = "REVIEW CRITERIA"
+
+
+def test_elicit_renders_type_profile_for_mapped_type():
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="risks_issues"), None, has_draft=False)
+    assert _ELICIT_FOCUS_MARKER in prompt
+    assert "elicit(technique='pre_mortem')" in prompt
+
+
+def test_review_renders_type_criteria_for_mapped_type():
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(REVIEW, artifact_type="risks_issues"), None, has_draft=True)
+    assert _REVIEW_CRITERIA_MARKER in prompt
+
+
+def test_unmapped_type_falls_back_to_generic_no_profile():
+    """A type with an output contract but no profile fields renders no type-profile block (generic)."""
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="executive_summary"), None, has_draft=False)
+    assert _ELICIT_FOCUS_MARKER not in prompt
+
+
+def test_type_profile_absent_in_draft_phase():
+    """DRAFT carries the section scaffold via the artifact contract, not the type-profile block."""
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="risks_issues"), None, has_draft=True)
+    assert _ELICIT_FOCUS_MARKER not in prompt
+    assert _REVIEW_CRITERIA_MARKER not in prompt
+
+
 def test_payload_omits_artifact_reference_policy_without_source_artifacts():
     state = _phase_state(ELICIT, artifact_type="vision_objectives")
     prompt = _build_tool_selection_prompt(
