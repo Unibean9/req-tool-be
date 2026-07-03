@@ -43,7 +43,7 @@ class Settings(BaseSettings):
 
     # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
     # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.
-    decision_graph_enabled: bool = True
+    decision_graph_enabled: bool = False
 
     app_env: str = "development"
     app_debug: bool = False
@@ -61,6 +61,15 @@ class Settings(BaseSettings):
     # Quality gate — reflection critic loop
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
+
+    # Behavior thresholds re-derived in plan 260702 Phase 6 (calibration). Kept as settings so an
+    # eval grid sweep can vary them via env without a code edit. Values below are the calibrated
+    # defaults; see plans/260702-agent-behavior-quality/evidence/behavior-before-after.md.
+    # low_coverage_ratio: below this the diagnosis loop treats a section as weakly covered.
+    low_coverage_ratio: float = 0.34
+    # readiness rubric (readiness.py): dimension pass floor and overall ready threshold.
+    readiness_dimension_pass: float = 0.5
+    readiness_ready_threshold: float = 0.7
 
     # Deterministic proposal gate (validators.validate_proposal) runs before candidate readiness
     # in write_draft. Operator rollback path — flip to False to disable the deterministic gate on

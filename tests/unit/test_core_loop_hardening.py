@@ -106,7 +106,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+    with patch("app.graphs.interrupts.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
             state, config, "Cau hoi?", run_id="call_1", interrupt_kind="stream_response"
         )
@@ -140,7 +140,7 @@ async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_s
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+    with patch("app.graphs.interrupts.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
             state, config, "Cau hoi?", run_id="call_2"
         )
@@ -174,7 +174,7 @@ def test_legacy_draft_update_field_removed_from_analysis_result_contract():
 
 def test_ask_user_impl_passes_stream_response_interrupt_kind():
     """_ask_user_impl calls _save_and_interrupt_ask with interrupt_kind='stream_response'."""
-    from app.graphs import nodes
+    from app.graphs import interrupts
     from app.graphs.agent_tools import _ask_user_impl
 
     captured = {}
@@ -183,7 +183,7 @@ def test_ask_user_impl_passes_stream_response_interrupt_kind():
         captured["interrupt_kind"] = interrupt_kind
         return "user_reply"
 
-    with patch.object(nodes, "_save_and_interrupt_ask", side_effect=fake_save):
+    with patch.object(interrupts, "_save_and_interrupt_ask", side_effect=fake_save):
         import asyncio
         asyncio.get_event_loop().run_until_complete(
             _ask_user_impl("Q?", _state(), {}, "call_x")

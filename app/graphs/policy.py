@@ -16,6 +16,12 @@ class GovernanceDenied(Exception):
         super().__init__(f"Tool was rejected by policy: {tool_name}")
 
 
+# DOCUMENTATION-ONLY for tool-loop tools: the enforcement authority for what the loop may run is
+# the session-phase menu (app/graphs/session_phase.py) applied inside agent_tools.get_available_tools
+# and the post-LLM gate (analysis/tool_gating.py). Keys here either back a genuine @governed
+# approval checkpoint (init_workflow_run/create_artifact/... stubs, finalize_prd, lock_scope) or
+# document enum-era tool names the loop no longer calls. Audit table:
+# plans/260702-agent-behavior-quality/evidence/phase-02-design.md.
 POLICY = {
     "read_artifacts": "allow",
     "read_artifact_graph": "allow",

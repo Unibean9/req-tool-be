@@ -10,6 +10,7 @@ dimension scores 0 and "scope_stability" is flagged.
 
 from typing import Any
 
+from app.config import settings
 from app.documents.registry import children_of, status_score
 
 # dimension key -> (description, source sections). Implementation Readiness is special (min of all).
@@ -30,9 +31,6 @@ READINESS_DIMENSIONS: dict[str, dict[str, Any]] = {
 }
 
 _ALL_SECTIONS = list(children_of("brd"))
-
-_READY_THRESHOLD = 0.7
-_DIMENSION_PASS = 0.5
 
 
 def _value_score(value: Any) -> float:
@@ -65,10 +63,12 @@ def compute_readiness_score(section_coverage: dict[str, Any] | None, state: Any 
             scores = [section_scores[s] for s in spec["sections"]]
             dimension_scores[key] = sum(scores) / len(scores)
 
+    dimension_pass = settings.readiness_dimension_pass
+    ready_threshold = settings.readiness_ready_threshold
     readiness_score = sum(dimension_scores.values()) / len(dimension_scores)
-    blocking_gaps = [key for key, score in dimension_scores.items() if score < _DIMENSION_PASS]
-    warnings = [key for key, score in dimension_scores.items() if _DIMENSION_PASS <= score < _READY_THRESHOLD]
-    ready = readiness_score >= _READY_THRESHOLD and not blocking_gaps
+    blocking_gaps = [key for key, score in dimension_scores.items() if score < dimension_pass]
+    warnings = [key for key, score in dimension_scores.items() if dimension_pass <= score < ready_threshold]
+    ready = readiness_score >= ready_threshold and not blocking_gaps
 
     if ready:
         recommended_next_step = "architecture_readiness"

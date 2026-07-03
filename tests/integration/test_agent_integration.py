@@ -147,7 +147,7 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
         "missing_context": [],
     }
 
-    with patch("app.graphs.nodes.interrupt") as mock_interrupt:
+    with patch("app.graphs.interrupts.interrupt") as mock_interrupt:
         mock_interrupt.side_effect = Exception("interrupt raised")
         try:
             await graph.ainvoke(state, config)

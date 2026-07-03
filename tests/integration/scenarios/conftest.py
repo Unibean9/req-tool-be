@@ -47,6 +47,10 @@ ScenarioSessionFactory = async_sessionmaker(scenario_engine, class_=AsyncSession
 
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _scenario_tables():
+    # Re-exported into tests/eval/conftest.py, so one pytest session may run this once per
+    # directory. Dispose pooled connections before deleting the file (Windows blocks unlink on an
+    # open handle) and tolerate the shared teardown running twice.
+    await scenario_engine.dispose()
     if _DB_PATH.exists():
         _DB_PATH.unlink()
     async with scenario_engine.begin() as conn:
@@ -54,7 +58,10 @@ async def _scenario_tables():
     yield
     await scenario_engine.dispose()
     if _DB_PATH.exists():
-        _DB_PATH.unlink()
+        try:
+            _DB_PATH.unlink()
+        except PermissionError:
+            pass
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -105,14 +112,23 @@ class ScenarioEnv:
             return row.status.value if row else None
 
     async def get_checkpoint_field(self, session_id: uuid.UUID, field: str) -> Any:
+        values = await self._checkpoint_values(session_id)
+        return values.get(field)
+
+    async def get_checkpoint_fields(self, session_id: uuid.UUID, fields: tuple[str, ...]) -> dict[str, Any]:
+        """Read several checkpoint channel values in one checkpointer round trip."""
+        values = await self._checkpoint_values(session_id)
+        return {field: values.get(field) for field in fields}
+
+    async def _checkpoint_values(self, session_id: uuid.UUID) -> dict[str, Any]:
         checkpointer = AgentSessionCheckpointer(
             session_id=str(session_id),
             session_factory=ScenarioSessionFactory,
         )
         checkpoint = await checkpointer.aget_tuple({"configurable": {"thread_id": str(session_id)}})
         if checkpoint is None:
-            return None
-        return (checkpoint.checkpoint.get("channel_values") or {}).get(field)
+            return {}
+        return checkpoint.checkpoint.get("channel_values") or {}
 
     async def drain(self, session_id: uuid.UUID, *, max_coros: int = 50) -> str | None:
         """Run every captured graph coroutine to completion, in order."""

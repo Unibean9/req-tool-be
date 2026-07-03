@@ -60,6 +60,30 @@ async def test_orchestrator_single_weak_signal_does_not_escalate_risk(decision_g
 
 
 @pytest.mark.asyncio
+async def test_orchestrator_validated_coverage_downgrades_sections_with_violations(decision_graph_factory):
+    """Phase 4: a section with a violation finding no longer counts as covered, so a nominally-full
+    coverage on a sparse draft flips the diagnosis from low to high risk."""
+    nodes = decision_graph_factory({"id": "N7", "kind": "objective", "status": "confirmed"})
+
+    state = {
+        "decision_nodes": nodes,
+        "artifact_type": "brd",
+        "section_coverage": {"scope_capabilities": "filled", "vision_objectives": "filled"},
+        "section_findings": {
+            "scope_capabilities": [{"severity": "violation", "message": "x"}],
+            "vision_objectives": [{"severity": "violation", "message": "x"}],
+        },
+        "quality_report": None,
+        "draft_body": "",  # sparse
+    }
+
+    update = await orchestrator_node(state, {})
+
+    assert update["diagnosis_signal"]["risk_level"] == "high"
+    assert "low_coverage" in update["diagnosis_signal"]["signals"]
+
+
+@pytest.mark.asyncio
 async def test_orchestrator_diagnosis_disabled_is_noop(decision_graph_factory, monkeypatch):
     monkeypatch.setattr(settings, "enable_adaptive_diagnosis", False)
     nodes = decision_graph_factory({"id": "N7", "kind": "objective", "status": "confirmed"})

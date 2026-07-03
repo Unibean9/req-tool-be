@@ -89,6 +89,22 @@ def merge_decision_nodes(
     return {**left, **right}
 
 
+def merge_section_findings(
+    left: dict[str, list] | None, right: dict[str, list] | None
+) -> dict[str, list]:
+    """Merge section-finding updates per section-key, mirroring merge_decision_nodes.
+
+    Two section-writing tools in one turn each build from the same pre-turn snapshot and return the
+    full dict; per-key union keeps both writes. A passing section is stored as [] (never dropped) so
+    clearing a defect propagates rather than being lost by omission.
+    """
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
+
+
 class MethodProfile(TypedDict):
     """BMAD method profile (addendum §8): which planning workflow the project is in."""
 
@@ -188,10 +204,10 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser, queried by validators and the finalize gate.
-    assumptions: list[AssumptionObject]
+    # populated by the note parser, queried by validators and the finalize gate. assumptions and
+    # open_questions moved to the decision graph in Phase 5 (single source of truth) — see
+    # decision_graph.derive_assumptions / derive_open_questions.
     risks: list[RiskObject]
-    open_questions: list[OpenQuestionObject]
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
     # compression — they are the ground truth the analyst builds on.
     key_facts: list[KeyFactObject]
@@ -239,6 +255,18 @@ class WorkflowState(TypedDict):
     # Count of LLM judge calls spent escalating a high-risk diagnosis, session-lifetime. Plain
     # replace-on-write; compared against DIAGNOSIS_JUDGE_CALLS_MAX to gate further escalation.
     diagnosis_judge_calls_used: int
+    # Explicit workflow position: "intent"|"elicit"|"draft"|"review"|"finalize" (session_phase.py).
+    # SINGLE WRITER: only orchestrator_node assigns it (via session_phase.transition); readers fall
+    # back to on-the-fly derivation for checkpoints created before this field existed.
+    session_phase: str | None
+    # Count of model tool selections rejected by the per-phase gate, session-lifetime. Written at a
+    # single site per turn (analyze result); read by the behavior eval's out_of_phase metric.
+    out_of_phase_tool_calls: int
+    # Section-scoped structural findings from the last write of each section, keyed by the section
+    # heading (Phase 4). A passing section stores [] (not absent) so a re-validation can clear a
+    # prior defect through the union merge. Two decision tools in one turn each return the full dict
+    # built from the same snapshot, so per-key merge keeps both — mirroring decision_nodes.
+    section_findings: Annotated[dict[str, list[dict[str, Any]]], merge_section_findings]
 
 
 def build_initial_workflow_state(
@@ -273,9 +301,7 @@ def build_initial_workflow_state(
         "section_coverage": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
-        "assumptions": [],
         "risks": [],
-        "open_questions": [],
         "key_facts": [],
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
         "draft_body": None,
@@ -294,4 +320,7 @@ def build_initial_workflow_state(
         "thinking_mode": None,
         "diagnosis_signal": None,
         "diagnosis_judge_calls_used": 0,
+        "session_phase": None,
+        "out_of_phase_tool_calls": 0,
+        "section_findings": {},
     }

@@ -66,10 +66,11 @@ async def test_scenario1_vague_idea(client, db_session):
 
 @pytest.mark.asyncio
 async def test_scenario2_clear_direction_records_assumptions_and_risks(client, db_session):
-    """Clear direction: notes feed structured assumptions + risks.
+    """Clear direction: notes feed structured risks + assumption decision nodes.
 
     workflow_mode is no longer LLM-reported (it is inferred from DB coverage), so this scenario no
     longer asserts an echoed brief/prd value; the surviving behavior is the structured note parsing.
+    Phase 5: an ASSUMPTION note creates a decision-graph node (single source of truth), not a state list.
     """
     note = await _write_note_impl(
         "ASSUMPTION: users have phones | confidence: high\nRISK: vendor lock-in | likelihood: medium",
@@ -77,8 +78,10 @@ async def test_scenario2_clear_direction_records_assumptions_and_risks(client, d
         "call_1",
         "explore_note",
     )
-    assert note.update["assumptions"]
     assert note.update["risks"]
+    assumption_nodes = [n for n in note.update["decision_nodes"].values() if n["kind"] == "assumption"]
+    assert assumption_nodes and assumption_nodes[0]["statement"] == "users have phones"
+    assert assumption_nodes[0]["status"] == "needs_confirmation"
 
 
 @pytest.mark.asyncio

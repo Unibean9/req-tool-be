@@ -7,6 +7,7 @@ script the analyst tool-selection turns — everything else gets a sensible defa
 Routing keys (matching app/graphs):
 - TOOL_CALL_SCHEMA  -> has property "__tool_call__" -> native AIMessage(tool_calls) (harness self-test)
 - tools param set   -> native tool-selection: next scripted tool-selection turn as an AIMessage
+- JUDGE_SCHEMA      -> score+findings+suggestions props -> scripted critique report
 - ON_TOPIC_SCHEMA   -> has property "on_topic" -> judge response (M2 harness only)
 - TRIAGE_SCHEMA     -> has property "turn_type" -> triage classifier
 - SUMMARY_SCHEMA    -> property set == {"summary"} -> summary response
@@ -66,6 +67,7 @@ class ScriptedLLM:
         judge: dict[str, Any] | None = None,
         tool_calls: list[dict[str, Any]] | None = None,
         tool_brain: list[dict[str, Any]] | None = None,
+        critique: list[dict[str, Any]] | None = None,
     ) -> None:
         # Ordered native tool-call turns, consumed one per "tool_call"-routed generate.
         self._tool_calls = list(tool_calls or [])
@@ -74,6 +76,11 @@ class ScriptedLLM:
         # TOOL_SELECTION_SCHEMA generate. analyze_node converts it to an AIMessage.
         self._tool_brain = list(tool_brain or [])
         self._tool_brain_idx = 0
+        # Ordered critique-judge responses (JUDGE_SCHEMA generates), consumed in order; when
+        # exhausted (or never scripted) the judge returns a clean pass so critique never blocks a
+        # scenario that did not script it.
+        self._critique = list(critique or [])
+        self._critique_idx = 0
         self._summary = summary or {"summary": ""}
         # Default judge passes (on_topic=True): infra wiring, not a real M2 measurement (which needs
         # a real LLM judge outside CI).
@@ -97,7 +104,18 @@ class ScriptedLLM:
     ) -> tuple[Any, None]:
         route = self._route(response_format, tools=tools)
         result = self._respond(route)
-        self.calls.append({"route": route, "result": result})
+        # system + tool-schema names captured for the golden-transcript regression (prompt-assembly
+        # refactors must be byte-identical); routing behavior is unchanged.
+        self.calls.append(
+            {
+                "route": route,
+                "result": result,
+                "system": system,
+                "last_message": (messages[-1].get("content") if messages else None),
+                "tool_names": [getattr(t, "name", None) or (t.get("name") if isinstance(t, dict) else None)
+                               for t in (tools or [])],
+            }
+        )
         return result, None
 
     # ------------------------------------------------------------------
@@ -105,7 +123,12 @@ class ScriptedLLM:
     # ------------------------------------------------------------------
 
     def _route(self, response_format: dict[str, Any] | None, *, tools: list[Any] | None = None) -> str:
-        props = ((response_format or {}).get("properties")) or {}
+        rf = response_format or {}
+        # Production judge schemas nest under {"name", "schema"}; graph-internal schemas are flat.
+        props = rf.get("properties") or (rf.get("schema") or {}).get("properties") or {}
+        # Critique judge (app/graphs/critique.py JUDGE_SCHEMA): score + findings + suggestions.
+        if {"score", "findings", "suggestions"} <= set(props.keys()):
+            return "critique"
         # __tool_call__ marker wins so the harness self-test (which passes BOTH tools and
         # TOOL_CALL_SCHEMA) still routes to the native tool_call brain.
         if "__tool_call__" in props:
@@ -140,6 +163,12 @@ class ScriptedLLM:
             # Exhausted -> terminal: a plain AIMessage with no tool_calls. analyze_node sees the empty
             # tool_calls and ends the turn (route_node -> END).
             return AIMessage(content="", tool_calls=[])
+        if route == "critique":
+            if self._critique_idx < len(self._critique):
+                report = self._critique[self._critique_idx]
+                self._critique_idx += 1
+                return dict(report)
+            return {"score": 0.85, "findings": [], "suggestions": []}
         if route == "triage":
             return {"turn_type": "work", "locale": "vi"}
         if route == "judge":

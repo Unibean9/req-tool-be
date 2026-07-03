@@ -29,6 +29,35 @@ from app.services.document_service import DocumentService
 # survive idle proxy/load-balancer timeouts. Overridable per-call (tests use a short interval).
 HEARTBEAT_INTERVAL_SECONDS = 15.0
 
+# session_phase per checkpoint_id — decoding the graph checkpoint blob is the only way to read the
+# phase (it lives in graph state, not a session column), so cache it per checkpoint id; the id
+# changes whenever state changes, making invalidation automatic. Bounded FIFO.
+_PHASE_CACHE: dict[str, str | None] = {}
+_PHASE_CACHE_MAX_ENTRIES = 512
+
+
+def _session_phase_from_checkpoint(session: AgentSession) -> str | None:
+    """Best-effort read of the session-phase channel from the persisted graph checkpoint."""
+    payload = session.graph_checkpoint or {}
+    checkpoint_id = payload.get("checkpoint_id")
+    if not checkpoint_id or "data" not in payload:
+        return None
+    if checkpoint_id in _PHASE_CACHE:
+        return _PHASE_CACHE[checkpoint_id]
+    try:
+        import base64
+
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        checkpoint = JsonPlusSerializer().loads_typed((payload["serde_type"], base64.b64decode(payload["data"])))
+        phase = (checkpoint.get("channel_values") or {}).get("session_phase")
+    except Exception:  # noqa: BLE001 — a malformed checkpoint must never break the event stream
+        phase = None
+    if len(_PHASE_CACHE) >= _PHASE_CACHE_MAX_ENTRIES:
+        _PHASE_CACHE.pop(next(iter(_PHASE_CACHE)))
+    _PHASE_CACHE[checkpoint_id] = phase
+    return phase
+
 
 class AgentEventService:
     def __init__(self, db: AsyncSession, session_factory: Any = None):
@@ -140,6 +169,7 @@ class AgentEventService:
                 "focused_artifact_id": session.focused_artifact_id,
                 "status": session.status,
                 "ui_status": _ui_status(session.status, session.interrupt_type),
+                "session_phase": _session_phase_from_checkpoint(session),
                 "interrupt_type": session.interrupt_type,
                 "missing_context": session.missing_context,
                 "document": document,

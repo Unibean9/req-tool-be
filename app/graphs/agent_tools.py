@@ -27,7 +27,7 @@ from sqlalchemy import exists, func, select
 
 from app.config import settings
 from app.documents.registry import children_of, output_contract, status_score
-from app.graphs import nodes
+from app.graphs import interrupts
 from app.graphs.decision_graph import (
     VALID_KINDS,
     VALID_STATUSES,
@@ -37,10 +37,12 @@ from app.graphs.decision_graph import (
     infer_cascade_mode,
     render_view,
     supersede_node,
+    synthesis_assumption_signals,
     update_node,
 )
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ARTIFACT_PREDECESSORS
+from app.graphs.session_phase import PhaseSignals, derive_phase, phase_allows
 from app.graphs.state import QualityReport, WorkflowState
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.tools import read_current_body
@@ -211,17 +213,73 @@ async def _audit_interaction_tool_call(
 # ---------------------------------------------------------------------------
 
 
-async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
-    if not str(message or "").strip():
+# Batched question form (Phase 3): up to 3 related, typed facets in one interrupt.
+_MAX_BATCH_QUESTIONS = 3
+_BATCH_QUESTION_TYPES = frozenset({"choice", "text", "confirm"})
+
+
+def _normalize_batch_questions(questions: Any) -> list[dict[str, Any]]:
+    """Keep at most 3 well-formed questions; drop malformed entries rather than erroring the turn.
+
+    A valid entry has a non-empty `prompt` and a `type` in {choice, text, confirm} (defaulting to
+    `text`); `choice` entries keep their string `options`. Anything else is silently dropped so a
+    partially-malformed batch still asks its good questions instead of failing the whole tool call.
+    """
+    if not isinstance(questions, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        prompt = str(item.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        q_type = str(item.get("type") or "text").strip().lower()
+        if q_type not in _BATCH_QUESTION_TYPES:
+            q_type = "text"
+        entry: dict[str, Any] = {"prompt": prompt, "type": q_type}
+        if q_type == "choice":
+            entry["options"] = [str(opt).strip() for opt in (item.get("options") or []) if str(opt).strip()]
+        normalized.append(entry)
+        if len(normalized) >= _MAX_BATCH_QUESTIONS:
+            break
+    return normalized
+
+
+def _render_batched_question_text(message: str, questions: list[dict[str, Any]]) -> str:
+    """Joined-text fallback: the header (if any) followed by each numbered question, so a client
+    that renders only free text still surfaces every facet."""
+    lines: list[str] = []
+    header = str(message or "").strip()
+    if header:
+        lines.append(header)
+    for index, question in enumerate(questions, start=1):
+        line = f"{index}. {question['prompt']}"
+        if question["type"] == "choice" and question.get("options"):
+            line += f" ({' / '.join(question['options'])})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _ask_user_impl(
+    message: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    questions: Any = None,
+):
+    batch = _normalize_batch_questions(questions)
+    if not str(message or "").strip() and not batch:
         return _missing_required_arg_update("ask_user", "message", tool_call_id)
+    content = _render_batched_question_text(message, batch) if batch else message
 
     # ToolCall.id is the correct idempotency key here: inside the ToolNode body
     # state["last_agent_run_id"] still belongs to the prior analyze_node, not this invocation.
     # interrupt_kind="stream_response": session stays ACTIVE so the conversation resume path applies
     # (not the approval-gate path). The graph still halts via interrupt() — only the DB fields differ.
-    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=message)
-    user_content = await nodes._save_and_interrupt_ask(
-        state, config, message, run_id=tool_call_id, interrupt_kind="stream_response"
+    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=content)
+    user_content = await interrupts._save_and_interrupt_ask(
+        state, config, content, run_id=tool_call_id, interrupt_kind="stream_response", questions=batch or None
     )
     return Command(
         update={
@@ -235,18 +293,26 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
 
 @tool
 async def ask_user(
-    message: Annotated[str, "One focused question, written in the user's locale."],
+    message: Annotated[str, "A short header/lead-in, written in the user's locale. May be empty when `questions` is given."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    questions: Annotated[
+        list[dict] | None,
+        "Optional batch of up to 3 RELATED questions asked in one turn. Each item: "
+        "{prompt: str, type: 'choice'|'text'|'confirm', options?: [str] for choice}. Batch related "
+        "facets of one topic; ask serially (single question, empty list) only when one answer "
+        "determines the next question.",
+    ] = None,
 ) -> Command:
-    """Ask the user a clarifying question and pause for their reply.
+    """Ask the user for information and pause for their reply.
 
     Use when you need information you do not have and cannot reasonably infer. Do NOT use to deliver
     an opinion or assessment (use respond) or to present a prepared draft (use write_draft /
-    confirm_intent). Ask one focused question, not a checklist.
+    confirm_intent). Keep to ONE topic: either one focused question, or up to 3 related facets of
+    the same topic via `questions` — never an open-ended checklist.
     """
-    return await _ask_user_impl(message, state, config, tool_call_id)
+    return await _ask_user_impl(message, state, config, tool_call_id, questions)
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +339,7 @@ async def _confirm_intent_impl(
     # next turn sees user_confirmed=True — which unlocks the artifact tool menu in get_available_tools.
     # kind="assessment": this is a surfaced intent summary, not a clarifying question.
     await _audit_interaction_tool_call(state, config, tool_name=f"confirm_intent:{tool_call_id}", message=summary)
-    user_content = await nodes._save_and_interrupt_ask(
+    user_content = await interrupts._save_and_interrupt_ask(
         state, config, summary, run_id=tool_call_id, kind="assessment", interrupt_kind="stream_response"
     )
     return Command(
@@ -350,53 +416,6 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
         seen.add(normalized)
         result.append(normalized)
     return result
-
-
-def _normalize_for_fact_match(text: str) -> str:
-    return re.sub(r"[^\w\s]", "", str(text or "").lower()).strip()
-
-
-def _drop_statements_already_facts(statements: list[str], key_facts: list[dict]) -> list[str]:
-    """Exclude an assumption/open-question statement the user already stated as a key fact.
-
-    A confirmed key_fact supersedes an assumption about the same thing — surfacing both would show
-    the agent "assuming" something the user has already told it.
-    """
-    fact_texts = [_normalize_for_fact_match(f.get("statement") or "") for f in (key_facts or [])]
-    fact_texts = [text for text in fact_texts if text]
-    if not fact_texts:
-        return statements
-    kept: list[str] = []
-    for statement in statements:
-        normalized = _normalize_for_fact_match(statement)
-        if normalized and any(normalized in fact or fact in normalized for fact in fact_texts):
-            continue
-        kept.append(statement)
-    return kept
-
-
-def _graph_assumption_signals(decision_nodes: dict) -> tuple[list[str], list[str]]:
-    """Derive (confirmed, pending) assumption-like statements from the decision graph.
-
-    The readiness gate must see assumptions the model recorded as nodes, not only those captured via
-    the legacy note tools — otherwise a graph-only session reports SUFFICIENT while unresolved nodes
-    remain (the dual-source-of-truth divergence). Pending = anything still awaiting the user:
-    needs_confirmation nodes plus open_questions that are neither parked (deferred on purpose) nor
-    already resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
-    """
-    confirmed: list[str] = []
-    pending: list[str] = []
-    for node in (decision_nodes or {}).values():
-        status = node.get("status")
-        kind = node.get("kind")
-        statement = node.get("statement") or ""
-        if status == "needs_confirmation":
-            pending.append(statement)
-        elif kind == "open_question" and status in {"proposed", None}:
-            pending.append(statement)
-        elif kind == "assumption" and status == "confirmed":
-            confirmed.append(statement)
-    return confirmed, pending
 
 
 def _cold_start_draft_blocked(state: WorkflowState) -> bool:
@@ -498,24 +517,17 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                 reason=f"{len(gate.warnings)} warning(s)" if gate.warnings else None,
                 session_id=str(session_id),
             )
-            graph_confirmed, graph_pending = _graph_assumption_signals(state.get("decision_nodes") or {})
-            key_facts = state.get("key_facts") or []
+            # Single source of truth (Phase 5): assumptions/open-questions are derived from the
+            # decision graph only — no parallel state fields, no key-fact reconciliation shim.
+            graph_confirmed, graph_pending = synthesis_assumption_signals(state.get("decision_nodes") or {})
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
                 base_version_id=focused.current_version_id,
                 evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
                 inference_level="medium",
-                confirmed_assumptions=_dedupe_keep_order(
-                    _drop_statements_already_facts(
-                        [a["statement"] for a in (state.get("assumptions") or [])] + graph_confirmed, key_facts
-                    )
-                ),
-                pending_assumptions=_dedupe_keep_order(
-                    _drop_statements_already_facts(
-                        [q["question"] for q in (state.get("open_questions") or [])] + graph_pending, key_facts
-                    )
-                ),
+                confirmed_assumptions=_dedupe_keep_order(graph_confirmed),
+                pending_assumptions=_dedupe_keep_order(graph_pending),
                 deterministic_warnings=gate.warnings,
             )
             readiness = evaluate_candidate_readiness(
@@ -686,14 +698,28 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
         )
 
     # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
-    # Beyond that, tagged lines (ASSUMPTION:/RISK:/OPEN_QUESTION:) are parsed into structured state
-    # objects and appended to the accumulating lists so validators and the finalize gate can query
-    # them. Append (prior + new) since these channels have no reducer.
+    # Beyond that, tagged lines are parsed into structured objects. risks/key_facts append to their
+    # state lists (append prior + new — no reducer). ASSUMPTION:/OPEN_QUESTION: lines instead create
+    # decision nodes (Phase 5: the graph is the single source of truth for assumptions/open-questions)
+    # — assumptions land needs_confirmation (agent-authored, not user-confirmed), open_questions proposed.
     extracted = extract_structured_objects(content)
     update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
-    for bucket in ("assumptions", "risks", "open_questions", "key_facts"):
+    for bucket in ("risks", "key_facts"):
         if extracted[bucket]:
             update[bucket] = [*(state.get(bucket) or []), *extracted[bucket]]
+
+    new_nodes: dict[str, Any] = {}
+    origin = _node_origin(state, None)
+    for assumption in extracted["assumptions"]:
+        node = create_node(
+            kind="assumption", statement=assumption["statement"], origin=origin, status="needs_confirmation"
+        )
+        new_nodes[node["id"]] = node
+    for question in extracted["open_questions"]:
+        node = create_node(kind="open_question", statement=question["question"], origin=origin, status="proposed")
+        new_nodes[node["id"]] = node
+    if new_nodes:
+        update["decision_nodes"] = {**(state.get("decision_nodes") or {}), **new_nodes}
     return Command(update=update)
 
 
@@ -747,6 +773,32 @@ def _decision_graph_off_update(tool_name: str, tool_call_id: str) -> Command:
 
 def _node_origin(state: WorkflowState, technique: str | None) -> dict[str, Any]:
     return {"turn": state.get("turn_count") or 0, "by": "agent", "technique": technique, "source": None}
+
+
+def _section_content(statement: str | None, fields: dict[str, str] | None) -> str:
+    """Text a section write exposes to validation: the statement plus any table-cell values."""
+    parts = [str(statement or "")]
+    if fields:
+        parts.extend(str(value) for value in fields.values())
+    return "\n".join(part for part in parts if part)
+
+
+def _section_findings_update(state: WorkflowState, node: dict[str, Any]) -> dict[str, Any]:
+    """Validate the section a decision-node write touched and record findings (Phase 4).
+
+    Never blocks the write. Keyed by section heading, replace-on-write per key: a passing section
+    stores [] so a re-validation clears a prior defect through the merge reducer. A node with no
+    section has nothing to validate, so the findings map is left untouched.
+    """
+    section = node.get("section")
+    if not section:
+        return {}
+    from app.graphs.analysis.section_validation import validate_section
+
+    findings = validate_section(
+        state.get("artifact_type") or "brd", section, _section_content(node.get("statement"), node.get("fields"))
+    )
+    return {"section_findings": {**(state.get("section_findings") or {}), section: findings}}
 
 
 async def _create_decision_node_impl(
@@ -805,6 +857,7 @@ async def _create_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=f"node {node['id']} ({kind})", tool_call_id=tool_call_id)],
+            **_section_findings_update(state, node),
         }
     )
 
@@ -853,6 +906,7 @@ async def _update_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=f"node {node_id} updated", tool_call_id=tool_call_id)],
+            **_section_findings_update(state, updated[node_id]),
         }
     )
 
@@ -885,6 +939,7 @@ async def _supersede_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+            **_section_findings_update(state, updated[new_id]),
         }
     )
 
@@ -1151,7 +1206,7 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
     # mode differ, so the user sees an assessment rather than a question.
     await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
-    user_content = await nodes._save_and_interrupt_ask(
+    user_content = await interrupts._save_and_interrupt_ask(
         state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
     )
     return Command(
@@ -1901,11 +1956,33 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     return True
 
 
+def _phase_signals(state: WorkflowState) -> PhaseSignals:
+    """State-derived facts the session-phase machine transitions on (single computation site)."""
+    has_draft = bool(_cached_draft_body(state).strip()) or bool(str(state.get("draft_body") or "").strip())
+    critique_started = bool(state.get("critique_rounds") or 0) or bool(state.get("quality_report"))
+    return PhaseSignals(
+        user_confirmed=state.get("user_confirmed") is not None,
+        has_draft=has_draft,
+        has_evidence=bool(state.get("decision_nodes")) or bool(state.get("session_elicit_count") or 0),
+        critique_started=critique_started,
+        # Only consult the finalize gate when it can matter — it logs each evaluation.
+        finalize_open=bool(has_draft and critique_started and _finalize_gate_open(state)),
+    )
+
+
+def current_session_phase(state: WorkflowState) -> str:
+    """The phase gating reads: orchestrator's persisted value, derived on the fly for legacy
+    checkpoints (resume paths can re-enter the ToolNode before orchestrator has ever run)."""
+    return state.get("session_phase") or derive_phase(_phase_signals(state))
+
+
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    The menu is intentionally broad. The only hard safety gates left here are draft/quality gates:
-    `finalize` needs a passing current critique, and critique/readiness tools need a rendered draft.
+    The menu is intentionally broad. Two gate layers: the session-phase menu (see
+    app/graphs/session_phase.py — the single authority for which loop tools a phase offers) and
+    the draft/quality conditions (`finalize` needs a passing current critique, critique/readiness
+    tools need a rendered draft). POLICY in policy.py is documentation-only for loop tools.
     """
     tools = [
         ask_user,
@@ -1939,7 +2016,8 @@ def get_available_tools(state: WorkflowState) -> list:
     if has_draft and critique_rounds > 0:
         tools.append(run_readiness_check)
     tools.extend(_decision_graph_menu(state))
-    return tools
+    phase = current_session_phase(state)
+    return [t for t in tools if phase_allows(phase, t.name)]
 
 
 def _decision_graph_menu(state: WorkflowState) -> list:

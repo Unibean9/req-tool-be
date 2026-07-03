@@ -164,6 +164,97 @@ def supersede_node(
     return result
 
 
+# Statuses that keep a node "in play" for the derived assumption/open-question views. superseded is
+# frozen history; parked is deferred on purpose (folds into its own view via the graph, not here).
+_DERIVED_VIEW_STATUSES = VALID_STATUSES - {"superseded", "parked"}
+
+
+def derive_assumptions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
+    """Assumptions as a derived view over the graph — replaces the parallel state["assumptions"].
+
+    Active assumption-kind nodes projected to the shape consumers read (`statement` + `status`).
+    """
+    return [
+        {"statement": node.get("statement") or "", "status": node.get("status")}
+        for node in (decision_nodes or {}).values()
+        if node.get("kind") == "assumption" and node.get("status") in _DERIVED_VIEW_STATUSES
+    ]
+
+
+def derive_open_questions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
+    """Open questions as a derived view over the graph — replaces state["open_questions"].
+
+    Active (non-parked) open_question-kind nodes projected to `question` + `status`.
+    """
+    return [
+        {"question": node.get("statement") or "", "status": node.get("status")}
+        for node in (decision_nodes or {}).values()
+        if node.get("kind") == "open_question" and node.get("status") in _DERIVED_VIEW_STATUSES
+    ]
+
+
+def synthesis_assumption_signals(decision_nodes: dict[str, DecisionNode]) -> tuple[list[str], list[str]]:
+    """Derive (confirmed, pending) assumption-like statements for draft synthesis — the sole source.
+
+    Pending = anything still awaiting the user: needs_confirmation nodes (any kind, so a supersede
+    cascade's stale dependents still block readiness) plus open_questions that are neither parked
+    (deferred) nor resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
+    """
+    confirmed: list[str] = []
+    pending: list[str] = []
+    for node in (decision_nodes or {}).values():
+        status = node.get("status")
+        kind = node.get("kind")
+        statement = node.get("statement") or ""
+        if status == "needs_confirmation":
+            pending.append(statement)
+        elif kind == "open_question" and status in {"proposed", None}:
+            pending.append(statement)
+        elif kind == "assumption" and status == "confirmed":
+            confirmed.append(statement)
+    return confirmed, pending
+
+
+def _statement_present(decision_nodes: dict[str, DecisionNode], kind: str, statement: str) -> bool:
+    normalized = _normalize_statement(statement)
+    return any(
+        node.get("kind") == kind and _normalize_statement(node.get("statement", "")) == normalized
+        for node in decision_nodes.values()
+    )
+
+
+def migrate_legacy_notes(
+    decision_nodes: dict[str, DecisionNode],
+    assumptions: list[dict[str, Any]] | None,
+    open_questions: list[dict[str, Any]] | None,
+    origin: dict[str, Any],
+) -> tuple[dict[str, DecisionNode], int]:
+    """One-time migration of pre-Phase-5 state-field entries into decision nodes (audit D1/D2/D3).
+
+    A resumed legacy checkpoint may carry assumptions/open_questions in the dropped state fields with
+    no matching node. Each such entry becomes a node — assumptions needs_confirmation (agent-authored,
+    not user-confirmed: audit D3), open_questions proposed — so nothing is lost. Entries that already
+    have a statement-matching node of the same kind are skipped (idempotent across repeated loads).
+    """
+    result = _clone(decision_nodes)
+    migrated = 0
+    for entry in assumptions or []:
+        statement = str(entry.get("statement") or "").strip()
+        if not statement or _statement_present(result, "assumption", statement):
+            continue
+        node = create_node(kind="assumption", statement=statement, origin=origin, status="needs_confirmation")
+        result[node["id"]] = node
+        migrated += 1
+    for entry in open_questions or []:
+        statement = str(entry.get("question") or "").strip()
+        if not statement or _statement_present(result, "open_question", statement):
+            continue
+        node = create_node(kind="open_question", statement=statement, origin=origin, status="proposed")
+        result[node["id"]] = node
+        migrated += 1
+    return result, migrated
+
+
 def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[DecisionNode]:
     """Return parked open_questions whose every blocker has been resolved.
 

@@ -200,6 +200,7 @@ async def test_analyze_node_audit_omits_tool_body_from_agent_run(client, db_sess
     ]), None))
 
     state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True  # ELICIT phase so write_draft is in phase (test is about body omission)
     config = _config(str(agent_session.id), str(project_id), mock_llm)
     config["configurable"]["session_factory"] = _session_factory()
 
@@ -287,12 +288,16 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     agent_session.focused_artifact_id = child_b.id
     await db_session.commit()
 
+    # Phase 2: after the focus reset clears critique state, finalize would be out of phase on the
+    # freshly-focused artifact, so the model picks an in-phase tool (write_draft is valid in any
+    # post-confirm phase). The point of this test is the critique-state reset, not the tool identity.
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
-        {"id": "scripted:0", "name": "finalize", "args": {"summary": "Hoan tat"}}
+        {"id": "scripted:0", "name": "write_draft", "args": {"title": "Problem", "body": "## Problem\nX."}}
     ]), None))
 
     state = _state(artifact_type="problem_statement")
+    state["user_confirmed"] = True
     state["focused_artifact_id"] = str(child_a.id)
     state["critique_rounds"] = 1
     state["last_critiqued_draft_hash"] = "stalehash"
@@ -305,7 +310,7 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     assert result["focused_artifact_id"] == str(child_b.id)
     assert result["critique_rounds"] == 0
     assert result["last_critiqued_draft_hash"] is None
-    assert result["analysis_result"]["tools"][0]["name"] == "finalize"
+    assert result["analysis_result"]["tools"][0]["name"] == "write_draft"
     assert "gated_tool" not in result["analysis_result"]
 
 

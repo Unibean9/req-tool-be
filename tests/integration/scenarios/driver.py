@@ -37,7 +37,19 @@ _ITEM_CONTAINERS = {
     "non_functional_requirement": "prd",
     "use_case": "prd",
     "acceptance_criteria": "prd",
+    "tech_decision": "sad",
 }
+
+# Checkpoint fields mirrored into every snapshot so metric extraction stays pure over the
+# transcript (app/eval/behavior_metrics.py reads them from snapshot["state"]).
+_STATE_SNAPSHOT_FIELDS = (
+    "turn_count",
+    "critique_rounds",
+    "quality_report",
+    "diagnosis_signal",
+    "section_coverage",
+    "out_of_phase_tool_calls",
+)
 
 
 @dataclass
@@ -203,6 +215,7 @@ class ScenarioDriver:
             },
             "messages": await self._list_messages(),
             "tool_calls": await self._list_tool_calls(),
+            "state": await self.env.get_checkpoint_fields(self.session_id, _STATE_SNAPSHOT_FIELDS),
         }
 
     # ------------------------------------------------------------------
@@ -228,7 +241,8 @@ class ScenarioDriver:
             artifact_type=self.scenario.artifact_type,
             final_status=final.get("status"),
             final_interrupt=final.get("interrupt_type"),
-            brain_turns_consumed=self.scenario.llm._tool_brain_idx,
+            # A live LLM client has no scripted brain; record None instead of failing.
+            brain_turns_consumed=getattr(self.scenario.llm, "_tool_brain_idx", None),
         )
 
         return self.recorder

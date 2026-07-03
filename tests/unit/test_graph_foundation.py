@@ -120,9 +120,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "section_coverage": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
-        "assumptions": [],
         "risks": [],
-        "open_questions": [],
         "focused_artifact_id": None,
         "draft_body": None,
         "method_profile": dict(DEFAULT_METHOD_PROFILE),
@@ -154,9 +152,7 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "section_coverage",
         "coverage_complete",
         "section_coverage_stall_count",
-        "assumptions",
         "risks",
-        "open_questions",
         "key_facts",
         "focused_artifact_id",
         "draft_body",
@@ -175,6 +171,9 @@ def test_workflow_state_structure_and_add_messages_reducer():
         "thinking_mode",
         "diagnosis_signal",
         "diagnosis_judge_calls_used",
+        "session_phase",
+        "out_of_phase_tool_calls",
+        "section_findings",
     }
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 
