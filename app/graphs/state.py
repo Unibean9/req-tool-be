@@ -204,20 +204,22 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser, queried by validators and the finalize gate. assumptions and
-    # open_questions moved to the decision graph in Phase 5 (single source of truth) — see
-    # decision_graph.derive_assumptions / derive_open_questions.
-    risks: list[RiskObject]
+    # populated by the note parser. assumptions and open_questions moved to the decision graph in
+    # Phase 5 (single source of truth) — see decision_graph.derive_assumptions / derive_open_questions.
+    # Additive reducers keep same-turn parallel note writes from colliding.
+    risks: Annotated[list[RiskObject], operator.add]
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
     # compression — they are the ground truth the analyst builds on.
-    key_facts: list[KeyFactObject]
+    key_facts: Annotated[list[KeyFactObject], operator.add]
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
     # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
     # draft view; this field stays as DB context for document workflows.
     draft_body: str | None
     candidate_readiness: dict[str, Any] | None
-    tool_errors: list[dict[str, Any]]
+    # Append-only recoverable tool error log. Multiple tool failures can be returned in one ToolNode
+    # superstep, so this channel needs the same additive reducer discipline as note outputs.
+    tool_errors: Annotated[list[dict[str, Any]], operator.add]
     feedback_summary: dict[str, Any] | None
     verification_status: dict[str, Any] | None
     latest_checked_revision: str | None

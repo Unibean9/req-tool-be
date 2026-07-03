@@ -2,7 +2,7 @@ import time
 import uuid
 from typing import Any
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.graph import END
 from langgraph.types import interrupt
@@ -11,9 +11,6 @@ from sqlalchemy import exists, select
 from app.config import settings
 from app.documents.registry import children_of, status_score
 from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, get_available_tools
-from app.graphs.session_phase import IllegalPhaseTransition
-from app.graphs.session_phase import derive_phase as _derive_phase
-from app.graphs.session_phase import transition as phase_transition
 
 # Phase 1 decomposition: analyze_node's concerns live in app.graphs.analysis.* now. The private
 # names are re-exported here because existing tests/evals import them from nodes.
@@ -25,33 +22,32 @@ from app.graphs.analysis.context_loader import (  # noqa: F401
     _missing_required_headings,
     load_turn_context,
 )
-from app.graphs.analysis.section_validation import validated_coverage
 from app.graphs.analysis.prompt_assembly import (  # noqa: F401
     _THINKING_MODE_RATIONALE,
     _THINKING_MODE_TECHNIQUE_HINTS,
     _analyzer_history_messages,
-    _build_key_facts_block,
-    _build_draft_block,
-    _build_draft_delta_block,
-    _compact_list,
     _build_analyzer_messages,
     _build_artifact_contract_block,
+    _build_draft_block,
+    _build_draft_delta_block,
     _build_feedback_control_block,
+    _build_key_facts_block,
     _build_mode_hint_directive,
     _build_output_contract_block,
     _build_section_coverage_hint,
     _build_stuck_escalation_block,
     _build_thinking_mode_block,
     _build_tool_selection_prompt,
+    _compact_list,
     _is_human_turn,
     _is_near_stuck,
     _latest_human_text,
     _msg_role_content,
     build_system_prompt,
 )
+from app.graphs.analysis.section_validation import validated_coverage
 from app.graphs.analysis.tool_gating import (  # noqa: F401
     _COERCED_ASK_FALLBACK_BY_LOCALE,
-    gate_model_selection,
     _INTERRUPT_BEARING_TOOLS,
     _RESPOND_FALLBACK_BY_LOCALE,
     _SIDE_EFFECT_FREE_NOTE_TOOLS,
@@ -65,6 +61,7 @@ from app.graphs.analysis.tool_gating import (  # noqa: F401
     _model_tool_calls,
     _plain_response_tool,
     _response_message_incomplete,
+    gate_model_selection,
 )
 from app.graphs.analysis.turn_audit import (  # noqa: F401
     _RECENT_TOOL_CALLS_MAXLEN,
@@ -92,6 +89,9 @@ from app.graphs.interrupts import (  # noqa: F401
     _agent_message_already_saved,
     _save_and_interrupt_ask,
 )
+from app.graphs.session_phase import IllegalPhaseTransition
+from app.graphs.session_phase import derive_phase as _derive_phase
+from app.graphs.session_phase import transition as phase_transition
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
 from app.models.agent import (
     AgentMessage,
@@ -606,9 +606,11 @@ def _analysis_turn_result(
     method_profile["current_workflow"] = _infer_workflow_mode(effective_state)
     method_profile["planning_track"] = _normalize_planning_track(method_profile.get("planning_track"))
 
+    next_turn_count = effective_state["turn_count"] + 1
+    recent_tool_calls = append_turn_fingerprint(effective_state.get("recent_tool_calls"), dispatched_tools)
     result = {
         "analysis_result": analysis_result,
-        "turn_count": effective_state["turn_count"] + 1,
+        "turn_count": next_turn_count,
         "last_agent_run_id": run_id,
         # Locale stays sticky once set so the output language lock holds across turns.
         "locale": locale,
@@ -621,7 +623,7 @@ def _analysis_turn_result(
         # this turn's prompt, so clear it now — the next turn returns to proactive default.
         "mode_hint": None,
         "feedback_summary": next_feedback,
-        "recent_tool_calls": append_turn_fingerprint(effective_state.get("recent_tool_calls"), dispatched_tools),
+        "recent_tool_calls": recent_tool_calls,
         "out_of_phase_tool_calls": (effective_state.get("out_of_phase_tool_calls") or 0) + out_of_phase_count,
         **ctx.focus_reset_update,
         **coverage,
@@ -629,10 +631,32 @@ def _analysis_turn_result(
     # User-facing text must pass through tools so service persistence/interrupt handling owns delivery.
     # Bedrock Anthropic rejects ":" in replayed tool_use ids; keep ids within ^[a-zA-Z0-9_-]+$.
     if dispatched_tool_calls:
+        dispatch_stop_reason = _pending_dispatch_stop_reason(next_turn_count, recent_tool_calls)
         result["messages"] = [AIMessage(content="", tool_calls=dispatched_tool_calls)]
-    else:
-        result["messages"] = [AIMessage(content="")]
+        if dispatch_stop_reason:
+            result["messages"].extend(_synthetic_tool_results(dispatched_tool_calls, dispatch_stop_reason))
     return result
+
+
+def _pending_dispatch_stop_reason(next_turn_count: int, recent_tool_calls: list[str]) -> str | None:
+    """Return why route_node will END instead of dispatching the just-emitted tool calls."""
+    if next_turn_count >= settings.max_agent_turns:
+        return "max_agent_turns"
+    if _has_repeated_tool_calls(recent_tool_calls):
+        return "repeated_tool_calls"
+    return None
+
+
+def _synthetic_tool_results(tool_calls: list[dict[str, Any]], reason: str) -> list[ToolMessage]:
+    """Close suppressed tool calls so provider replay never sees dangling tool_use blocks."""
+    return [
+        ToolMessage(
+            content=f"Tool call was not executed because the analysis loop stopped: {reason}.",
+            tool_call_id=str(tool_call.get("id") or ""),
+            status="error",
+        )
+        for tool_call in tool_calls
+    ]
 
 
 async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:

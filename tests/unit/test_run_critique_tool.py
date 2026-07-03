@@ -39,11 +39,11 @@ def test_run_critique_is_available_when_decision_graph_has_view():
     assert "run_critique" in _tool_names(state)
 
 
-def test_run_critique_ignores_focused_artifact_body_without_graph():
+def test_run_critique_uses_focused_artifact_body_without_graph():
     state = _state(artifact_type="brd")
     state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
     state["draft_body"] = "## Goal\n- Increase retention by 30%."
-    assert "run_critique" not in _tool_names(state)
+    assert "run_critique" in _tool_names(state)
 
 
 def test_run_critique_not_available_without_draft():

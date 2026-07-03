@@ -31,7 +31,7 @@ _PHASE_PROFILE_BLOCKS: dict[str, frozenset[str]] = {
     INTENT: frozenset(),
     ELICIT: frozenset({"thinking_mode", "section_coverage", "batching", "section_repair"}),
     DRAFT: frozenset({"artifact_contract", "section_coverage", "decision_view", "section_repair"}),
-    REVIEW: frozenset({"decision_view", "section_repair"}),
+    REVIEW: frozenset({"artifact_contract", "decision_view", "section_repair"}),
     FINALIZE: frozenset(),
 }
 
@@ -435,6 +435,19 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
             values = readiness.get(key) or []
             if values:
                 parts.append(f"- {key}: {_compact_list(values)}")
+
+    diagnosis = state.get("diagnosis_signal") or {}
+    if diagnosis and (diagnosis.get("risk_level") == "high" or diagnosis.get("judge_result")):
+        parts.append(f"- diagnosis_risk: {diagnosis.get('risk_level') or 'unknown'}")
+        signals = diagnosis.get("signals") or []
+        if signals:
+            parts.append(f"- diagnosis_signals: {_compact_list(signals)}")
+        judge = diagnosis.get("judge_result") or {}
+        if judge:
+            parts.append(f"- diagnosis_judge_score: {judge.get('score', 'unknown')}")
+            findings = judge.get("findings") or []
+            if findings:
+                parts.append(f"- diagnosis_judge_findings: {_compact_list(findings)}")
 
     feedback_summary = state.get("feedback_summary") or {}
     resurfaced = feedback_summary.get("resurfaced_questions") or []

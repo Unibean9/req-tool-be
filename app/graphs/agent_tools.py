@@ -40,11 +40,11 @@ from app.graphs.decision_graph import (
     synthesis_assumption_signals,
     update_node,
 )
+from app.graphs.gate_logging import log_gate_decision
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.session_phase import PhaseSignals, derive_phase, phase_allows
 from app.graphs.state import QualityReport, WorkflowState
-from app.graphs.gate_logging import log_gate_decision
 from app.graphs.tools import read_current_body
 from app.graphs.validators import validate_proposal
 from app.models.agent import (
@@ -133,16 +133,24 @@ async def current_draft_body(
     """Canonical draft body for the whole tool-loop.
 
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
-    through here. The decision graph is the source of truth; DB-loaded draft text is context, not
-    the live editable artifact view.
+    through here. The decision graph wins when it has nodes; a DB-loaded draft is the fallback for
+    resumed document sessions whose graph has not been rebuilt yet.
     """
     _ = config
-    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
+    return _current_draft_body_sync(state)
 
 
 def _cached_draft_body(state: WorkflowState) -> str:
     """Synchronous draft view used by menu construction and finalize hashing."""
-    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
+    return _current_draft_body_sync(state)
+
+
+def _current_draft_body_sync(state: WorkflowState) -> str:
+    decision_nodes = state.get("decision_nodes") or {}
+    artifact_type = state.get("artifact_type") or "brd"
+    if decision_nodes:
+        return render_view(decision_nodes, artifact_type)
+    return str(state.get("draft_body") or "")
 
 
 async def artifact_stage(
@@ -293,7 +301,10 @@ async def _ask_user_impl(
 
 @tool
 async def ask_user(
-    message: Annotated[str, "A short header/lead-in, written in the user's locale. May be empty when `questions` is given."],
+    message: Annotated[
+        str,
+        "A short header/lead-in, written in the user's locale. May be empty when `questions` is given.",
+    ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
@@ -563,7 +574,6 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
             "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
             "draft_body": body,
             "candidate_readiness": readiness,
-            "tool_errors": [],
         }
     )
 
@@ -698,15 +708,16 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
         )
 
     # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
-    # Beyond that, tagged lines are parsed into structured objects. risks/key_facts append to their
-    # state lists (append prior + new — no reducer). ASSUMPTION:/OPEN_QUESTION: lines instead create
-    # decision nodes (Phase 5: the graph is the single source of truth for assumptions/open-questions)
-    # — assumptions land needs_confirmation (agent-authored, not user-confirmed), open_questions proposed.
+    # Beyond that, tagged lines are parsed into structured objects. risks/key_facts carry additive
+    # reducers, so emit ONLY the new entries — returning prior+new would re-append every existing
+    # entry through the reducer. ASSUMPTION:/OPEN_QUESTION: lines instead create decision nodes
+    # (Phase 5: the graph is the single source of truth for assumptions/open-questions) — assumptions
+    # land needs_confirmation (agent-authored, not user-confirmed), open_questions proposed.
     extracted = extract_structured_objects(content)
     update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
     for bucket in ("risks", "key_facts"):
         if extracted[bucket]:
-            update[bucket] = [*(state.get(bucket) or []), *extracted[bucket]]
+            update[bucket] = extracted[bucket]
 
     new_nodes: dict[str, Any] = {}
     origin = _node_origin(state, None)
@@ -1202,12 +1213,12 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     if not str(message or "").strip():
         return _missing_required_arg_update("respond", "message", tool_call_id)
 
-    # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id, ASK_HUMAN
-    # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
-    # mode differ, so the user sees an assessment rather than a question.
+    # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id). respond is a
+    # conversational pause like ask_user/confirm_intent, so it keeps the session ACTIVE with a
+    # STREAM_RESPONSE interrupt instead of entering the approval-gate WAITING state.
     await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
     user_content = await interrupts._save_and_interrupt_ask(
-        state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
+        state, config, message, run_id=tool_call_id, kind="assessment", mode=mode, interrupt_kind="stream_response"
     )
     return Command(
         update={
@@ -1640,7 +1651,6 @@ ELICIT_TECHNIQUES = (
 
 def _duckduckgo_search(query: str) -> list[dict]:
     """Keyless DuckDuckGo HTML scrape. Best-effort; web_search wraps this in graceful fallback."""
-    import re
 
     import httpx
 
@@ -1736,7 +1746,7 @@ def _elicit_first_principles(seed: str) -> dict:
 
 
 def _elicit_comparable_products(seed: str, search_client) -> dict:
-    res = web_search(f"management software {seed}", client=search_client)
+    res = web_search(seed, client=search_client)
     results = res.get("results") or []
     if res.get("error") or not results:
         return {
@@ -1958,7 +1968,7 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
 
 def _phase_signals(state: WorkflowState) -> PhaseSignals:
     """State-derived facts the session-phase machine transitions on (single computation site)."""
-    has_draft = bool(_cached_draft_body(state).strip()) or bool(str(state.get("draft_body") or "").strip())
+    has_draft = bool(_cached_draft_body(state).strip())
     critique_started = bool(state.get("critique_rounds") or 0) or bool(state.get("quality_report"))
     return PhaseSignals(
         user_confirmed=state.get("user_confirmed") is not None,

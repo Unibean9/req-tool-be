@@ -65,7 +65,7 @@ def test_finalize_not_available_without_decision_graph_view():
     assert "finalize" not in _names(state)
 
 
-def test_finalize_ignores_db_draft_without_graph_view():
+def test_finalize_uses_db_draft_without_graph_view():
     draft = "Draft tai tu DB"
     state = {
         "messages": [],
@@ -79,8 +79,8 @@ def test_finalize_ignores_db_draft_without_graph_view():
         "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
     names = _names(state)
-    assert "finalize" not in names
-    assert "run_readiness_check" not in names
+    assert "finalize" in names
+    assert "run_readiness_check" in names
 
 
 def test_finalize_not_available_when_gate_fails():
@@ -195,13 +195,13 @@ async def test_finalize_hard_blocks_without_current_draft_body():
 
 
 @pytest.mark.asyncio
-async def test_current_draft_body_ignores_focused_artifact_without_graph():
+async def test_current_draft_body_uses_focused_artifact_body_without_graph():
     state = {
         "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": "stale",
     }
     config = {"configurable": {"session_factory": None}}
-    assert await current_draft_body(state, config) == ""
+    assert await current_draft_body(state, config) == "stale"
 
 
 @pytest.mark.asyncio

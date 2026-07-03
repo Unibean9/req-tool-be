@@ -1,6 +1,5 @@
 """Session phase state machine: transitions, legacy derivation, and per-phase tool gating."""
 
-import ast
 from pathlib import Path
 
 import pytest
@@ -190,3 +189,20 @@ def test_phase_signals_reads_draft_and_evidence_sources():
     assert signals.has_evidence is True
     assert signals.has_draft is False
     assert derive_phase(signals) == DRAFT
+
+
+def test_db_loaded_draft_counts_for_review_menu():
+    state = _state(
+        session_phase=REVIEW,
+        user_confirmed=True,
+        decision_nodes={},
+        draft_body="## Vision\nExisting DB draft",
+        critique_rounds=1,
+    )
+
+    signals = _phase_signals(state)
+    names = {tool.name for tool in get_available_tools(state)}
+
+    assert signals.has_draft is True
+    assert "run_critique" in names
+    assert "run_readiness_check" in names

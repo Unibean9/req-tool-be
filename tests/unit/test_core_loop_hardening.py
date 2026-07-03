@@ -34,12 +34,12 @@ async def test_current_draft_body_renders_decision_graph():
 
 
 @pytest.mark.asyncio
-async def test_current_draft_body_ignores_cached_body_without_nodes():
+async def test_current_draft_body_uses_db_body_when_graph_empty():
     state = _state()
     state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
     state["draft_body"] = "DB draft cu"
 
-    assert await current_draft_body(state) == ""
+    assert await current_draft_body(state) == "DB draft cu"
 
 
 @pytest.mark.asyncio
@@ -120,7 +120,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
 
 @pytest.mark.asyncio
 async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_session):
-    """write_draft/respond use default interrupt_kind='ask_human' → WAITING_FOR_HUMAN + ASK_HUMAN (regression guard)."""
+    """Approval flows use default interrupt_kind='ask_human' -> WAITING_FOR_HUMAN + ASK_HUMAN."""
     from sqlalchemy import select
 
     from app.graphs import nodes
@@ -188,5 +188,24 @@ def test_ask_user_impl_passes_stream_response_interrupt_kind():
         asyncio.get_event_loop().run_until_complete(
             _ask_user_impl("Q?", _state(), {}, "call_x")
         )
+
+    assert captured["interrupt_kind"] == "stream_response"
+
+
+def test_respond_impl_passes_stream_response_interrupt_kind():
+    """_respond_impl is a conversational pause, so it matches ask_user's stream_response status."""
+    from app.graphs import interrupts
+    from app.graphs.agent_tools import _respond_impl
+
+    captured = {}
+
+    async def fake_save(state, config, content, *, run_id, interrupt_kind="ask_human", **kw):
+        captured["interrupt_kind"] = interrupt_kind
+        return "user_reply"
+
+    with patch.object(interrupts, "_save_and_interrupt_ask", side_effect=fake_save):
+        import asyncio
+
+        asyncio.get_event_loop().run_until_complete(_respond_impl("Assessment", "critique", _state(), {}, "call_x"))
 
     assert captured["interrupt_kind"] == "stream_response"

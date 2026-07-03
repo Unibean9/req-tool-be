@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, output_contract
+from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, children_of, get_config, output_contract
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
@@ -290,24 +290,45 @@ _BRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
     ("risk", "Need the main BRD risk."),
 )
 
-_PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
-    ("actor", "Actor: identify customers and staff acting in the flow."),
-    ("flow", "Main flow: describe each processing step from start to finish."),
-    ("rule", "Business rule: define point accrual rules and point conditions."),
-    # Each edge-case keys on its own distinctive phrase, not a shared "edge_case" marker, so coverage
-    # of one does not suppress the others (they map to separate PRD checklist items).
-    ("retroactive accrual", "Edge-case: customer forgot phone number at purchase -> can points be added later?"),
-    ("merge history", "Edge-case: customer changes phone number -> how is history merged?"),
-    ("expiration", "Edge-case: does the free voucher expire?"),
-)
-
-
 def _gap_present(decision_nodes: dict[str, DecisionNode], marker: str) -> bool:
     active_nodes = [node for node in decision_nodes.values() if node.get("status") not in {"parked", "superseded"}]
     if marker in VALID_KINDS:
         return any(node.get("kind") == marker for node in active_nodes)
+    if marker in _ITEM_TYPES:
+        marker_texts = {_normalize_statement(marker.replace("_", " "))}
+        try:
+            config = get_config(marker)
+        except ValueError:
+            config = None
+        if config is not None:
+            marker_texts.add(_normalize_statement(config.label))
+            marker_texts.add(_normalize_statement(config.description))
+        return any(
+            any(
+                text
+                and (
+                    text in _normalize_statement(node.get("section", ""))
+                    or text in _normalize_statement(node.get("statement", ""))
+                )
+                for text in marker_texts
+            )
+            for node in active_nodes
+        )
     marker_text = marker.replace("_", " ")
     return any(marker_text in _normalize_statement(node.get("statement", "")) for node in active_nodes)
+
+
+def _registry_sweep_gaps(container_type: str) -> tuple[tuple[str, str], ...]:
+    """Derive container sweep gaps from the document registry instead of scenario fixtures."""
+    try:
+        children = children_of(container_type)
+    except ValueError:
+        return ()
+    gaps: list[tuple[str, str]] = []
+    for child_type in children:
+        config = get_config(child_type)
+        gaps.append((child_type, f"Need {config.label} for the {container_type.upper()}: {config.description}"))
+    return tuple(gaps)
 
 
 def completeness_sweep(
@@ -320,7 +341,7 @@ def completeness_sweep(
     Only produces descriptions; the caller decides whether to create parked nodes or inject into the
     prompt. Dedup is exact (normalized statement match), not LLM similarity.
     """
-    template = _PRD_SWEEP_GAPS if artifact_type == "prd" else _BRD_SWEEP_GAPS
+    template = _registry_sweep_gaps("prd") if artifact_type == "prd" else _BRD_SWEEP_GAPS
     existing_questions = {
         _normalize_statement(node.get("statement", ""))
         for node in decision_nodes.values()
@@ -412,11 +433,6 @@ def _default_impact_selector(change_description: str, decision_nodes: dict[str, 
     for node_id, node in decision_nodes.items():
         statement = _normalize_statement(node.get("statement", ""))
         if tokens and any(token in statement for token in tokens):
-            affected.append(node_id)
-            continue
-        if any(
-            token in normalized_change for token in ("handoff", "channel", "kenh", "delivery", "multi-channel")
-        ) and any(token in statement for token in ("cashier", "tai quay", "at counter", "customers/day", "1 visit")):
             affected.append(node_id)
     return affected
 
@@ -584,7 +600,11 @@ def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...], id_prefix
     for index, node in enumerate(nodes, start=1):
         fields = node.get("fields") or {}
         cells = [
-            f"{id_prefix}-{index:02d}" if _is_auto_id(column, id_prefix) else _markdown_cell(_field_value(fields, column))
+            (
+                f"{id_prefix}-{index:02d}"
+                if _is_auto_id(column, id_prefix)
+                else _markdown_cell(_field_value(fields, column))
+            )
             for column in columns
         ]
         content_indexes = [i for i, column in enumerate(columns) if not _is_auto_id(column, id_prefix)]

@@ -58,6 +58,7 @@ def test_unknown_phase_falls_back_to_full_assembly():
 def test_profile_gating_matches_table():
     assert _phase_includes({"session_phase": DRAFT}, "artifact_contract") is True
     assert _phase_includes({"session_phase": INTENT}, "artifact_contract") is False
+    assert _phase_includes({"session_phase": REVIEW}, "artifact_contract") is True
     assert _phase_includes({"session_phase": ELICIT}, "batching") is True
     assert _phase_includes({"session_phase": DRAFT}, "batching") is False
     assert _phase_includes({"session_phase": REVIEW}, "decision_view") is True
@@ -89,11 +90,11 @@ def test_intent_phase_renders_neither_contract_nor_batching():
     assert _BATCHING_MARKER not in prompt
 
 
-def test_review_phase_suppresses_technique_menu():
+def test_review_phase_renders_contract_but_suppresses_technique_menu():
     load_instructions()
     prompt = build_system_prompt(_phase_state(REVIEW, thinking_mode="challenging"), None, has_draft=True)
     assert _THINKING_MODE_MARKER not in prompt
-    assert _ARTIFACT_CONTRACT_MARKER not in prompt
+    assert _ARTIFACT_CONTRACT_MARKER in prompt
 
 
 def test_unset_phase_renders_full_assembly():
@@ -190,6 +191,23 @@ def test_finalize_payload_hides_coverage_and_decision_view(decision_graph_factor
     prompt = _build_tool_selection_prompt(state, [])
     assert _SECTION_COVERAGE_MARKER not in prompt
     assert _DECISION_VIEW_MARKER not in prompt
+
+
+def test_payload_surfaces_high_risk_diagnosis_feedback():
+    state = _phase_state(
+        DRAFT,
+        diagnosis_signal={
+            "risk_level": "high",
+            "signals": ["low_coverage", "quality_gate_failed"],
+            "judge_result": {"score": 0.2, "findings": ["Missing acceptance signals"], "suggestions": []},
+        },
+    )
+
+    prompt = _build_tool_selection_prompt(state, [])
+
+    assert "diagnosis_risk: high" in prompt
+    assert "diagnosis_judge_score: 0.2" in prompt
+    assert "Missing acceptance signals" in prompt
 
 
 def test_payload_tells_model_to_read_named_context_artifact_before_asking():

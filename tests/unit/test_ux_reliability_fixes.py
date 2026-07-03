@@ -80,7 +80,7 @@ async def test_drain_queue_replays_mode_hint(client, db_session):
     svc = _service(db_session)
     with (
         patch("app.services.agent_service.build_initial_workflow_state", return_value={}) as build,
-        patch("app.services.agent_service.asyncio.create_task", side_effect=lambda coro, *a, **k: coro.close()),
+        patch("app.services.agent_service.asyncio.create_task", side_effect=lambda coro, *_, **__: coro.close()),
     ):
         await svc._drain_queue(
             session_id=session.id,
@@ -148,6 +148,18 @@ def test_evidence_source_web_when_search_succeeds():
 
     out = elicit(technique="comparable_products", seed="coffee shop app", search_client=fake_client)
     assert out["evidence_source"] == "web"
+
+
+def test_comparable_products_search_uses_seed_without_domain_prefix():
+    queries = []
+
+    def fake_client(query: str) -> list[dict]:
+        queries.append(query)
+        return [{"title": "A", "snippet": "result", "url": "https://a.example"}]
+
+    elicit(technique="comparable_products", seed="warehouse robot", search_client=fake_client)
+
+    assert queries == ["warehouse robot"]
 
 
 def test_evidence_source_model_knowledge_on_fallback():

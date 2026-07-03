@@ -439,7 +439,8 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
         assert readiness["blocking_reasons"] == []
         assert "- Retention target is missing ⚠️ needs confirmation." in row.input_snapshot["body"]
         assert command.update["candidate_readiness"]["state"] == "needs_confirmation"
-        assert command.update["tool_errors"] == []
+        # tool_errors is an additive channel now: a success emits no update instead of a dead "clear".
+        assert "tool_errors" not in command.update
 
 
 @pytest.mark.asyncio

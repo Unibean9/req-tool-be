@@ -76,6 +76,18 @@ def test_tool_policy_references_current_tools():
         assert tool in instruction, tool
 
 
+def test_decision_tool_layer_matches_current_graph_and_elicit_contract():
+    instruction = _ba()
+
+    assert "When decision-graph tools" in instruction
+    assert "When decision-graph tools are not offered" in instruction
+    assert "body` argument is the fallback" in instruction
+    assert "ignored once any node exists" not in instruction
+    for technique in ("pre_mortem", "tree_of_thought", "socratic_questioning", "challenge_assumptions"):
+        assert technique in instruction
+    assert "On first contact" not in instruction
+
+
 def test_output_contract_does_not_restate_json_schema():
     instruction = _ba()
     # No raw JSON schema fragments embedded.
