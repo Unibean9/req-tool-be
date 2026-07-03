@@ -3,8 +3,6 @@
 Pure module: no state reads, no DB, no imports from nodes/agent_tools. Callers compute
 PhaseSignals from WorkflowState (agent_tools._phase_signals) and orchestrator_node is the ONLY
 writer of state["session_phase"]; every other reader derives on the fly for legacy checkpoints.
-
-Design table: plans/260702-agent-behavior-quality/evidence/phase-02-design.md.
 """
 
 from dataclasses import dataclass
@@ -85,7 +83,7 @@ def derive_phase(signals: PhaseSignals) -> str:
 def transition(current: str | None, signals: PhaseSignals) -> str:
     """Compute the next phase and validate edge legality; the ONLY path that may move the phase.
 
-    current=None (fresh session or pre-phase checkpoint) adopts the derived phase directly.
+    current=None (fresh session or legacy checkpoint) adopts the derived phase directly.
     """
     target = derive_phase(signals)
     if current is None or current == target:

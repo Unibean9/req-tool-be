@@ -1,6 +1,6 @@
-"""Phase 5 — assumptions/open-questions as derived views over the decision graph.
+"""Assumptions/open-questions as derived views over the decision graph.
 
-One test per divergence class in evidence/phase-05-divergence-audit.md, plus the migration helper.
+One test per divergence class, plus the migration helper.
 """
 
 from app.graphs.decision_graph import (

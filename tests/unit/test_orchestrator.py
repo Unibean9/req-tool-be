@@ -61,7 +61,7 @@ async def test_orchestrator_single_weak_signal_does_not_escalate_risk(decision_g
 
 @pytest.mark.asyncio
 async def test_orchestrator_validated_coverage_downgrades_sections_with_violations(decision_graph_factory):
-    """Phase 4: a section with a violation finding no longer counts as covered, so a nominally-full
+    """A section with a violation finding no longer counts as covered, so a nominally-full
     coverage on a sparse draft flips the diagnosis from low to high risk."""
     nodes = decision_graph_factory({"id": "N7", "kind": "objective", "status": "confirmed"})
 

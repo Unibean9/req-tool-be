@@ -32,7 +32,7 @@ def test_state_has_risks_field():
 
 
 def test_assumptions_open_questions_are_not_state_fields():
-    # Phase 5: moved to the decision graph (single source of truth). The note parser still emits the
+    # Assumptions/open-questions live in the decision graph. The note parser still emits the
     # buckets, but they are routed to decision nodes, not accumulated in WorkflowState.
     assert "assumptions" not in WorkflowState.__annotations__
     assert "open_questions" not in WorkflowState.__annotations__

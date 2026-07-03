@@ -12,7 +12,7 @@ from app.config import settings
 from app.documents.registry import children_of, status_score
 from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, get_available_tools
 
-# Phase 1 decomposition: analyze_node's concerns live in app.graphs.analysis.* now. The private
+# analyze_node's concerns live in app.graphs.analysis.* now. The private
 # names are re-exported here because existing tests/evals import them from nodes.
 from app.graphs.analysis.context_loader import (  # noqa: F401
     TurnContext,
@@ -108,8 +108,8 @@ from app.models.agent import (
 # Valid planning tracks; _normalize_planning_track falls back to quick on miss.
 _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 
-# Tool schemas, gating, audit hashing, and token estimation moved to app.graphs.analysis.*
-# (Phase 1 decomposition); re-exported below for existing import paths.
+# Tool schemas, gating, audit hashing, and token estimation moved to app.graphs.analysis.*;
+# re-exported below for existing import paths.
 
 
 def _normalize_planning_track(track: Any) -> str:
@@ -319,13 +319,14 @@ _THINKING_MODES = ("structuring", "challenging", "synthesizing", "risk_probing")
 
 # Coverage below settings.low_coverage_ratio counts as "low coverage" for the diagnosis
 # conjunction. Read from settings (not a module constant) so a single weak signal can't silently
-# escalate every section, and so the Phase 6 eval sweep can vary it via env.
+# escalate every section, and so eval sweeps can vary it via env.
 _COVERAGE_SCORES = {"filled": 1.0, "needs_review": 0.5, "partial": 0.5, "missing": 0.0}
 
 
 def _diagnose_section(state: WorkflowState) -> dict[str, Any]:
-    """Cheap, LLM-free risk/ambiguity diagnosis for the current section (Phase 1 of the adaptive
-    analysis loop). Never calls an LLM — pure function of state already available in-turn.
+    """Cheap, LLM-free risk/ambiguity diagnosis for the current section.
+
+    Never calls an LLM — pure function of state already available in-turn.
 
     Cold start (no coverage data yet, e.g. turn 1): defaults to low risk / "structuring" rather
     than erroring or guessing high risk. This is intentional, not an overlooked edge case —
@@ -335,7 +336,7 @@ def _diagnose_section(state: WorkflowState) -> dict[str, Any]:
     if not coverage:
         return {"risk_level": "low", "signals": [], "thinking_mode": "structuring"}
 
-    # Validated coverage (Phase 4): a section carrying a structural `violation` finding does not
+    # Validated coverage: a section carrying a structural `violation` finding does not
     # count as covered, so the ratio reflects "covered with acceptable content", not just presence.
     coverage = validated_coverage(coverage, state.get("section_findings"))
     ratios = [_COVERAGE_SCORES.get(value, 0.0) for value in coverage.values()]
@@ -385,7 +386,7 @@ def _diagnosis_llm_client(config: RunnableConfig | None) -> Any:
 async def _apply_judge_escalation(
     diagnosis: dict[str, Any], state: WorkflowState, config: RunnableConfig | None
 ) -> dict[str, Any]:
-    """Escalate a heuristic high-risk diagnosis to an LLM judge call, budget-gated (Phase 4).
+    """Escalate a heuristic high-risk diagnosis to an LLM judge call, budget-gated.
 
     Low-risk sections never reach the judge. High-risk sections spend one judge call per turn up
     to DIAGNOSIS_JUDGE_CALLS_MAX; once the budget is exhausted the call is skipped with a distinct
@@ -464,11 +465,11 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
         diagnosis_update = {"thinking_mode": None, "diagnosis_signal": None}
 
     decision_nodes = state.get("decision_nodes") or {}
-    # Legacy migration (Phase 5): a pre-Phase-5 checkpoint may carry note-parsed assumptions/
-    # open_questions in the dropped state fields. Fold any that a node does not already cover into
+    # Legacy migration: an older checkpoint may carry note-parsed assumptions/open_questions in the
+    # dropped state fields. Fold any that a node does not already cover into
     # decision nodes so a resumed session loses nothing. No-op once the fields are absent (the common
     # case — LangGraph does not surface a channel removed from the schema, so this only fires when the
-    # keys are still present in the state dict). See evidence/phase-05-divergence-audit.md.
+    # keys are still present in the state dict).
     legacy_assumptions = state.get("assumptions")
     legacy_open_questions = state.get("open_questions")
     migration_update: dict[str, Any] = {}

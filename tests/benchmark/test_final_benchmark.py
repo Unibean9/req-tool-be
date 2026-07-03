@@ -1,5 +1,4 @@
-"""Re-run the identical fixture from test_baseline_benchmark.py after all P1-P10 fixes have
-landed, and write the before/after delta to evidence/benchmark-final.md (Phase 10).
+"""Re-run the identical fixture from test_baseline_benchmark.py and write the before/after delta.
 
 Not part of the default `pytest tests/unit tests/integration -q` run (this directory is
 outside both) — invoke explicitly: `pytest tests/benchmark/test_final_benchmark.py -s -q`.
@@ -70,15 +69,14 @@ def _render_report(
     all_runs: list[list[dict]],
 ) -> str:
     lines = [
-        "# Final Benchmark Comparison (Phase 10)",
+        "# Final Benchmark Comparison",
         "",
-        "Same fixture and methodology as `evidence/benchmark-baseline.md` (Phase 0), re-run after all "
-        "P1/P3/P2/P5/P6/P8/P9/P10/P7 fixes have landed (P2 and P5 were closed as accepted-residual-cost, "
-        "not implemented — see plan.md Session Notes).",
+        "Same fixture and methodology as `evidence/benchmark-baseline.md`, re-run after the behavior "
+        "quality changes.",
         "",
         "## Mode",
         "",
-        "Identical to Phase 0: mocked LLM client (`tests/benchmark/fixture.py:BenchmarkLLM`), no real "
+        "Identical to the baseline: mocked LLM client (`tests/benchmark/fixture.py:BenchmarkLLM`), no real "
         "API key in this environment. Latency is in-process overhead only, not real LLM API round-trip "
         "latency. Token counts are a deterministic size proxy (`len(payload) // 4`), not real "
         "provider-billed tokens — this proxy cannot show P1's (prompt caching) actual billing effect, "

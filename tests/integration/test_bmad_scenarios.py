@@ -70,7 +70,7 @@ async def test_scenario2_clear_direction_records_assumptions_and_risks(client, d
 
     workflow_mode is no longer LLM-reported (it is inferred from DB coverage), so this scenario no
     longer asserts an echoed brief/prd value; the surviving behavior is the structured note parsing.
-    Phase 5: an ASSUMPTION note creates a decision-graph node (single source of truth), not a state list.
+    An ASSUMPTION note creates a decision-graph node, not a state list.
     """
     note = await _write_note_impl(
         "ASSUMPTION: users have phones | confidence: high\nRISK: vendor lock-in | likelihood: medium",

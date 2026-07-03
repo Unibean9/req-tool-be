@@ -34,9 +34,8 @@ def _quality_pass(body: str) -> dict:
 
 
 def test_draft_phase_offers_drafting_and_critique_but_not_finalize(decision_graph_factory):
-    # Phase 2: a confirmed session with evidence sits in DRAFT phase, which offers drafting/critique
-    # tools and keeps finalize gated. (Was test_only_safety_gates_remain_without_intent_or_note_filter,
-    # which asserted the pre-Phase-2 broad menu under user_confirmed=None; the intent filter is back.)
+    # A confirmed session with evidence sits in DRAFT phase, which offers drafting/critique tools and
+    # keeps finalize gated.
     nodes = decision_graph_factory(
         {"id": "N1", "kind": "objective", "statement": "Reduce processing time", "status": "confirmed"},
     )
@@ -87,7 +86,7 @@ def test_finalize_quality_gate_still_active(decision_graph_factory):
 
 def test_solo_interrupt_enforcement_still_active():
     # ask_user + respond are both in-phase in ELICIT, so this isolates solo enforcement from the
-    # Phase 2 per-phase gate (arbitrary interrupt tools could include finalize/confirm_intent, which
+    # per-phase gate (arbitrary interrupt tools could include finalize/confirm_intent, which
     # ELICIT excludes — that drop would be phase gating, not solo enforcement).
     assert {"ask_user", "respond"} <= _INTERRUPT_BEARING_TOOLS
     raw = [{"name": "ask_user", "args": {}}, {"name": "respond", "args": {}}]

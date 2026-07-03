@@ -137,7 +137,7 @@ async def test_ask_user_tool_uses_shared_helper(client, db_session):
 
 
 # ---------------------------------------------------------------------------
-# T2b — batched ask_user round-trips through save + structured resume (Phase 3)
+# T2b — batched ask_user round-trips through save + structured resume
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -365,7 +365,7 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    # Phase 5: assumptions/open-questions are derived from the decision graph, not state fields.
+    # Assumptions/open-questions are derived from the decision graph, not state fields.
     state["decision_nodes"] = {
         "N1": create_node(
             kind="assumption",
@@ -410,7 +410,7 @@ async def test_write_draft_snapshot_records_candidate_readiness(mock_interrupt, 
     state["user_confirmed"] = True
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    # Phase 5: the pending assumption is a decision-graph node, not a state field.
+    # The pending assumption is a decision-graph node, not a state field.
     state["decision_nodes"] = {
         "Q1": create_node(
             kind="open_question",

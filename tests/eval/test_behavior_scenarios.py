@@ -1,4 +1,4 @@
-"""Behavior eval suite: 4 scripted scenarios + metric extraction (plan 260702 Phase 0).
+"""Behavior eval suite: 4 scripted scenarios + metric extraction.
 
 Stub mode (default, CI): the analyst brain is a ScriptedLLM — green tests guard harness
 mechanics (driver, metric extraction, report shape), NOT agent behavior. All before/after
@@ -52,7 +52,7 @@ def _live_client():
 
 def _report_dir() -> Path:
     if _MODE == "live":
-        # Phase 6 sweep/final-eval redirect output away from the Phase 0 baseline via
+        # Sweep/final-eval runs redirect output away from the committed baseline via
         # BEHAVIOR_EVAL_OUTDIR (per-cell dirs); unset keeps the recorded baseline destination.
         override = os.environ.get("BEHAVIOR_EVAL_OUTDIR")
         out = Path(override) if override else _BASELINE_DIR
@@ -87,7 +87,7 @@ async def test_behavior_scenario(scenario_factory, client, scenario_env, scenari
     # Live baseline runs each scenario several times (nondeterminism); tag files per run.
     run_tag = os.environ.get("BEHAVIOR_EVAL_RUN", "")
     suffix = f".run{run_tag}" if run_tag else ""
-    # Phase 6 sweep cells only need metric JSON; final eval archives transcripts. METRICS_ONLY
+    # Sweep cells only need metric JSON; final eval archives transcripts. METRICS_ONLY
     # keeps the swept evidence dir small (transcripts are ~50-100KB each).
     if _MODE == "live" and not os.environ.get("BEHAVIOR_EVAL_METRICS_ONLY"):
         (out_dir / f"{scenario.name}{suffix}.transcript.json").write_text(

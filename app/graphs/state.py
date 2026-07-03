@@ -204,8 +204,8 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser. assumptions and open_questions moved to the decision graph in
-    # Phase 5 (single source of truth) — see decision_graph.derive_assumptions / derive_open_questions.
+    # populated by the note parser. assumptions and open_questions are derived from the decision graph;
+    # see decision_graph.derive_assumptions / derive_open_questions.
     # Additive reducers keep same-turn parallel note writes from colliding.
     risks: Annotated[list[RiskObject], operator.add]
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
@@ -265,7 +265,7 @@ class WorkflowState(TypedDict):
     # single site per turn (analyze result); read by the behavior eval's out_of_phase metric.
     out_of_phase_tool_calls: int
     # Section-scoped structural findings from the last write of each section, keyed by the section
-    # heading (Phase 4). A passing section stores [] (not absent) so a re-validation can clear a
+    # heading. A passing section stores [] (not absent) so a re-validation can clear a
     # prior defect through the union merge. Two decision tools in one turn each return the full dict
     # built from the same snapshot, so per-key merge keeps both — mirroring decision_nodes.
     section_findings: Annotated[dict[str, list[dict[str, Any]]], merge_section_findings]

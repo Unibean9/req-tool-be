@@ -1,7 +1,7 @@
-"""Phase 5 — a resumed legacy checkpoint's state-field assumptions/open-questions migrate to nodes.
+"""A resumed legacy checkpoint's state-field assumptions/open-questions migrate to nodes.
 
 Only fires when the keys are still present in the state dict (LangGraph drops a channel removed from
-the schema, so on a real resume this is a no-op — documented in evidence/phase-05-divergence-audit.md).
+the schema, so on a real resume this is a no-op).
 This exercises the migration contract at the node boundary.
 """
 

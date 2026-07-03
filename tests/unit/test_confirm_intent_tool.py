@@ -1,7 +1,7 @@
 """D6 — confirm_intent tool, schema registration, and self-validation.
 
-Phase 2 (plan 260702-agent-behavior-quality) supersedes the quick-wins "broad menu, tools
-self-reject" design here: the per-phase menu now hides out-of-phase tools (INTENT hides
+The current design supersedes the quick-wins "broad menu, tools self-reject" design here: the
+per-phase menu now hides out-of-phase tools (INTENT hides
 write_draft; ELICIT hides confirm_intent), and `_gate_selected_tools` DROPS an out-of-phase
 selection rather than dispatching it for a tool-level error. The self-correction channel is
 preserved via the feedback block (the phase is named back to the model); tools still self-reject
@@ -53,7 +53,7 @@ def test_confirm_intent_is_interrupt_bearing():
 
 
 # ---------------------------------------------------------------------------
-# Per-phase menu (Phase 2): INTENT hides drafting/quality tools, ELICIT hides confirm_intent
+# Per-phase menu: INTENT hides drafting/quality tools, ELICIT hides confirm_intent
 # ---------------------------------------------------------------------------
 
 def test_intent_phase_hides_draft_and_quality_tools():
@@ -221,7 +221,7 @@ async def test_audit_idempotent_when_row_exists():
 
 
 def test_write_draft_in_intent_phase_is_dropped_by_gate():
-    # Phase 2: write_draft is out of phase in INTENT, so the gate drops it (model is told via feedback).
+    # write_draft is out of phase in INTENT, so the gate drops it (model is told via feedback).
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
     assert gated == []
@@ -235,7 +235,7 @@ def test_write_draft_in_artifact_phase_not_coerced():
 
 
 def test_write_draft_unavailable_before_confirm_intent():
-    # Phase 2 reversal: drafting is not offered until intent is confirmed (no pre-intent drafting).
+    # Drafting is not offered until intent is confirmed.
     assert "write_draft" not in _names({"messages": [], "user_confirmed": None})
 
 

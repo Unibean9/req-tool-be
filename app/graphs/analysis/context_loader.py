@@ -1,8 +1,4 @@
-"""Per-turn context loading: focus reconciliation, artifact reads, coverage, decision view.
-
-Moved verbatim from app/graphs/nodes.py (Phase 1 decomposition — no logic changes).
-load_turn_context wraps the exact DB block analyze_node used to hold inline.
-"""
+"""Per-turn context loading: focus reconciliation, artifact reads, coverage, decision view."""
 
 import hashlib
 import uuid

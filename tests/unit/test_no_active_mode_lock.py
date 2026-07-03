@@ -40,7 +40,7 @@ def test_solo_interrupt_still_enforced():
     """Regression: two interrupt-bearing tools in one turn collapse to the first, independent of mode.
 
     Uses ask_user + respond, both in-phase in ELICIT, so this isolates solo enforcement from the
-    Phase 2 per-phase gate (picking two arbitrary interrupt tools could hit finalize/confirm_intent,
+    per-phase gate (picking two arbitrary interrupt tools could hit finalize/confirm_intent,
     which ELICIT excludes — the drop would then be phase gating, not solo enforcement)."""
     assert {"ask_user", "respond"} <= _INTERRUPT_BEARING_TOOLS
     raw = [{"name": "ask_user", "args": {}}, {"name": "respond", "args": {}}]

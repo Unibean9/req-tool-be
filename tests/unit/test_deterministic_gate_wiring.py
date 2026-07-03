@@ -2,7 +2,7 @@
 
 `validate_proposal` violations block a proposal before the PROPOSE_ARTIFACTS interrupt and before
 any AgentToolCall row is written; warnings ride the synthesis metadata. The `enforce_deterministic_gate`
-config flag restores pre-phase behavior exactly.
+config flag restores legacy behavior exactly.
 """
 
 import uuid

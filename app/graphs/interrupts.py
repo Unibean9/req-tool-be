@@ -58,7 +58,7 @@ async def _save_and_interrupt_ask(
     payload: dict[str, Any] = {"kind": kind, "locale": locale, "options": [], "blocks": [], "run_id": run_id}
     if mode:
         payload["mode"] = mode
-    # Batched question form (Phase 3): the structured list rides alongside `content`, which already
+    # Batched question form: the structured list rides alongside `content`, which already
     # carries the joined-text fallback so a client that ignores `questions` still shows every facet.
     if questions:
         payload["questions"] = questions

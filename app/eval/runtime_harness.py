@@ -214,7 +214,7 @@ def _runtime_recovery_eval() -> RuntimeGateResult:
 def _turn_budget_eval() -> RuntimeGateResult:
     # Measured from a recorded behavior-scenario transcript (see tests/eval/test_behavior_scenarios.py;
     # the fixture is the committed brd-happy-path stub run). Refresh the fixture when scenario flows
-    # change; live-baseline calibration replaces the budget in plan 260702-agent-behavior-quality.
+    # change.
     from app.eval.behavior_metrics import turns_to_first_draft
 
     transcript_path = Path(__file__).parent / "fixtures" / "behavior_reference_transcript.json"

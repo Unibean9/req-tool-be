@@ -1,6 +1,6 @@
 """Behavior-baseline scenarios: 4 scripted sessions covering the symptom axes.
 
-Scenario set (plan 260702-agent-behavior-quality, Phase 0):
+Scenario set:
 - brd-happy-path       — clear brief, cooperative answers, one Q&A round before drafting.
 - brd-ambiguous        — vague brief, contradictory answers, rejected first draft, failing
                           critique, clarify, redraft.

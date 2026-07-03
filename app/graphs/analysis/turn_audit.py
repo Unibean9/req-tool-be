@@ -1,9 +1,4 @@
-"""AgentRun bookkeeping, audit hashing, token estimation, and turn fingerprints.
-
-Moved verbatim from app/graphs/nodes.py (Phase 1 decomposition — no logic changes). The
-record_run_and_dispatch function wraps the exact AgentRun persistence + dispatch-coercion block
-that previously lived inline in analyze_node.
-"""
+"""AgentRun bookkeeping, audit hashing, token estimation, and turn fingerprints."""
 
 import hashlib
 import uuid
@@ -139,7 +134,7 @@ def build_analysis_result_base(
         "available_tools": [tool.name for tool in available_tools],
         "locale": locale,
         "coverage_complete": coverage_complete,
-        # Phase 3: the phase whose profile shaped this turn's prompt, so the eval can group the
+        # The phase whose profile shaped this turn's prompt, so the eval can group the
         # per-component token estimate (token_usage.by_component) by phase.
         "session_phase": session_phase,
     }

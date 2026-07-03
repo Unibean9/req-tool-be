@@ -1,4 +1,4 @@
-"""Synthesis assumption signals derived from the decision graph (single source of truth, Phase 5).
+"""Synthesis assumption signals derived from the decision graph.
 
 Guards against the dual-source-of-truth divergence: a graph-only session (no critique_note/explore_note
 calls) used to leave open_questions=[] so write_draft reported SUFFICIENT while unresolved nodes remained.

@@ -1,4 +1,4 @@
-"""Batched ask_user question form (plan 260702 Phase 3).
+"""Batched ask_user question form.
 
 ask_user accepts up to 3 related, typed questions in one interrupt. The joined-text `message`
 fallback always carries every facet, so a client that ignores the structured `questions` still

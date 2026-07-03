@@ -56,7 +56,7 @@ def test_legacy_checkpoint_derives_phase_on_first_transition():
 
 
 def test_legacy_checkpoint_fixtures_resume_with_correct_phase():
-    """Fixture states shaped like current-format checkpoints (pre-phase) derive correctly."""
+    """Fixture states shaped like legacy checkpoints derive correctly."""
     fresh = _state()
     fresh.pop("session_phase")
     assert current_session_phase(fresh) == INTENT

@@ -229,7 +229,7 @@ def migrate_legacy_notes(
     open_questions: list[dict[str, Any]] | None,
     origin: dict[str, Any],
 ) -> tuple[dict[str, DecisionNode], int]:
-    """One-time migration of pre-Phase-5 state-field entries into decision nodes (audit D1/D2/D3).
+    """One-time migration of legacy state-field entries into decision nodes.
 
     A resumed legacy checkpoint may carry assumptions/open_questions in the dropped state fields with
     no matching node. Each such entry becomes a node — assumptions needs_confirmation (agent-authored,

@@ -221,7 +221,7 @@ async def _audit_interaction_tool_call(
 # ---------------------------------------------------------------------------
 
 
-# Batched question form (Phase 3): up to 3 related, typed facets in one interrupt.
+# Batched question form: up to 3 related, typed facets in one interrupt.
 _MAX_BATCH_QUESTIONS = 3
 _BATCH_QUESTION_TYPES = frozenset({"choice", "text", "confirm"})
 
@@ -528,7 +528,7 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                 reason=f"{len(gate.warnings)} warning(s)" if gate.warnings else None,
                 session_id=str(session_id),
             )
-            # Single source of truth (Phase 5): assumptions/open-questions are derived from the
+            # Single source of truth: assumptions/open-questions are derived from the
             # decision graph only — no parallel state fields, no key-fact reconciliation shim.
             graph_confirmed, graph_pending = synthesis_assumption_signals(state.get("decision_nodes") or {})
             metadata = ArtifactSynthesisMetadata(
@@ -711,7 +711,7 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
     # Beyond that, tagged lines are parsed into structured objects. risks/key_facts carry additive
     # reducers, so emit ONLY the new entries — returning prior+new would re-append every existing
     # entry through the reducer. ASSUMPTION:/OPEN_QUESTION: lines instead create decision nodes
-    # (Phase 5: the graph is the single source of truth for assumptions/open-questions) — assumptions
+    # because the graph is the single source of truth for assumptions/open-questions — assumptions
     # land needs_confirmation (agent-authored, not user-confirmed), open_questions proposed.
     extracted = extract_structured_objects(content)
     update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
@@ -795,7 +795,7 @@ def _section_content(statement: str | None, fields: dict[str, str] | None) -> st
 
 
 def _section_findings_update(state: WorkflowState, node: dict[str, Any]) -> dict[str, Any]:
-    """Validate the section a decision-node write touched and record findings (Phase 4).
+    """Validate the section a decision-node write touched and record findings.
 
     Never blocks the write. Keyed by section heading, replace-on-write per key: a passing section
     stores [] so a re-validation clears a prior defect through the merge reducer. A node with no
@@ -1628,7 +1628,7 @@ async def read_artifact(
 CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
 # Cap on LLM judge calls the orchestrator's diagnosis step may spend per turn escalating a
-# heuristic high-risk classification (adaptive analysis loop, Phase 4).
+# heuristic high-risk classification.
 DIAGNOSIS_JUDGE_CALLS_MAX = settings.max_diagnosis_judge_calls
 
 

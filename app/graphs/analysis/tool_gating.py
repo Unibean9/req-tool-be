@@ -1,7 +1,4 @@
-"""Tool-menu schemas, the post-LLM solo-invariant gate, and dispatch-time arg coercion.
-
-Moved verbatim from app/graphs/nodes.py (Phase 1 decomposition — no logic changes).
-"""
+"""Tool-menu schemas, the post-LLM solo-invariant gate, and dispatch-time arg coercion."""
 
 from typing import Any
 

@@ -1,5 +1,4 @@
-"""Tests for the Phase 2 thinking-mode suffix block and Phase 4 stuck-loop warning block
-(adaptive analysis loop)."""
+"""Tests for thinking-mode suffix and stuck-loop warning blocks."""
 
 from app.graphs.agent_tools import ELICIT_TECHNIQUES
 from app.graphs.nodes import (

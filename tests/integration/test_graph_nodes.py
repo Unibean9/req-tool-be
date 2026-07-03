@@ -288,7 +288,7 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
     agent_session.focused_artifact_id = child_b.id
     await db_session.commit()
 
-    # Phase 2: after the focus reset clears critique state, finalize would be out of phase on the
+    # After the focus reset clears critique state, finalize would be out of phase on the
     # freshly-focused artifact, so the model picks an in-phase tool (write_draft is valid in any
     # post-confirm phase). The point of this test is the critique-state reset, not the tool identity.
     mock_llm = AsyncMock()
@@ -1235,7 +1235,7 @@ async def test_greeting_turn_skips_full_analysis(client, db_session):
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Phase A1 (C2): load current draft body just-in-time
+# Load current draft body just-in-time
 # ---------------------------------------------------------------------------
 
 async def _add_artifact_with_version(

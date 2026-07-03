@@ -4,7 +4,7 @@ Captures, per analyst turn of each behavior scenario (stub mode): the rendered s
 last user-side prompt message, the tool-schema names offered, and the dispatched tool names from
 the checkpoint. Volatile tokens (UUIDs, hex hashes) are normalized to stable placeholders.
 
-Refactors that must be behavior-neutral (plan 260702 Phase 1) are gated on this comparison.
+Refactors that must be behavior-neutral are gated on this comparison.
 Regenerate intentionally with UPDATE_GOLDENS=1 after a reviewed behavior change.
 """
 

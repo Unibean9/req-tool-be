@@ -1,4 +1,4 @@
-"""Phase 4: section-scoped structural validation + validated coverage numerator."""
+"""Section-scoped structural validation + validated coverage numerator."""
 
 from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER
 from app.graphs.analysis.section_validation import validate_section, validated_coverage

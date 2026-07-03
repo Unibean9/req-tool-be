@@ -1,9 +1,4 @@
-"""System-prompt block stack and per-turn analyst payload assembly.
-
-Moved verbatim from app/graphs/nodes.py (Phase 1 decomposition — no logic changes, no string
-edits; block order is exactly the pre-decomposition order, guarded by the golden-transcript
-regression).
-"""
+"""System-prompt block stack and per-turn analyst payload assembly."""
 
 import difflib
 from typing import Any
@@ -21,7 +16,7 @@ from app.graphs.session_phase import DRAFT, ELICIT, FINALIZE, INTENT, REVIEW
 from app.graphs.state import WorkflowState
 from app.instructions import get_instruction
 
-# Per-phase prompt profile (plan 260702 Phase 3): the optional blocks each session phase includes.
+# Per-phase prompt profile: the optional blocks each session phase includes.
 # A block appears only where it changes THIS phase's action, so no phase renders the full
 # god-assembly. Blocks NOT listed in any profile (conversation summary, tool menu, key facts,
 # feedback signals, mode hint, language lock, stuck-escalation) are cross-cutting and always
@@ -40,8 +35,8 @@ def _phase_includes(state: WorkflowState, block: str) -> bool:
     """Whether the current session phase's profile includes this optional prompt block.
 
     An unset/unknown phase (legacy checkpoint, or a caller that builds a prompt before
-    orchestrator_node has assigned one) falls back to including every block — the pre-Phase-3
-    god-assembly — so no code path that never sets a phase regresses.
+    orchestrator_node has assigned one) falls back to including every block so no code path that
+    never sets a phase regresses.
     """
     phase = state.get("session_phase")
     if phase not in _PHASE_PROFILE_BLOCKS:
@@ -495,8 +490,7 @@ def _compact_list(values: list[Any], limit: int = 3) -> str:
     return "; ".join(rendered)
 
 
-# Technique hints per thinking mode. Widened after Phase 3 landed (elicit_tool's registry now
-# includes pre_mortem/challenge_assumptions) -- every name here must exist in ELICIT_TECHNIQUES.
+# Technique hints per thinking mode. Every name here must exist in ELICIT_TECHNIQUES.
 _THINKING_MODE_TECHNIQUE_HINTS: dict[str, tuple[str, ...]] = {
     "challenging": ("reverse", "first_principles", "challenge_assumptions"),
     "risk_probing": ("5_whys", "reverse", "pre_mortem"),
@@ -517,8 +511,8 @@ def _build_thinking_mode_block(state: WorkflowState) -> str:
     """Thinking-mode guidance appended to the system prompt after the artifact contract block.
 
     Returns "" for an unset or low-risk thinking mode so the fast path's prompt stays
-    byte-identical to pre-plan behavior. get_instruction()'s cached, role-keyed assembly is never
-    touched -- this is a per-turn suffix, same mechanism as _build_artifact_contract_block.
+    byte-identical when omitted. get_instruction()'s cached, role-keyed assembly is never touched
+    -- this is a per-turn suffix, same mechanism as _build_artifact_contract_block.
     """
     thinking_mode = state.get("thinking_mode")
     techniques = _THINKING_MODE_TECHNIQUE_HINTS.get(thinking_mode or "")
@@ -532,7 +526,7 @@ def _build_thinking_mode_block(state: WorkflowState) -> str:
 
 
 def _is_near_stuck(recent_tool_calls: list[str]) -> bool:
-    """True one repeat before route_node's hard-stop threshold fires (Phase 4 safety valve).
+    """True one repeat before route_node's hard-stop threshold fires.
 
     Mirrors _has_repeated_tool_calls's tail-identity check but at _REPEATED_TOOL_CALL_EXIT_THRESHOLD
     - 1 fingerprints, so the model can be warned to change course before route_node exits the loop.
@@ -548,8 +542,8 @@ def _is_near_stuck(recent_tool_calls: list[str]) -> bool:
 def _build_stuck_escalation_block(state: WorkflowState) -> str:
     """Prompt suffix warning the model it is one repeat away from route_node's early exit.
 
-    Returns "" when adaptive diagnosis is disabled or the model is not near-stuck, keeping the
-    fast path byte-identical to pre-plan behavior.
+    Returns "" when adaptive diagnosis is disabled or the model is not near-stuck, keeping the fast
+    path byte-identical when omitted.
     """
     if not settings.enable_adaptive_diagnosis:
         return ""
@@ -563,7 +557,7 @@ def _build_stuck_escalation_block(state: WorkflowState) -> str:
 
 
 def _build_batching_instruction_block(_state: WorkflowState) -> str:
-    """ELICIT-only steer (Phase 3): batch related clarifications into one ask_user call.
+    """ELICIT-only steer: batch related clarifications into one ask_user call.
 
     A per-turn suffix, not part of get_instruction()'s cached string. Attacks the serial
     one-question-at-a-time chains that made elicitation feel like an interrogation.
@@ -712,7 +706,7 @@ def build_system_prompt(state: WorkflowState, agent_role: str | None, *, has_dra
     )
     # Artifact-type shape (taxonomy chain + section-coverage contract) belongs with the static policy
     # in L1, not the per-turn payload — appended last so the static prefix stays cache-friendly.
-    # Phase 3 gates the two artifact/technique suffixes by session phase: the full contract is a
+    # The two artifact/technique suffixes are gated by session phase: the full contract is a
     # drafting concern; the technique shortlist is an elicitation concern. Stuck-escalation is
     # cross-cutting and always appended.
     system_prompt = system_prompt or ""
@@ -728,7 +722,7 @@ def build_system_prompt(state: WorkflowState, agent_role: str | None, *, has_dra
 
 
 def _build_section_repair_block(state: WorkflowState) -> str:
-    """Targeted repair line for sections whose last write recorded a structural finding (Phase 4).
+    """Targeted repair line for sections whose last write recorded a structural finding.
 
     Severity is phase-scoped to avoid training the model to ignore the line: only `violation`
     findings surface in ELICIT (early, terse sections should not be nagged for style); warnings join

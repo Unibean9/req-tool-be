@@ -1,4 +1,4 @@
-"""Per-phase prompt profiles (plan 260702 Phase 3).
+"""Per-phase prompt profiles.
 
 Each session phase renders only the prompt blocks relevant to its job — no phase renders the full
 god-assembly. An unset/unknown phase falls back to including every block (backward compatible with
@@ -104,7 +104,7 @@ def test_unset_phase_renders_full_assembly():
     assert _BATCHING_MARKER in prompt
 
 
-# --- section repair block (Phase 4) -----------------------------------------
+# --- section repair block ----------------------------------------------------
 
 
 def test_draft_phase_renders_section_repair_with_violation_and_warning():

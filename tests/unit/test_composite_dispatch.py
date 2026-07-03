@@ -25,7 +25,7 @@ def test_gate_passes_non_interrupt_tools_through():
 
 
 def test_gate_drops_out_of_phase_tool():
-    # Phase 2 supersedes the old "dispatch unavailable tool for a tool-level error" behavior for
+    # The gate supersedes the old "dispatch unavailable tool for a tool-level error" behavior for
     # out-of-phase tools: _state() is INTENT phase (user_confirmed=None), which excludes finalize,
     # so the gate drops it (the model is told the phase via the feedback block instead).
     state = _state()
@@ -84,7 +84,7 @@ def test_gate_drops_read_artifact_when_bundled_with_interrupt_tool():
 
 
 def test_gate_drops_out_of_phase_interrupt_tool_but_keeps_note():
-    """Phase 2: out-of-phase finalize (INTENT phase) is dropped; the in-phase side-effect-free note
+    """Out-of-phase finalize (INTENT phase) is dropped; the in-phase side-effect-free note
     still passes through so its structured facts reach state this turn."""
     state = _state()  # INTENT phase: finalize out of phase, explore_note in phase
     requested = [

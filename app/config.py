@@ -62,9 +62,8 @@ class Settings(BaseSettings):
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
 
-    # Behavior thresholds re-derived in plan 260702 Phase 6 (calibration). Kept as settings so an
-    # eval grid sweep can vary them via env without a code edit. Values below are the calibrated
-    # defaults; see plans/260702-agent-behavior-quality/evidence/behavior-before-after.md.
+    # Behavior thresholds kept as settings so eval grid sweeps can vary them via env without a
+    # code edit. Values below are the calibrated defaults.
     # low_coverage_ratio: below this the diagnosis loop treats a section as weakly covered.
     low_coverage_ratio: float = 0.34
     # readiness rubric (readiness.py): dimension pass floor and overall ready threshold.
@@ -77,8 +76,8 @@ class Settings(BaseSettings):
     enforce_deterministic_gate: bool = True
 
     # Adaptive diagnosis loop (orchestrator_node -> analyze_node): heuristic-gated thinking-mode
-    # selection. Operator-facing rollback path — flip to False to restore pre-plan behavior
-    # (no diagnosis, no prompt suffix, no judge escalation) without a code revert.
+    # selection. Operator-facing rollback path: flip to False to disable diagnosis, prompt suffixes,
+    # and judge escalation without a code revert.
     enable_adaptive_diagnosis: bool = True
     # Cap on LLM judge calls the diagnosis step may spend per turn escalating a heuristic
     # high-risk classification. Mirrors max_critique_rounds' role as a cost ceiling.

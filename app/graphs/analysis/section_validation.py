@@ -1,4 +1,4 @@
-"""Incremental, section-scoped structural validation (Phase 4).
+"""Incremental, section-scoped structural validation.
 
 Runs when a section is WRITTEN (a decision-node create/update), not only when the full draft is
 proposed — so a defect surfaces within one turn of its cause. Pure Python, NO LLM, NO DB. Composes
