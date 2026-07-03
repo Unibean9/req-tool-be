@@ -1,5 +1,4 @@
 import uuid
-from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -8,111 +7,15 @@ from sqlalchemy import select
 
 from app.graphs.decision_graph import create_node
 from app.graphs.policy import GovernanceDenied
-from app.graphs.state import (
-    DEFAULT_ARTIFACT_CHAIN,
-    DEFAULT_METHOD_PROFILE,
-    DEFAULT_READINESS,
-    WorkflowState,
-)
+from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentMessage,
     AgentRun,
     AgentSession,
 )
 from tests.conftest import TestSessionFactory
+from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
 from tests.helpers import create_org, create_project, make_auth_headers
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _session_factory():
-    @asynccontextmanager
-    async def factory():
-        async with TestSessionFactory() as db:
-            yield db
-
-    return factory
-
-
-def _state(artifact_type: str = "goal", turn_count: int = 0, analysis_result=None) -> WorkflowState:
-    return {
-        "artifact_type": artifact_type,
-        "workflow_area": "analysis",
-        "step_key": None,
-        "messages": [],
-        "conversation_summary": "",
-        "analysis_result": analysis_result,
-        "pending_tool_call_ids": [],
-        "last_agent_run_id": None,
-        "turn_count": turn_count,
-        "missing_context": [],
-        "user_confirmed": None,
-        "critique_rounds": 0,
-        "quality_report": None,
-        "last_critiqued_draft_hash": None,
-        "locale": None,
-        "turn_type": None,
-        "triage_reply": None,
-        "section_coverage": None,
-        "coverage_complete": None,
-        "section_coverage_stall_count": None,
-        "assumptions": [],
-        "risks": [],
-        "open_questions": [],
-        "key_facts": [],
-        "focused_artifact_id": None,
-        "draft_body": None,
-        "method_profile": dict(DEFAULT_METHOD_PROFILE),
-        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
-        "readiness": dict(DEFAULT_READINESS),
-        "candidate_readiness": None,
-        "tool_errors": [],
-        "feedback_summary": None,
-        "verification_status": None,
-        "latest_checked_revision": None,
-        "mode_hint": None,
-        "session_elicit_count": 0,
-        "decision_nodes": {},
-    }
-
-
-def _config(session_id: str, project_id: str, llm_client=None) -> dict:
-    return {
-        "configurable": {
-            "thread_id": session_id,
-            "project_id": project_id,
-            "llm_client": llm_client or AsyncMock(),
-            "session_factory": _session_factory(),
-        }
-    }
-
-
-async def _make_agent_session(client, db_session, project_id: uuid.UUID) -> AgentSession:
-    session = AgentSession(
-        project_id=project_id,
-        artifact_type="goal",
-        workflow_area="analysis",
-        graph_checkpoint={},
-    )
-    db_session.add(session)
-    await db_session.commit()
-    return session
-
-
-async def _make_agent_run(db_session, agent_session: AgentSession) -> AgentRun:
-    run = AgentRun(session_id=agent_session.id, analysis_result={})
-    db_session.add(run)
-    await db_session.commit()
-    return run
-
-
-async def _project(client) -> uuid.UUID:
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
-
 
 # ---------------------------------------------------------------------------
 # analyze_node tests

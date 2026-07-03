@@ -8,26 +8,13 @@ from app.graphs.agent_tools import (
     get_available_tools,
 )
 from app.graphs.critique import CRITIQUE_MODES, _invoke_judge
-from app.graphs.decision_graph import create_node, render_view
-from tests.integration.test_graph_nodes import _state
+from app.graphs.decision_graph import render_view
+from tests.factories import _draft_state, _scripted_client, _state
 
 
 def _tool_names(state):
     # Every gating test in this file exercises the artifact phase (post-confirm_intent).
     return {t.name for t in get_available_tools({**state, "user_confirmed": True})}
-
-
-def _draft_state(statement: str = "Increase retention by 30%.") -> dict:
-    state = _state(artifact_type="brd")
-    state["decision_nodes"] = {
-        "N1": create_node(
-            kind="objective",
-            statement=statement,
-            origin={"source": "test"},
-            status="confirmed",
-        )
-    }
-    return state
 
 
 def _draft_body(state: dict) -> str:
@@ -120,16 +107,6 @@ async def test_run_critique_updates_quality_report():
     for key in ("blocking_issues", "non_blocking_warnings", "revision_plan",
                 "quality_gate_result", "recommended_next_action"):
         assert key in report
-
-
-def _scripted_client(score: float, findings: list[str], suggestions: list[str]):
-    from unittest.mock import AsyncMock
-
-    client = AsyncMock()
-    client.generate = AsyncMock(return_value=(
-        {"score": score, "findings": findings, "suggestions": suggestions}, None
-    ))
-    return client
 
 
 @pytest.mark.asyncio

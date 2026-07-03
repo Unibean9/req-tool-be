@@ -3,14 +3,14 @@ import json
 from unittest.mock import AsyncMock
 
 from tests.integration.scenarios.diff_transcripts import diff_pair
-from tests.integration.scenarios.test_scenarios import _judge_client
+from tests.integration.scenarios.eval_support import judge_client
 
 
 def test_behavior_scenario_judge_defaults_to_mock(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "real-key-present")
     monkeypatch.delenv("SCENARIO_USE_REAL_JUDGE", raising=False)
 
-    client = _judge_client()
+    client = judge_client()
 
     assert isinstance(client.generate, AsyncMock)
     result, _ = asyncio.run(client.generate())

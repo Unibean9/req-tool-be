@@ -14,7 +14,7 @@ from app.graphs.analysis.prompt_assembly import (
 from app.graphs.nodes import _build_tool_selection_prompt
 from app.graphs.session_phase import DRAFT, ELICIT, FINALIZE, INTENT, PHASES, REVIEW
 from app.instructions import load_instructions
-from tests.integration.test_graph_nodes import _state
+from tests.factories import _state
 
 _ARTIFACT_CONTRACT_MARKER = "provenance chain"
 _BATCHING_MARKER = "BATCHING:"

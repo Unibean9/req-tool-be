@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.models.agent import AgentSession
 from tests.conftest import TestSessionFactory
+from tests.factories import _session_factory
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -147,15 +148,6 @@ async def _create_agent_session(client, db_session) -> AgentSession:
     db_session.add(session)
     await db_session.commit()
     return session
-
-
-def _session_factory():
-    @asynccontextmanager
-    async def factory():
-        async with TestSessionFactory() as db:
-            yield db
-
-    return factory
 
 
 async def _load_agent_session(session_id: uuid.UUID) -> AgentSession:

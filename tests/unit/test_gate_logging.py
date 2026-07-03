@@ -27,9 +27,17 @@ from app.models.artifact import ArtifactType
 from app.schemas.artifact_synthesis import ArtifactReadinessState
 from app.services.agent_service import AgentService
 from tests.conftest import TestSessionFactory
-from tests.integration.test_graph_nodes import _config, _make_agent_run, _session_factory, _state
-from tests.unit.test_run_critique_tool import _draft_state, _scripted_client
-from tests.unit.test_tool_parity import _focused_items, _make_agent_session, _project
+from tests.factories import (
+    _config,
+    _draft_state,
+    _focused_items,
+    _make_agent_run,
+    _make_agent_session,
+    _project,
+    _scripted_client,
+    _session_factory,
+    _state,
+)
 
 GATE_LOGGER = "app.graphs.gate_logging"
 

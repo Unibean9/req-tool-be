@@ -19,14 +19,7 @@ from app.models.agent import (
     AgentSessionStatus,
 )
 from app.services.agent_event_service import AgentEventService
-from tests.helpers import create_org, create_project, make_auth_headers
-
-
-async def _project_id(client):
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
+from tests.factories import _project
 
 
 def _service(db_session):
@@ -44,7 +37,7 @@ def _service(db_session):
 
 @pytest.mark.asyncio
 async def test_queue_message_persists_mode_hint(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     session = AgentSession(project_id=project_id, artifact_type="goal", workflow_area="analysis", graph_checkpoint={})
     db_session.add(session)
     await db_session.flush()
@@ -57,7 +50,7 @@ async def test_queue_message_persists_mode_hint(client, db_session):
 
 @pytest.mark.asyncio
 async def test_drain_queue_replays_mode_hint(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     session = AgentSession(
         project_id=project_id,
         artifact_type="goal",
@@ -112,7 +105,7 @@ class _FakeRequest:
 
 @pytest.mark.asyncio
 async def test_sse_heartbeat_on_idle_stream(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,

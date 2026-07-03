@@ -4,8 +4,6 @@ These are behavior smoke tests (not exhaustive units): each confirms the headlin
 scenario through analyze_node or the pure BMAD helpers.
 """
 
-import uuid
-
 import pytest
 from langchain_core.messages import AIMessage
 
@@ -16,7 +14,7 @@ from app.graphs.agent_tools import (
 )
 from app.graphs.nodes import analyze_node
 from app.graphs.readiness import compute_readiness_score
-from tests.integration.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
+from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
 
 _ALL_SECTIONS = [
     "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
@@ -36,17 +34,10 @@ class _LLM:
         return AIMessage(content=self._payload.get("draft_update", ""), tool_calls=tool_calls), None
 
 
-async def _project_id(client):
-    from tests.helpers import create_org, create_project, make_auth_headers
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
 
 
 async def _analyze(client, db_session, payload, artifact_type="intent", state_mut=None):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     state = _state(artifact_type=artifact_type)
     if state_mut:
@@ -87,7 +78,7 @@ async def test_scenario2_clear_direction_records_assumptions_and_risks(client, d
 @pytest.mark.asyncio
 async def test_scenario3_build_immediately_flags_blocking_gaps(client, db_session):
     """Wants to build now but PRD is weak -> readiness check returns blocking gaps."""
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
     state = _state(artifact_type="intent")

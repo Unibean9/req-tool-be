@@ -163,3 +163,46 @@ def test_supersede_node_cycle_does_not_overwrite_old_status(decision_graph_facto
     assert result["A"]["status"] == "superseded"
     assert result["B"]["status"] == "parked"
     assert result[new_id]["status"] == "proposed"
+
+
+def test_supersede_reconfirm_marks_dependents_needs_confirmation(decision_graph_factory):
+    nodes = decision_graph_factory(
+        {"id": "N1", "kind": "objective", "status": "confirmed"},
+        {"id": "N3", "depends_on": ["N1"], "status": "confirmed"},
+        {"id": "N4", "depends_on": ["N1"], "status": "confirmed"},
+    )
+
+    result = supersede_node(nodes, "N1", "Chinh cuc bo", _origin(), cascade_mode="reconfirm")
+
+    assert result["N1"]["status"] == "superseded"
+    assert result["N3"]["status"] == "needs_confirmation"
+    assert result["N4"]["status"] == "needs_confirmation"
+
+
+def test_supersede_ripple_does_not_affect_unrelated_nodes(decision_graph_factory):
+    nodes = decision_graph_factory(
+        {"id": "N1", "kind": "decision", "status": "confirmed"},
+        {"id": "N3", "depends_on": ["N1"], "status": "confirmed"},
+        {"id": "N2", "kind": "decision", "status": "confirmed"},
+        {"id": "N5", "depends_on": ["N2"], "status": "confirmed"},
+    )
+
+    result = supersede_node(nodes, "N1", "Doi N1", _origin(), cascade_mode="abandon")
+
+    assert result["N5"]["status"] == "confirmed"
+
+
+def test_supersede_does_not_revive_already_superseded_dependent(decision_graph_factory):
+    # N5 was already superseded by N5b in an earlier edit; both still depend_on the root N1.
+    # Superseding N1 must ripple N5b but leave N5 frozen — reviving it would rewrite history.
+    nodes = decision_graph_factory(
+        {"id": "N1", "kind": "decision", "status": "confirmed"},
+        {"id": "N5", "depends_on": ["N1"], "status": "superseded", "superseded_by": "N5b"},
+        {"id": "N5b", "depends_on": ["N1"], "status": "confirmed", "supersedes": "N5"},
+    )
+
+    result = supersede_node(nodes, "N1", "Dao huong", _origin(), cascade_mode="abandon")
+
+    assert result["N5"]["status"] == "superseded"
+    assert result["N5"]["superseded_by"] == "N5b"
+    assert result["N5b"]["status"] == "parked"

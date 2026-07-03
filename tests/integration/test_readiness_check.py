@@ -3,17 +3,15 @@
 import pytest
 from sqlalchemy import select
 
+from app.documents.registry import children_of
 from app.graphs.agent_tools import _run_readiness_check_impl, get_available_tools
 from app.graphs.decision_graph import create_node
 from app.graphs.readiness import compute_readiness_score
 from app.models.agent import AgentToolCall
 from tests.conftest import TestSessionFactory
-from tests.integration.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
+from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
 
-_ALL_SECTIONS = [
-    "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
-    "business_rules", "constraints_assumptions", "risks_issues",
-]
+_ALL_SECTIONS = list(children_of("brd"))
 
 
 def _coverage(**overrides):
@@ -61,7 +59,7 @@ def test_recommended_next_step_populated_in_output():
 
 @pytest.mark.asyncio
 async def test_run_readiness_check_persisted_to_audit_log(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
@@ -82,7 +80,7 @@ async def test_run_readiness_check_persisted_to_audit_log(client, db_session):
 
 @pytest.mark.asyncio
 async def test_readiness_state_updated_after_check(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
@@ -113,12 +111,3 @@ def test_run_readiness_check_in_available_tools_with_draft():
     assert "run_readiness_check" in names
 
 
-async def _project_id(client):
-    import uuid
-
-    from tests.helpers import create_org, create_project, make_auth_headers
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])

@@ -20,6 +20,8 @@ from app.eval.behavior_metrics import behavior_report, extract_behavior_metrics
 from tests.eval.behavior_scenarios import BEHAVIOR_SCENARIOS
 from tests.integration.scenarios.driver import ScenarioDriver
 
+pytestmark = [pytest.mark.eval, pytest.mark.evidence]
+
 _MODE = os.environ.get("BEHAVIOR_EVAL_MODE", "stub")
 
 # Live runs get extra generic turns beyond the scripted actions: the real model may need more
@@ -50,7 +52,7 @@ def _live_client():
     )
 
 
-def _report_dir() -> Path:
+def _report_dir(tmp_path: Path) -> Path:
     if _MODE == "live":
         # Sweep/final-eval runs redirect output away from the committed baseline via
         # BEHAVIOR_EVAL_OUTDIR (per-cell dirs); unset keeps the recorded baseline destination.
@@ -58,15 +60,15 @@ def _report_dir() -> Path:
         out = Path(override) if override else _BASELINE_DIR
         out.mkdir(parents=True, exist_ok=True)
         return out
-    from tests.integration.scenarios.recorder import TRANSCRIPTS_DIR
 
-    TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    return TRANSCRIPTS_DIR
+    out = tmp_path / "behavior-eval"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scenario_factory", BEHAVIOR_SCENARIOS, ids=lambda f: f.__name__)
-async def test_behavior_scenario(scenario_factory, client, scenario_env, scenario_project):
+async def test_behavior_scenario(scenario_factory, client, scenario_env, scenario_project, tmp_path):
     headers, project = scenario_project
     scenario = scenario_factory()
     model_id = None
@@ -82,8 +84,9 @@ async def test_behavior_scenario(scenario_factory, client, scenario_env, scenari
     transcript = recorder.to_dict()
     report = behavior_report(transcript, artifacts, mode=_MODE, model=model_id)
 
-    out_dir = _report_dir()
-    recorder.write()
+    out_dir = _report_dir(tmp_path)
+    if _MODE != "live" or not os.environ.get("BEHAVIOR_EVAL_METRICS_ONLY"):
+        recorder.write(out_dir)
     # Live baseline runs each scenario several times (nondeterminism); tag files per run.
     run_tag = os.environ.get("BEHAVIOR_EVAL_RUN", "")
     suffix = f".run{run_tag}" if run_tag else ""
@@ -114,10 +117,10 @@ async def test_behavior_scenario(scenario_factory, client, scenario_env, scenari
 async def test_ambiguous_scenario_records_failed_first_critique(client, scenario_env, scenario_project):
     if _MODE != "stub":
         pytest.skip("scripted-expectation test is stub-mode only")
-    from tests.eval.behavior_scenarios import brd_ambiguous
+    from tests.eval.behavior_scenarios import reject_critique_redraft
 
     headers, project = scenario_project
-    scenario = brd_ambiguous()
+    scenario = reject_critique_redraft()
     driver = ScenarioDriver(client, scenario_env, headers, uuid.UUID(project["id"]), scenario)
     recorder = await driver.run()
 

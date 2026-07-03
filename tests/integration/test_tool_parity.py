@@ -4,7 +4,7 @@ Wraps the three enum branches as parallel tools (ask→ask_user, propose→write
 done→finalize) without removing the enum branches. Guards the R1 (duplicate-message on
 HTTP-resume) and R3 (idempotency-key collision) risks.
 
-Unit tests (T1–T5) call the tool impls directly with `interrupt` patched. T6 exercises the
+Contract tests (T1-T5) call the tool impls directly with `interrupt` patched. T6 exercises the
 real ToolNode dispatch + interrupt/resume through a minimal compiled graph (analyze_node
 cannot emit native tool_calls without bind_tools, so the HTTP driver path cannot
 reach the tools yet — a seeded AIMessage seeds tool-path coverage).
@@ -27,14 +27,17 @@ from app.models.agent import (
 )
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from tests.conftest import TestSessionFactory
-from tests.helpers import create_org, create_project, make_auth_headers
-from tests.integration.test_graph_nodes import (
+from tests.factories import (
     _config,
+    _focused_items,
     _make_agent_run,
     _make_agent_session,
+    _project,
     _session_factory,
     _state,
 )
+
+pytestmark = pytest.mark.integration
 
 
 def _set_graph_draft(state: dict, statement: str = "draft") -> str:
@@ -48,39 +51,6 @@ def _set_graph_draft(state: dict, statement: str = "draft") -> str:
         )
     }
     return render_view(state["decision_nodes"], state["artifact_type"])
-
-
-async def _project(client) -> uuid.UUID:
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
-
-
-async def _focused_items(db_session, project_id: uuid.UUID, *item_types: ArtifactType):
-    parent = Artifact(
-        project_id=project_id,
-        type=ArtifactType.BRD,
-        status=ArtifactStatus.DRAFT,
-        title="BRD",
-        extra_metadata={},
-    )
-    db_session.add(parent)
-    await db_session.flush()
-    items = [
-        Artifact(
-            project_id=project_id,
-            parent_id=parent.id,
-            type=item_type,
-            status=ArtifactStatus.DRAFT,
-            title=item_type.value.replace("_", " ").title(),
-            extra_metadata={},
-        )
-        for item_type in item_types
-    ]
-    db_session.add_all(items)
-    await db_session.commit()
-    return items
 
 
 # ---------------------------------------------------------------------------

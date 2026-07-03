@@ -7,8 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
-from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
-from tests.unit.test_tool_parity import _project
+from tests.factories import _config, _make_agent_session, _project, _session_factory, _state
 
 # ---------------------------------------------------------------------------
 # _gate_selected_tools unit tests

@@ -186,9 +186,8 @@ def _tool_select_to_ai_message(turn: dict[str, Any]) -> AIMessage:
     """Convert a scripted tool-selection turn → AIMessage(tool_calls=[...]).
 
     Mirrors the native client path: analyze_node now receives an AIMessage directly (not a dict), so
-    the scripted turn `{"tools": [{"name": "ask_user", "args": {...}}], "active_mode": ...}` is mapped
-    to `AIMessage(tool_calls=[{"id": "scripted:0", "name": ..., "args": ...}])`. The analytic
-    `active_mode` is dropped — analyze_node derives it from the picked tool, same as production.
+    the scripted turn `{"tools": [{"name": "ask_user", "args": {...}}]}` is mapped to
+    `AIMessage(tool_calls=[{"id": "scripted:0", "name": ..., "args": ...}])`.
     """
     tool_calls = [
         {"id": f"scripted:{i}", "name": item["name"], "args": dict(item.get("args") or {})}
@@ -202,14 +201,10 @@ def tool_call(name: str, args: dict[str, Any], *, call_id: str = "call_1") -> di
     return {"id": call_id, "name": name, "args": args}
 
 
-def tool_select(tool: str, *, active_mode: str | None = None, **args: Any) -> dict[str, Any]:
+def tool_select(tool: str, **args: Any) -> dict[str, Any]:
     """A scripted tool-SELECTION turn: the analyst names a tool plus its args.
 
-    analyze_node converts this dict into an AIMessage(tool_calls=[...]). `active_mode` is kept as a
-    top-level analytic field (eval reads it from analysis_result); remaining kwargs become the
-    per-tool args in the new D1 schema: {"tools": [{"name": tool, "args": {...}}]}.
+    analyze_node converts this dict into an AIMessage(tool_calls=[...]). Keyword arguments become
+    the per-tool args in the native tool-call schema: {"tools": [{"name": tool, "args": {...}}]}.
     """
-    turn: dict[str, Any] = {"tools": [{"name": tool, "args": dict(args)}]}
-    if active_mode is not None:
-        turn["active_mode"] = active_mode
-    return turn
+    return {"tools": [{"name": tool, "args": dict(args)}]}

@@ -8,6 +8,7 @@ from app.graphs.decision_graph import (
     derive_assumptions,
     derive_open_questions,
     migrate_legacy_notes,
+    render_view,
     synthesis_assumption_signals,
 )
 
@@ -98,3 +99,20 @@ def test_migrate_skips_blank_entries():
     nodes, migrated = migrate_legacy_notes({}, [{"statement": "  "}], [{"question": ""}], {"by": "migration"})
     assert migrated == 0
     assert nodes == {}
+
+
+# --- render_view (superseded hidden, parked folded, active shown) ------------
+
+
+def test_render_view_excludes_superseded_nodes(decision_graph_factory):
+    nodes = decision_graph_factory(
+        {"id": "N1", "kind": "decision", "statement": "Huong cu da bo", "status": "superseded"},
+        {"id": "N3", "kind": "objective", "statement": "Goal being confirmed", "status": "confirmed"},
+        {"id": "N4", "kind": "scope", "statement": "Pham vi treo lai", "status": "parked"},
+    )
+
+    out = render_view(nodes, "brd")
+
+    assert "Huong cu da bo" not in out
+    assert "Goal being confirmed" in out
+    assert "Pham vi treo lai" in out

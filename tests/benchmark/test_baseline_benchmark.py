@@ -1,69 +1,41 @@
-"""Record baseline latency/token numbers before any latency/token fix lands.
+"""Record baseline latency/token numbers for the canonical journeys.
 
-Not part of the default `pytest tests/unit tests/integration -q` run (this directory is
-outside both) — invoke explicitly: `pytest tests/benchmark/test_baseline_benchmark.py -s -q`.
-The final benchmark re-runs the identical fixture (tests/benchmark/fixture.py) via
-test_final_benchmark.py and writes evidence/benchmark-final.md for the before/after delta.
+Run explicitly with `pytest -m benchmark tests/benchmark/test_baseline_benchmark.py -s -q`.
+The final benchmark re-runs the same journey fixture and writes the before/after
+delta.
 """
 
-import statistics
 from pathlib import Path
 
 import pytest
 
-from tests.benchmark.fixture import FIXTURE_TURN_COUNT, run_fixture
-from tests.helpers import create_org, create_project, make_auth_headers
+from tests.benchmark.fixture import FIXTURE_JOURNEY_COUNT, aggregate_runs, run_fixture
+
+pytestmark = [pytest.mark.benchmark, pytest.mark.evidence]
 
 RUNS = 3
 EVIDENCE_PATH = Path(__file__).resolve().parents[2] / "plans" / "260701-optimize-latency-token" / "evidence" / "benchmark-baseline.md"
-
-
-def _aggregate(all_runs: list[list[dict]]) -> dict[str, dict[str, float]]:
-    """min/median/max per metric, aggregated across runs, summed across the fixture's turns."""
-    totals = {
-        "total_latency_ms": [sum(t["total_latency_ms"] for t in run) for run in all_runs],
-        "total_tokens": [sum(t["total_tokens"] for t in run) for run in all_runs],
-        "analyze_latency_ms": [sum(t["analyze_latency_ms"] for t in run) for run in all_runs],
-        "triage_latency_ms": [sum(t["triage_latency_ms"] for t in run) for run in all_runs],
-        "critique_latency_ms": [sum(t["critique_latency_ms"] for t in run) for run in all_runs],
-    }
-    return {
-        name: {"min": min(values), "median": statistics.median(values), "max": max(values)}
-        for name, values in totals.items()
-    }
 
 
 def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]]) -> str:
     lines = [
         "# Baseline Benchmark",
         "",
-        "Recorded before any latency/token fix lands. Same fixture and methodology as "
-        "`evidence/benchmark-final.md` — see `tests/benchmark/fixture.py`.",
+        "Recorded before any latency/token fix lands. Same canonical journey fixture and methodology as "
+        "`evidence/benchmark-final.md` - see `tests/benchmark/fixture.py`.",
         "",
         "## Mode",
         "",
-        "Mocked LLM client (`tests/benchmark/fixture.py:BenchmarkLLM`) — no real API key in this "
-        "environment. Consequences:",
-        "- Latency here is **in-process overhead only** (DB session open/close inside `analyze_node`, "
-        "the triage/analyze/critique call plumbing, in-memory prompt assembly). It does NOT capture "
-        "real LLM API round-trip latency.",
-        "- Token counts are a **deterministic size proxy** (`len(payload) // 4` on the exact "
-        "messages/system/tools sent to `generate()`), not real provider-billed tokens. This proxy "
-        "cannot show P1's (prompt caching) actual billing effect, since caching changes what is "
-        "billed, not the payload size sent. It CAN show P3's history-capping effect (fewer/smaller "
-        "history messages in the payload) and P2's same-turn critique cache-boundary effect if that "
-        "phase changes what is embedded in the critique prompt.",
+        "Scripted mock LLM through the real HTTP/graph scenario harness. Latency is in-process "
+        "harness and application overhead, not real external LLM latency. Token counts are a "
+        "deterministic payload-size proxy, not provider-billed usage.",
         "",
-        f"## Fixture ({FIXTURE_TURN_COUNT} turns)",
+        f"## Fixture ({FIXTURE_JOURNEY_COUNT} canonical journeys)",
         "",
-        "`tests/benchmark/fixture.py:run_fixture` — triage_node + analyze_node called directly per "
-        "turn (real DB session_factory, real AgentRun rows), with one same-turn `_invoke_judge` call "
-        "at turn 5 (mirrors run_critique firing in the same turn as analyze) and a growing draft body "
-        "across write_draft turns. Direct node calls were used instead of the full graph + ToolNode "
-        "+ interrupt wiring — that wiring is orthogonal to what P1/P2/P3/P5/P6 change and adds "
-        "complexity disproportionate to a --fast benchmark harness.",
+        "`tests/benchmark/fixture.py:run_fixture` runs the shared canonical journeys through "
+        "`ScenarioDriver`, so integration, eval, and benchmark lanes exercise the same behavior.",
         "",
-        f"## Results ({RUNS} runs, values summed across all {FIXTURE_TURN_COUNT} turns per run)",
+        f"## Results ({RUNS} runs, values summed across all {FIXTURE_JOURNEY_COUNT} journeys per run)",
         "",
         "| Metric | Min | Median | Max |",
         "| --- | --- | --- | --- |",
@@ -72,7 +44,7 @@ def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]])
         lines.append(f"| {name} | {stats['min']:.0f} | {stats['median']:.0f} | {stats['max']:.0f} |")
     lines += [
         "",
-        "## Raw per-run, per-turn data",
+        "## Raw per-run, per-journey data",
         "",
         "```json",
     ]
@@ -85,27 +57,21 @@ def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]])
 
 
 @pytest.mark.asyncio
-async def test_record_baseline_benchmark(client, db_session):
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    import uuid
-
-    project_id = uuid.UUID(project["id"])
-
+async def test_record_baseline_benchmark(client, scenario_env, scenario_project):
     all_runs = []
     for _ in range(RUNS):
-        metrics = await run_fixture(db_session, project_id)
-        assert len(metrics) == FIXTURE_TURN_COUNT
+        metrics = await run_fixture(client, scenario_env, scenario_project)
+        assert len(metrics) == FIXTURE_JOURNEY_COUNT
         all_runs.append(metrics)
 
-    agg = _aggregate(all_runs)
+    agg = aggregate_runs(all_runs)
     report = _render_report(all_runs, agg)
     EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     EVIDENCE_PATH.write_text(report, encoding="utf-8")
 
-    # Sanity: every turn recorded a non-negative latency and a positive token estimate.
+    # Sanity: every journey recorded non-negative latency and a positive token estimate.
     for run in all_runs:
-        for turn in run:
-            assert turn["total_latency_ms"] >= 0
-            assert turn["total_tokens"] > 0
+        for journey in run:
+            assert journey["final_status"] == "completed"
+            assert journey["total_latency_ms"] >= 0
+            assert journey["total_tokens"] > 0

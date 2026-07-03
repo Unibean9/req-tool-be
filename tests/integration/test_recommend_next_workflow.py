@@ -10,7 +10,7 @@ from app.graphs.agent_tools import (
 )
 from app.models.agent import AgentToolCall
 from tests.conftest import TestSessionFactory
-from tests.integration.test_graph_nodes import _config, _make_agent_run, _make_agent_session, _session_factory, _state
+from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
 
 _ALL_SECTIONS = [
     "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
@@ -79,7 +79,7 @@ def test_recommend_not_available_when_no_signal():
 
 @pytest.mark.asyncio
 async def test_result_persisted_to_audit_log(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
@@ -102,7 +102,7 @@ async def test_result_persisted_to_audit_log(client, db_session):
 
 @pytest.mark.asyncio
 async def test_recommended_next_workflow_written_to_state(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
@@ -120,7 +120,7 @@ async def test_recommended_next_workflow_written_to_state(client, db_session):
 @pytest.mark.asyncio
 async def test_recommend_reflects_current_coverage_same_turn(client, db_session):
     """The tool derives from the live section_coverage, not a possibly-stale artifact_chain."""
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
     run = await _make_agent_run(db_session, agent_session)
 
@@ -140,12 +140,3 @@ async def test_recommend_reflects_current_coverage_same_turn(client, db_session)
     assert command.update["method_profile"]["recommended_next_workflow"] == "prd"
 
 
-async def _project_id(client):
-    import uuid
-
-    from tests.helpers import create_org, create_project, make_auth_headers
-
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])

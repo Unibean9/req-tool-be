@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from app.graphs.agent_tools import artifact_stage, current_draft_body
-from app.graphs.decision_graph import create_node, render_view
-from tests.integration.test_graph_nodes import _state
+from app.graphs.decision_graph import create_node
+from tests.factories import _state
 
 
 def _state_with_node(statement: str = "Reduce processing time") -> dict:
@@ -26,30 +26,8 @@ def _state_with_node(statement: str = "Reduce processing time") -> dict:
     return state
 
 
-@pytest.mark.asyncio
-async def test_current_draft_body_renders_decision_graph():
-    state = _state_with_node("Reduce processing time")
-
-    assert await current_draft_body(state) == render_view(state["decision_nodes"], "brd")
-
-
-@pytest.mark.asyncio
-async def test_current_draft_body_uses_db_body_when_graph_empty():
-    state = _state()
-    state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
-    state["draft_body"] = "DB draft cu"
-
-    assert await current_draft_body(state) == "DB draft cu"
-
-
-@pytest.mark.asyncio
-async def test_current_draft_body_ignores_legacy_working_draft():
-    state = _state()
-    state["working_draft"] = "checkpoint cu"
-
-    assert await current_draft_body(state) == ""
-
-
+# current_draft_body's graph/DB/legacy source precedence is owned by test_gate_stack_minimal
+# and test_finalize_gate; this file keeps only the truly-empty edge that neither covers.
 @pytest.mark.asyncio
 async def test_current_draft_body_empty_when_neither_present():
     assert await current_draft_body(_state()) == ""
@@ -92,7 +70,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
     from tests.helpers import create_org, create_project, make_auth_headers
-    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.factories import _config, _make_agent_session, _session_factory
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -126,7 +104,7 @@ async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_s
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
     from tests.helpers import create_org, create_project, make_auth_headers
-    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.factories import _config, _make_agent_session, _session_factory
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)

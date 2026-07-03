@@ -16,8 +16,15 @@ from app.graphs.agent_tools import _write_draft_impl
 from app.models.agent import AgentToolCall
 from app.models.artifact import ArtifactType
 from tests.conftest import TestSessionFactory
-from tests.integration.test_graph_nodes import _config, _make_agent_run, _session_factory, _state
-from tests.unit.test_tool_parity import _focused_items, _make_agent_session, _project
+from tests.factories import (
+    _config,
+    _focused_items,
+    _make_agent_run,
+    _make_agent_session,
+    _project,
+    _session_factory,
+    _state,
+)
 
 
 async def _seed(client, db_session):

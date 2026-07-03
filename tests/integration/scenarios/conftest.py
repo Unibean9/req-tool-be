@@ -19,6 +19,7 @@ that would otherwise hit the real database / a real LLM:
 """
 
 import asyncio
+import os
 import uuid
 from pathlib import Path
 from typing import Any
@@ -38,7 +39,7 @@ from app.services.agent_service import AgentService
 from tests.helpers import create_org, create_project, make_auth_headers
 
 # Keep the DB file in the workspace so scenario tests do not depend on Windows Temp capacity.
-_DB_PATH = Path(__file__).parents[3] / ".pytest_cache" / "reqtool_scenarios.sqlite"
+_DB_PATH = Path(__file__).parents[3] / ".pytest_cache" / f"reqtool_scenarios_{os.getpid()}.sqlite"
 _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 _SCENARIO_DB_URL = f"sqlite+aiosqlite:///{_DB_PATH.as_posix()}"
 scenario_engine = create_async_engine(_SCENARIO_DB_URL)
