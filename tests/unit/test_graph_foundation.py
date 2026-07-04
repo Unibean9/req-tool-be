@@ -95,7 +95,7 @@ async def test_create_artifact_denies_type_outside_allowed_context():
 
 def test_artifact_predecessors_design_types_trace_to_brd():
     assert ARTIFACT_PREDECESSORS["brd"] == []
-    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["brd"]
+    assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["use_case", "business_rules"]
 
 
 def test_workflow_state_structure_and_add_messages_reducer():

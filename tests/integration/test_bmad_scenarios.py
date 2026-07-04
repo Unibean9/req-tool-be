@@ -18,7 +18,7 @@ from tests.factories import _config, _make_agent_run, _make_agent_session, _proj
 
 _ALL_SECTIONS = [
     "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
-    "business_rules", "constraints_assumptions", "risks_issues",
+    "business_rules", "constraints_assumptions",
 ]
 
 

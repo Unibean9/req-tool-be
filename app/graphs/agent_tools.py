@@ -56,7 +56,8 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
-from app.models.artifact import Artifact, ArtifactLink, ArtifactStatus, RelationType
+from app.models.artifact import Artifact, ArtifactLink, ArtifactStatus, ArtifactVersion, RelationType
+from app.models.project import Project
 from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
     ArtifactReadinessState,
@@ -634,6 +635,95 @@ def _open_blocker_questions(state: WorkflowState) -> list[dict[str, Any]]:
     return scan_parked_questions(state.get("decision_nodes") or {})
 
 
+# --- Executive summary synthesis (BRD finalize) -----------------------------
+# executive_summary is no longer elicited; it is synthesized from the BRD's
+# vision/problem/scope at finalize and promoted to a project field.
+_EXEC_SUMMARY_SOURCES = ("problem_statement", "vision_objectives", "scope_capabilities")
+
+
+def synthesize_executive_summary(sources: dict[str, str]) -> str:
+    """Assemble a one-paragraph executive summary from BRD source sections.
+
+    Deterministic template over problem/vision/scope, isolated so it can be
+    swapped for an LLM synthesis and stubbed in tests. The finalize hook calls
+    it exactly once (see `_persist_executive_summary_draft`), so even a
+    non-deterministic implementation yields a stable persisted value across an
+    interrupt/resume cycle.
+    """
+    labels = {
+        "problem_statement": "Problem",
+        "vision_objectives": "Vision & objectives",
+        "scope_capabilities": "Scope",
+    }
+    parts = [
+        f"{labels[key]}: {(sources.get(key) or '').strip()}"
+        for key in _EXEC_SUMMARY_SOURCES
+        if (sources.get(key) or "").strip()
+    ]
+    return " ".join(parts)
+
+
+async def _load_accepted_bodies(db, project_id, types: tuple[str, ...]) -> dict[str, str]:
+    rows = (
+        await db.execute(
+            select(Artifact.type, ArtifactVersion.body)
+            .join(ArtifactVersion, Artifact.current_version_id == ArtifactVersion.id)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.type.in_(list(types)),
+                Artifact.status == ArtifactStatus.ACCEPTED,
+            )
+        )
+    ).all()
+    return {getattr(t, "value", t): (body or "") for t, body in rows}
+
+
+async def _persist_executive_summary_draft(db, project_id) -> str | None:
+    """Resume-safe synthesis: compute and persist the executive summary once.
+
+    If the project already carries an executive_summary — persisted on a prior
+    execution of this finalize node, before its interrupt — reuse it verbatim and
+    never recompute, so a non-deterministic synthesis cannot drift across resume.
+    The caller commits within its own DB block.
+    """
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if project is None:
+        return None
+    if project.executive_summary:
+        return project.executive_summary
+    sources = await _load_accepted_bodies(db, project_id, _EXEC_SUMMARY_SOURCES)
+    draft = synthesize_executive_summary(sources)
+    if not draft.strip():
+        return None
+    project.executive_summary = draft
+    return draft
+
+
+async def _apply_executive_summary_resume(project_id, resume, session_factory) -> None:
+    """Apply the user's finalize confirmation to the synthesized draft.
+
+    Resume payload shape (BRD finalize only): {"executive_summary_action": "edit",
+    "executive_summary": "<text>"} overwrites; {"executive_summary_action": "reject"}
+    clears the field; anything else (approve/default) keeps the persisted draft.
+    """
+    if not isinstance(resume, dict):
+        return
+    action = resume.get("executive_summary_action")
+    if action not in ("edit", "reject"):
+        return
+    async with session_factory() as db:
+        project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+        if project is None:
+            return
+        if action == "edit":
+            new_text = str(resume.get("executive_summary") or "").strip()
+            if new_text:
+                project.executive_summary = new_text
+        else:  # reject
+            project.executive_summary = None
+        await db.commit()
+
+
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(summary or "").strip():
         return _missing_required_arg_update("finalize", "summary", tool_call_id)
@@ -677,12 +767,14 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
+    artifact_type = state.get("artifact_type") or ""
+    project_id_raw = cfg.get("project_id")
+    finalize_project_id = uuid.UUID(str(project_id_raw)) if project_id_raw else None
+    exec_summary_draft: str | None = None
 
     async with session_factory() as db:
-        project_id_raw = cfg.get("project_id")
-        if project_id_raw:
-            project_id = uuid.UUID(str(project_id_raw))
-            artifact_type = state.get("artifact_type") or ""
+        if finalize_project_id is not None:
+            project_id = finalize_project_id
             missing_predecessors: list[str] = []
             for pred_type in ARTIFACT_PREDECESSORS.get(artifact_type, []):
                 count = (
@@ -708,12 +800,27 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
                     tool_call_id,
                 )
 
+            # Finalizing the BRD container synthesizes the executive summary from
+            # vision/problem/scope and persists it (once) BEFORE the interrupt, so
+            # the resume path reuses the confirmed draft instead of recomputing.
+            if artifact_type == "brd":
+                exec_summary_draft = await _persist_executive_summary_draft(db, project_id)
+
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
 
-    interrupt({"type": "finalize", "message": summary})
+    interrupt_payload: dict[str, Any] = {"type": "finalize", "message": summary}
+    if exec_summary_draft:
+        interrupt_payload["executive_summary"] = exec_summary_draft
+    resume = interrupt(interrupt_payload)
+
+    # Apply the user's confirmation of the synthesized executive summary (edit/reject);
+    # approve/default keeps the persisted draft. Runs once (finalize resumes once).
+    if artifact_type == "brd" and finalize_project_id is not None:
+        await _apply_executive_summary_resume(finalize_project_id, resume, session_factory)
+
     return Command(update={"messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)]})
 
 

@@ -26,4 +26,5 @@ class ProjectResponse(BaseModel):
     name: str
     slug: str
     description: str | None
+    executive_summary: str | None = None
     created_at: datetime

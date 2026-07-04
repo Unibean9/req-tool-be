@@ -29,7 +29,7 @@ async def test_document_types_require_auth_and_come_from_registry(client):
 
 
 @pytest.mark.asyncio
-async def test_get_brd_returns_seven_empty_slots_before_creation(client):
+async def test_get_brd_returns_six_empty_slots_before_creation(client):
     headers, project = await _project_context(client)
     response = await client.get(
         f"{BASE}/projects/{project['id']}/documents/brd",
@@ -38,7 +38,7 @@ async def test_get_brd_returns_seven_empty_slots_before_creation(client):
     assert response.status_code == 200, response.text
     document = response.json()["data"]
     assert document["artifact_id"] is None
-    assert len(document["items"]) == 7
+    assert len(document["items"]) == 6
     assert all(item["artifact_id"] is None for item in document["items"])
 
 
@@ -88,10 +88,9 @@ async def test_prd_container_and_functional_requirement_flow(client):
     assert container_response.status_code == 201, container_response.text
     container = container_response.json()["data"]
     assert [item["artifact_type"] for item in container["items"]] == [
-        "functional_requirement",
         "use_case",
+        "functional_requirement",
         "non_functional_requirement",
-        "acceptance_criteria",
     ]
 
     item_response = await client.post(

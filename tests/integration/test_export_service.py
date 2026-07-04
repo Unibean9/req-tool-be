@@ -10,7 +10,6 @@ REQUIREMENTS_BODY = {
     "scope_capabilities": "Tracking dashboard and approval flow.",
     "business_rules": "Every approval must have an accountable owner.",
     "constraints_assumptions": "Integrate with the existing infrastructure.",
-    "risks_issues": "Historical data is missing for baseline.",
 }
 
 
@@ -31,7 +30,6 @@ async def test_brd_export_renders_requirements_sections_and_research_basis(clien
         "## Scope and Capabilities",
         "## Business Rules",
         "## Constraints and Assumptions",
-        "## Risks and Issues",
         "## Research Basis",
     ]:
         assert heading in text

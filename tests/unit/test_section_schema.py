@@ -15,25 +15,25 @@ def test_registry_has_all_document_containers():
     assert all_container_types() == ("brd", "prd", "sad")
 
 
-def test_brd_registry_has_eight_items():
+def test_brd_registry_has_six_items():
+    # executive_summary promoted to a project field; risks_issues merged into
+    # constraints_assumptions.
     assert children_of("brd") == (
-        "executive_summary",
         "vision_objectives",
         "problem_statement",
         "stakeholder_register",
         "scope_capabilities",
         "business_rules",
         "constraints_assumptions",
-        "risks_issues",
     )
 
 
-def test_prd_registry_has_four_active_items():
+def test_prd_registry_has_three_active_items():
+    # acceptance_criteria merged into functional_requirement.
     assert children_of("prd") == (
         "use_case",
         "functional_requirement",
         "non_functional_requirement",
-        "acceptance_criteria",
     )
 
 

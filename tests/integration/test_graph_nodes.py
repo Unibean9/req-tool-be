@@ -219,11 +219,12 @@ async def test_analyze_node_resets_critique_state_when_db_focused_artifact_chang
 
 @pytest.mark.asyncio
 async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_session):
-    """A derived session must see its `brd` predecessor as analyst context.
+    """A derived session must see its direct predecessor as analyst context.
 
     Regression: analyze_node previously read only same-type artifacts, so a
     derived type never saw the upstream source it derives from — leaving the
-    analyst blind to requirements and hurting traceability.
+    analyst blind to requirements and hurting traceability. functional_requirement
+    derives from use_case.
     """
     from app.graphs.nodes import analyze_node
     from app.models.artifact import Artifact
@@ -233,9 +234,9 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    brd_title = "BRD: Dieu phoi study scheduling cho sinh vien"
+    use_case_title = "BC: Dieu phoi study scheduling cho sinh vien"
     db_session.add(
-        Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft")
+        Artifact(project_id=project_id, type="use_case", title=use_case_title, extra_metadata={}, status="draft")
     )
     await db_session.commit()
 
@@ -257,7 +258,7 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
     await analyze_node(state, config)
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
-    assert brd_title in prompt, "Predecessor BRD title must appear in the analyst prompt context"
+    assert use_case_title in prompt, "Predecessor use_case title must appear in the analyst prompt context"
 
 
 def test_output_contract_block_lists_sections_for_graph_view():
@@ -283,10 +284,10 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
 
-    brd_title = "BRD: Dieu phoi study scheduling"
+    fr_title = "FR: Dieu phoi study scheduling"
     domain_title = "Domain entity: Lich nhom"
     component_title = "Component: Bo orchestration lich"
-    db_session.add(Artifact(project_id=project_id, type="brd", title=brd_title, extra_metadata={}, status="draft"))
+    db_session.add(Artifact(project_id=project_id, type="functional_requirement", title=fr_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="domain_entity", title=domain_title, extra_metadata={}, status="draft"))
     db_session.add(Artifact(project_id=project_id, type="component", title=component_title, extra_metadata={}, status="draft"))
     await db_session.commit()
@@ -311,7 +312,7 @@ async def test_analyze_node_feeds_transitive_ancestry_into_prompt(client, db_ses
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert component_title in prompt, "Tien nhiem truc tiep (component) must co trong prompt"
     assert domain_title in prompt, "Bridge predecessor (domain_entity) must appear in the prompt"
-    assert brd_title in prompt, "To tien xa (brd) must co qua transitive closure"
+    assert fr_title in prompt, "To tien xa (functional_requirement) must co qua transitive closure"
 
 
 @pytest.mark.asyncio

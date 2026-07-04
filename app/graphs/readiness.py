@@ -22,10 +22,10 @@ READINESS_DIMENSIONS: dict[str, dict[str, Any]] = {
     "capability_clarity": {"description": "Capability is clear.", "sections": ["scope_capabilities"]},
     "business_rule_testability": {"description": "Business rule is verifiable.", "sections": ["business_rules"]},
     "constraint_visibility": {"description": "Constraints are visible.", "sections": ["constraints_assumptions"]},
-    "risk_exposure": {"description": "Risks are identified.", "sections": ["risks_issues"]},
+    "risk_exposure": {"description": "Risks are identified.", "sections": ["constraints_assumptions"]},
     "architecture_readiness": {
         "description": "Ready for architecture.",
-        "sections": ["constraints_assumptions", "risks_issues"],
+        "sections": ["constraints_assumptions"],
     },
     "implementation_readiness": {"description": "Ready for implementation.", "sections": ["__all__"]},
 }

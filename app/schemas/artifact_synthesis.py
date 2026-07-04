@@ -97,8 +97,14 @@ def evaluate_candidate_readiness(
         if isinstance(synthesis_metadata, ArtifactSynthesisMetadata)
         else ArtifactSynthesisMetadata.model_validate(synthesis_metadata)
     )
-    contract = output_contract(artifact_type)
-    missing_headings = [heading for heading in contract.required_headings if heading not in body]
+    # Retired item types (e.g. risks_issues/acceptance_criteria/executive_summary) keep their enum
+    # value for historical rows but no longer have a registry contract; degrade to no required
+    # headings so an in-flight draft of such a type stays workable instead of raising.
+    try:
+        required_headings = output_contract(artifact_type).required_headings
+    except ValueError:
+        required_headings = ()
+    missing_headings = [heading for heading in required_headings if heading not in body]
     if missing_headings:
         return ArtifactCandidateReadiness(
             state=ArtifactReadinessState.POORLY_STRUCTURED,

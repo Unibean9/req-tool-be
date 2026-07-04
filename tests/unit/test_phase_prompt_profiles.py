@@ -237,28 +237,28 @@ _REVIEW_CRITERIA_MARKER = "REVIEW CRITERIA"
 
 def test_elicit_renders_type_profile_for_mapped_type():
     load_instructions()
-    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="risks_issues"), None, has_draft=False)
+    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="constraints_assumptions"), None, has_draft=False)
     assert _ELICIT_FOCUS_MARKER in prompt
     assert "elicit(technique='pre_mortem')" in prompt
 
 
 def test_review_renders_type_criteria_for_mapped_type():
     load_instructions()
-    prompt = build_system_prompt(_phase_state(REVIEW, artifact_type="risks_issues"), None, has_draft=True)
+    prompt = build_system_prompt(_phase_state(REVIEW, artifact_type="constraints_assumptions"), None, has_draft=True)
     assert _REVIEW_CRITERIA_MARKER in prompt
 
 
 def test_unmapped_type_falls_back_to_generic_no_profile():
     """A type with an output contract but no profile fields renders no type-profile block (generic)."""
     load_instructions()
-    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="executive_summary"), None, has_draft=False)
+    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="problem_statement"), None, has_draft=False)
     assert _ELICIT_FOCUS_MARKER not in prompt
 
 
 def test_type_profile_absent_in_draft_phase():
     """DRAFT carries the section scaffold via the artifact contract, not the type-profile block."""
     load_instructions()
-    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="risks_issues"), None, has_draft=True)
+    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="constraints_assumptions"), None, has_draft=True)
     assert _ELICIT_FOCUS_MARKER not in prompt
     assert _REVIEW_CRITERIA_MARKER not in prompt
 

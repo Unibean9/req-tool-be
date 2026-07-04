@@ -65,7 +65,7 @@ RUBRIC_CRITERIA: dict[str, dict[str, str]] = {
     "risk_awareness": {
         "name": "Risk awareness",
         "description": "Whether related risks and issues have been surfaced.",
-        "guidance": "High score if risks are in risks_issues and reflect collected structured risks.",
+        "guidance": "High score if risks are in constraints_assumptions and reflect collected structured risks.",
     },
     "scope_control": {
         "name": "Scope control",

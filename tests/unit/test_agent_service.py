@@ -1776,10 +1776,14 @@ def _problem_body():
 
 
 def _risks_body():
+    # constraints_assumptions is the last BRD child and absorbed risks_issues, so its
+    # contract now requires the constraints headings plus ## Risks / ## Mitigation Plan.
     return "\n\n".join(
         [
+            "## Constraints\n- Must integrate with existing infrastructure.",
+            "## Assumptions\n- Current auth provider stays.",
+            "## Validation Plan\n- Confirm provider SLA before build.",
             "## Risks\n- Low adoption risk.",
-            "## Issues\n- No retention baseline yet.",
             "## Mitigation Plan\n- Measure baseline and test new onboarding.",
         ]
     )

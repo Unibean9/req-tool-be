@@ -48,17 +48,19 @@ def test_no_shared_layer_duplicated_across_roles():
     assert ba_shared == pm_shared
 
 
-def test_taxonomy_uses_7_sections_not_9_slots():
+def test_taxonomy_uses_6_brd_sections_not_9_slots():
     """The taxonomy catalog moved out of the static prompt into the per-turn chain block
-    (memory/context holds evidence); the registry remains the 7-section source of truth."""
+    (memory/context holds evidence); the registry remains the 6-section BRD source of truth
+    (risks_issues merged into constraints_assumptions; executive_summary promoted)."""
     from app.documents.registry import all_item_types
 
     types = all_item_types()
     for section in (
         "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
-        "business_rules", "constraints_assumptions", "risks_issues",
+        "business_rules", "constraints_assumptions",
     ):
         assert section in types, section
+    assert "risks_issues" not in types
     assert "why_now" not in types
     # The static prompt no longer dumps the full catalog or legacy mode phrasing.
     assert "qa | critique | explore | draft" not in _ba()

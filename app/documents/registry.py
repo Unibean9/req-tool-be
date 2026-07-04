@@ -84,14 +84,12 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         artifact_type="brd",
         label="Business Requirements Document",
         children=(
-            "executive_summary",
             "vision_objectives",
             "problem_statement",
             "stakeholder_register",
             "scope_capabilities",
             "business_rules",
             "constraints_assumptions",
-            "risks_issues",
         ),
         is_container=True,
         description="Business context, scope, rules, constraints, and risks.",
@@ -103,10 +101,9 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
             "use_case",
             "functional_requirement",
             "non_functional_requirement",
-            "acceptance_criteria",
         ),
         is_container=True,
-        description="Product behavior, quality attributes, use cases, and acceptance criteria.",
+        description="Product behavior, quality attributes, and use cases.",
     ),
     DocumentTypeConfig(
         artifact_type="sad",
@@ -115,17 +112,9 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         is_container=True,
         description="Architecture domains, components, interfaces, and technical decisions.",
     ),
-    _item(
-        "executive_summary",
-        "Executive Summary",
-        "A one-paragraph summary of what the project is, why it matters, and its expected outcome.",
-        sub_dimensions={
-            "what": "What the project is, in plain terms.",
-            "why": "Why the project matters now.",
-            "expected_outcome": "The outcome expected if the project succeeds.",
-        },
-        threshold=0.8,
-    ),
+    # executive_summary is retired as an elicited item — it is synthesized from
+    # vision/problem/scope and promoted to a project-level field. The enum value
+    # is kept for historical rows; it is no longer a BRD child.
     _item(
         "vision_objectives",
         "Vision and Objectives",
@@ -202,18 +191,9 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         },
         threshold=0.75,
     ),
-    _item(
-        "risks_issues",
-        "Risks and Issues",
-        "Risks and issues: adverse events, likelihood, mitigation, and tracking status.",
-        sub_dimensions={
-            "risk": "Adverse event or condition that may occur.",
-            "likelihood": "Likelihood of the risk occurring.",
-            "mitigation": "Risk mitigation or handling strategy.",
-            "status": "Tracking status for the risk or open issue.",
-        },
-        threshold=0.75,
-    ),
+    # risks_issues is retired as a standalone item — risks and mitigation are
+    # merged into constraints_assumptions ("Constraints, Assumptions & Risks").
+    # The enum value is kept for historical rows.
     _item("functional_requirement", "Functional Requirements", "A testable product behavior."),
     _item(
         "use_case",
@@ -225,7 +205,9 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         },
     ),
     _item("non_functional_requirement", "Non-Functional Requirements", "A measurable quality constraint."),
-    _item("acceptance_criteria", "Acceptance Criteria", "Conditions that prove a requirement is met."),
+    # acceptance_criteria is retired as a standalone item — Given/When/Then
+    # acceptance is merged into the functional_requirement contract. The enum
+    # value is kept for historical rows.
     _item(
         "tech_stack",
         "Tech Stack",
@@ -243,12 +225,6 @@ _CONTAINER_BY_ITEM = {
 }
 
 _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
-    "executive_summary": ArtifactOutputContract(
-        artifact_type="executive_summary",
-        format="markdown",
-        required_headings=("## Executive Summary",),
-        guidance="One short paragraph: what the project is, why it matters, and its expected outcome.",
-    ),
     "vision_objectives": ArtifactOutputContract(
         artifact_type="vision_objectives",
         format="markdown",
@@ -312,39 +288,49 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "No two rules contradict each other.",
         ),
     ),
+    # Constraints, Assumptions & Risks — risks_issues was merged in here. Risks
+    # live in a second table under ## Risks with strategy under ## Mitigation Plan.
     "constraints_assumptions": ArtifactOutputContract(
         artifact_type="constraints_assumptions",
         format="markdown",
-        required_headings=("## Constraints", "## Assumptions", "## Validation Plan"),
-        guidance="Separate hard constraints from assumptions and state validation approach.",
+        required_headings=(
+            "## Constraints",
+            "## Assumptions",
+            "## Validation Plan",
+            "## Risks",
+            "## Mitigation Plan",
+        ),
+        guidance=(
+            "Separate hard constraints from assumptions and state the validation approach. "
+            "Capture risks in a second table under ## Risks (risk, likelihood, impact, mitigation, "
+            "status) and record the handling strategy under ## Mitigation Plan."
+        ),
         table_columns=("constraint/assumption", "impact", "owner/source", "validation"),
-    ),
-    "risks_issues": ArtifactOutputContract(
-        artifact_type="risks_issues",
-        format="markdown",
-        required_headings=("## Risks", "## Issues", "## Mitigation Plan"),
-        guidance="Track risks/issues with likelihood, impact, and mitigation.",
-        table_columns=("risk", "likelihood", "impact", "mitigation", "status"),
         elicit_checklist=(
-            "What could cause this initiative to fail or slip?",
-            "For each risk: likelihood, impact, and an owner.",
-            "Which risks are already active issues today?",
-            "What is the mitigation or contingency for the top risks?",
+            "What hard constraints (time, budget, technology, legal) bound this work?",
+            "Which assumptions are relied on, and how will each be validated before build?",
+            "What could cause this initiative to fail or slip, and how likely is each risk?",
+            "For each top risk: its impact, an owner, and a concrete mitigation or contingency.",
         ),
         elicit_technique="pre_mortem",
         review_criteria=(
+            "Constraints are separated from assumptions, each with a validation approach.",
             "Every risk has a likelihood, an impact, and a concrete mitigation (not 'monitor').",
-            "Active issues are separated from potential risks.",
             "No high-impact risk is left without an owner or contingency.",
         ),
     ),
+    # Functional requirement — acceptance_criteria was merged in here: each row's
+    # "acceptance signal" carries a Given/When/Then condition instead of a separate
+    # AC artifact.
     "functional_requirement": ArtifactOutputContract(
         artifact_type="functional_requirement",
         format="markdown",
         required_headings=("## Functional Requirements",),
         guidance=(
-            "One row per testable behavior; reference use cases by their UC id where relevant. "
-            "The dependencies column lists FR ids this requirement depends on, as free text."
+            "One row per testable behavior; reference business capabilities by their BC id where "
+            "relevant. State each requirement's acceptance as a Given/When/Then condition in the "
+            "acceptance signal column. The dependencies column lists FR ids this requirement "
+            "depends on, as free text."
         ),
         table_columns=(
             "id",
@@ -358,15 +344,16 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         id_prefix="FR",
         elicit_checklist=(
             "For each behavior: the exact input, the expected output, and the observable acceptance signal.",
-            "Which use case (UC id) does each requirement serve?",
+            "Which business capability (BC id) does each requirement serve?",
+            "State acceptance as Given/When/Then, including negative/failure cases, not only the happy path.",
+            "Are the acceptance results measurable rather than subjective?",
             "Priority of each requirement and its dependencies on other FRs.",
-            "What are the boundary and error behaviors, not just the happy path?",
         ),
         elicit_technique="first_principles",
         review_criteria=(
-            "Each requirement is independently testable via its acceptance signal.",
+            "Each requirement is independently testable via its Given/When/Then acceptance signal.",
             "Inputs and outputs are concrete, not vague ('handle X properly').",
-            "Error/boundary behavior is specified, not only the happy path.",
+            "Failure/negative cases are covered, not only the happy path.",
         ),
     ),
     "use_case": ArtifactOutputContract(
@@ -389,26 +376,6 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
         guidance="One row per quality attribute with a measurable target and verification method.",
         table_columns=("id", "quality attribute", "requirement", "measurement", "scope/tradeoff"),
         id_prefix="NFR",
-    ),
-    "acceptance_criteria": ArtifactOutputContract(
-        artifact_type="acceptance_criteria",
-        format="markdown",
-        required_headings=("## Acceptance Criteria",),
-        guidance="One Given/When/Then row per criterion; link each to its functional requirement by FR id.",
-        table_columns=("id", "linked requirement", "given", "when", "then"),
-        id_prefix="AC",
-        elicit_checklist=(
-            "For each criterion: the precondition (Given), the action (When), and the observable result (Then).",
-            "Which functional requirement (FR id) does each criterion verify?",
-            "What negative/failure cases must also be asserted?",
-            "Are the results measurable rather than subjective?",
-        ),
-        elicit_technique="reverse",
-        review_criteria=(
-            "Every criterion is a concrete Given/When/Then, not a restated requirement.",
-            "Each criterion links to a functional requirement by FR id.",
-            "Failure/negative cases are covered, not only success paths.",
-        ),
     ),
     "tech_stack": ArtifactOutputContract(
         artifact_type="tech_stack",

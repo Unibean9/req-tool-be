@@ -42,25 +42,31 @@ POLICY = {
 }
 
 
+# The intentional, acyclic artifact chain. Advisory only: shapes
+# ancestor_types() prompt-context loading and the finalize predecessor check —
+# never a hard gate. Pre-ES interim shape: sad and domain_entity stand in on
+# prd/functional_requirement until Event Storming rewires them to
+# event_storming/aggregate.
+# interface and tech_decision are intentional pipeline leaves (nothing consumes
+# them); stakeholder_register and tech_stack are interim leaves until ES lands.
 ARTIFACT_PREDECESSORS = {
     "brd": [],
-    "vision_objectives": [],
-    "problem_statement": ["vision_objectives"],
+    "problem_statement": [],
+    "vision_objectives": ["problem_statement"],
     "stakeholder_register": ["problem_statement"],
-    "scope_capabilities": ["problem_statement"],
+    "scope_capabilities": ["vision_objectives"],
     "business_rules": ["scope_capabilities"],
     "constraints_assumptions": ["scope_capabilities"],
-    "risks_issues": ["constraints_assumptions"],
     "prd": ["brd"],
-    "domain_entity": ["brd"],
-    "functional_requirement": ["brd"],
-    "non_functional_requirement": ["brd"],
-    "use_case": ["functional_requirement"],
-    "acceptance_criteria": ["functional_requirement"],
+    "use_case": ["scope_capabilities"],
+    "functional_requirement": ["use_case", "business_rules"],
+    "non_functional_requirement": ["constraints_assumptions"],
     "sad": ["prd"],
-    "component": ["domain_entity"],
+    "tech_stack": ["constraints_assumptions", "non_functional_requirement"],
+    "domain_entity": ["functional_requirement"],
+    "component": ["domain_entity", "functional_requirement"],
     "interface": ["component"],
-    "tech_decision": ["component"],
+    "tech_decision": ["component", "non_functional_requirement"],
 }
 
 
