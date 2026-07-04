@@ -47,6 +47,11 @@ class ArtifactType(enum.StrEnum):
     INTERFACE = "interface"
     TECH_DECISION = "tech_decision"
     TECH_STACK = "tech_stack"
+    EVENT_STORMING = "event_storming"
+    DOMAIN_EVENT = "domain_event"
+    ACTOR_COMMAND = "actor_command"
+    POLICY = "policy"
+    AGGREGATE = "aggregate"
     # Legacy delivery values retained because PostgreSQL enum members cannot be dropped in place.
     EPIC = "epic"
     STORY = "story"

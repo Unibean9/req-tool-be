@@ -12,7 +12,7 @@ from app.documents.registry import (
 
 
 def test_registry_has_all_document_containers():
-    assert all_container_types() == ("brd", "prd", "sad")
+    assert all_container_types() == ("brd", "prd", "sad", "event_storming")
 
 
 def test_brd_registry_has_six_items():
@@ -59,6 +59,7 @@ def test_registry_item_metadata_is_complete():
         *children_of("brd"),
         *children_of("prd"),
         *children_of("sad"),
+        *children_of("event_storming"),
     }
     for item_type in all_item_types():
         config = get_config(item_type)

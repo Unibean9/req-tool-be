@@ -112,6 +112,13 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         is_container=True,
         description="Architecture domains, components, interfaces, and technical decisions.",
     ),
+    DocumentTypeConfig(
+        artifact_type="event_storming",
+        label="Event Storming",
+        children=("domain_event", "actor_command", "policy", "aggregate"),
+        is_container=True,
+        description="Domain events, actors/commands, policies, and aggregates discovered via event storming.",
+    ),
     # executive_summary is retired as an elicited item — it is synthesized from
     # vision/problem/scope and promoted to a project-level field. The enum value
     # is kept for historical rows; it is no longer a BRD child.
@@ -217,6 +224,14 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item("component", "Component", "A deployable or logical architecture component."),
     _item("interface", "Interface", "A contract between architecture components."),
     _item("tech_decision", "Technical Decision", "A technical choice, rationale, and consequences."),
+    _item("domain_event", "Domain Events", "A past-tense fact that happened in the domain, grouped by business flow."),
+    _item("actor_command", "Actors and Commands", "An actor-initiated intent that triggers a domain event."),
+    _item(
+        "policy",
+        "Policies",
+        "A 'Whenever {event}, then {command/event}' reaction, often crossing an aggregate boundary.",
+    ),
+    _item("aggregate", "Aggregates", "A consistency boundary that handles commands and emits events."),
 )
 
 _BY_TYPE = {config.artifact_type: config for config in _CONFIGS}
@@ -426,8 +441,122 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "## Options Considered",
             "## Decision",
             "## Consequences",
+            "## Event Storming Reference",
         ),
-        guidance="ADR-style Markdown for technical decisions, options, and consequences.",
+        guidance=(
+            "ADR-style Markdown for technical decisions, options, and consequences. Under "
+            "`## Event Storming Reference`, name the specific event storming event or actor that "
+            "drove the decision by its stable id (EVT-/CMD-/POL-/AGG-/HS-), not just by prose name."
+        ),
+        review_criteria=(
+            "Verify the decision cites a concrete event/actor from the Event Storming draft by its "
+            "ES id (e.g. EVT-04, HS-01), not a placeholder or generic justification.",
+        ),
+    ),
+    "domain_event": ArtifactOutputContract(
+        artifact_type="domain_event",
+        format="markdown",
+        required_headings=("## Domain Events", "## Hotspots"),
+        guidance=(
+            "Group domain events by business flow: one `### Flow: {BC-id} {name}` sub-heading per "
+            "flow, cross-referencing the PRD's `use_case` Business Capability id, each with its own "
+            "small `flowchart LR` mermaid diagram showing that flow's command -> event -> policy -> "
+            "aggregate chain only, not one global diagram covering every flow. Record only Trigger, "
+            "Triggered By, and Downstream Effects for each event — no structured data/schema table; "
+            "that is SAD's `domain_entity`, derived later, not an event storming input. Events are "
+            "past-tense facts: a `...Requested` event records that a request was received, and "
+            "commands are not restated as events. Under `## Hotspots`, list one row per unresolved "
+            "point of confusion or conflict surfaced during the timeline walkthrough, with columns "
+            "id (HS-prefixed), description, raised during, flow, and status."
+        ),
+        table_columns=("trigger", "triggered by", "downstream effects"),
+        id_prefix="EVT",
+        render_style="entries",
+        elicit_checklist=(
+            "For each business flow (PRD use_case BC id): walk the domain events in chronological order.",
+            "For each event: what trigger (a command or another event) caused it?",
+            "For each event: what downstream effects (events, policies, aggregates) does it cause?",
+            "What hotspots (unresolved confusion, conflict, or risk) surfaced during the timeline walkthrough?",
+        ),
+        elicit_technique="event_storming",
+        review_criteria=(
+            "An event names its trigger and actor with no data schema.",
+            "Every `### Flow:` sub-heading names a BC id present in the PRD draft.",
+            "Each flow has its own `flowchart LR` diagram.",
+            "Events are past-tense facts.",
+            "Every hotspot has an HS id, the flow it blocks, and a status.",
+        ),
+    ),
+    "actor_command": ArtifactOutputContract(
+        artifact_type="actor_command",
+        format="markdown",
+        required_headings=("## Actors and Commands",),
+        guidance=(
+            "One row per command: the actor who issues it, the command itself, its precondition, "
+            "and the resulting event. Commands are often shared across flows, so each row notes the "
+            "flow/BC-id it participates in rather than being grouped under a per-flow sub-heading."
+        ),
+        table_columns=("id", "actor", "command", "precondition", "resulting event", "flow"),
+        id_prefix="CMD",
+        render_style="table",
+        elicit_checklist=(
+            "Who are the actors (users, systems, schedulers) that initiate commands?",
+            "For each actor: what commands do they issue?",
+            "For each command: what precondition must hold before it can be accepted?",
+            "For each command: what domain event does it result in?",
+        ),
+        elicit_technique="event_storming",
+        review_criteria=("A command names its precondition and resulting event.",),
+    ),
+    "policy": ArtifactOutputContract(
+        artifact_type="policy",
+        format="markdown",
+        required_headings=("## Policies",),
+        guidance=(
+            "A policy is a 'Whenever {event}, then {command/event}' reaction — the automatic "
+            "connection between events and commands, often crossing an aggregate boundary. Policies "
+            "are often shared across flows, so each entry notes the flow/BC-id it participates in "
+            "rather than being grouped under a per-flow sub-heading."
+        ),
+        table_columns=("when", "then", "crosses aggregate boundary", "flow"),
+        id_prefix="POL",
+        render_style="entries",
+        elicit_checklist=(
+            "For each event: does it trigger a 'whenever {event}, then {command/event}' reaction?",
+            "For each policy: which aggregate emits the event, and which aggregate handles the reaction?",
+            "Does the reaction cross an aggregate boundary, or stay within the same aggregate?",
+        ),
+        elicit_technique="event_storming",
+        review_criteria=(
+            "A policy names the event(s) it reacts to and the command/event it triggers, and states "
+            "whether it crosses an aggregate boundary.",
+            "Event-to-event edges without a policy are only acceptable as documented same-aggregate "
+            "emissions.",
+        ),
+    ),
+    "aggregate": ArtifactOutputContract(
+        artifact_type="aggregate",
+        format="markdown",
+        required_headings=("## Aggregates",),
+        guidance=(
+            "One entry per aggregate: its responsibilities, the commands it handles, the events it "
+            "emits, and its invariants. An aggregate shared across flows appears once with a "
+            "`Flows:` note listing every flow/BC-id it participates in — never duplicated per flow."
+        ),
+        table_columns=("responsibilities", "commands handled", "events emitted", "invariants", "flows"),
+        id_prefix="AGG",
+        render_style="entries",
+        elicit_checklist=(
+            "For each aggregate: what is its core responsibility and consistency boundary?",
+            "Which commands does it handle?",
+            "Which events does it emit?",
+            "What invariants must it always enforce?",
+        ),
+        elicit_technique="event_storming",
+        review_criteria=(
+            "An aggregate names the commands it handles, the events it emits, and its invariants.",
+            "An aggregate shared across flows appears once with a `Flows:` note, never duplicated per flow.",
+        ),
     ),
 }
 

@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.documents.registry import container_for
+from app.documents.registry import all_container_types, container_for
 from app.models.agent import (
     AgentMessage,
     AgentRun,
@@ -216,9 +216,9 @@ class AgentEventService:
                 if focused.parent_id is not None:
                     parent = await self.db.get(Artifact, focused.parent_id)
                     document_type = parent.type.value if parent is not None else document_type
-                elif focused.type.value in {"brd", "prd", "sad"}:
+                elif focused.type.value in all_container_types():
                     document_type = focused.type.value
-        if document_type is None and session.artifact_type in {"brd", "prd", "sad"}:
+        if document_type is None and session.artifact_type in all_container_types():
             document_type = session.artifact_type
         if document_type is None:
             return None

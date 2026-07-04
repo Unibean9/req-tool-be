@@ -9,14 +9,14 @@ from app.documents.registry import all_container_types, all_item_types, children
 from app.graphs.policy import ARTIFACT_PREDECESSORS, ancestor_types
 
 # Types that are intentionally terminal — nothing downstream consumes them.
-# stakeholder_register and tech_stack are interim leaves until Event Storming
-# (plans/260701-event-storming) wires actor_command/aggregate on top.
 _INTENTIONAL_LEAVES = {
     "sad",
     "interface",
     "tech_decision",
     "tech_stack",
     "stakeholder_register",
+    "policy",
+    "aggregate",
 }
 
 
@@ -62,11 +62,17 @@ def test_chain_is_acyclic():
 
 
 def test_predecessors_match_intended_pre_es_shape():
-    """Representative edges of the pre-ES interim shape (brainstorm §4.2)."""
+    """Representative edges of the intended chain shape (brainstorm §4.2)."""
     assert ARTIFACT_PREDECESSORS["problem_statement"] == []
     assert ARTIFACT_PREDECESSORS["vision_objectives"] == ["problem_statement"]
     assert ARTIFACT_PREDECESSORS["use_case"] == ["scope_capabilities"]
     assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["use_case", "business_rules"]
     assert ARTIFACT_PREDECESSORS["non_functional_requirement"] == ["constraints_assumptions"]
     assert ARTIFACT_PREDECESSORS["domain_entity"] == ["functional_requirement"]
-    assert ARTIFACT_PREDECESSORS["sad"] == ["prd"]
+    assert ARTIFACT_PREDECESSORS["sad"] == ["event_storming"]
+
+
+def test_ancestor_chain_routes_sad_through_event_storming():
+    assert "event_storming" in ancestor_types("sad")
+    assert "prd" in ancestor_types("event_storming")
+    assert "brd" in ancestor_types("event_storming")

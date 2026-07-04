@@ -13,6 +13,7 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from app.models.organization import OrgMember
 from app.services.agent_event_service import AgentEventService, _ui_status
 from tests.conftest import BASE, TestSessionFactory
@@ -445,3 +446,103 @@ async def test_agent_events_route_rejects_project_member_who_is_not_session_owne
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _document_for_session — container detection is registry-driven, not a
+# hardcoded {"brd", "prd", "sad"} set. event_storming must resolve the same
+# way brd/prd/sad already do.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_document_for_session_resolves_event_storming_via_artifact_type(client, db_session):
+    project_id = await _project(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="event_storming",
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType.EVENT_STORMING
+
+
+@pytest.mark.asyncio
+async def test_document_for_session_resolves_event_storming_via_focused_container(client, db_session):
+    project_id = await _project(client)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EVENT_STORMING,
+        status=ArtifactStatus.DRAFT,
+        title="Event Storming",
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType.EVENT_STORMING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+async def test_document_for_session_regression_via_artifact_type(client, db_session, container_type):
+    project_id = await _project(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type=container_type,
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType(container_type)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+async def test_document_for_session_regression_via_focused_container(client, db_session, container_type):
+    project_id = await _project(client)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType(container_type),
+        status=ArtifactStatus.DRAFT,
+        title=container_type.upper(),
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType(container_type)

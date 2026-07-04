@@ -49,6 +49,34 @@ def test_completeness_sweep_omits_retired_types():
         assert retired_label not in joined
 
 
+def test_completeness_sweep_brd_uses_hardcoded_gaps_unchanged():
+    """Regression tripwire: BRD keeps its four literal gap questions, byte-for-byte."""
+    assert completeness_sweep({}, "brd") == [
+        "Need a measurable objective for the BRD.",
+        "Need v1 scope for the BRD.",
+        "Need the main BRD assumption.",
+        "Need the main BRD risk.",
+    ]
+
+
+def test_completeness_sweep_sad_uses_registry_children():
+    """SAD gaps derive from SAD's own registry children, not BRD's hardcoded questions."""
+    gaps = completeness_sweep({}, "sad")
+    joined = " ".join(gaps)
+    assert "for the BRD" not in joined
+    for label in ("Tech Stack", "Domain Entity", "Component", "Interface", "Technical Decision"):
+        assert label in joined
+
+
+def test_completeness_sweep_event_storming_uses_registry_children():
+    """The fix generalizes to the new container with zero ES-specific sweep code."""
+    gaps = completeness_sweep({}, "event_storming")
+    joined = " ".join(gaps)
+    assert "for the BRD" not in joined
+    for label in ("Domain Events", "Actors and Commands", "Policies", "Aggregates"):
+        assert label in joined
+
+
 def test_recommendation_denominator_tracks_trimmed_brd_children():
     """Score denominator == len(children_of('brd')) (now 6), so a full brief (4/6)
     stays below the readiness threshold instead of inflating past it."""

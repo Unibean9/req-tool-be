@@ -360,7 +360,7 @@ def completeness_sweep(
     Only produces descriptions; the caller decides whether to create parked nodes or inject into the
     prompt. Dedup is exact (normalized statement match), not LLM similarity.
     """
-    template = _registry_sweep_gaps("prd") if artifact_type == "prd" else _BRD_SWEEP_GAPS
+    template = _BRD_SWEEP_GAPS if artifact_type == "brd" else _registry_sweep_gaps(artifact_type)
     existing_questions = {
         _normalize_statement(node.get("statement", ""))
         for node in decision_nodes.values()

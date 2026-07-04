@@ -44,11 +44,12 @@ POLICY = {
 
 # The intentional, acyclic artifact chain. Advisory only: shapes
 # ancestor_types() prompt-context loading and the finalize predecessor check —
-# never a hard gate. Pre-ES interim shape: sad and domain_entity stand in on
-# prd/functional_requirement until Event Storming rewires them to
-# event_storming/aggregate.
+# never a hard gate. Event Storming sits between PRD and SAD: SAD depends on
+# event_storming instead of prd directly, and the ES item types form their own
+# flow chain (use_case -> actor_command -> domain_event -> policy/aggregate).
 # interface and tech_decision are intentional pipeline leaves (nothing consumes
-# them); stakeholder_register and tech_stack are interim leaves until ES lands.
+# them); stakeholder_register and tech_stack are interim leaves until domain
+# work rewires them; policy and aggregate are intentional ES leaves.
 ARTIFACT_PREDECESSORS = {
     "brd": [],
     "problem_statement": [],
@@ -61,12 +62,17 @@ ARTIFACT_PREDECESSORS = {
     "use_case": ["scope_capabilities"],
     "functional_requirement": ["use_case", "business_rules"],
     "non_functional_requirement": ["constraints_assumptions"],
-    "sad": ["prd"],
+    "event_storming": ["prd"],
+    "sad": ["event_storming"],
     "tech_stack": ["constraints_assumptions", "non_functional_requirement"],
     "domain_entity": ["functional_requirement"],
     "component": ["domain_entity", "functional_requirement"],
     "interface": ["component"],
     "tech_decision": ["component", "non_functional_requirement"],
+    "actor_command": ["use_case"],
+    "domain_event": ["actor_command"],
+    "policy": ["domain_event"],
+    "aggregate": ["domain_event", "actor_command"],
 }
 
 

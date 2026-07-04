@@ -1854,3 +1854,103 @@ async def test_first_user_message_starts_graph_fresh(client, db_session, _no_bac
     _no_background_tasks.assert_called_once()
     scheduled = _no_background_tasks.call_args.args[0]
     assert scheduled.cr_code.co_name == "_run_graph"
+
+
+# ---------------------------------------------------------------------------
+# _document_type_for_session — container detection is registry-driven, not a
+# hardcoded {"brd", "prd", "sad"} set. event_storming must resolve the same
+# way brd/prd/sad already do.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_document_type_for_session_resolves_event_storming_via_artifact_type(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="event_storming",
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == "event_storming"
+
+
+@pytest.mark.asyncio
+async def test_document_type_for_session_resolves_event_storming_via_focused_container(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EVENT_STORMING,
+        status=ArtifactStatus.DRAFT,
+        title="Event Storming",
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == "event_storming"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+async def test_document_type_for_session_regression_via_artifact_type(client, db_session, container_type):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type=container_type,
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == container_type
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+async def test_document_type_for_session_regression_via_focused_container(client, db_session, container_type):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType(container_type),
+        status=ArtifactStatus.DRAFT,
+        title=container_type.upper(),
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == container_type

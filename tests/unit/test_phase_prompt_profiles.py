@@ -6,6 +6,7 @@ legacy checkpoints and callers that build a prompt before orchestrator_node assi
 """
 
 from app.documents.registry import children_of
+from app.graphs.analysis.context_loader import _context_artifact_types
 from app.graphs.analysis.prompt_assembly import (
     _PHASE_PROFILE_BLOCKS,
     _phase_includes,
@@ -248,6 +249,14 @@ def test_review_renders_type_criteria_for_mapped_type():
     assert _REVIEW_CRITERIA_MARKER in prompt
 
 
+def test_review_renders_event_storming_reference_criterion_for_tech_decision():
+    """tech_decision's REVIEW prompt carries the new ES-reference criterion (cite by ES id)."""
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(REVIEW, artifact_type="tech_decision"), None, has_draft=True)
+    assert _REVIEW_CRITERIA_MARKER in prompt
+    assert "EVT-04" in prompt
+
+
 def test_unmapped_type_falls_back_to_generic_no_profile():
     """A type with an output contract but no profile fields renders no type-profile block (generic)."""
     load_instructions()
@@ -261,6 +270,35 @@ def test_type_profile_absent_in_draft_phase():
     prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="constraints_assumptions"), None, has_draft=True)
     assert _ELICIT_FOCUS_MARKER not in prompt
     assert _REVIEW_CRITERIA_MARKER not in prompt
+
+
+def test_elicit_renders_type_profile_for_event_storming_item():
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(ELICIT, artifact_type="domain_event"), None, has_draft=False)
+    assert _ELICIT_FOCUS_MARKER in prompt
+    assert "elicit(technique='event_storming')" in prompt
+
+
+# --- ES -> SAD integration (context and prompt provenance) ------------------
+
+
+def test_sad_turn_context_types_include_event_storming_ancestry():
+    """SAD's source-candidate context (not just the finalize gate) must expose ES types.
+
+    `_context_artifact_types` backs the artifact rows read for a turn (context_loader.py); this
+    pins that a SAD-focused turn sees `event_storming` (and its own ancestor, `prd`) as context.
+    """
+    context_types = _context_artifact_types("sad")
+    assert "event_storming" in context_types
+    assert "prd" in context_types
+
+
+def test_sad_prompt_provenance_chain_includes_event_storming():
+    """The ancestor chain rendered into SAD's system prompt (prompt_assembly) includes event_storming."""
+    load_instructions()
+    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="sad"), None, has_draft=True)
+    assert _ARTIFACT_CONTRACT_MARKER in prompt
+    assert "event_storming" in prompt
 
 
 def test_payload_omits_artifact_reference_policy_without_source_artifacts():

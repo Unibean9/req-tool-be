@@ -52,6 +52,11 @@ ARTIFACT_ROLE_MAP: dict[str, str] = {
     "tech_decision": "product_manager",
     "epic": "product_manager",
     "story": "product_manager",
+    "event_storming": "product_manager",
+    "domain_event": "product_manager",
+    "actor_command": "product_manager",
+    "policy": "product_manager",
+    "aggregate": "product_manager",
 }
 
 # workflow_area fallback

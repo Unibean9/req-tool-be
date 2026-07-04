@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.documents.registry import container_for
+from app.documents.registry import all_container_types, container_for
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import build_initial_workflow_state
@@ -179,9 +179,9 @@ class AgentService:
                     parent = await self.db.get(Artifact, focused.parent_id)
                     if parent is not None:
                         return parent.type.value
-                if focused.type.value in {"brd", "prd", "sad"}:
+                if focused.type.value in all_container_types():
                     return focused.type.value
-        if session.artifact_type in {"brd", "prd", "sad"}:
+        if session.artifact_type in all_container_types():
             return session.artifact_type
         return container_for(session.artifact_type)
 

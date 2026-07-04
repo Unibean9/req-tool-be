@@ -1851,6 +1851,7 @@ ELICIT_TECHNIQUES = (
     "tree_of_thought",
     "socratic_questioning",
     "challenge_assumptions",
+    "event_storming",
 )
 
 
