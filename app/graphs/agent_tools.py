@@ -5,10 +5,10 @@ parallel ToolNode runs the choice. Each tool is a thin `@tool` over a plain asyn
 stay unit-testable without a Runtime.
 
 Idempotency on resume — LangGraph re-executes a ToolNode body from the top when its interrupt is
-resumed: ask_user keys its message insert on the per-invocation ToolCall.id; write_draft keys its
-proposal row on (run_id, tool_name), reusing the existing AgentToolCall.tool_name column (no
-migration). finalize has no insert to dedup — its only DB write is an idempotent-by-value session
-status update — so it needs no key.
+resumed: ask_user keys its message insert on the per-invocation ToolCall.id; approval proposals key
+their AgentToolCall rows on (run_id, proposal-specific tool_name), reusing the existing
+AgentToolCall.tool_name column (no migration). finalize has no insert to dedup — its only DB write is
+an idempotent-by-value session status update — so it needs no key.
 """
 
 import hashlib
@@ -36,6 +36,7 @@ from app.graphs.decision_graph import (
     get_dependents,
     impact,
     infer_cascade_mode,
+    render_node_map,
     render_view,
     scan_parked_questions,
     supersede_node,
@@ -43,11 +44,13 @@ from app.graphs.decision_graph import (
     update_node,
 )
 from app.graphs.gate_logging import log_gate_decision
+from app.graphs.lifecycle_context import filter_lifecycle_menu_tools, lifecycle_tool_block_reason
 from app.graphs.note_parser import extract_structured_objects
-from app.graphs.policy import ARTIFACT_PREDECESSORS
+from app.graphs.policy import ancestor_types
 from app.graphs.session_phase import PhaseSignals, derive_phase, phase_allows
 from app.graphs.state import QualityReport, WorkflowState
 from app.graphs.tools import read_current_body
+from app.graphs.tools import read_source_documents as read_source_documents_query
 from app.graphs.validators import validate_proposal
 from app.models.agent import (
     AgentSession,
@@ -64,7 +67,6 @@ from app.schemas.artifact_synthesis import (
     ArtifactSynthesisMetadata,
     evaluate_candidate_readiness,
 )
-from app.services.artifact_service import ArtifactLinkService
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -430,6 +432,95 @@ def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     return body
 
 
+def _proposal_based_on(state: WorkflowState, artifact_type: str) -> dict[str, str]:
+    predecessor_types = set(ancestor_types(artifact_type))
+    based_on: dict[str, str] = {}
+    for item in state.get("turn_context_artifacts") or []:
+        artifact_id = str(item.get("id") or "").strip()
+        artifact_type_value = str(item.get("type") or "").strip()
+        version_id = str(item.get("current_version_id") or "").strip()
+        if artifact_id and version_id and artifact_type_value in predecessor_types:
+            based_on[artifact_id] = version_id
+    return based_on
+
+
+def _proposal_lifecycle_metadata(state: WorkflowState, artifact_type: str) -> dict[str, Any]:
+    return {
+        "based_on": _proposal_based_on(state, artifact_type),
+        "decision_node_map": render_node_map(state.get("decision_nodes") or {}, artifact_type),
+    }
+
+
+AUTO_EVIDENCE_EXCERPT_MAX_CHARS = 1200
+
+
+def _evidence_excerpt(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > AUTO_EVIDENCE_EXCERPT_MAX_CHARS:
+        return text[:AUTO_EVIDENCE_EXCERPT_MAX_CHARS]
+    return text
+
+
+def _proposal_source_evidence(state: WorkflowState, based_on: dict[str, str]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in state.get("source_context") or []:
+        if not isinstance(item, dict):
+            continue
+        excerpt = _evidence_excerpt(item.get("excerpt"))
+        if not excerpt:
+            continue
+        source_document_id = str(item.get("source_document_id") or "").strip()
+        if source_document_id:
+            key = ("source_document", source_document_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append(
+                {
+                    "source_document_id": source_document_id,
+                    "source_type": "document",
+                    "locator": f"source_document:{source_document_id}",
+                    "excerpt": excerpt,
+                    "confidence": 1.0,
+                    "metadata": {
+                        "source_kind": "source_document",
+                        "title": item.get("title"),
+                        "source_locator": item.get("locator"),
+                    },
+                }
+            )
+            continue
+
+        predecessor_artifact_id = str(item.get("artifact_id") or "").strip()
+        predecessor_version_id = str(item.get("predecessor_version_id") or "").strip()
+        if not predecessor_artifact_id or not predecessor_version_id:
+            continue
+        if based_on.get(predecessor_artifact_id) != predecessor_version_id:
+            continue
+        key = ("predecessor_version", predecessor_version_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(
+            {
+                "source_type": "ai_output",
+                "locator": f"artifact_version:{predecessor_version_id}",
+                "excerpt": excerpt,
+                "confidence": 1.0,
+                "metadata": {
+                    "source_kind": "predecessor_version",
+                    "predecessor_artifact_id": predecessor_artifact_id,
+                    "predecessor_version_id": predecessor_version_id,
+                    "title": item.get("title"),
+                },
+            }
+        )
+    return evidence
+
+
 def _dedupe_keep_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -454,10 +545,33 @@ def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     return True
 
 
-async def _write_draft_impl(title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+async def _write_draft_impl(
+    title: str,
+    body: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    curation_action: str | None = None,
+    curation_justification: str | None = None,
+):
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
+    lifecycle_block = lifecycle_tool_block_reason(
+        state,
+        "write_draft",
+        {"curation_action": curation_action, "curation_justification": curation_justification},
+    )
+    if lifecycle_block:
+        log_gate_decision("lifecycle_tool_impl", "blocked", reason=lifecycle_block)
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code=lifecycle_block,
+                message=f"Cannot write_draft: lifecycle state blocks this proposal ({lifecycle_block}).",
+                recovery="Follow the Situation Report allowed actions before proposing a draft.",
+            ),
+            tool_call_id,
+        )
     if _cold_start_draft_blocked(state):
         return _recoverable_tool_update(
             RecoverableToolError(
@@ -544,6 +658,16 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
             # Single source of truth: assumptions/open-questions are derived from the
             # decision graph only — no parallel state fields, no key-fact reconciliation shim.
             graph_confirmed, graph_pending = synthesis_assumption_signals(state.get("decision_nodes") or {})
+            lifecycle_metadata = _proposal_lifecycle_metadata(state, focused.type.value)
+            based_on = (
+                lifecycle_metadata.get("based_on") if isinstance(lifecycle_metadata.get("based_on"), dict) else {}
+            )
+            source_evidence = _proposal_source_evidence(state, based_on)
+            if curation_action or curation_justification:
+                lifecycle_metadata["curation_decision"] = {
+                    "action": str(curation_action or "").strip().upper(),
+                    "justification": str(curation_justification or "").strip(),
+                }
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
@@ -566,8 +690,11 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                 "title": title,
                 "body": body,
                 "synthesis_metadata": metadata.model_dump(mode="json"),
+                "lifecycle_metadata": lifecycle_metadata,
                 "candidate_readiness": readiness,
             }
+            if source_evidence:
+                input_snapshot["source_evidence"] = source_evidence
             db.add(
                 AgentToolCall(
                     run_id=run_id,
@@ -603,6 +730,14 @@ async def write_draft(
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    curation_action: Annotated[
+        str | None,
+        "Required only for STALE artifacts: ADD | UPDATE | SUPERSEDE | RETIRE | NOOP.",
+    ] = None,
+    curation_justification: Annotated[
+        str | None,
+        "Required only for STALE artifacts: short reason explaining the chosen curation action.",
+    ] = None,
 ) -> Command:
     """Propose an artifact draft and pause for the user to review it.
 
@@ -612,7 +747,7 @@ async def write_draft(
     the decision-node tools, not here). Without a complete graph, supply the body — it grows
     incrementally, never rewritten from scratch.
     """
-    return await _write_draft_impl(title, body, state, config, tool_call_id)
+    return await _write_draft_impl(title, body, state, config, tool_call_id, curation_action, curation_justification)
 
 
 # ---------------------------------------------------------------------------
@@ -776,7 +911,7 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
         if finalize_project_id is not None:
             project_id = finalize_project_id
             missing_predecessors: list[str] = []
-            for pred_type in ARTIFACT_PREDECESSORS.get(artifact_type, []):
+            for pred_type in ancestor_types(artifact_type):
                 count = (
                     await db.execute(
                         select(func.count(Artifact.id)).where(
@@ -1258,6 +1393,51 @@ async def _session_user_id(session_factory, session_id: uuid.UUID | None) -> uui
         return await db.scalar(select(AgentSession.created_by_id).where(AgentSession.id == session_id))
 
 
+def _proposal_run_id(state: WorkflowState, tool_call_id: str, tool_name: str) -> uuid.UUID:
+    run_id_raw = state.get("last_agent_run_id")
+    if run_id_raw:
+        return uuid.UUID(str(run_id_raw))
+    # record_run_and_dispatch uses "{run_uuid}-{index}" ids. This fallback keeps proposal tools
+    # idempotent even if a legacy caller did not thread last_agent_run_id into state.
+    try:
+        return uuid.UUID(str(tool_call_id)[:36])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{tool_name} requires last_agent_run_id in state — analyze_node must run first") from exc
+
+
+async def _save_approval_proposal(
+    *,
+    config: RunnableConfig,
+    run_id: uuid.UUID,
+    session_id: uuid.UUID,
+    tool_name: str,
+    input_snapshot: dict[str, Any],
+) -> None:
+    session_factory = config["configurable"]["session_factory"]
+    async with session_factory() as db:
+        existing = (
+            await db.execute(
+                select(AgentToolCall).where(
+                    AgentToolCall.run_id == run_id,
+                    AgentToolCall.tool_name == tool_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                AgentToolCall(
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    input_snapshot=input_snapshot,
+                    status=AgentToolCallStatus.PROPOSED,
+                )
+            )
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+        session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS
+        await db.commit()
+
+
 async def _load_artifact_links(config: RunnableConfig) -> list[dict[str, str]]:
     project_id, _session_id, session_factory = _config_ids(config)
     if project_id is None or session_factory is None:
@@ -1300,11 +1480,12 @@ async def _create_artifact_link_impl(
     source_artifact_id: str,
     target_artifact_id: str,
     relation_type: str,
+    state: WorkflowState,
     config: RunnableConfig,
     tool_call_id: str,
 ) -> Command:
     project_id, session_id, session_factory = _config_ids(config)
-    if project_id is None or session_factory is None:
+    if project_id is None or session_id is None or session_factory is None:
         return _tool_not_available_update("create_artifact_link", "missing project/session context", tool_call_id)
     try:
         body = ArtifactLinkCreateRequest(
@@ -1314,27 +1495,31 @@ async def _create_artifact_link_impl(
         )
     except (ValueError, TypeError) as exc:
         return _tool_not_available_update("create_artifact_link", f"invalid input: {exc}", tool_call_id)
-    created_by_id = await _session_user_id(session_factory, session_id)
-    try:
-        async with session_factory() as db:
-            link = await ArtifactLinkService(db).create(
-                project_id=project_id,
-                body=body,
-                created_by_id=created_by_id,
-            )
-            await db.commit()
-    except ValueError as exc:
-        return _tool_not_available_update("create_artifact_link", str(exc), tool_call_id)
-    except Exception:
-        logger.exception("create_artifact_link failed")
-        return _tool_not_available_update(
-            "create_artifact_link", "internal error while creating artifact link", tool_call_id
-        )
+    run_id = _proposal_run_id(state, tool_call_id, "create_artifact_link")
+    proposal_tool_name = (
+        f"create_artifact_link:{body.source_artifact_id}:{body.target_artifact_id}:{body.relation_type.value}"
+    )
+    await _save_approval_proposal(
+        config=config,
+        run_id=run_id,
+        session_id=session_id,
+        tool_name=proposal_tool_name,
+        input_snapshot={
+            "source_artifact_id": str(body.source_artifact_id),
+            "target_artifact_id": str(body.target_artifact_id),
+            "relation_type": body.relation_type.value,
+            "metadata": body.metadata,
+        },
+    )
+    interrupt({"type": "propose_artifacts", "tool_name": "create_artifact_link"})
     return Command(
         update={
             "messages": [
                 ToolMessage(
-                    content=json.dumps(link.model_dump(mode="json"), ensure_ascii=False),
+                    content=(
+                        "create_artifact_link proposal is waiting for human approval; "
+                        "the link is not committed until approved."
+                    ),
                     tool_call_id=tool_call_id,
                 )
             ]
@@ -1347,11 +1532,96 @@ async def create_artifact_link_tool(
     source_artifact_id: Annotated[str, "Source artifact UUID."],
     target_artifact_id: Annotated[str, "Target artifact UUID."],
     relation_type: Annotated[str, "RelationType value, e.g. derives_from, depends_on, satisfies."],
+    state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Create an artifact dependency link, rejecting duplicates and graph cycles."""
-    return await _create_artifact_link_impl(source_artifact_id, target_artifact_id, relation_type, config, tool_call_id)
+    """Propose an artifact dependency link and pause for human approval.
+
+    The link is not committed until the proposal is approved, so do not expect read_artifact_graph to
+    show it in the same turn.
+    """
+    return await _create_artifact_link_impl(
+        source_artifact_id,
+        target_artifact_id,
+        relation_type,
+        state,
+        config,
+        tool_call_id,
+    )
+
+
+async def _propose_retirement_impl(
+    artifact_id: str,
+    reason: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    superseded_by_artifact_id: str | None = None,
+) -> Command:
+    project_id, session_id, session_factory = _config_ids(config)
+    if project_id is None or session_id is None or session_factory is None:
+        return _tool_not_available_update("propose_retirement", "missing project/session context", tool_call_id)
+    if not str(reason or "").strip():
+        return _missing_required_arg_update("propose_retirement", "reason", tool_call_id)
+    try:
+        retired_id = uuid.UUID(str(artifact_id))
+        superseded_by_id = (
+            uuid.UUID(str(superseded_by_artifact_id)) if str(superseded_by_artifact_id or "").strip() else None
+        )
+    except (TypeError, ValueError) as exc:
+        return _tool_not_available_update("propose_retirement", f"invalid input: {exc}", tool_call_id)
+    run_id = _proposal_run_id(state, tool_call_id, "propose_retirement")
+    proposal_tool_name = f"propose_retirement:{retired_id}"
+    await _save_approval_proposal(
+        config=config,
+        run_id=run_id,
+        session_id=session_id,
+        tool_name=proposal_tool_name,
+        input_snapshot={
+            "artifact_id": str(retired_id),
+            "reason": str(reason).strip(),
+            "superseded_by_artifact_id": str(superseded_by_id) if superseded_by_id else None,
+        },
+    )
+    interrupt({"type": "propose_artifacts", "tool_name": "propose_retirement"})
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=(
+                        "propose_retirement is waiting for human approval; "
+                        "the artifact is not archived until approved."
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        }
+    )
+
+
+@tool("propose_retirement")
+async def propose_retirement_tool(
+    artifact_id: Annotated[str, "Artifact UUID to archive/retire."],
+    reason: Annotated[str, "Concise audit reason for retiring this artifact."],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    superseded_by_artifact_id: Annotated[str | None, "Optional replacement artifact UUID."] = None,
+) -> Command:
+    """Propose retiring an artifact and pause for human approval.
+
+    Approval archives the artifact, records the optional superseded_by reference, and rejects the
+    proposal if live downstream dependents still use the artifact.
+    """
+    return await _propose_retirement_impl(
+        artifact_id,
+        reason,
+        state,
+        config,
+        tool_call_id,
+        superseded_by_artifact_id,
+    )
 
 
 async def _run_impact_analysis_impl(
@@ -1769,6 +2039,46 @@ async def run_readiness_check(
 # Cap a single read so a large body cannot dominate the analyze prompt; the head is enough to orient,
 # and a focused draft is reached through write_draft/current_draft_body, not this tool.
 READ_ARTIFACT_MAX_CHARS = 8000
+READ_SOURCE_DOCUMENT_MAX_CHARS = 8000
+READ_SOURCE_DOCUMENT_MAX_ITEMS = 3
+
+
+def _read_artifact_source_context(result: dict[str, Any], excerpt: str) -> list[dict[str, Any]]:
+    version_id = str(result.get("current_version_id") or "").strip()
+    artifact_id = str(result.get("artifact_id") or "").strip()
+    if not version_id or not artifact_id or not excerpt.strip():
+        return []
+    return [
+        {
+            "source_kind": "predecessor_version",
+            "artifact_id": artifact_id,
+            "predecessor_version_id": version_id,
+            "title": result.get("title"),
+            "locator": f"artifact_version:{version_id}",
+            "excerpt": excerpt,
+            "truncated": bool(result.get("truncated")),
+        }
+    ]
+
+
+def _source_document_source_context(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for document in documents:
+        excerpt = str(document.get("excerpt") or "").strip()
+        source_document_id = str(document.get("id") or "").strip()
+        if not source_document_id or not excerpt:
+            continue
+        entries.append(
+            {
+                "source_kind": "source_document",
+                "source_document_id": source_document_id,
+                "title": document.get("title"),
+                "locator": document.get("locator"),
+                "excerpt": excerpt,
+                "truncated": bool(document.get("truncated")),
+            }
+        )
+    return entries
 
 
 async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_call_id: str):
@@ -1800,12 +2110,21 @@ async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_cal
 
     if result is None:
         content = f"read_artifact: artifact not found {artifact_id} (or has no content yet) in project."
+        source_context = []
     else:
         body = result["body"] or ""
+        excerpt = body[:READ_ARTIFACT_MAX_CHARS]
         if len(body) > READ_ARTIFACT_MAX_CHARS:
-            body = body[:READ_ARTIFACT_MAX_CHARS] + "\n\n…(remaining content truncated)"
+            body = excerpt + "\n\n…(remaining content truncated)"
+            result = {**result, "truncated": True}
+        else:
+            body = excerpt
         content = f"# {result['title']}\n\n{body}"
-    return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
+        source_context = _read_artifact_source_context(result, excerpt)
+    update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
+    if source_context:
+        update["source_context"] = source_context
+    return Command(update=update)
 
 
 @tool
@@ -1821,6 +2140,76 @@ async def read_artifact(
     you, not shown to the user.
     """
     return await _read_artifact_impl(id, config, tool_call_id)
+
+
+def _normalize_source_document_ids(ids: Any) -> tuple[bool, list[uuid.UUID], list[str]]:
+    if ids is None:
+        return False, [], []
+    if isinstance(ids, str):
+        raw_items = [ids]
+    else:
+        try:
+            raw_items = list(ids or [])
+        except TypeError:
+            raw_items = [ids]
+    parsed: list[uuid.UUID] = []
+    invalid: list[str] = []
+    for raw in raw_items[:READ_SOURCE_DOCUMENT_MAX_ITEMS]:
+        try:
+            parsed.append(uuid.UUID(str(raw)))
+        except (TypeError, ValueError):
+            invalid.append(str(raw))
+    return True, parsed, invalid
+
+
+async def _read_source_documents_impl(ids: Any, config: RunnableConfig, tool_call_id: str) -> Command:
+    cfg = config["configurable"]
+    project_id_raw = cfg.get("project_id")
+    session_factory = cfg.get("session_factory")
+    ids_supplied, parsed_ids, invalid_ids = _normalize_source_document_ids(ids)
+    documents: list[dict[str, Any]] = []
+    if session_factory is not None and project_id_raw is not None and (parsed_ids or not ids_supplied):
+        async with session_factory() as db:
+            documents = await read_source_documents_query(
+                db=db,
+                project_id=uuid.UUID(str(project_id_raw)),
+                source_document_ids=parsed_ids or None,
+                limit=READ_SOURCE_DOCUMENT_MAX_ITEMS,
+                max_chars=READ_SOURCE_DOCUMENT_MAX_CHARS,
+            )
+    payload = {
+        "documents": documents,
+        "invalid_ids": invalid_ids,
+        "strategy": {
+            "max_items": READ_SOURCE_DOCUMENT_MAX_ITEMS,
+            "max_chars_per_document": READ_SOURCE_DOCUMENT_MAX_CHARS,
+            "mode": "bounded_excerpt",
+        },
+    }
+    source_context = _source_document_source_context(documents)
+    update: dict[str, Any] = {
+        "messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]
+    }
+    if source_context:
+        update["source_context"] = source_context
+    return Command(update=update)
+
+
+@tool("read_source_documents")
+async def read_source_documents_tool(
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    ids: Annotated[
+        list[str] | None,
+        "Optional source document UUIDs. Omit to read the latest project source documents as bounded excerpts.",
+    ] = None,
+) -> Command:
+    """Read bounded stored source-document text for this project.
+
+    Use before drafting when the user references uploaded/pasted source documents. The returned
+    excerpts are available to generation and are snapshotted as evidence only if a draft is proposed.
+    """
+    return await _read_source_documents_impl(ids, config, tool_call_id)
 
 
 # ---------------------------------------------------------------------------
@@ -2130,6 +2519,7 @@ def get_all_analyzer_tools() -> list:
         critique_note,
         explore_note,
         read_artifact,
+        read_source_documents_tool,
         run_critique,
         recommend_next_workflow,
         run_readiness_check,
@@ -2143,6 +2533,7 @@ def get_all_analyzer_tools() -> list:
         run_impact_analysis,
         read_artifact_graph_tool,
         create_artifact_link_tool,
+        propose_retirement_tool,
     ]
 
 
@@ -2209,8 +2600,10 @@ def get_available_tools(state: WorkflowState) -> list:
         explore_note,
         confirm_intent,
         read_artifact,
+        read_source_documents_tool,
         read_artifact_graph_tool,
         create_artifact_link_tool,
+        propose_retirement_tool,
         run_impact_analysis,
         elicit_tool,
         web_search_tool,
@@ -2234,7 +2627,8 @@ def get_available_tools(state: WorkflowState) -> list:
         tools.append(run_readiness_check)
     tools.extend(_decision_graph_menu(state))
     phase = current_session_phase(state)
-    return [t for t in tools if phase_allows(phase, t.name)]
+    phase_filtered = [t for t in tools if phase_allows(phase, t.name)]
+    return filter_lifecycle_menu_tools(phase_filtered, state)
 
 
 def _decision_graph_menu(state: WorkflowState) -> list:

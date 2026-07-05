@@ -687,6 +687,45 @@ def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type
     return "\n\n".join(blocks)
 
 
+def _node_map_entry(section: str, rendered_tag: str | None) -> dict[str, str | None]:
+    return {"section": section, "rendered_tag": rendered_tag}
+
+
+def render_node_map(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> dict[str, dict[str, str | None]]:
+    """Map rendered decision nodes to their output section and trace tag, using render_view ordering."""
+    result: dict[str, dict[str, str | None]] = {}
+    active = [n for n in decision_nodes.values() if n.get("status") in _ACTIVE_STATUSES]
+    parked = [n for n in decision_nodes.values() if n.get("status") == "parked"]
+
+    if artifact_type in _ITEM_TYPES:
+        contract = output_contract(artifact_type)
+        by_heading = {heading: [] for heading in contract.required_headings}
+        for node in active:
+            by_heading[_resolve_contract_heading(node, contract.required_headings)].append(node)
+        for heading in contract.required_headings:
+            for index, node in enumerate(by_heading[heading], start=1):
+                node_id = str(node.get("id") or "").strip()
+                if not node_id:
+                    continue
+                rendered_tag = f"{contract.id_prefix}-{index:02d}" if contract.id_prefix else None
+                result[node_id] = _node_map_entry(heading, rendered_tag)
+    else:
+        sections = _SECTION_TEMPLATES.get(artifact_type, _BRD_SECTIONS)
+        for heading, kinds in sections:
+            for node in active:
+                if node.get("kind") not in kinds:
+                    continue
+                node_id = str(node.get("id") or "").strip()
+                if node_id:
+                    result[node_id] = _node_map_entry(f"## {heading}", None)
+
+    for node in parked:
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            result[node_id] = _node_map_entry("## Parked", None)
+    return result
+
+
 def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:
     """Project the decision graph to markdown — a derived view, never the source of truth.
 

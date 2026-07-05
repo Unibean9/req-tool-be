@@ -10,6 +10,8 @@ The `FEEDBACK CONTROL:` block and the diagnosis lines are signals, not narration
 | `created_parked_questions` | Acknowledge and schedule; do not re-ask immediately. | — |
 | `stale_warning` | Reconfirm the node before building further on it. | Reconfirm before finalizing. |
 | `stale_base_version` | Re-read the artifact and rebase before drafting/finalizing. | Approval of a stale base is rejected — rebase or the write cannot persist. |
+| `lifecycle_persist_rejection` | Re-read upstream artifacts; rebase before proposing. | Rejects until based-on facts match current upstream versions. |
+| `candidate_readiness_rejection` | Resolve readiness blockers before proposing. | Rejects until structure/evidence/confirmation is sufficient. |
 | dropped tools (`skipped last turn`) | Call it again in its own turn if still needed. | — |
 | out-of-phase tools (`rejected last turn`) | Do not re-call this phase; pick from the offered menu. | Repeated rejection wastes the turn. |
 | `diagnosis_risk` / `diagnosis_signals` / `diagnosis_judge_*` | Apply the suggested technique; address findings before proceeding. | Resolve findings before drafting/finalizing. |

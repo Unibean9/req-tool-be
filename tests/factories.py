@@ -6,7 +6,14 @@ from unittest.mock import AsyncMock
 from app.graphs.decision_graph import create_node
 from app.graphs.state import WorkflowState, build_initial_workflow_state
 from app.models.agent import AgentRun, AgentSession
-from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
+from app.models.artifact import (
+    Artifact,
+    ArtifactStatus,
+    ArtifactType,
+    ArtifactVersion,
+    ChangeSource,
+    VersionStatus,
+)
 from tests.conftest import TestSessionFactory
 from tests.helpers import create_org, create_project, make_auth_headers
 
@@ -56,6 +63,30 @@ async def _make_agent_session(client, db_session, project_id: uuid.UUID) -> Agen
     db_session.add(session)
     await db_session.commit()
     return session
+
+
+async def _accept_predecessor(db_session, project_id: uuid.UUID, item_type: str, body: str = "seed") -> Artifact:
+    """Seed an accepted artifact of ``item_type`` with a current version so a downstream artifact
+    resolves out of BLOCKED (its predecessor is accepted) in lifecycle-aware tests."""
+    art = Artifact(
+        project_id=project_id, type=item_type, status=ArtifactStatus.ACCEPTED, title=item_type, extra_metadata={}
+    )
+    db_session.add(art)
+    await db_session.flush()
+    ver = ArtifactVersion(
+        artifact_id=art.id,
+        version_number=1,
+        title=item_type,
+        body=body,
+        status=VersionStatus.ACCEPTED,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(ver)
+    await db_session.flush()
+    art.current_version_id = ver.id
+    await db_session.commit()
+    return art
 
 
 async def _make_agent_run(db_session, agent_session: AgentSession) -> AgentRun:

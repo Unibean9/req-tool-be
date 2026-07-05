@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from hashlib import sha256
+from typing import Any
 
-from sqlalchemy import delete, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.documents.registry import container_for
+from app.graphs.lifecycle_resolver import (
+    ArtifactLifecycleSnapshot,
+    BasedOnPredecessorSnapshot,
+    LifecycleVerdict,
+    StructuralPredecessorSnapshot,
+    resolve_lifecycle,
+)
+from app.graphs.policy import ancestor_types
 from app.models.artifact import (
     Artifact,
     ArtifactEvidence,
@@ -15,6 +26,7 @@ from app.models.artifact import (
     ArtifactStatus,
     ArtifactVersion,
     RelationType,
+    ReviewStatus,
     SourceDocument,
     VersionStatus,
 )
@@ -38,6 +50,8 @@ from app.schemas.artifact import (
     SourceDocumentResponse,
 )
 
+logger = logging.getLogger(__name__)
+
 ALLOWED_STATUS_TRANSITIONS: dict[ArtifactStatus, set[ArtifactStatus]] = {
     ArtifactStatus.DRAFT: {ArtifactStatus.NEEDS_CLARIFICATION},
     ArtifactStatus.NEEDS_CLARIFICATION: {ArtifactStatus.DRAFT, ArtifactStatus.ACCEPTED},
@@ -49,6 +63,58 @@ ALLOWED_STATUS_TRANSITIONS: dict[ArtifactStatus, set[ArtifactStatus]] = {
 
 class InvalidArtifactStatusTransition(ValueError):
     pass
+
+
+class ArtifactInUseError(Exception):
+    def __init__(self, artifact_ids: list[uuid.UUID]):
+        self.artifact_ids = artifact_ids
+        super().__init__("Artifact has live downstream dependents")
+
+
+def _enum_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
+
+
+def _artifact_type(value: Any) -> str:
+    return str(_enum_value(value) or "")
+
+
+def _current_metadata(artifact: Artifact | None) -> dict[str, Any]:
+    if artifact is None or artifact.current_version is None:
+        return {}
+    metadata = artifact.current_version.extra_metadata or {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _based_on_from_artifact(artifact: Artifact | None) -> dict[str, str]:
+    based_on = _current_metadata(artifact).get("based_on")
+    if not isinstance(based_on, dict):
+        return {}
+    return {str(key): str(value) for key, value in based_on.items() if key and value}
+
+
+def _log_terminal_review_noop(artifact: Artifact, version: ArtifactVersion, review_status: ReviewStatus) -> None:
+    """A review outcome that could not drive the artifact's status (terminal or non-current version)."""
+    logger.info(
+        "review_status_noop artifact_id=%s version_id=%s artifact_status=%s version_status=%s review=%s",
+        artifact.id,
+        version.id,
+        _enum_value(artifact.status),
+        _enum_value(version.status),
+        _enum_value(review_status),
+    )
+
+
+def _lifecycle_report_from_verdict(verdict: LifecycleVerdict) -> dict[str, Any]:
+    return {
+        "state": verdict.state.value,
+        "reason": verdict.reason,
+        "allowed_actions": sorted(action.value for action in verdict.allowed_actions),
+        "blockers": list(verdict.blockers),
+    }
 
 
 class ArtifactService:
@@ -136,7 +202,22 @@ class ArtifactService:
                 ArtifactVersion.status == current_version_status
             )
         artifacts = (await self.db.execute(query)).scalars().all()
-        return [await self.to_response(artifact) for artifact in artifacts]
+        lifecycle_reports = await self.lifecycle_reports_by_id(project_id=project_id)
+        return [
+            await self.to_response(artifact, lifecycle_report=lifecycle_reports.get(artifact.id))
+            for artifact in artifacts
+        ]
+
+    async def get(
+        self,
+        *,
+        project_id: uuid.UUID,
+        artifact_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> ArtifactResponse:
+        await self._require_project_member(project_id, user_id)
+        artifact = await self._get_project_artifact(project_id, artifact_id)
+        return await self.to_response(artifact)
 
     async def update(
         self,
@@ -148,6 +229,8 @@ class ArtifactService:
     ) -> ArtifactResponse:
         await self._require_project_member(project_id, updated_by_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
+        if artifact.status == ArtifactStatus.ARCHIVED:
+            raise InvalidArtifactStatusTransition("Cannot edit an archived artifact")
         current = await self._get_current_version(artifact)
 
         next_title = body.title if body.title is not None else current.title
@@ -198,6 +281,8 @@ class ArtifactService:
     ) -> ArtifactResponse:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
+        if artifact.status == ArtifactStatus.ARCHIVED:
+            raise InvalidArtifactStatusTransition("Cannot restore a version of an archived artifact")
         version = await self.db.get(ArtifactVersion, version_id)
         if version is None or version.artifact_id != artifact.id:
             raise ValueError("Artifact version not found")
@@ -213,33 +298,54 @@ class ArtifactService:
         artifact_id: uuid.UUID,
         user_id: uuid.UUID,
     ) -> None:
+        await self.archive_artifact(
+            project_id=project_id,
+            artifact_id=artifact_id,
+            user_id=user_id,
+            reason="Deleted through the REST artifact endpoint",
+            source="human_delete",
+        )
+
+    async def archive_artifact(
+        self,
+        *,
+        project_id: uuid.UUID,
+        artifact_id: uuid.UUID,
+        user_id: uuid.UUID,
+        reason: str,
+        superseded_by_id: uuid.UUID | None = None,
+        source: str = "retirement",
+    ) -> Artifact:
         await self._require_project_member(project_id, user_id)
         artifact = await self._get_project_artifact(project_id, artifact_id)
-        child_ids = (
-            (await self.db.execute(select(Artifact.id).where(Artifact.parent_id == artifact.id))).scalars().all()
-        )
-        for child_id in child_ids:
-            await self.delete(
-                project_id=project_id,
-                artifact_id=child_id,
-                user_id=user_id,
-            )
-        artifact.current_version_id = None
+        if superseded_by_id is not None:
+            if superseded_by_id == artifact_id:
+                raise ValueError("Artifact cannot supersede itself")
+            superseding = await self._get_project_artifact(project_id, superseded_by_id)
+            if superseding.status == ArtifactStatus.ARCHIVED:
+                raise ValueError("Superseding artifact is archived")
+        dependent_ids = await self.downstream_usage_ids(project_id=project_id, artifact_id=artifact_id)
+        if dependent_ids:
+            raise ArtifactInUseError(dependent_ids)
+
+        metadata = dict(artifact.extra_metadata or {})
+        retirement = {
+            "source": source,
+            "reason": str(reason or "").strip(),
+            "retired_by_id": str(user_id),
+            "superseded_by": str(superseded_by_id) if superseded_by_id else None,
+        }
+        metadata["retirement"] = retirement
+        if superseded_by_id is not None:
+            metadata["superseded_by"] = str(superseded_by_id)
+        artifact.extra_metadata = metadata
+        artifact.status = ArtifactStatus.ARCHIVED
+        if artifact.current_version_id is not None:
+            current = await self.db.get(ArtifactVersion, artifact.current_version_id)
+            if current is not None:
+                current.status = VersionStatus.ARCHIVED
         await self.db.flush()
-        await self.db.execute(
-            delete(ArtifactLink).where(
-                ArtifactLink.project_id == project_id,
-                or_(
-                    ArtifactLink.source_artifact_id == artifact_id,
-                    ArtifactLink.target_artifact_id == artifact_id,
-                ),
-            )
-        )
-        await self.db.execute(delete(ArtifactEvidence).where(ArtifactEvidence.artifact_id == artifact_id))
-        await self.db.execute(delete(ArtifactReview).where(ArtifactReview.artifact_id == artifact_id))
-        await self.db.execute(delete(ArtifactVersion).where(ArtifactVersion.artifact_id == artifact_id))
-        await self.db.delete(artifact)
-        await self.db.flush()
+        return artifact
 
     async def add_evidence(
         self,
@@ -292,6 +398,39 @@ class ArtifactService:
             .order_by(ArtifactEvidence.created_at)
         )
         return [self.evidence_to_response(evidence) for evidence in result.scalars().all()]
+
+    async def downstream_usage_ids(self, *, project_id: uuid.UUID, artifact_id: uuid.UUID) -> list[uuid.UUID]:
+        linked_dependents = (
+            await self.db.execute(
+                select(ArtifactLink.source_artifact_id)
+                .join(Artifact, Artifact.id == ArtifactLink.source_artifact_id)
+                .where(
+                    ArtifactLink.project_id == project_id,
+                    ArtifactLink.target_artifact_id == artifact_id,
+                    Artifact.status != ArtifactStatus.ARCHIVED,
+                )
+            )
+        ).scalars()
+        child_dependents = (
+            await self.db.execute(
+                select(Artifact.id).where(
+                    Artifact.project_id == project_id,
+                    Artifact.parent_id == artifact_id,
+                    Artifact.status != ArtifactStatus.ARCHIVED,
+                )
+            )
+        ).scalars()
+        based_on_dependents: list[uuid.UUID] = []
+        rows = await self._project_artifacts_with_current_versions(project_id)
+        target = str(artifact_id)
+        for row in rows:
+            if row.id == artifact_id or row.status == ArtifactStatus.ARCHIVED:
+                continue
+            if target in _based_on_from_artifact(row):
+                based_on_dependents.append(row.id)
+        dependent_ids = {item for item in linked_dependents} | {item for item in child_dependents}
+        dependent_ids.update(based_on_dependents)
+        return sorted(dependent_ids, key=str)
 
     async def create_link(
         self,
@@ -380,6 +519,102 @@ class ArtifactService:
             queue.extend(adjacency.get(current, []))
         return False
 
+    async def lifecycle_reports_by_id(self, *, project_id: uuid.UUID) -> dict[uuid.UUID, dict[str, Any]]:
+        artifacts = await self._project_artifacts_with_current_versions(project_id)
+        artifacts_by_type: dict[str, list[Artifact]] = {}
+        artifacts_by_id = {artifact.id: artifact for artifact in artifacts}
+        for artifact in artifacts:
+            artifacts_by_type.setdefault(_artifact_type(artifact.type), []).append(artifact)
+
+        reports: dict[uuid.UUID, dict[str, Any]] = {}
+        for artifact in artifacts:
+            artifact_type = _artifact_type(artifact.type)
+            based_on = _based_on_from_artifact(artifact)
+            snapshot = ArtifactLifecycleSnapshot(
+                artifact_type=artifact_type,
+                artifact_id=str(artifact.id),
+                status=_enum_value(artifact.status),
+                current_version_id=str(artifact.current_version_id) if artifact.current_version_id else None,
+                based_on=based_on,
+            )
+            verdict = resolve_lifecycle(
+                artifact_type,
+                snapshot,
+                required_predecessors=self._structural_predecessors(artifact_type, artifacts_by_type),
+                based_on_predecessors=self._based_on_predecessors(based_on, artifacts_by_id),
+            )
+            reports[artifact.id] = _lifecycle_report_from_verdict(verdict)
+        return reports
+
+    async def _project_artifacts_with_current_versions(self, project_id: uuid.UUID) -> list[Artifact]:
+        return list(
+            (
+                await self.db.execute(
+                    select(Artifact)
+                    .where(Artifact.project_id == project_id)
+                    .options(selectinload(Artifact.current_version))
+                    .order_by(Artifact.created_at, Artifact.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    def _structural_predecessors(
+        self,
+        artifact_type: str,
+        artifacts_by_type: dict[str, list[Artifact]],
+    ) -> list[StructuralPredecessorSnapshot]:
+        snapshots: list[StructuralPredecessorSnapshot] = []
+        for predecessor_type in ancestor_types(artifact_type):
+            accepted = next(
+                (
+                    item
+                    for item in artifacts_by_type.get(predecessor_type, [])
+                    if item.status == ArtifactStatus.ACCEPTED and item.current_version_id is not None
+                ),
+                None,
+            )
+            if accepted is None:
+                snapshots.append(StructuralPredecessorSnapshot(artifact_type=predecessor_type, found=False))
+                continue
+            snapshots.append(
+                StructuralPredecessorSnapshot(
+                    artifact_type=predecessor_type,
+                    artifact_id=str(accepted.id),
+                    status=_enum_value(accepted.status),
+                    current_version_id=str(accepted.current_version_id) if accepted.current_version_id else None,
+                    found=True,
+                )
+            )
+        return snapshots
+
+    def _based_on_predecessors(
+        self,
+        based_on: dict[str, str],
+        artifacts_by_id: dict[uuid.UUID, Artifact],
+    ) -> dict[str, BasedOnPredecessorSnapshot]:
+        predecessors: dict[str, BasedOnPredecessorSnapshot] = {}
+        for raw_id in sorted(based_on):
+            try:
+                artifact_id = uuid.UUID(str(raw_id))
+            except (TypeError, ValueError):
+                predecessors[str(raw_id)] = BasedOnPredecessorSnapshot(artifact_id=str(raw_id), found=False)
+                continue
+            predecessor = artifacts_by_id.get(artifact_id)
+            if predecessor is None:
+                predecessors[str(raw_id)] = BasedOnPredecessorSnapshot(artifact_id=str(raw_id), found=False)
+                continue
+            predecessors[str(raw_id)] = BasedOnPredecessorSnapshot(
+                artifact_id=str(predecessor.id),
+                artifact_type=_artifact_type(predecessor.type),
+                status=_enum_value(predecessor.status),
+                current_version_id=str(predecessor.current_version_id) if predecessor.current_version_id else None,
+                found=True,
+                retired=predecessor.status == ArtifactStatus.ARCHIVED,
+            )
+        return predecessors
+
     def link_to_response(self, link: ArtifactLink) -> ArtifactLinkResponse:
         return ArtifactLinkResponse(
             id=link.id,
@@ -406,12 +641,18 @@ class ArtifactService:
             created_at=evidence.created_at,
         )
 
-    async def to_response(self, artifact: Artifact) -> ArtifactResponse:
+    async def to_response(
+        self,
+        artifact: Artifact,
+        lifecycle_report: dict[str, Any] | None = None,
+    ) -> ArtifactResponse:
         version = None
         if artifact.current_version_id is not None:
             current = await self.db.get(ArtifactVersion, artifact.current_version_id)
             if current is not None:
                 version = await self.version_to_response(current, artifact_type=artifact.type.value)
+        if lifecycle_report is None:
+            lifecycle_report = (await self.lifecycle_reports_by_id(project_id=artifact.project_id)).get(artifact.id)
         return ArtifactResponse(
             id=artifact.id,
             project_id=artifact.project_id,
@@ -427,6 +668,8 @@ class ArtifactService:
             created_at=artifact.created_at,
             metadata=artifact.extra_metadata or {},
             current_version=version,
+            lifecycle_state=(lifecycle_report or {}).get("state"),
+            lifecycle_reason=(lifecycle_report or {}).get("reason"),
         )
 
     async def version_to_response(
@@ -503,6 +746,42 @@ class ArtifactVersionService:
         self.db = db
         self.artifacts = ArtifactService(db)
 
+    def _apply_review_status_side_effects(
+        self,
+        *,
+        artifact: Artifact,
+        version: ArtifactVersion,
+        review_status: ReviewStatus,
+    ) -> None:
+        # A review is a distinct status-transition authority from update(): approving a DRAFT jumps it
+        # straight to ACCEPTED, which the update() edit matrix intentionally forbids. ARCHIVED/ACCEPTED
+        # stay terminal here — a later review row is kept for audit but must not drive status. That
+        # no-op is deliberate (see test_review_approve_is_terminal_and_later_reject_is_audit_only); it
+        # is logged rather than silent so reviewers can see the outcome had no status effect.
+        version_terminal = version.status in {VersionStatus.ACCEPTED, VersionStatus.ARCHIVED}
+        artifact_terminal = artifact.status in {ArtifactStatus.ACCEPTED, ArtifactStatus.ARCHIVED}
+        if review_status == ReviewStatus.APPROVED:
+            if version.status != VersionStatus.ARCHIVED:
+                version.status = VersionStatus.ACCEPTED
+            if artifact.status != ArtifactStatus.ARCHIVED:
+                artifact.status = ArtifactStatus.ACCEPTED
+                artifact.current_version_id = version.id
+                artifact.title = version.title
+            else:
+                _log_terminal_review_noop(artifact, version, review_status)
+            return
+        if version_terminal:
+            _log_terminal_review_noop(artifact, version, review_status)
+            return
+        version.status = VersionStatus.REJECTED
+        if artifact.current_version_id != version.id or artifact_terminal:
+            _log_terminal_review_noop(artifact, version, review_status)
+            return
+        if review_status == ReviewStatus.REJECTED:
+            artifact.status = ArtifactStatus.REJECTED
+        elif review_status == ReviewStatus.CHANGES_REQUESTED:
+            artifact.status = ArtifactStatus.NEEDS_CLARIFICATION
+
     async def review(
         self,
         *,
@@ -525,6 +804,11 @@ class ArtifactVersionService:
             comment=body.comment,
         )
         self.db.add(review)
+        self._apply_review_status_side_effects(
+            artifact=artifact,
+            version=version,
+            review_status=body.review_status,
+        )
         await self.db.flush()
         await self.db.refresh(review)
         return ArtifactReviewResponse(
@@ -605,6 +889,7 @@ class ArtifactLinkService:
             .all()
         )
 
+        lifecycle_reports = await self.artifacts.lifecycle_reports_by_id(project_id=project_id)
         nodes = [
             ArtifactNode(
                 id=artifact.id,
@@ -617,6 +902,8 @@ class ArtifactLinkService:
                 )
                 if artifact.current_version_id
                 else None,
+                lifecycle_state=(lifecycle_reports.get(artifact.id) or {}).get("state"),
+                lifecycle_reason=(lifecycle_reports.get(artifact.id) or {}).get("reason"),
             )
             for artifact in artifact_rows
         ]

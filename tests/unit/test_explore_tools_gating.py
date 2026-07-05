@@ -142,9 +142,11 @@ def test_respond_always_available():
 # ---------------------------------------------------------------------------
 
 def test_read_artifact_available_in_intent_and_artifact_phase():
-    # Intent phase (user_confirmed None) and artifact phase both offer the side-effect-free read.
+    # Intent phase (user_confirmed None) and artifact phase both offer side-effect-free reads.
     assert "read_artifact" in _names(get_available_tools({"messages": []}))
     assert "read_artifact" in _names(get_available_tools({"messages": [], "user_confirmed": True}))
+    assert "read_source_documents" in _names(get_available_tools({"messages": []}))
+    assert "read_source_documents" in _names(get_available_tools({"messages": [], "user_confirmed": True}))
 
 
 def test_respond_resets_note_step_limit():

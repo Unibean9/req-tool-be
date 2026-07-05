@@ -2,6 +2,8 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, TypeVar
 
+from app.graphs.tool_metadata import policy_table
+
 
 class ApprovalRequired(Exception):
     def __init__(self, tool_name: str, args_snapshot: dict[str, Any]):
@@ -18,28 +20,9 @@ class GovernanceDenied(Exception):
 
 # DOCUMENTATION-ONLY for tool-loop tools: the enforcement authority for what the loop may run is
 # the session-phase menu (app/graphs/session_phase.py) applied inside agent_tools.get_available_tools
-# and the post-LLM gate (analysis/tool_gating.py). Keys here either back a genuine @governed
-# approval checkpoint (init_workflow_run/create_artifact/... stubs, finalize_prd, lock_scope) or
-# document enum-era tool names the loop no longer calls.
-POLICY = {
-    "read_artifacts": "allow",
-    "read_artifact_graph": "allow",
-    "read_workflow_steps": "allow",
-    "read_source_documents": "allow",
-    "read_project_context": "allow",
-    "init_workflow_run": "require_approval",
-    "create_artifact": "require_approval",
-    "update_artifact": "require_approval",
-    "create_artifact_link": "require_approval",
-    "delete_artifact_link": "require_approval",
-    "create_artifact_review": "require_approval",
-    # finalize requires at least one run_critique round before it is offered (spec §15.1). This is
-    # a documentation signal; the actual gate lives in agent_tools.get_available_tools.
-    "finalize": "require_critique",
-    # BMAD governance gates (addendum §18): phase completion and scope lock need human approval.
-    "finalize_prd": "require_human_approval",
-    "lock_scope": "require_human_approval",
-}
+# and the post-LLM gate (analysis/tool_gating.py). The table is derived from tool metadata so approval
+# policy and dispatch metadata cannot drift.
+POLICY = policy_table()
 
 
 # The intentional, acyclic artifact chain. Advisory only: shapes

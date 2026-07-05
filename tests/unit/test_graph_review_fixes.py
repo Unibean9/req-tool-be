@@ -20,6 +20,8 @@ def _ctx(state):
         effective_state=state,
         focus_reset_update={},
         artifacts=[],
+        lifecycle_reports=[],
+        artifact_history=[],
         coverage={"coverage_complete": False, "section_coverage": {}},
         draft_body=None,
         previous_draft_body=None,

@@ -6,7 +6,6 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import select
 
 from app.graphs.decision_graph import create_node
-from app.graphs.policy import GovernanceDenied
 from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentMessage,
@@ -14,7 +13,14 @@ from app.models.agent import (
     AgentSession,
 )
 from tests.conftest import TestSessionFactory
-from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
+from tests.factories import (
+    _accept_predecessor,
+    _config,
+    _make_agent_session,
+    _project,
+    _session_factory,
+    _state,
+)
 from tests.helpers import create_org, create_project, make_auth_headers
 
 # ---------------------------------------------------------------------------
@@ -95,6 +101,9 @@ async def test_analyze_node_audit_omits_tool_body_from_agent_run(client, db_sess
     project = await create_project(client, headers, org["id"])
     project_id = uuid.UUID(project["id"])
     agent_session = await _make_agent_session(client, db_session, project_id)
+    # vision_objectives has an accepted problem_statement predecessor, so it resolves to MISSING
+    # (create allowed) rather than BLOCKED — keeping write_draft on the menu for this audit check.
+    await _accept_predecessor(db_session, project_id, "problem_statement")
     model_body = "## Vision\nBi mat proposal body.\n\n## Objectives\n- Tang toc.\n\n## Success Metrics\n- 99%."
 
     mock_llm = AsyncMock()
@@ -901,10 +910,11 @@ def test_route_node_does_not_exit_on_varying_or_below_threshold_repeats():
 
 @pytest.mark.asyncio
 async def test_governed_unknown_write_tool_raises_governance_denied():
-    from app.graphs.tools import create_artifact
+    import app.graphs.tools as graph_tools
+    from app.graphs.policy import POLICY
 
-    with pytest.raises(GovernanceDenied):
-        await create_artifact(artifact_type="unknown_type", title="Test", body="", context={"allowed_types": ["goal"]})
+    assert not hasattr(graph_tools, "create_artifact")
+    assert POLICY["create_artifact"] == "require_approval"
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ reach the tools yet — a seeded AIMessage seeds tool-path coverage).
 """
 
 import hashlib
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -25,7 +26,7 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
 )
-from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType, SourceDocument, SourceType
 from tests.conftest import TestSessionFactory
 from tests.factories import (
     _config,
@@ -263,6 +264,52 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
+async def test_link_and_retirement_proposals_scope_idempotency_to_target(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _create_artifact_link_impl, _propose_retirement_impl
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    source, target_a, target_b = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.FUNCTIONAL_REQUIREMENT,
+        ArtifactType.EPIC,
+        ArtifactType.EPIC,
+    )
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state()
+    state["last_agent_run_id"] = str(run.id)
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await _create_artifact_link_impl(str(source.id), str(target_a.id), "derives_from", state, config, "call_1")
+    await _create_artifact_link_impl(str(source.id), str(target_a.id), "derives_from", state, config, "call_1")
+    await _create_artifact_link_impl(str(source.id), str(target_b.id), "derives_from", state, config, "call_2")
+    await _propose_retirement_impl(str(target_a.id), "Superseded", state, config, "call_3")
+    await _propose_retirement_impl(str(target_a.id), "Superseded", state, config, "call_3")
+    await _propose_retirement_impl(str(target_b.id), "Superseded", state, config, "call_4")
+
+    async with TestSessionFactory() as db:
+        rows = (
+            await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+        ).scalars().all()
+        assert {row.tool_name for row in rows} == {
+            f"create_artifact_link:{source.id}:{target_a.id}:derives_from",
+            f"create_artifact_link:{source.id}:{target_b.id}:derives_from",
+            f"propose_retirement:{target_a.id}",
+            f"propose_retirement:{target_b.id}",
+        }
+        snapshots = {row.tool_name: row.input_snapshot for row in rows}
+        assert snapshots[f"create_artifact_link:{source.id}:{target_a.id}:derives_from"]["target_artifact_id"] == str(
+            target_a.id
+        )
+        assert snapshots[f"propose_retirement:{target_b.id}"]["artifact_id"] == str(target_b.id)
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
 async def test_write_draft_snapshot_keeps_complete_body_when_graph_render_is_partial(mock_interrupt, client, db_session):
     from app.graphs.agent_tools import _write_draft_impl
 
@@ -362,6 +409,182 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
         assert metadata["base_version_id"] == str(current.id)
         assert metadata["confirmed_assumptions"] == ["Retention metric confirmed by the user"]
         assert metadata["pending_assumptions"] == ["Specific target needs confirmation"]
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_snapshot_records_lifecycle_facts_from_turn_context(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+    from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    focused, predecessor = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.VISION_OBJECTIVES,
+        ArtifactType.PROBLEM_STATEMENT,
+    )
+    predecessor_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=1,
+        title="Problem",
+        body="Problem body",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(predecessor_version)
+    await db_session.flush()
+    predecessor.current_version_id = predecessor_version.id
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["turn_context_artifacts"] = [
+        {
+            "id": str(predecessor.id),
+            "type": "problem_statement",
+            "title": "Problem",
+            "status": "draft",
+            "current_version_id": str(predecessor_version.id),
+        },
+        {
+            "id": str(focused.id),
+            "type": "vision_objectives",
+            "title": "Vision",
+            "status": "draft",
+            "current_version_id": None,
+        },
+    ]
+    state["decision_nodes"] = {
+        "N1": create_node(
+            kind="objective",
+            statement="Increase activation",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="N1",
+            section="## Vision",
+        )
+    }
+    model_body = "\n\n".join(
+        [
+            "## Vision\nIncrease activation.",
+            "## Objectives\n- Improve onboarding.",
+            "## Success Metrics\n- Activation reaches 25%.",
+        ]
+    )
+    config = _config(str(agent_session.id), str(project_id))
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await _write_draft_impl("Vision", model_body, state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        lifecycle = row.input_snapshot["lifecycle_metadata"]
+        assert lifecycle["based_on"] == {str(predecessor.id): str(predecessor_version.id)}
+        assert lifecycle["decision_node_map"] == {
+            "N1": {"section": "## Vision", "rendered_tag": None},
+        }
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_snapshot_records_loaded_source_evidence(mock_interrupt, client, db_session):
+    from app.graphs.agent_tools import _write_draft_impl
+    from app.models.artifact import ArtifactVersion, ChangeSource, VersionStatus
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    focused, predecessor = await _focused_items(
+        db_session,
+        project_id,
+        ArtifactType.VISION_OBJECTIVES,
+        ArtifactType.PROBLEM_STATEMENT,
+    )
+    predecessor_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=1,
+        title="Problem",
+        body="Problem source body",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    stale_unrelated_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=2,
+        title="Problem stale",
+        body="Stale body",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    source_document = SourceDocument(
+        project_id=project_id,
+        title="Interview notes",
+        source_type=SourceType.TEXT_PASTE,
+        content_text="Interview excerpt",
+        extra_metadata={},
+    )
+    db_session.add_all([predecessor_version, stale_unrelated_version, source_document])
+    await db_session.flush()
+    predecessor.current_version_id = predecessor_version.id
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    state["turn_context_artifacts"] = [
+        {
+            "id": str(predecessor.id),
+            "type": "problem_statement",
+            "title": "Problem",
+            "status": "draft",
+            "current_version_id": str(predecessor_version.id),
+        }
+    ]
+    state["source_context"] = [
+        {
+            "source_kind": "source_document",
+            "source_document_id": str(source_document.id),
+            "title": source_document.title,
+            "excerpt": "Users need monthly reports.",
+        },
+        {
+            "source_kind": "predecessor_version",
+            "artifact_id": str(predecessor.id),
+            "predecessor_version_id": str(predecessor_version.id),
+            "title": "Problem",
+            "excerpt": "Problem source body",
+        },
+        {
+            "source_kind": "predecessor_version",
+            "artifact_id": str(predecessor.id),
+            "predecessor_version_id": str(stale_unrelated_version.id),
+            "title": "Problem stale",
+            "excerpt": "Stale body",
+        },
+    ]
+    config = _config(str(agent_session.id), str(project_id))
+
+    await _write_draft_impl("Vision", "## Vision\nContent", state, config, "call_1")
+
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        evidence = row.input_snapshot["source_evidence"]
+        assert {item["source_type"] for item in evidence} == {"document", "ai_output"}
+        assert evidence[0]["source_document_id"] == str(source_document.id)
+        predecessor_evidence = next(item for item in evidence if item["source_type"] == "ai_output")
+        assert predecessor_evidence["metadata"]["predecessor_version_id"] == str(predecessor_version.id)
+        assert str(stale_unrelated_version.id) not in str(evidence)
 
 
 @pytest.mark.asyncio
@@ -795,3 +1018,52 @@ async def test_read_artifact_scoped_to_project(client, db_session):
     command = await _read_artifact_impl(str(artifact.id), config, "call_1")
 
     assert "artifact not found" in command.update["messages"][0].content
+
+
+@pytest.mark.asyncio
+async def test_read_source_documents_returns_bounded_project_source_content(client, db_session):
+    from app.graphs.agent_tools import READ_SOURCE_DOCUMENT_MAX_CHARS, _read_source_documents_impl
+
+    project_id = await _project(client)
+    content = "Source fact: users need monthly reports. " + ("x" * READ_SOURCE_DOCUMENT_MAX_CHARS)
+    document = SourceDocument(
+        project_id=project_id,
+        title="Interview notes",
+        source_type=SourceType.TEXT_PASTE,
+        content_text=content,
+        extra_metadata={},
+    )
+    db_session.add(document)
+    await db_session.commit()
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_source_documents_impl([str(document.id)], config, "call_1")
+
+    payload = json.loads(command.update["messages"][0].content)
+    assert payload["strategy"]["mode"] == "bounded_excerpt"
+    assert payload["documents"][0]["id"] == str(document.id)
+    assert "Source fact" in payload["documents"][0]["excerpt"]
+    assert payload["documents"][0]["truncated"] is True
+    assert command.update["source_context"][0]["source_document_id"] == str(document.id)
+    assert len(command.update["source_context"][0]["excerpt"]) == READ_SOURCE_DOCUMENT_MAX_CHARS
+
+
+@pytest.mark.asyncio
+async def test_read_source_documents_invalid_id_returns_observation(client):
+    from app.graphs.agent_tools import _read_source_documents_impl
+
+    project_id = await _project(client)
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_source_documents_impl(["not-a-uuid"], config, "call_1")
+
+    payload = json.loads(command.update["messages"][0].content)
+    assert payload["documents"] == []
+    assert payload["invalid_ids"] == ["not-a-uuid"]
+    assert "source_context" not in command.update
+
+    scalar_command = await _read_source_documents_impl(123, config, "call_2")
+    scalar_payload = json.loads(scalar_command.update["messages"][0].content)
+    assert scalar_payload["documents"] == []
+    assert scalar_payload["invalid_ids"] == ["123"]
+    assert "source_context" not in scalar_command.update

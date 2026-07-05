@@ -6,8 +6,11 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
 from app.graphs.agent_tools import current_session_phase
+from app.graphs.gate_logging import log_gate_decision
+from app.graphs.lifecycle_context import lifecycle_blocked_tool_names
 from app.graphs.session_phase import phase_allows
 from app.graphs.state import WorkflowState
+from app.graphs.tool_metadata import interrupt_bearing_tools, side_effect_free_note_tools
 
 # Tool impls now reject empty required args via a ToolMessage error, so this table no longer drives
 # dispatch; it survives only as the required-arg contract that the intent_gate eval and unit tests assert.
@@ -47,22 +50,14 @@ _RESPOND_FALLBACK_BY_LOCALE = {
 # Tools that call interrupt() — they must always run solo (no composite dispatch).
 # DB-writing tools (write_draft, finalize) are also in this set: they interrupt and must not
 # be paired with another tool in the same turn to preserve idempotency invariants.
-_INTERRUPT_BEARING_TOOLS: frozenset[str] = frozenset(
-    {
-        "ask_user",
-        "respond",
-        "write_draft",
-        "finalize",
-        "confirm_intent",
-    }
-)
+_INTERRUPT_BEARING_TOOLS: frozenset[str] = interrupt_bearing_tools()
 
 # Silent scratchpad notes: no interrupt, no DB write, pure state append (assumptions/risks/
 # open_questions/key_facts). They may ride along with an interrupt-bearing tool because the ToolNode
 # discards their partial update when the interrupt fires and re-applies it exactly once on resume —
 # so the model can record what it learned in the SAME turn it asks a question, instead of having the
 # note dropped by solo enforcement (the only key_facts populator, which starved the anti-re-ask block).
-_SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = frozenset({"critique_note", "explore_note"})
+_SIDE_EFFECT_FREE_NOTE_TOOLS: frozenset[str] = side_effect_free_note_tools()
 
 
 def _strip_injected_params(schema: dict[str, Any]) -> dict[str, Any]:
@@ -91,9 +86,18 @@ def gate_model_selection(
     next_feedback = dict(state.get("feedback_summary") or {})
     next_feedback.pop("dropped_tools", None)
     next_feedback.pop("out_of_phase_tools", None)
+    next_feedback.pop("lifecycle_blocked_tools", None)
     if out_of_phase_tools:
         next_feedback["out_of_phase_tools"] = {"phase": phase, "dropped": out_of_phase_tools}
-    solo_dropped = [name for name in dropped_tools if name not in out_of_phase_tools]
+    lifecycle_blocked = [
+        item for item in lifecycle_blocked_tool_names(state, raw_tools) if item["name"] not in out_of_phase_tools
+    ]
+    lifecycle_blocked_names = {item["name"] for item in lifecycle_blocked}
+    if lifecycle_blocked:
+        next_feedback["lifecycle_blocked_tools"] = lifecycle_blocked
+    solo_dropped = [
+        name for name in dropped_tools if name not in out_of_phase_tools and name not in lifecycle_blocked_names
+    ]
     if solo_dropped:
         next_feedback["dropped_tools"] = solo_dropped
     return model_tool_calls, gated_tools, dropped_tools, next_feedback, out_of_phase_tools
@@ -226,6 +230,23 @@ def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[d
                 f"dropped: not available in session phase '{phase}'",
             )
     validated = in_phase
+
+    lifecycle_blocked = lifecycle_blocked_tool_names(_state, validated)
+    if lifecycle_blocked:
+        blocked_by_name = {item["name"]: item for item in lifecycle_blocked}
+        kept_after_lifecycle: list[dict] = []
+        for item in validated:
+            blocked = blocked_by_name.get(item["name"])
+            if blocked is None:
+                kept_after_lifecycle.append(item)
+                continue
+            log_gate_decision(
+                "lifecycle_tool_gate",
+                "blocked",
+                reason=blocked["reason"],
+                extra={"tool": item["name"], "lifecycle_state": blocked["state"]},
+            )
+        validated = kept_after_lifecycle
 
     # Solo enforcement: at most one interrupt-bearing tool per turn (two interrupts in a node is
     # unsafe). When one is present, keep it plus any side-effect-free notes (so their structured facts

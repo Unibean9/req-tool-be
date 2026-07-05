@@ -12,6 +12,7 @@ from app.graphs.agent_tools import (
     _recoverable_tool_update,
 )
 from app.graphs.analysis.prompt_assembly import _build_feedback_control_block
+from app.graphs.state import TOOL_ERRORS_PER_CODE_LIMIT, merge_tool_errors
 
 
 def test_recovery_threaded_into_entry_and_tool_message():
@@ -55,6 +56,37 @@ def test_repeated_error_escalates_at_threshold():
     assert "Provide 'body'" in block
 
 
+def test_tool_errors_cap_keeps_latest_entries_per_code():
+    errors = [
+        {"code": "a", "message": f"a-{index}"}
+        for index in range(TOOL_ERRORS_PER_CODE_LIMIT + 2)
+    ] + [{"code": "b", "message": "b-0"}]
+
+    merged = merge_tool_errors([], errors)
+
+    assert [item["message"] for item in merged if item["code"] == "a"] == ["a-2", "a-3", "a-4"]
+    assert [item["message"] for item in merged if item["code"] == "b"] == ["b-0"]
+
+
+def test_tool_errors_cap_preserves_repeated_error_escalation():
+    state = {
+        "tool_errors": merge_tool_errors(
+            [],
+            [
+                {"code": "missing_required_arg", "recovery": "Provide 'body' and call write_draft again."},
+                {"code": "missing_required_arg", "recovery": "Provide 'body' and call write_draft again."},
+                {"code": "missing_required_arg", "recovery": "Provide 'body' and call write_draft again."},
+                {"code": "other_error"},
+            ],
+        )
+    }
+
+    block = _build_feedback_control_block(state)
+
+    assert "missing_required_arg" in block
+    assert "failed 3 times" in block
+
+
 def test_single_error_does_not_escalate():
     state = {"tool_errors": [{"code": "missing_required_arg"}]}
     assert _build_feedback_control_block(state) == ""
@@ -70,6 +102,39 @@ def test_stale_base_version_renders_rebase_steer():
     assert "stale_base_version" in block
     assert "re-read the artifact and rebase" in block
     assert "v1" in block and "v2" in block
+
+
+def test_lifecycle_persist_rejection_renders_rebase_steer():
+    state = {
+        "feedback_summary": {
+            "lifecycle_persist_rejection": {
+                "stale_predecessors": [{"artifact_id": "a1", "reason": "predecessor_version_changed"}]
+            }
+        }
+    }
+
+    block = _build_feedback_control_block(state)
+
+    assert "lifecycle_persist_rejection" in block
+    assert "re-read upstream artifacts and rebase" in block
+    assert "predecessor_version_changed" in block
+
+
+def test_candidate_readiness_rejection_renders_revision_steer():
+    state = {
+        "feedback_summary": {
+            "candidate_readiness_rejection": {
+                "state": "poorly_structured",
+                "blocking_reasons": ["Missing target needing confirmation"],
+            }
+        }
+    }
+
+    block = _build_feedback_control_block(state)
+
+    assert "candidate_readiness_rejection" in block
+    assert "revise before proposing again" in block
+    assert "Missing target" in block
 
 
 def test_resurfaced_question_wording_unchanged_below_ignored_threshold():

@@ -43,6 +43,19 @@ class KeyFactObject(TypedDict):
     turn: str
 
 
+class SourceContextEntry(TypedDict, total=False):
+    """A bounded source excerpt the model explicitly loaded before drafting."""
+
+    source_kind: str
+    source_document_id: str
+    artifact_id: str
+    predecessor_version_id: str
+    title: str
+    locator: str
+    excerpt: str
+    truncated: bool
+
+
 class DecisionNode(TypedDict):
     """A node in the decision graph — the unit of truth for an artifact.
 
@@ -106,6 +119,56 @@ def merge_section_findings(
     if not right:
         return left
     return {**left, **right}
+
+
+SOURCE_CONTEXT_LIMIT = 12
+
+
+def _source_context_key(entry: dict[str, Any]) -> str | None:
+    if entry.get("source_document_id"):
+        return f"source_document:{entry['source_document_id']}"
+    if entry.get("predecessor_version_id"):
+        return f"predecessor_version:{entry['predecessor_version_id']}"
+    return None
+
+
+def merge_source_context(
+    left: list[SourceContextEntry] | None, right: list[SourceContextEntry] | None
+) -> list[SourceContextEntry]:
+    """Keep bounded, deduped source excerpts loaded by read tools."""
+    deduped: dict[str, SourceContextEntry] = {}
+    for entry in list(left or []) + list(right or []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("__reset__"):
+            deduped.clear()
+            continue
+        key = _source_context_key(entry)
+        if key is None:
+            continue
+        deduped.pop(key, None)
+        deduped[key] = dict(entry)
+    return list(deduped.values())[-SOURCE_CONTEXT_LIMIT:]
+
+
+TOOL_ERRORS_PER_CODE_LIMIT = 3
+
+
+def merge_tool_errors(
+    left: list[dict[str, Any]] | None, right: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Append recoverable tool errors, then keep only the latest N entries per code."""
+    entries = list(left or []) + list(right or [])
+    seen_by_code: dict[str, int] = {}
+    retained_reversed: list[dict[str, Any]] = []
+    for entry in reversed(entries):
+        code = str(entry.get("code") or "__missing_code__")
+        count = seen_by_code.get(code, 0)
+        if count >= TOOL_ERRORS_PER_CODE_LIMIT:
+            continue
+        seen_by_code[code] = count + 1
+        retained_reversed.append(entry)
+    return list(reversed(retained_reversed))
 
 
 class MethodProfile(TypedDict):
@@ -216,13 +279,24 @@ class WorkflowState(TypedDict):
     key_facts: Annotated[list[KeyFactObject], operator.add]
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
+    # Artifact rows loaded into the current analyzer turn. Used for write-time provenance snapshots;
+    # replace-on-write so a draft only records the facts the model saw this turn.
+    turn_context_artifacts: list[dict[str, Any]]
+    # Computed lifecycle verdicts for the same per-turn context set. Plain replace-on-write; the DB
+    # stores facts only, not these states.
+    lifecycle_reports: list[dict[str, Any]]
+    # Recent version changes for context artifacts, including change_source so the analyst can tell
+    # human/manual edits from agent-generated versions.
+    artifact_history: list[dict[str, Any]]
+    # Bounded excerpts explicitly loaded from source documents or predecessor artifacts this session.
+    source_context: Annotated[list[SourceContextEntry], merge_source_context]
     # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
     # draft view; this field stays as DB context for document workflows.
     draft_body: str | None
     candidate_readiness: dict[str, Any] | None
-    # Append-only recoverable tool error log. Multiple tool failures can be returned in one ToolNode
-    # superstep, so this channel needs the same additive reducer discipline as note outputs.
-    tool_errors: Annotated[list[dict[str, Any]], operator.add]
+    # Recoverable tool error log. Multiple tool failures can be returned in one ToolNode superstep, so
+    # this channel merges additively, then trims to the latest entries per code.
+    tool_errors: Annotated[list[dict[str, Any]], merge_tool_errors]
     feedback_summary: dict[str, Any] | None
     verification_status: dict[str, Any] | None
     latest_checked_revision: str | None
@@ -309,6 +383,10 @@ def build_initial_workflow_state(
         "risks": [],
         "key_facts": [],
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
+        "turn_context_artifacts": [],
+        "lifecycle_reports": [],
+        "artifact_history": [],
+        "source_context": [],
         "draft_body": None,
         "candidate_readiness": None,
         "tool_errors": [],

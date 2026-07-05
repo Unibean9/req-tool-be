@@ -28,6 +28,7 @@ from app.graphs.analysis.prompt_assembly import (  # noqa: F401
     _analyzer_history_messages,
     _build_analyzer_messages,
     _build_artifact_contract_block,
+    _build_artifact_history_block,
     _build_draft_block,
     _build_draft_delta_block,
     _build_feedback_control_block,
@@ -35,6 +36,7 @@ from app.graphs.analysis.prompt_assembly import (  # noqa: F401
     _build_mode_hint_directive,
     _build_output_contract_block,
     _build_section_coverage_hint,
+    _build_situation_report_block,
     _build_stuck_escalation_block,
     _build_thinking_mode_block,
     _build_tool_selection_prompt,
@@ -630,6 +632,9 @@ def _analysis_turn_result(
         "locale": locale,
         # Persist the DB-loaded draft body so run_critique can target it next turn.
         "draft_body": ctx.draft_body,
+        "turn_context_artifacts": [dict(item) for item in ctx.artifacts],
+        "lifecycle_reports": [dict(item) for item in ctx.lifecycle_reports],
+        "artifact_history": [dict(item) for item in ctx.artifact_history],
         "method_profile": method_profile,
         # Display/persistence snapshot; recommend_next_workflow re-derives inline to avoid staleness.
         "artifact_chain": _derive_artifact_chain(coverage.get("section_coverage")),

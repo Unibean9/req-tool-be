@@ -11,6 +11,7 @@ from app.graphs.analysis.context_loader import (
     _decision_view_can_hide_draft,
 )
 from app.graphs.analysis.turn_audit import _REPEATED_TOOL_CALL_EXIT_THRESHOLD
+from app.graphs.lifecycle_context import render_artifact_history, render_situation_report
 from app.graphs.policy import ancestor_types
 from app.graphs.session_phase import DRAFT, ELICIT, FINALIZE, INTENT, REVIEW
 from app.graphs.state import WorkflowState
@@ -327,18 +328,34 @@ def _build_key_facts_block(state: WorkflowState) -> str:
     return f"\n\nConfirmed key facts (do not ask again):\n{lines}"
 
 
+def _build_situation_report_block(state: WorkflowState) -> str:
+    return render_situation_report(state.get("lifecycle_reports") or [])
+
+
+def _build_artifact_history_block(state: WorkflowState) -> str:
+    return render_artifact_history(state.get("artifact_history") or [])
+
+
 def _build_artifact_reference_policy_block(artifacts: list[dict], current_artifact_type: str) -> str:
-    if not any(str(item.get("type") or "") != current_artifact_type for item in artifacts):
-        return ""
-    return (
-        "\n\nARTIFACT REFERENCE POLICY:\n"
-        "- If the latest user turn asks to base this work on a named artifact in Current context, "
-        "call `read_artifact` for that artifact id before asking the user for content or an id.\n"
-        "- Do not bundle `read_artifact` with `ask_user`, `respond`, `write_draft`, or `finalize`; "
-        "read first, then synthesize, draft, or ask on the next turn.\n"
-        "- Ask the user to paste content or provide an artifact id only after no matching Current "
-        "context artifact exists, or `read_artifact` reports that it was not found.\n\n"
+    lines = [
+        "- If the latest user turn references uploaded/pasted source documents, call "
+        "`read_source_documents` before drafting; omit ids when you need bounded excerpts from the "
+        "latest project source documents.",
+    ]
+    if any(str(item.get("type") or "") != current_artifact_type for item in artifacts):
+        lines.extend(
+            [
+                "- If the latest user turn asks to base this work on a named artifact in Current context, "
+                "call `read_artifact` for that artifact id before asking the user for content or an id.",
+                "- Ask the user to paste content or provide an artifact id only after no matching Current "
+                "context artifact exists, or `read_artifact` reports that it was not found.",
+            ]
+        )
+    lines.append(
+        "- Do not bundle `read_artifact` or `read_source_documents` with `ask_user`, `respond`, "
+        "`write_draft`, or `finalize`; read first, then synthesize, draft, or ask on the next turn."
     )
+    return "\n\nARTIFACT REFERENCE POLICY:\n" + "\n".join(lines) + "\n\n"
 
 
 def _build_tool_selection_prompt(
@@ -390,11 +407,15 @@ def _build_tool_selection_prompt(
     section_coverage_hint = _build_section_coverage_hint(state) if _phase_includes(state, "section_coverage") else ""
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
+    situation_report_block = _build_situation_report_block(state)
+    artifact_history_block = _build_artifact_history_block(state)
     # Taxonomy chain + section-coverage contract are no longer here — they moved to the system prompt
     # (see _build_artifact_contract_block) so the per-turn payload stays small next to the conversation.
     return (
         f"You are the analyst for artifact type: {state['artifact_type']}.\n\n"
         f"Current context:\n{artifact_context}\n\n"
+        f"{situation_report_block}"
+        f"{artifact_history_block}"
         f"{artifact_reference_policy}"
         f"{summary_block}"
         f"Tools available this turn: {tool_menu}.\n"
@@ -476,6 +497,31 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
             f"(base {stale_base.get('base_version_id')} -> current {stale_base.get('current_version_id')}); "
             "re-read the artifact and rebase before drafting or finalizing."
         )
+    lifecycle_rejection = feedback_summary.get("lifecycle_persist_rejection") or {}
+    if lifecycle_rejection:
+        stale_predecessors = lifecycle_rejection.get("stale_predecessors") or []
+        rendered = _compact_list(
+            [
+                f"{item.get('artifact_id')}: {item.get('reason')}"
+                if isinstance(item, dict)
+                else str(item)
+                for item in stale_predecessors
+            ]
+        )
+        suffix = f" Changed predecessors: {rendered}." if rendered else ""
+        parts.append(
+            "- lifecycle_persist_rejection: predecessor artifacts changed after this draft was prepared; "
+            f"re-read upstream artifacts and rebase before proposing again.{suffix}"
+        )
+    readiness_rejection = feedback_summary.get("candidate_readiness_rejection") or {}
+    if readiness_rejection:
+        blockers = readiness_rejection.get("blocking_reasons") or readiness_rejection.get("missing") or []
+        rendered = _compact_list(blockers)
+        suffix = f" Blockers: {rendered}." if rendered else ""
+        parts.append(
+            "- candidate_readiness_rejection: the draft was not ready to persist "
+            f"(state={readiness_rejection.get('state', 'unknown')}); revise before proposing again.{suffix}"
+        )
     dropped = feedback_summary.get("dropped_tools") or []
     if dropped:
         parts.append(
@@ -489,6 +535,12 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
             f"do not call again in this phase — pick from the tools offered this turn: "
             f"{_compact_list(out_of_phase['dropped'])}"
         )
+    lifecycle_blocked = feedback_summary.get("lifecycle_blocked_tools") or []
+    if lifecycle_blocked:
+        rendered = "; ".join(
+            f"{item.get('name')}: {item.get('reason')} ({item.get('state')})" for item in lifecycle_blocked[:3]
+        )
+        parts.append(f"- rejected last turn by lifecycle state: {rendered}")
 
     parts.extend(_repeated_tool_error_lines(state))
 

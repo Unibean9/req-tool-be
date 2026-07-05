@@ -31,6 +31,9 @@ def test_state_has_section_coverage_field():
     assert "section_coverage" in WorkflowState.__annotations__
     assert "section_coverage_stall_count" in WorkflowState.__annotations__
     assert "focused_artifact_id" in WorkflowState.__annotations__
+    assert "turn_context_artifacts" in WorkflowState.__annotations__
+    assert "lifecycle_reports" in WorkflowState.__annotations__
+    assert "artifact_history" in WorkflowState.__annotations__
     assert "candidate_readiness" in WorkflowState.__annotations__
     assert "tool_errors" in WorkflowState.__annotations__
     assert "feedback_summary" in WorkflowState.__annotations__
@@ -48,6 +51,18 @@ def test_state_no_longer_has_slot_coverage_field():
     assert "slot_coverage" not in WorkflowState.__annotations__
     assert "last_asked_slot" not in WorkflowState.__annotations__
     assert "coverage_stall_count" not in WorkflowState.__annotations__
+
+
+def test_initial_state_seeds_turn_context_artifacts_empty():
+    state = build_initial_workflow_state(
+        artifact_type="brd",
+        workflow_area="analysis",
+        step_key=None,
+    )
+
+    assert state["turn_context_artifacts"] == []
+    assert state["lifecycle_reports"] == []
+    assert state["artifact_history"] == []
 
 
 def test_initial_workflow_state_seeds_governance_fields():

@@ -4,10 +4,8 @@ from langgraph.graph import add_messages
 from app.config import settings
 from app.graphs.policy import ARTIFACT_PREDECESSORS, ApprovalRequired, GovernanceDenied, governed
 from app.graphs.state import (
-    DEFAULT_ARTIFACT_CHAIN,
-    DEFAULT_METHOD_PROFILE,
-    DEFAULT_READINESS,
     WorkflowState,
+    build_initial_workflow_state,
 )
 
 
@@ -99,82 +97,15 @@ def test_artifact_predecessors_design_types_trace_to_brd():
 
 
 def test_workflow_state_structure_and_add_messages_reducer():
-    state: WorkflowState = {
-        "artifact_type": "goal",
-        "workflow_area": "analysis",
-        "step_key": "intent_vision",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "conversation_summary": "",
-        "analysis_result": None,
-        "pending_tool_call_ids": [],
-        "last_agent_run_id": None,
-        "turn_count": 0,
-        "missing_context": [],
-        "user_confirmed": None,
-        "critique_rounds": 0,
-        "quality_report": None,
-        "last_critiqued_draft_hash": None,
-        "locale": None,
-        "turn_type": None,
-        "triage_reply": None,
-        "section_coverage": None,
-        "coverage_complete": None,
-        "section_coverage_stall_count": None,
-        "risks": [],
-        "focused_artifact_id": None,
-        "draft_body": None,
-        "method_profile": dict(DEFAULT_METHOD_PROFILE),
-        "artifact_chain": dict(DEFAULT_ARTIFACT_CHAIN),
-        "readiness": dict(DEFAULT_READINESS),
-        "mode_hint": None,
-        "decision_nodes": {},
-    }
+    state: WorkflowState = build_initial_workflow_state(
+        artifact_type="goal",
+        workflow_area="analysis",
+        step_key="intent_vision",
+        messages=[{"role": "user", "content": "Hello"}],
+    )
 
     assert state["turn_count"] == 0
-    assert set(WorkflowState.__annotations__) == {
-        "artifact_type",
-        "workflow_area",
-        "step_key",
-        "messages",
-        "conversation_summary",
-        "analysis_result",
-        "pending_tool_call_ids",
-        "last_agent_run_id",
-        "turn_count",
-        "missing_context",
-        "user_confirmed",
-        "critique_rounds",
-        "quality_report",
-        "last_critiqued_draft_hash",
-        "locale",
-        "turn_type",
-        "triage_reply",
-        "section_coverage",
-        "coverage_complete",
-        "section_coverage_stall_count",
-        "risks",
-        "key_facts",
-        "focused_artifact_id",
-        "draft_body",
-        "method_profile",
-        "artifact_chain",
-        "readiness",
-        "mode_hint",
-        "candidate_readiness",
-        "verification_status",
-        "latest_checked_revision",
-        "tool_errors",
-        "feedback_summary",
-        "session_elicit_count",
-        "decision_nodes",
-        "recent_tool_calls",
-        "thinking_mode",
-        "diagnosis_signal",
-        "diagnosis_judge_calls_used",
-        "session_phase",
-        "out_of_phase_tool_calls",
-        "section_findings",
-    }
+    assert set(state) == set(WorkflowState.__annotations__)
     assert WorkflowState.__annotations__["messages"].__metadata__[0] is add_messages
 
 

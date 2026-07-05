@@ -200,22 +200,22 @@ class Artifact(AuditMixin, Base):
             "uq_artifacts_project_brd",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'brd'"),
-            sqlite_where=text("type = 'brd'"),
+            postgresql_where=text("type = 'brd' AND status != 'archived'"),
+            sqlite_where=text("type = 'brd' AND status != 'archived'"),
         ),
         Index(
             "uq_artifacts_project_prd",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'prd'"),
-            sqlite_where=text("type = 'prd'"),
+            postgresql_where=text("type = 'prd' AND status != 'archived'"),
+            sqlite_where=text("type = 'prd' AND status != 'archived'"),
         ),
         Index(
             "uq_artifacts_project_sad",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'sad'"),
-            sqlite_where=text("type = 'sad'"),
+            postgresql_where=text("type = 'sad' AND status != 'archived'"),
+            sqlite_where=text("type = 'sad' AND status != 'archived'"),
         ),
     )
 

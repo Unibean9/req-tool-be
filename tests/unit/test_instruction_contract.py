@@ -152,6 +152,8 @@ _FEEDBACK_SIGNAL_MARKERS = (
     "created_parked_questions",
     "stale_warning",
     "stale_base_version",
+    "lifecycle_persist_rejection",
+    "candidate_readiness_rejection",
     "dropped tools",
     "out-of-phase tools",
     "diagnosis_risk",
