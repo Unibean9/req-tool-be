@@ -122,7 +122,7 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
 
     # Tool-loop: analyze (the entry node) picks the ask_user tool, which interrupts for the human.
     # The mock returns this selection dict for every generate.
-    llm = _mock_llm({"tools": [{"name": "ask_user", "args": {"message": "What do you want?"}}], "confidence": 0.9, "active_mode": "discovery"})
+    llm = _mock_llm({"tools": [{"name": "ask_user", "args": {"message": "What do you want?"}}], "confidence": 0.9})
 
     # No checkpointer — avoids checkpointer + node concurrent session writes in test
     graph = build_graph(checkpointer=None)
@@ -147,7 +147,7 @@ async def test_full_flow_session_reaches_waiting_for_human(client, db_session):
         "missing_context": [],
     }
 
-    with patch("app.graphs.nodes.interrupt") as mock_interrupt:
+    with patch("app.graphs.interrupts.interrupt") as mock_interrupt:
         mock_interrupt.side_effect = Exception("interrupt raised")
         try:
             await graph.ainvoke(state, config)

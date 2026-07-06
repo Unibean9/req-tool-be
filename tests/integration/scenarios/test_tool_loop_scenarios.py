@@ -2,8 +2,8 @@
 
 Proves the shim runs a full conversation: analyze emits tool_calls, the ToolNode dispatches, the
 HITL interrupt/resume round-trips, an approved write_draft becomes an artifact, and an exhausted
-tool-brain (no tool picked) ends the turn cleanly. The enum ALL_SCENARIOS keep running the enum
-path (flag off); these run only with tool_loop_only monkeypatched on.
+tool-brain (no tool picked) ends the turn cleanly. The canonical scenario lane covers broad
+user journeys; this file keeps focused tool-loop edge cases.
 """
 
 import uuid
@@ -11,22 +11,10 @@ import uuid
 import pytest
 
 from tests.integration.scenarios.driver import Scenario, ScenarioDriver
+from tests.integration.scenarios.library import _GOAL_BODY
 from tests.integration.scenarios.scripted_llm import ScriptedLLM, tool_select
 
 pytestmark = pytest.mark.asyncio
-
-_GOAL_BODY = (
-    "## Scope\n"
-    "MVP focuses on student groups that need to find shared study times during the week.\n\n"
-    "## Capabilities\n"
-    "| capability | priority | rationale | dependency |\n"
-    "| --- | --- | --- | --- |\n"
-    "| Create study group | Must | Has a member list for calendar comparison | User account |\n"
-    "| Sync personal calendar | Must | Identify busy/free slots | Google Calendar integration |\n"
-    "| Suggest common time slots | Must | Reduce coordination time | Calendar data |\n\n"
-    "## Out of Scope\n"
-    "- Payments, advanced attendance management, and long-term learning analytics."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +27,10 @@ async def test_tool_loop_ask_then_draft_approve(client, scenario_env, scenario_p
     project_id = uuid.UUID(project["id"])
 
     llm = ScriptedLLM(tool_brain=[
-        tool_select("ask_user", message="Who is the primary user?", active_mode="discovery"),
+        tool_select("ask_user", message="Who is the primary user?"),
         tool_select("confirm_intent",
-                    summary="Set measurable goals for the student group scheduling tool.",
-                    active_mode="discovery"),
-        tool_select("write_draft", title="Goal: orchestration study scheduling", body=_GOAL_BODY, active_mode="structuring"),
+                    summary="Set measurable goals for the student group scheduling tool."),
+        tool_select("write_draft", title="Goal: orchestration study scheduling", body=_GOAL_BODY),
     ])
     scenario = Scenario(
         name="tool-loop-ask-draft-approve",
@@ -78,9 +65,8 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
 
     llm = ScriptedLLM(tool_brain=[
         tool_select("confirm_intent",
-                    summary="Set goals for the student group scheduling tool.",
-                    active_mode="discovery"),
-        tool_select("write_draft", title="Goal (draft)", body=_GOAL_BODY, active_mode="structuring"),
+                    summary="Set goals for the student group scheduling tool."),
+        tool_select("write_draft", title="Goal (draft)", body=_GOAL_BODY),
     ])
     scenario = Scenario(
         name="tool-loop-reject-draft",
@@ -117,11 +103,10 @@ async def test_tool_loop_composite_two_decision_nodes_both_survive(client, scena
                 {"name": "create_decision_node",
                  "args": {"kind": "risk", "statement": "staff avoid entering recipes", "node_id": "N2"}},
             ],
-            "active_mode": "discovery",
         },
         tool_select("confirm_intent",
-                    summary="Dieu phoi study scheduling cho sinh vien.", active_mode="discovery"),
-        tool_select("write_draft", title="Goal", body=_GOAL_BODY, active_mode="structuring"),
+                    summary="Dieu phoi study scheduling cho sinh vien."),
+        tool_select("write_draft", title="Goal", body=_GOAL_BODY),
     ])
     scenario = Scenario(
         name="tool-loop-composite-decision-nodes",
@@ -158,10 +143,9 @@ async def test_tool_loop_two_elicits_one_turn_accumulate(client, scenario_env, s
                 {"name": "elicit", "args": {"technique": "comparable_products", "seed": "app coffee shop"}},
                 {"name": "elicit", "args": {"technique": "5_whys", "seed": "inventory shortage"}},
             ],
-            "active_mode": "discovery",
         },
-        tool_select("confirm_intent", summary="App quantification cho coffee shop.", active_mode="discovery"),
-        tool_select("write_draft", title="Goal", body=_GOAL_BODY, active_mode="structuring"),
+        tool_select("confirm_intent", summary="App quantification cho coffee shop."),
+        tool_select("write_draft", title="Goal", body=_GOAL_BODY),
     ])
     scenario = Scenario(
         name="tool-loop-two-elicits",
@@ -200,15 +184,12 @@ async def test_tool_loop_composite_two_note_tools(client, scenario_env, scenario
                 {"name": "explore_note", "args": {"content": "Primary users are students in groups of 4-6."}},
                 {"name": "critique_note", "args": {"content": "Need measurement: group session attendance rate."}},
             ],
-            "active_mode": "discovery",
         },
         # Turn 2: confirm intent after notes.
         tool_select("confirm_intent",
-                    summary="Dieu phoi study scheduling cho sinh vien, do bang ti le tham gia.",
-                    active_mode="discovery"),
+                    summary="Dieu phoi study scheduling cho sinh vien, do bang ti le tham gia."),
         # Turn 3: draft after intent confirmed.
-        tool_select("write_draft", title="Goal: orchestration study scheduling", body=_GOAL_BODY,
-                    active_mode="structuring"),
+        tool_select("write_draft", title="Goal: orchestration study scheduling", body=_GOAL_BODY),
     ])
     scenario = Scenario(
         name="tool-loop-composite-notes",

@@ -6,10 +6,13 @@ from sqlalchemy import func, select
 from app.models.artifact import (
     Artifact,
     ArtifactEvidence,
+    ArtifactLink,
     ArtifactReview,
+    ArtifactStatus,
     ArtifactVersion,
     EvidenceSourceType,
     RelationType,
+    VersionStatus,
 )
 from tests.conftest import BASE
 from tests.helpers import create_org, create_project, make_auth_headers
@@ -104,7 +107,7 @@ async def test_update_artifact_allows_review_transition_path(client):
 
 
 @pytest.mark.asyncio
-async def test_review_approve_and_reject_create_review_rows(client, db_session):
+async def test_review_approve_is_terminal_and_later_reject_is_audit_only(client, db_session):
     headers, project = await _project_context(client)
     artifact = await _create_artifact(client, headers, project["id"])
     version_id = artifact["current_version_id"]
@@ -132,6 +135,39 @@ async def test_review_approve_and_reject_create_review_rows(client, db_session):
     assert [row.review_status.value for row in rows] == ["approved", "rejected"]
     assert rows[0].reviewed_by_id is not None
     assert rows[0].created_at is not None
+    db_artifact = await db_session.get(Artifact, uuid.UUID(artifact["id"]))
+    db_version = await db_session.get(ArtifactVersion, uuid.UUID(version_id))
+    assert db_artifact.status == ArtifactStatus.ACCEPTED
+    assert db_version.status == VersionStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_review_reject_and_changes_requested_drive_non_terminal_statuses(client, db_session):
+    headers, project = await _project_context(client)
+    rejected_artifact = await _create_artifact(client, headers, project["id"], title="Rejected")
+    changes_artifact = await _create_artifact(client, headers, project["id"], title="Needs changes")
+
+    reject = await client.post(
+        f"{BASE}/projects/{project['id']}/artifacts/{rejected_artifact['id']}/versions/{rejected_artifact['current_version_id']}/review",
+        json={"review_status": "rejected", "comment": "Wrong scope"},
+        headers=headers,
+    )
+    changes = await client.post(
+        f"{BASE}/projects/{project['id']}/artifacts/{changes_artifact['id']}/versions/{changes_artifact['current_version_id']}/review",
+        json={"review_status": "changes_requested", "comment": "Clarify acceptance criteria"},
+        headers=headers,
+    )
+
+    assert reject.status_code == 201, reject.text
+    assert changes.status_code == 201, changes.text
+    db_rejected_artifact = await db_session.get(Artifact, uuid.UUID(rejected_artifact["id"]))
+    db_rejected_version = await db_session.get(ArtifactVersion, uuid.UUID(rejected_artifact["current_version_id"]))
+    db_changes_artifact = await db_session.get(Artifact, uuid.UUID(changes_artifact["id"]))
+    db_changes_version = await db_session.get(ArtifactVersion, uuid.UUID(changes_artifact["current_version_id"]))
+    assert db_rejected_artifact.status == ArtifactStatus.REJECTED
+    assert db_rejected_version.status == VersionStatus.REJECTED
+    assert db_changes_artifact.status == ArtifactStatus.NEEDS_CLARIFICATION
+    assert db_changes_version.status == VersionStatus.REJECTED
 
 
 @pytest.mark.asyncio
@@ -254,7 +290,7 @@ async def test_list_artifacts_filters_by_type_status_and_priority(client):
 
 
 @pytest.mark.asyncio
-async def test_delete_artifact_removes_own_history_and_links_but_keeps_related_artifact(client, db_session):
+async def test_delete_artifact_archives_leaf_and_preserves_history_and_links(client, db_session):
     headers, project = await _project_context(client)
     source = await _create_artifact(client, headers, project["id"], title="Source")
     target = await _create_artifact(client, headers, project["id"], title="Target")
@@ -266,29 +302,98 @@ async def test_delete_artifact_removes_own_history_and_links_but_keeps_related_a
             locator="chat:1",
         )
     )
-    from app.models.artifact import ArtifactLink
+    link = ArtifactLink(
+        project_id=uuid.UUID(project["id"]),
+        source_artifact_id=uuid.UUID(source["id"]),
+        target_artifact_id=uuid.UUID(target["id"]),
+        relation_type=RelationType.SUPPORTS,
+    )
+    db_session.add(link)
+    await db_session.flush()
 
+    resp = await client.delete(f"{BASE}/projects/{project['id']}/artifacts/{source['id']}", headers=headers)
+
+    assert resp.status_code == 204, resp.text
+    archived = await db_session.get(Artifact, uuid.UUID(source["id"]))
+    assert archived.status == ArtifactStatus.ARCHIVED
+    assert await db_session.get(Artifact, uuid.UUID(target["id"])) is not None
+    assert await db_session.get(ArtifactLink, link.id) is not None
+    assert (
+        await db_session.scalar(
+            select(func.count(ArtifactVersion.id)).where(ArtifactVersion.artifact_id == uuid.UUID(source["id"]))
+        )
+        == 1
+    )
+    archived_version = await db_session.get(ArtifactVersion, uuid.UUID(source["current_version_id"]))
+    assert archived_version.status == VersionStatus.ARCHIVED
+
+
+@pytest.mark.asyncio
+async def test_archived_singleton_frees_unique_slot_for_recreation(client, db_session):
+    headers, project = await _project_context(client)
+    brd = await _create_artifact(client, headers, project["id"], artifact_type="brd", title="BRD v1")
+
+    resp = await client.delete(f"{BASE}/projects/{project['id']}/artifacts/{brd['id']}", headers=headers)
+    assert resp.status_code == 204, resp.text
+    archived = await db_session.get(Artifact, uuid.UUID(brd["id"]))
+    assert archived.status == ArtifactStatus.ARCHIVED
+
+    # The partial unique index excludes archived rows, so a replacement singleton can be created.
+    recreated = await client.post(
+        f"{BASE}/projects/{project['id']}/artifacts",
+        json={"type": "brd", "title": "BRD v2", "body": "Rewritten", "priority": "must", "metadata": {}},
+        headers=headers,
+    )
+    assert recreated.status_code == 201, recreated.text
+    assert recreated.json()["data"]["id"] != brd["id"]
+
+
+@pytest.mark.asyncio
+async def test_update_and_restore_on_archived_artifact_are_rejected(client, db_session):
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"], title="Doomed")
+    version_id = artifact["current_version_id"]
+
+    archive = await client.delete(f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}", headers=headers)
+    assert archive.status_code == 204, archive.text
+
+    update = await client.patch(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}",
+        json={"title": "Revived"},
+        headers=headers,
+    )
+    assert update.status_code == 400, update.text
+
+    restore = await client.post(
+        f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}/versions/{version_id}/restore",
+        headers=headers,
+    )
+    assert restore.status_code == 400, restore.text
+    still_archived = await db_session.get(Artifact, uuid.UUID(artifact["id"]))
+    assert still_archived.status == ArtifactStatus.ARCHIVED
+
+
+@pytest.mark.asyncio
+async def test_delete_artifact_returns_conflict_when_live_link_depends_on_it(client, db_session):
+    headers, project = await _project_context(client)
+    dependent = await _create_artifact(client, headers, project["id"], title="Dependent")
+    target = await _create_artifact(client, headers, project["id"], title="Target")
     db_session.add(
         ArtifactLink(
             project_id=uuid.UUID(project["id"]),
-            source_artifact_id=uuid.UUID(source["id"]),
+            source_artifact_id=uuid.UUID(dependent["id"]),
             target_artifact_id=uuid.UUID(target["id"]),
             relation_type=RelationType.SUPPORTS,
         )
     )
     await db_session.flush()
 
-    resp = await client.delete(f"{BASE}/projects/{project['id']}/artifacts/{source['id']}", headers=headers)
+    resp = await client.delete(f"{BASE}/projects/{project['id']}/artifacts/{target['id']}", headers=headers)
 
-    assert resp.status_code == 204, resp.text
-    assert await db_session.get(Artifact, uuid.UUID(source["id"])) is None
-    assert await db_session.get(Artifact, uuid.UUID(target["id"])) is not None
-    assert (
-        await db_session.scalar(
-            select(func.count(ArtifactVersion.id)).where(ArtifactVersion.artifact_id == uuid.UUID(source["id"]))
-        )
-        == 0
-    )
+    assert resp.status_code == 409
+    assert dependent["id"] in resp.json()["detail"]["artifact_ids"]
+    db_target = await db_session.get(Artifact, uuid.UUID(target["id"]))
+    assert db_target.status != ArtifactStatus.ARCHIVED
 
 
 @pytest.mark.asyncio

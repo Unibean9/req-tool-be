@@ -30,7 +30,8 @@ class ArtifactPriority(enum.StrEnum):
 class ArtifactType(enum.StrEnum):
     BRD = "brd"
     PRD = "prd"
-    SAD = "sad"
+    ADD = "add"
+    EXECUTIVE_SUMMARY = "executive_summary"
     VISION_OBJECTIVES = "vision_objectives"
     PROBLEM_STATEMENT = "problem_statement"
     STAKEHOLDER_REGISTER = "stakeholder_register"
@@ -45,6 +46,12 @@ class ArtifactType(enum.StrEnum):
     COMPONENT = "component"
     INTERFACE = "interface"
     TECH_DECISION = "tech_decision"
+    TECH_STACK = "tech_stack"
+    EVENT_STORMING = "event_storming"
+    DOMAIN_EVENT = "domain_event"
+    ACTOR_COMMAND = "actor_command"
+    POLICY = "policy"
+    AGGREGATE = "aggregate"
     # Legacy delivery values retained because PostgreSQL enum members cannot be dropped in place.
     EPIC = "epic"
     STORY = "story"
@@ -193,22 +200,22 @@ class Artifact(AuditMixin, Base):
             "uq_artifacts_project_brd",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'brd'"),
-            sqlite_where=text("type = 'brd'"),
+            postgresql_where=text("type = 'brd' AND status != 'archived'"),
+            sqlite_where=text("type = 'brd' AND status != 'archived'"),
         ),
         Index(
             "uq_artifacts_project_prd",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'prd'"),
-            sqlite_where=text("type = 'prd'"),
+            postgresql_where=text("type = 'prd' AND status != 'archived'"),
+            sqlite_where=text("type = 'prd' AND status != 'archived'"),
         ),
         Index(
-            "uq_artifacts_project_sad",
+            "uq_artifacts_project_add",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'sad'"),
-            sqlite_where=text("type = 'sad'"),
+            postgresql_where=text("type = 'add' AND status != 'archived'"),
+            sqlite_where=text("type = 'add' AND status != 'archived'"),
         ),
     )
 

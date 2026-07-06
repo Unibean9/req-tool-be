@@ -210,6 +210,52 @@ async def test_create_link_accepts_same_project_artifacts(db_session):
     assert link.target_artifact_id == target.id
 
 
+@pytest.mark.asyncio
+async def test_create_link_rejects_transitive_cycle(db_session):
+    user, project, _other_project = await _seed_link_projects(db_session)
+    artifacts = []
+    for title, artifact_type in (
+        ("BRD", ArtifactType.BRD),
+        ("PRD", ArtifactType.PRD),
+        ("ADD", ArtifactType.ADD),
+    ):
+        artifact = Artifact(
+            project_id=project.id,
+            type=artifact_type,
+            status=ArtifactStatus.DRAFT,
+            title=title,
+            created_by_id=user.id,
+        )
+        db_session.add(artifact)
+        artifacts.append(artifact)
+    await db_session.flush()
+
+    service = ArtifactService(db_session)
+    await service.create_link(
+        project_id=project.id,
+        source_artifact_id=artifacts[0].id,
+        target_artifact_id=artifacts[1].id,
+        relation_type=RelationType.DEPENDS_ON,
+        created_by_id=user.id,
+    )
+    await service.create_link(
+        project_id=project.id,
+        source_artifact_id=artifacts[1].id,
+        target_artifact_id=artifacts[2].id,
+        relation_type=RelationType.DEPENDS_ON,
+        created_by_id=user.id,
+    )
+
+    with pytest.raises(ValueError, match="cycle"):
+        await service.create_link(
+            project_id=project.id,
+            source_artifact_id=artifacts[2].id,
+            target_artifact_id=artifacts[0].id,
+            relation_type=RelationType.DEPENDS_ON,
+            created_by_id=user.id,
+        )
+
+
 async def _seed_link_projects(db_session):
     user = User(email=f"artifact-{uuid.uuid4()}@example.com", hashed_password="x", full_name="Artifact Repository")
     db_session.add(user)

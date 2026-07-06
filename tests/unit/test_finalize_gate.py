@@ -1,11 +1,15 @@
-"""Finalize gate: graph view non-empty AND critique_rounds > 0 AND quality gate passed AND candidate_readiness sufficient."""
+"""Finalize gate: graph view non-empty AND critique_rounds > 0 AND quality gate passed AND candidate_readiness sufficient.
+
+Also covers the Phase-3 blocker gate: finalize additionally rejects while a resurfaced (blocker-
+resolved-but-unanswered) parked open_question exists, and passes again once it is resolved or dismissed.
+"""
 
 import hashlib
 from unittest.mock import patch
 
 import pytest
 
-from app.graphs.agent_tools import _finalize_impl, current_draft_body, get_available_tools
+from app.graphs.agent_tools import _dismiss_question_impl, _finalize_impl, current_draft_body, get_available_tools
 from app.graphs.decision_graph import create_node, render_view
 from app.schemas.artifact_synthesis import ArtifactReadinessState
 
@@ -65,7 +69,7 @@ def test_finalize_not_available_without_decision_graph_view():
     assert "finalize" not in _names(state)
 
 
-def test_finalize_ignores_db_draft_without_graph_view():
+def test_finalize_uses_db_draft_without_graph_view():
     draft = "Draft tai tu DB"
     state = {
         "messages": [],
@@ -79,8 +83,8 @@ def test_finalize_ignores_db_draft_without_graph_view():
         "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
     }
     names = _names(state)
-    assert "finalize" not in names
-    assert "run_readiness_check" not in names
+    assert "finalize" in names
+    assert "run_readiness_check" in names
 
 
 def test_finalize_not_available_when_gate_fails():
@@ -111,9 +115,9 @@ def test_finalize_available_on_escape_hatch_at_rounds_cap():
     assert "finalize" in _names(state)
 
 
-@pytest.mark.asyncio
-async def test_finalize_interrupt_triggers_when_available():
-    """_finalize_impl interrupts for human confirmation (the approval step) rather than erroring."""
+def _working_session_factory():
+    """A session_factory whose `async with ... as db` yields a db stub good enough for finalize's
+    predecessor check + session-row status update (no real DB needed)."""
 
     class _Session:
         status = None
@@ -124,6 +128,9 @@ async def test_finalize_interrupt_triggers_when_available():
     class _Result:
         def scalar_one(self_inner):
             return session_row
+
+        def scalar(self_inner):
+            return 1
 
     class _DB:
         async def execute(self_inner, *a, **k):
@@ -142,7 +149,14 @@ async def test_finalize_interrupt_triggers_when_available():
 
         return _Ctx()
 
-    config = {"configurable": {"session_factory": _factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    return _factory, session_row
+
+
+@pytest.mark.asyncio
+async def test_finalize_interrupt_triggers_when_available():
+    """_finalize_impl interrupts for human confirmation (the approval step) rather than erroring."""
+    factory, session_row = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
     state = {
         **_passing_state("draft"),
         "critique_rounds": 1,
@@ -195,13 +209,13 @@ async def test_finalize_hard_blocks_without_current_draft_body():
 
 
 @pytest.mark.asyncio
-async def test_current_draft_body_ignores_focused_artifact_without_graph():
+async def test_current_draft_body_uses_focused_artifact_body_without_graph():
     state = {
         "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
         "draft_body": "stale",
     }
     config = {"configurable": {"session_factory": None}}
-    assert await current_draft_body(state, config) == ""
+    assert await current_draft_body(state, config) == "stale"
 
 
 @pytest.mark.asyncio
@@ -222,3 +236,113 @@ async def test_finalize_hard_blocks_when_focused_artifact_was_not_critiqued():
     msg = command.update["messages"][0]
     assert "Cannot finalize" in msg.content
     assert "current draft" in msg.content
+
+
+# ---------------------------------------------------------------------------
+# Phase-3 blocker gate: a resurfaced (blocker-resolved-but-unanswered) parked open_question blocks
+# finalize; resolving (answer+confirm) or dismissing it reopens the gate. A non-blocker parked
+# question (no `blocks`) never gates.
+# ---------------------------------------------------------------------------
+
+
+def _state_with_blocker(extra_nodes: dict | None = None) -> dict:
+    nodes = {
+        "N1": create_node(
+            kind="objective", statement="A draft", origin={"source": "test"}, status="confirmed", node_id="N1"
+        ),
+        "Q1": create_node(
+            kind="open_question",
+            statement="Confirm rollout timeline",
+            origin={"source": "test"},
+            status="parked",
+            blocks=["N1"],
+            node_id="Q1",
+        ),
+    }
+    nodes.update(extra_nodes or {})
+    state = {
+        "messages": [],
+        "user_confirmed": True,
+        "artifact_type": "brd",
+        "decision_nodes": nodes,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
+    }
+    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+    return state
+
+
+@pytest.mark.asyncio
+async def test_finalize_blocked_on_open_blocker_question():
+    factory, _ = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    state = _state_with_blocker()
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
+
+    mock_interrupt.assert_not_called()
+    assert command.update["tool_errors"][0]["code"] == "finalize_blocker_unresolved"
+    msg = command.update["messages"][0]
+    assert "Q1" in msg.content
+    assert "Confirm rollout timeline" in msg.content
+
+
+@pytest.mark.asyncio
+async def test_finalize_passes_after_dismissing_blocker(monkeypatch):
+    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
+    factory, _ = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    state = _state_with_blocker()
+
+    dismiss_command = await _dismiss_question_impl("Q1", "No longer relevant.", state, "tc1")
+    state["decision_nodes"] = dismiss_command.update["decision_nodes"]
+    # Dismissal changes the rendered body (Q1 drops out of Parked); recompute the critiqued hash to
+    # isolate the blocker gate from the unrelated stale-draft gate.
+    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
+
+    mock_interrupt.assert_called_once()
+    assert "tool_errors" not in command.update
+
+
+@pytest.mark.asyncio
+async def test_finalize_passes_after_answering_and_confirming_blocker():
+    factory, _ = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    state = _state_with_blocker()
+    state["decision_nodes"]["Q1"]["status"] = "confirmed"
+    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
+
+    mock_interrupt.assert_called_once()
+    assert "tool_errors" not in command.update
+
+
+@pytest.mark.asyncio
+async def test_finalize_not_gated_by_non_blocker_parked_question():
+    factory, _ = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
+    extra = {
+        "Q2": create_node(
+            kind="open_question",
+            statement="Nice-to-have follow-up",
+            origin={"source": "test"},
+            status="parked",
+            node_id="Q2",
+        )
+    }
+    state = _state_with_blocker(extra_nodes=extra)
+    state["decision_nodes"]["Q1"]["status"] = "confirmed"
+    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
+
+    mock_interrupt.assert_called_once()
+    assert "tool_errors" not in command.update

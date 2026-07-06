@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, output_contract
+from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, children_of, get_config, output_contract
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
@@ -23,12 +23,12 @@ ABANDON_THRESHOLD = 2
 MAX_SWEEP_QUESTIONS = 5
 
 VALID_KINDS = {"objective", "scope", "assumption", "decision", "risk", "open_question", "fact"}
-VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded"}
+VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded", "dismissed"}
 
 _VALID_CASCADE_MODES = {"reconfirm", "abandon"}
 _RESOLVED_BLOCKER_STATUSES = {"confirmed", "inferred"}
 _BRD_STABLE_STATUSES = {"confirmed", "inferred"}
-_INACTIVE_STATUSES = {"parked", "superseded"}
+_INACTIVE_STATUSES = {"parked", "superseded", "dismissed"}
 
 
 def create_node(
@@ -83,6 +83,24 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
         raise ValueError(f"invalid status: {updates['status']!r}")
     result = _clone(nodes)
     result[node_id].update(updates)
+    return result
+
+
+def dismiss_node(
+    nodes: dict[str, DecisionNode], node_id: str, reason: str, audit: dict[str, Any]
+) -> dict[str, DecisionNode]:
+    """Mark an open_question node dismissed with an audit trail; never mutates the input dict.
+
+    Only open_question nodes are dismissible. The reason is stored as data on the node's `dismissal`
+    field for operator review — callers must never feed it back into a prompt as an instruction.
+    """
+    if node_id not in nodes:
+        raise KeyError(f"node {node_id!r} not found")
+    node = nodes[node_id]
+    if node.get("kind") != "open_question":
+        raise ValueError(f"node {node_id!r} is not an open_question; only open_questions can be dismissed")
+    result = update_node(nodes, node_id, status="dismissed")
+    result[node_id]["dismissal"] = {"reason": reason, "turn": audit.get("turn"), "dismissed_by": "agent"}
     return result
 
 
@@ -164,6 +182,98 @@ def supersede_node(
     return result
 
 
+# Statuses that keep a node "in play" for the derived assumption/open-question views. superseded is
+# frozen history; parked is deferred on purpose (folds into its own view via the graph, not here);
+# dismissed is a terminal non-answer (audited, not resurfaced).
+_DERIVED_VIEW_STATUSES = VALID_STATUSES - {"superseded", "parked", "dismissed"}
+
+
+def derive_assumptions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
+    """Assumptions as a derived view over the graph — replaces the parallel state["assumptions"].
+
+    Active assumption-kind nodes projected to the shape consumers read (`statement` + `status`).
+    """
+    return [
+        {"statement": node.get("statement") or "", "status": node.get("status")}
+        for node in (decision_nodes or {}).values()
+        if node.get("kind") == "assumption" and node.get("status") in _DERIVED_VIEW_STATUSES
+    ]
+
+
+def derive_open_questions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
+    """Open questions as a derived view over the graph — replaces state["open_questions"].
+
+    Active (non-parked) open_question-kind nodes projected to `question` + `status`.
+    """
+    return [
+        {"question": node.get("statement") or "", "status": node.get("status")}
+        for node in (decision_nodes or {}).values()
+        if node.get("kind") == "open_question" and node.get("status") in _DERIVED_VIEW_STATUSES
+    ]
+
+
+def synthesis_assumption_signals(decision_nodes: dict[str, DecisionNode]) -> tuple[list[str], list[str]]:
+    """Derive (confirmed, pending) assumption-like statements for draft synthesis — the sole source.
+
+    Pending = anything still awaiting the user: needs_confirmation nodes (any kind, so a supersede
+    cascade's stale dependents still block readiness) plus open_questions that are neither parked
+    (deferred) nor resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
+    """
+    confirmed: list[str] = []
+    pending: list[str] = []
+    for node in (decision_nodes or {}).values():
+        status = node.get("status")
+        kind = node.get("kind")
+        statement = node.get("statement") or ""
+        if status == "needs_confirmation":
+            pending.append(statement)
+        elif kind == "open_question" and status in {"proposed", None}:
+            pending.append(statement)
+        elif kind == "assumption" and status == "confirmed":
+            confirmed.append(statement)
+    return confirmed, pending
+
+
+def _statement_present(decision_nodes: dict[str, DecisionNode], kind: str, statement: str) -> bool:
+    normalized = _normalize_statement(statement)
+    return any(
+        node.get("kind") == kind and _normalize_statement(node.get("statement", "")) == normalized
+        for node in decision_nodes.values()
+    )
+
+
+def migrate_legacy_notes(
+    decision_nodes: dict[str, DecisionNode],
+    assumptions: list[dict[str, Any]] | None,
+    open_questions: list[dict[str, Any]] | None,
+    origin: dict[str, Any],
+) -> tuple[dict[str, DecisionNode], int]:
+    """One-time migration of legacy state-field entries into decision nodes.
+
+    A resumed legacy checkpoint may carry assumptions/open_questions in the dropped state fields with
+    no matching node. Each such entry becomes a node — assumptions needs_confirmation (agent-authored,
+    not user-confirmed: audit D3), open_questions proposed — so nothing is lost. Entries that already
+    have a statement-matching node of the same kind are skipped (idempotent across repeated loads).
+    """
+    result = _clone(decision_nodes)
+    migrated = 0
+    for entry in assumptions or []:
+        statement = str(entry.get("statement") or "").strip()
+        if not statement or _statement_present(result, "assumption", statement):
+            continue
+        node = create_node(kind="assumption", statement=statement, origin=origin, status="needs_confirmation")
+        result[node["id"]] = node
+        migrated += 1
+    for entry in open_questions or []:
+        statement = str(entry.get("question") or "").strip()
+        if not statement or _statement_present(result, "open_question", statement):
+            continue
+        node = create_node(kind="open_question", statement=statement, origin=origin, status="proposed")
+        result[node["id"]] = node
+        migrated += 1
+    return result, migrated
+
+
 def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[DecisionNode]:
     """Return parked open_questions whose every blocker has been resolved.
 
@@ -199,24 +309,45 @@ _BRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
     ("risk", "Need the main BRD risk."),
 )
 
-_PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
-    ("actor", "Actor: identify customers and staff acting in the flow."),
-    ("flow", "Main flow: describe each processing step from start to finish."),
-    ("rule", "Business rule: define point accrual rules and point conditions."),
-    # Each edge-case keys on its own distinctive phrase, not a shared "edge_case" marker, so coverage
-    # of one does not suppress the others (they map to separate PRD checklist items).
-    ("retroactive accrual", "Edge-case: customer forgot phone number at purchase -> can points be added later?"),
-    ("merge history", "Edge-case: customer changes phone number -> how is history merged?"),
-    ("expiration", "Edge-case: does the free voucher expire?"),
-)
-
-
 def _gap_present(decision_nodes: dict[str, DecisionNode], marker: str) -> bool:
     active_nodes = [node for node in decision_nodes.values() if node.get("status") not in {"parked", "superseded"}]
     if marker in VALID_KINDS:
         return any(node.get("kind") == marker for node in active_nodes)
+    if marker in _ITEM_TYPES:
+        marker_texts = {_normalize_statement(marker.replace("_", " "))}
+        try:
+            config = get_config(marker)
+        except ValueError:
+            config = None
+        if config is not None:
+            marker_texts.add(_normalize_statement(config.label))
+            marker_texts.add(_normalize_statement(config.description))
+        return any(
+            any(
+                text
+                and (
+                    text in _normalize_statement(node.get("section", ""))
+                    or text in _normalize_statement(node.get("statement", ""))
+                )
+                for text in marker_texts
+            )
+            for node in active_nodes
+        )
     marker_text = marker.replace("_", " ")
     return any(marker_text in _normalize_statement(node.get("statement", "")) for node in active_nodes)
+
+
+def _registry_sweep_gaps(container_type: str) -> tuple[tuple[str, str], ...]:
+    """Derive container sweep gaps from the document registry instead of scenario fixtures."""
+    try:
+        children = children_of(container_type)
+    except ValueError:
+        return ()
+    gaps: list[tuple[str, str]] = []
+    for child_type in children:
+        config = get_config(child_type)
+        gaps.append((child_type, f"Need {config.label} for the {container_type.upper()}: {config.description}"))
+    return tuple(gaps)
 
 
 def completeness_sweep(
@@ -229,7 +360,7 @@ def completeness_sweep(
     Only produces descriptions; the caller decides whether to create parked nodes or inject into the
     prompt. Dedup is exact (normalized statement match), not LLM similarity.
     """
-    template = _PRD_SWEEP_GAPS if artifact_type == "prd" else _BRD_SWEEP_GAPS
+    template = _BRD_SWEEP_GAPS if artifact_type == "brd" else _registry_sweep_gaps(artifact_type)
     existing_questions = {
         _normalize_statement(node.get("statement", ""))
         for node in decision_nodes.values()
@@ -321,11 +452,6 @@ def _default_impact_selector(change_description: str, decision_nodes: dict[str, 
     for node_id, node in decision_nodes.items():
         statement = _normalize_statement(node.get("statement", ""))
         if tokens and any(token in statement for token in tokens):
-            affected.append(node_id)
-            continue
-        if any(
-            token in normalized_change for token in ("handoff", "channel", "kenh", "delivery", "multi-channel")
-        ) and any(token in statement for token in ("cashier", "tai quay", "at counter", "customers/day", "1 visit")):
             affected.append(node_id)
     return affected
 
@@ -493,7 +619,11 @@ def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...], id_prefix
     for index, node in enumerate(nodes, start=1):
         fields = node.get("fields") or {}
         cells = [
-            f"{id_prefix}-{index:02d}" if _is_auto_id(column, id_prefix) else _markdown_cell(_field_value(fields, column))
+            (
+                f"{id_prefix}-{index:02d}"
+                if _is_auto_id(column, id_prefix)
+                else _markdown_cell(_field_value(fields, column))
+            )
             for column in columns
         ]
         content_indexes = [i for i, column in enumerate(columns) if not _is_auto_id(column, id_prefix)]
@@ -555,6 +685,45 @@ def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type
         blocks.append("## Parked\n" + "\n".join(lines))
 
     return "\n\n".join(blocks)
+
+
+def _node_map_entry(section: str, rendered_tag: str | None) -> dict[str, str | None]:
+    return {"section": section, "rendered_tag": rendered_tag}
+
+
+def render_node_map(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> dict[str, dict[str, str | None]]:
+    """Map rendered decision nodes to their output section and trace tag, using render_view ordering."""
+    result: dict[str, dict[str, str | None]] = {}
+    active = [n for n in decision_nodes.values() if n.get("status") in _ACTIVE_STATUSES]
+    parked = [n for n in decision_nodes.values() if n.get("status") == "parked"]
+
+    if artifact_type in _ITEM_TYPES:
+        contract = output_contract(artifact_type)
+        by_heading = {heading: [] for heading in contract.required_headings}
+        for node in active:
+            by_heading[_resolve_contract_heading(node, contract.required_headings)].append(node)
+        for heading in contract.required_headings:
+            for index, node in enumerate(by_heading[heading], start=1):
+                node_id = str(node.get("id") or "").strip()
+                if not node_id:
+                    continue
+                rendered_tag = f"{contract.id_prefix}-{index:02d}" if contract.id_prefix else None
+                result[node_id] = _node_map_entry(heading, rendered_tag)
+    else:
+        sections = _SECTION_TEMPLATES.get(artifact_type, _BRD_SECTIONS)
+        for heading, kinds in sections:
+            for node in active:
+                if node.get("kind") not in kinds:
+                    continue
+                node_id = str(node.get("id") or "").strip()
+                if node_id:
+                    result[node_id] = _node_map_entry(f"## {heading}", None)
+
+    for node in parked:
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            result[node_id] = _node_map_entry("## Parked", None)
+    return result
 
 
 def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:

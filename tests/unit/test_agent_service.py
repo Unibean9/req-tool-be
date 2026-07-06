@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from app.config import settings
 from app.core import crypto
 from app.core.crypto import encrypt_token
+from app.core.security import decode_token
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
@@ -22,11 +24,18 @@ from app.models.agent import (
 )
 from app.models.artifact import (
     Artifact,
+    ArtifactEvidence,
+    ArtifactLink,
     ArtifactStatus,
     ArtifactType,
     ArtifactVersion,
+    ChangeSource,
+    RelationType,
+    SourceDocument,
+    SourceType,
+    VersionStatus,
 )
-from app.models.llm_provider import LLMProviderConfig, ProviderType
+from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -41,6 +50,14 @@ async def _setup(client):
     org = await create_org(client, headers)
     project = await create_project(client, headers, org["id"])
     return uuid.UUID(project["id"])
+
+
+async def _setup_with_user(client):
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    token = headers["Authorization"].removeprefix("Bearer ")
+    return uuid.UUID(project["id"]), uuid.UUID(decode_token(token)["sub"])
 
 
 # Use patch to suppress background tasks in all tests — avoids concurrent session access.
@@ -112,6 +129,7 @@ async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypa
             encrypted_secret_key=encrypt_token("aws-secret"),
             region="us-east-1",
             model_name="amazon.nova-lite-v1:0",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -157,6 +175,7 @@ async def test_resolve_llm_client_returns_strong_when_configured(db_session, mon
             region="us-east-1",
             model_name="amazon.nova-lite-v1:0",
             strong_model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -172,6 +191,50 @@ async def test_resolve_llm_client_returns_strong_when_configured(db_session, mon
         assert all(item[0]["api_key"] == "AKIATEST" for item in created)
         assert all(item[0]["secret_key"] == "aws-secret" for item in created)
         assert all(item[0]["region"] == "us-east-1" for item in created)
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_passes_custom_base_url_to_default_and_strong(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        created = []
+
+        def fake_create(**kwargs):
+            client = object()
+            created.append((kwargs, client))
+            return client
+
+        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.CUSTOM,
+            name="custom",
+            base_url="https://custom.example/v1",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="custom-default",
+            strong_model_name="custom-strong",
+            status=LLMProviderStatus.ACTIVE,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert default_client is created[0][1]
+        assert strong_client is created[1][1]
+        assert [item[0]["model"] for item in created] == ["custom-default", "custom-strong"]
+        assert all(item[0]["provider_type"] == ProviderType.CUSTOM for item in created)
+        assert all(item[0]["api_key"] == "sk-test" for item in created)
+        assert all(item[0]["base_url"] == "https://custom.example/v1" for item in created)
     finally:
         monkeypatch.setattr(settings, "encryption_key", original_key)
         monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
@@ -201,6 +264,7 @@ async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch
             name="OpenAI",
             encrypted_api_key=encrypt_token("sk-test"),
             model_name="gpt-4o-mini",
+            status=LLMProviderStatus.ACTIVE,
         )
         db_session.add(config)
         await db_session.flush()
@@ -210,6 +274,92 @@ async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch
         assert default_client is created[0][1]
         assert strong_client is None
         assert len(created) == 1
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_resolve_llm_client_rejects_unchecked_config(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.OPENAI,
+            name="OpenAI",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="gpt-4o-mini",
+            status=LLMProviderStatus.DRAFT,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert exc_info.value.status_code == 422
+        assert exc_info.value.detail == "LLM provider config must pass health check before use"
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_rejects_unchecked_config_before_session_side_effects(
+    client,
+    db_session,
+    monkeypatch,
+):
+    project_id = await _setup(client)
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.OPENAI,
+            name="OpenAI",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="gpt-4o-mini",
+            status=LLMProviderStatus.DRAFT,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        svc = _make_service(db_session)
+        session_payload = await svc.create_session(
+            project_id=project_id,
+            artifact_type="goal",
+            provider_config_id=config.id,
+        )
+        session_id = uuid.UUID(session_payload["session_id"])
+
+        with pytest.raises(HTTPException) as exc_info:
+            await svc.handle_user_message(project_id=project_id, session_id=session_id, content="Xin chao")
+
+        session = await svc.get_session(project_id=project_id, session_id=session_id)
+        messages = (
+            await db_session.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == session_id,
+                    AgentMessage.role == AgentMessageRole.USER,
+                )
+            )
+        ).scalars().all()
+
+        assert exc_info.value.status_code == 422
+        assert session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+        assert messages == []
     finally:
         monkeypatch.setattr(settings, "encryption_key", original_key)
         monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
@@ -255,7 +405,7 @@ async def test_create_session_intent_has_no_predecessors(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_create_session_blocks_when_predecessor_not_accepted(client, db_session):
+async def test_create_session_warns_when_predecessor_not_accepted(client, db_session):
     project_id = await _setup(client)
     db_session.add(
         Artifact(
@@ -268,11 +418,9 @@ async def test_create_session_blocks_when_predecessor_not_accepted(client, db_se
     )
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
+    result = await _make_service(db_session).create_session(project_id=project_id, artifact_type="prd")
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["missing_context"] == ["brd"]
+    assert result["missing_context"] == ["brd"]
 
 
 @pytest.mark.asyncio
@@ -394,8 +542,9 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
     command = svc._resume_command(session, {"content": "Co"})
 
     assert command.resume == {INTERRUPT_ID: {"content": "Co"}}
-    # Every human resume resets the per-request silent-loop counter so conversations are unbounded.
-    assert command.update == {"turn_count": 0}
+    # Every human resume resets the per-request silent-loop counter so conversations are unbounded,
+    # and the per-turn diagnosis judge budget so a later turn can escalate again.
+    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0}
 
 
 @pytest.mark.asyncio
@@ -409,7 +558,7 @@ async def test_resume_command_merges_turn_count_reset_with_state_update(db_sessi
 
     command = svc._resume_command(session, {"content": "Co"}, state_update={"mode_hint": "critique"})
 
-    assert command.update == {"turn_count": 0, "mode_hint": "critique"}
+    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0, "mode_hint": "critique"}
 
 
 @pytest.mark.asyncio
@@ -978,7 +1127,175 @@ async def test_approve_tool_call_persists_synthesis_metadata_and_parent_version(
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_rejects_stale_base_version(client, db_session, _no_background_tasks):
+async def test_approve_tool_call_persists_lifecycle_metadata(client, db_session):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    _session, _run, tc = await _make_single_propose_session(db_session, project_id)
+    predecessor = (
+        await db_session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.type == ArtifactType.PROBLEM_STATEMENT,
+            )
+        )
+    ).scalar_one()
+    predecessor.status = ArtifactStatus.ACCEPTED
+    predecessor_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=1,
+        title="Problem",
+        body="Problem body",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(predecessor_version)
+    await db_session.flush()
+    predecessor.current_version_id = predecessor_version.id
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "lifecycle_metadata": {
+            "based_on": {str(predecessor.id): str(predecessor_version.id)},
+            "decision_node_map": {
+                "N1": {"section": "## Vision", "rendered_tag": None},
+            },
+        },
+    }
+    await db_session.flush()
+
+    updated_tc = await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    version = await db_session.get(ArtifactVersion, updated_tc.created_version_id)
+    assert version.extra_metadata["based_on"] == {str(predecessor.id): str(predecessor_version.id)}
+    assert version.extra_metadata["decision_node_map"] == {
+        "N1": {"section": "## Vision", "rendered_tag": None},
+    }
+    assert version.extra_metadata["synthesis_source"] == "bmad_synthesis"
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_persists_auto_source_evidence_after_approval(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    _session, _run, tc = await _make_single_propose_session(db_session, project_id)
+    predecessor = (
+        await db_session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.type == ArtifactType.PROBLEM_STATEMENT,
+            )
+        )
+    ).scalar_one()
+    predecessor_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=1,
+        title="Problem",
+        body="Problem body",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    source_document = SourceDocument(
+        project_id=project_id,
+        title="Interview notes",
+        source_type=SourceType.TEXT_PASTE,
+        content_text="Users need monthly reports.",
+        extra_metadata={},
+    )
+    db_session.add_all([predecessor_version, source_document])
+    await db_session.flush()
+    predecessor.current_version_id = predecessor_version.id
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "source_evidence": [
+            {
+                "source_document_id": str(source_document.id),
+                "source_type": "document",
+                "locator": f"source_document:{source_document.id}",
+                "excerpt": "Users need monthly reports.",
+                "confidence": 1.0,
+                "metadata": {"source_kind": "source_document"},
+            },
+            {
+                "source_type": "ai_output",
+                "locator": f"artifact_version:{predecessor_version.id}",
+                "excerpt": "Problem body",
+                "confidence": 1.0,
+                "metadata": {
+                    "source_kind": "predecessor_version",
+                    "predecessor_artifact_id": str(predecessor.id),
+                    "predecessor_version_id": str(predecessor_version.id),
+                },
+            },
+            {
+                "source_type": "chat",
+                "locator": "bare_claim",
+                "excerpt": "A bare claim without a source id.",
+                "metadata": {},
+            },
+        ],
+    }
+    await db_session.flush()
+
+    updated_tc = await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+
+    rows = (
+        await db_session.execute(
+            select(ArtifactEvidence).where(ArtifactEvidence.artifact_id == updated_tc.created_artifact_id)
+        )
+    ).scalars().all()
+    assert len(rows) == 2
+    assert {row.artifact_version_id for row in rows} == {updated_tc.created_version_id}
+    document_row = next(row for row in rows if row.source_document_id == source_document.id)
+    predecessor_row = next(row for row in rows if row.source_document_id is None)
+    assert document_row.excerpt == "Users need monthly reports."
+    assert predecessor_row.extra_metadata["predecessor_version_id"] == str(predecessor_version.id)
+    assert predecessor_row.excerpt == "Problem body"
+
+
+@pytest.mark.asyncio
+async def test_reject_tool_call_does_not_persist_auto_source_evidence(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    _session, _run, tc = await _make_single_propose_session(db_session, project_id)
+    source_document = SourceDocument(
+        project_id=project_id,
+        title="Interview notes",
+        source_type=SourceType.TEXT_PASTE,
+        content_text="Users need monthly reports.",
+        extra_metadata={},
+    )
+    db_session.add(source_document)
+    await db_session.flush()
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "source_evidence": [
+            {
+                "source_document_id": str(source_document.id),
+                "source_type": "document",
+                "locator": f"source_document:{source_document.id}",
+                "excerpt": "Users need monthly reports.",
+                "metadata": {"source_kind": "source_document"},
+            }
+        ],
+    }
+    await db_session.flush()
+
+    await svc.reject_tool_call(project_id=project_id, tool_call_id=tc.id)
+
+    focused_artifact_id = uuid.UUID(tc.input_snapshot["focused_artifact_id"])
+    rows = (
+        await db_session.execute(select(ArtifactEvidence).where(ArtifactEvidence.artifact_id == focused_artifact_id))
+    ).scalars().all()
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_recovers_stale_base_version_in_loop_and_preserves_http_409(
+    client, db_session, _no_background_tasks
+):
     from app.models.artifact import ChangeSource, VersionStatus
 
     project_id = await _setup(client)
@@ -1015,22 +1332,183 @@ async def test_approve_tool_call_rejects_stale_base_version(client, db_session, 
         },
     }
     await db_session.flush()
+    captured = {}
+    original_resume_command = svc._resume_command
+
+    def _capture_resume_command(session_row, resume, *, state_update=None):
+        captured["state_update"] = state_update
+        return original_resume_command(session_row, resume, state_update=state_update)
+
+    svc._resume_command = _capture_resume_command
     _no_background_tasks.reset_mock()
 
     with pytest.raises(HTTPException) as exc:
-        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+        await svc.approve_tool_call(
+            project_id=project_id,
+            tool_call_id=tc.id,
+            created_by_id=None,
+            _llm_client=AsyncMock(),
+        )
 
     assert exc.value.status_code == 409
     assert exc.value.detail["base_version_id"] == str(old_version.id)
     assert exc.value.detail["current_version_id"] == str(current_version.id)
+    await db_session.refresh(session)
     await db_session.refresh(tc)
-    assert tc.status == AgentToolCallStatus.PROPOSED
+    assert tc.status == AgentToolCallStatus.SUPERSEDED
     assert tc.created_version_id is None
-    _no_background_tasks.assert_not_called()
+    assert session.status == AgentSessionStatus.ACTIVE
+    assert _no_background_tasks.call_count == 1
+    stale = captured["state_update"]["feedback_summary"]["stale_base_version"]
+    assert stale["base_version_id"] == str(old_version.id)
+    assert stale["current_version_id"] == str(current_version.id)
+    assert stale["artifact_id"] == str(focused.id)
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, db_session):
+async def test_approve_tool_call_supersedes_and_resumes_when_lifecycle_predecessor_changed(
+    client, db_session, _no_background_tasks
+):
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+    predecessor = (
+        await db_session.execute(
+            select(Artifact).where(
+                Artifact.project_id == project_id,
+                Artifact.type == ArtifactType.PROBLEM_STATEMENT,
+            )
+        )
+    ).scalar_one()
+    predecessor.status = ArtifactStatus.ACCEPTED
+    old_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=1,
+        title="Problem old",
+        body="Old problem",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        extra_metadata={},
+    )
+    db_session.add(old_version)
+    await db_session.flush()
+    current_version = ArtifactVersion(
+        artifact_id=predecessor.id,
+        version_number=2,
+        title="Problem current",
+        body="Current problem",
+        status=VersionStatus.DRAFT,
+        change_source=ChangeSource.MANUAL,
+        parent_version_id=old_version.id,
+        extra_metadata={},
+    )
+    db_session.add(current_version)
+    await db_session.flush()
+    predecessor.current_version_id = current_version.id
+    tc.input_snapshot = {
+        **tc.input_snapshot,
+        "lifecycle_metadata": {
+            "based_on": {str(predecessor.id): str(old_version.id)},
+            "decision_node_map": {},
+        },
+    }
+    await db_session.flush()
+
+    captured = {}
+    original_resume_command = svc._resume_command
+
+    def _capture_resume_command(session_row, resume, *, state_update=None):
+        captured["state_update"] = state_update
+        return original_resume_command(session_row, resume, state_update=state_update)
+
+    svc._resume_command = _capture_resume_command
+    _no_background_tasks.reset_mock()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(
+            project_id=project_id,
+            tool_call_id=tc.id,
+            created_by_id=None,
+            _llm_client=AsyncMock(),
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.detail["stale_predecessors"][0]["artifact_id"] == str(predecessor.id)
+    await db_session.refresh(session)
+    await db_session.refresh(tc)
+    assert tc.status == AgentToolCallStatus.SUPERSEDED
+    assert tc.created_version_id is None
+    assert session.status == AgentSessionStatus.ACTIVE
+    assert _no_background_tasks.call_count == 1
+    rejection = captured["state_update"]["feedback_summary"]["lifecycle_persist_rejection"]
+    assert rejection["stale_predecessors"] == [
+        {
+            "artifact_id": str(predecessor.id),
+            "based_on_version_id": str(old_version.id),
+            "current_version_id": str(current_version.id),
+            "reason": "predecessor_version_changed",
+        }
+    ]
+    versions = (
+        await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
+    ).scalars().all()
+    assert versions == []
+
+
+@pytest.mark.asyncio
+async def test_guard_lifecycle_predecessors_locks_in_canonical_sorted_order(client, db_session):
+    """Deadlock-avoidance regression (plan F4): predecessor rows must be locked FOR UPDATE in a
+    canonical artifact_id order. The guard appends stale predecessors in lock-acquisition order, so a
+    sorted stale_predecessors output proves the lock order is canonical regardless of based_on order."""
+    from app.models.artifact import ChangeSource, VersionStatus
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    based_on: dict[str, str] = {}
+    for index in range(3):
+        art = Artifact(
+            project_id=project_id,
+            type=ArtifactType.FUNCTIONAL_REQUIREMENT,
+            status=ArtifactStatus.ACCEPTED,
+            title=f"Pred {index}",
+            extra_metadata={},
+        )
+        db_session.add(art)
+        await db_session.flush()
+        current = ArtifactVersion(
+            artifact_id=art.id,
+            version_number=1,
+            title=f"Pred {index}",
+            body="Body",
+            status=VersionStatus.ACCEPTED,
+            change_source=ChangeSource.MANUAL,
+            extra_metadata={},
+        )
+        db_session.add(current)
+        await db_session.flush()
+        art.current_version_id = current.id
+        # based_on points at a different (stale) version id, so every predecessor is stale.
+        based_on[str(art.id)] = str(uuid.uuid4())
+    await db_session.flush()
+
+    # Feed based_on in reverse-sorted order to prove the guard reorders it canonically.
+    reversed_based_on = dict(sorted(based_on.items(), key=lambda kv: kv[0], reverse=True))
+    rejection = await svc._guard_lifecycle_predecessors(
+        project_id, {"lifecycle_metadata": {"based_on": reversed_based_on}}
+    )
+
+    assert rejection is not None
+    locked_order = [item["artifact_id"] for item in rejection["stale_predecessors"]]
+    assert locked_order == sorted(based_on)
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_recovers_incomplete_candidate_readiness_and_preserves_http_422(
+    client, db_session, _no_background_tasks, caplog
+):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
@@ -1051,17 +1529,43 @@ async def test_approve_tool_call_blocks_incomplete_candidate_readiness(client, d
         },
     }
     await db_session.flush()
+    captured = {}
+    original_resume_command = svc._resume_command
 
-    with pytest.raises(HTTPException) as exc:
-        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+    def _capture_resume_command(session_row, resume, *, state_update=None):
+        captured["state_update"] = state_update
+        return original_resume_command(session_row, resume, state_update=state_update)
+
+    svc._resume_command = _capture_resume_command
+    _no_background_tasks.reset_mock()
+
+    with caplog.at_level(logging.INFO, logger="app.graphs.gate_logging"):
+        with pytest.raises(HTTPException) as exc:
+            await svc.approve_tool_call(
+                project_id=project_id,
+                tool_call_id=tc.id,
+                created_by_id=None,
+                _llm_client=AsyncMock(),
+            )
 
     assert exc.value.status_code == 422
     assert exc.value.detail["state"] == "poorly_structured"
+    await db_session.refresh(session)
     await db_session.refresh(tc)
     focused = await db_session.get(Artifact, uuid.UUID(tc.input_snapshot["focused_artifact_id"]))
-    assert tc.status == AgentToolCallStatus.PROPOSED
+    assert tc.status == AgentToolCallStatus.SUPERSEDED
     assert tc.created_version_id is None
+    assert session.status == AgentSessionStatus.ACTIVE
     assert focused.status == ArtifactStatus.DRAFT
+    assert _no_background_tasks.call_count == 1
+    feedback = captured["state_update"]["feedback_summary"]["candidate_readiness_rejection"]
+    assert feedback["state"] == "poorly_structured"
+    assert feedback["focused_artifact_id"] == str(focused.id)
+    assert any(
+        "gate=in_loop_feedback_recovery verdict=seeded" in record.getMessage()
+        and "candidate_readiness_rejection" in record.getMessage()
+        for record in caplog.records
+    )
     versions = (
         await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))
     ).scalars().all()
@@ -1124,7 +1628,7 @@ async def test_feedback_loop_many_edits_only_persists_final_ready_version(client
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_normalizes_unmarked_pending_assumptions_before_persist(client, db_session):
+async def test_approve_tool_call_rejects_unmarked_pending_assumptions(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
     session, run, tc = await _make_single_propose_session(db_session, project_id)
@@ -1145,13 +1649,11 @@ async def test_approve_tool_call_normalizes_unmarked_pending_assumptions_before_
     }
     await db_session.flush()
 
-    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
+    with pytest.raises(HTTPException) as exc_info:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=None)
 
-    version = (await db_session.execute(select(ArtifactVersion).where(ArtifactVersion.agent_run_id == run.id))).scalar_one()
-    assert "## Assumptions" in version.body
-    assert "- Students use study groups weekly" in version.body
-    assert "- Target retention 15% ⚠️ needs confirmation" in version.body
-    assert tc.created_version_id == version.id
+    assert exc_info.value.status_code == 422
+    assert "not ready enough to persist" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio
@@ -1420,6 +1922,155 @@ async def test_approve_tool_call_updates_each_focused_document_item(
     }
 
 
+@pytest.mark.asyncio
+async def test_approve_create_artifact_link_tool_call_executes_after_approval(client, db_session):
+    project_id, user_id = await _setup_with_user(client)
+    svc = _make_service(db_session)
+    source = Artifact(
+        project_id=project_id,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
+        status=ArtifactStatus.DRAFT,
+        title="Source",
+        created_by_id=user_id,
+    )
+    target = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EPIC,
+        status=ArtifactStatus.DRAFT,
+        title="Target",
+        created_by_id=user_id,
+    )
+    db_session.add_all([source, target])
+    await db_session.flush()
+    _session, _run, tc = await _make_public_tool_call_session(
+        db_session,
+        project_id,
+        user_id,
+        f"create_artifact_link:{source.id}:{target.id}:derives_from",
+        {
+            "source_artifact_id": str(source.id),
+            "target_artifact_id": str(target.id),
+            "relation_type": "derives_from",
+            "metadata": {"reason": "trace"},
+        },
+    )
+
+    updated = await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=user_id)
+
+    link = (await db_session.execute(select(ArtifactLink).where(ArtifactLink.project_id == project_id))).scalar_one()
+    assert updated.status == AgentToolCallStatus.EXECUTED
+    assert updated.input_snapshot["created_link_id"] == str(link.id)
+    assert link.source_artifact_id == source.id
+    assert link.target_artifact_id == target.id
+    assert link.relation_type == RelationType.DERIVES_FROM
+
+
+@pytest.mark.asyncio
+async def test_approve_propose_retirement_archives_leaf_and_records_superseded_by(client, db_session):
+    project_id, user_id = await _setup_with_user(client)
+    svc = _make_service(db_session)
+    retired = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EPIC,
+        status=ArtifactStatus.ACCEPTED,
+        title="Old epic",
+        created_by_id=user_id,
+    )
+    replacement = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EPIC,
+        status=ArtifactStatus.ACCEPTED,
+        title="New epic",
+        created_by_id=user_id,
+    )
+    db_session.add_all([retired, replacement])
+    await db_session.flush()
+    version = ArtifactVersion(
+        artifact_id=retired.id,
+        version_number=1,
+        title="Old epic",
+        body="Old body",
+        status=VersionStatus.ACCEPTED,
+        change_source=ChangeSource.MANUAL,
+        created_by_id=user_id,
+        extra_metadata={},
+    )
+    db_session.add(version)
+    await db_session.flush()
+    retired.current_version_id = version.id
+    await db_session.flush()
+    _session, _run, tc = await _make_public_tool_call_session(
+        db_session,
+        project_id,
+        user_id,
+        f"propose_retirement:{retired.id}",
+        {
+            "artifact_id": str(retired.id),
+            "reason": "Superseded by a cleaner epic",
+            "superseded_by_artifact_id": str(replacement.id),
+        },
+    )
+
+    updated = await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=user_id)
+
+    await db_session.refresh(retired)
+    await db_session.refresh(version)
+    assert updated.status == AgentToolCallStatus.EXECUTED
+    assert updated.created_artifact_id == retired.id
+    assert retired.status == ArtifactStatus.ARCHIVED
+    assert retired.extra_metadata["superseded_by"] == str(replacement.id)
+    assert retired.extra_metadata["retirement"]["source"] == "agent_retirement"
+    assert version.status == VersionStatus.ARCHIVED
+
+
+@pytest.mark.asyncio
+async def test_approve_propose_retirement_blocks_live_downstream_link(client, db_session):
+    project_id, user_id = await _setup_with_user(client)
+    svc = _make_service(db_session)
+    dependent = Artifact(
+        project_id=project_id,
+        type=ArtifactType.FUNCTIONAL_REQUIREMENT,
+        status=ArtifactStatus.ACCEPTED,
+        title="Dependent",
+        created_by_id=user_id,
+    )
+    retired = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EPIC,
+        status=ArtifactStatus.ACCEPTED,
+        title="Retired",
+        created_by_id=user_id,
+    )
+    db_session.add_all([dependent, retired])
+    await db_session.flush()
+    db_session.add(
+        ArtifactLink(
+            project_id=project_id,
+            source_artifact_id=dependent.id,
+            target_artifact_id=retired.id,
+            relation_type=RelationType.SUPPORTS,
+        )
+    )
+    await db_session.flush()
+    _session, _run, tc = await _make_public_tool_call_session(
+        db_session,
+        project_id,
+        user_id,
+        f"propose_retirement:{retired.id}",
+        {"artifact_id": str(retired.id), "reason": "No longer valid"},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=user_id)
+
+    assert exc.value.status_code == 409
+    assert str(dependent.id) in exc.value.detail["artifact_ids"]
+    await db_session.refresh(tc)
+    await db_session.refresh(retired)
+    assert tc.status == AgentToolCallStatus.PROPOSED
+    assert retired.status == ArtifactStatus.ACCEPTED
+
+
 # ---------------------------------------------------------------------------
 # reject_tool_call
 # ---------------------------------------------------------------------------
@@ -1489,7 +2140,11 @@ async def test_request_edit_does_not_resume_when_others_still_proposed(client, d
 
 
 @pytest.mark.asyncio
-async def test_request_edit_rejects_stale_base_version(client, db_session, _no_background_tasks):
+async def test_request_edit_recovers_stale_base_version_in_loop(client, db_session, _no_background_tasks):
+    """request_edit resumes the graph, so a stale base is pulled into the loop (seeded into
+    feedback_summary for the resumed turn to re-read + rebase) instead of a terminal 409."""
+    from unittest.mock import AsyncMock
+
     from app.models.artifact import ChangeSource, VersionStatus
 
     project_id = await _setup(client)
@@ -1521,12 +2176,32 @@ async def test_request_edit_rejects_stale_base_version(client, db_session, _no_b
     tc.input_snapshot = {**tc.input_snapshot, "base_version_id": str(old_version.id)}
     await db_session.flush()
 
-    with pytest.raises(HTTPException) as exc:
-        await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
+    svc._check_and_resume = AsyncMock()
+    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
 
-    assert exc.value.status_code == 409
-    assert exc.value.detail["current_version_id"] == str(current_version.id)
-    _no_background_tasks.assert_not_called()
+    await db_session.refresh(tc)
+    assert tc.status == AgentToolCallStatus.SUPERSEDED
+    svc._check_and_resume.assert_awaited_once()
+    seed = svc._check_and_resume.await_args.kwargs["state_update"]
+    stale = seed["feedback_summary"]["stale_base_version"]
+    assert stale["current_version_id"] == str(current_version.id)
+    assert stale["artifact_id"] == str(focused.id)
+
+
+@pytest.mark.asyncio
+async def test_request_edit_without_stale_seeds_no_state_update(client, db_session, _no_background_tasks):
+    """Non-stale request_edit preserves the legacy resume: no stale seed threaded to the resume."""
+    from unittest.mock import AsyncMock
+
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session, run, tc = await _make_single_propose_session(db_session, project_id)
+
+    svc._check_and_resume = AsyncMock()
+    await svc.request_edit(project_id=project_id, tool_call_id=tc.id, note="Sua lai")
+
+    svc._check_and_resume.assert_awaited_once()
+    assert svc._check_and_resume.await_args.kwargs["state_update"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1612,6 +2287,32 @@ async def _make_propose_session(db_session, project_id, created_by_id=None):
     return session, run, tc1, tc2
 
 
+async def _make_public_tool_call_session(db_session, project_id, user_id, tool_name, input_snapshot):
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="epic",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        interrupt_type=AgentSessionInterruptType.PROPOSE_ARTIFACTS,
+        created_by_id=user_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    run = AgentRun(session_id=session.id, analysis_result={})
+    db_session.add(run)
+    await db_session.flush()
+    tc = AgentToolCall(
+        run_id=run.id,
+        tool_name=tool_name,
+        input_snapshot=input_snapshot,
+        status=AgentToolCallStatus.PROPOSED,
+    )
+    db_session.add(tc)
+    await db_session.flush()
+    return session, run, tc
+
+
 async def _make_brd_items(db_session, project_id):
     parent = Artifact(
         project_id=project_id,
@@ -1665,10 +2366,14 @@ def _problem_body():
 
 
 def _risks_body():
+    # constraints_assumptions is the last BRD child and absorbed risks_issues, so its
+    # contract now requires the constraints headings plus ## Risks / ## Mitigation Plan.
     return "\n\n".join(
         [
+            "## Constraints\n- Must integrate with existing infrastructure.",
+            "## Assumptions\n- Current auth provider stays.",
+            "## Validation Plan\n- Confirm provider SLA before build.",
             "## Risks\n- Low adoption risk.",
-            "## Issues\n- No retention baseline yet.",
             "## Mitigation Plan\n- Measure baseline and test new onboarding.",
         ]
     )
@@ -1739,3 +2444,103 @@ async def test_first_user_message_starts_graph_fresh(client, db_session, _no_bac
     _no_background_tasks.assert_called_once()
     scheduled = _no_background_tasks.call_args.args[0]
     assert scheduled.cr_code.co_name == "_run_graph"
+
+
+# ---------------------------------------------------------------------------
+# _document_type_for_session — container detection is registry-driven, not a
+# hardcoded {"brd", "prd", "add"} set. event_storming must resolve the same
+# way brd/prd/add already do.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_document_type_for_session_resolves_event_storming_via_artifact_type(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="event_storming",
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == "event_storming"
+
+
+@pytest.mark.asyncio
+async def test_document_type_for_session_resolves_event_storming_via_focused_container(client, db_session):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EVENT_STORMING,
+        status=ArtifactStatus.DRAFT,
+        title="Event Storming",
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == "event_storming"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
+async def test_document_type_for_session_regression_via_artifact_type(client, db_session, container_type):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type=container_type,
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == container_type
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
+async def test_document_type_for_session_regression_via_focused_container(client, db_session, container_type):
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType(container_type),
+        status=ArtifactStatus.DRAFT,
+        title=container_type.upper(),
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document_type = await svc._document_type_for_session(session)
+
+    assert document_type == container_type

@@ -149,7 +149,7 @@ def _interrupt_ask_user_uses_stream_response() -> GateResult:
     async def run():
         state = {"messages": [], "user_confirmed": None}
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-        with patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new=AsyncMock(side_effect=_fake_save)):
+        with patch("app.graphs.interrupts._save_and_interrupt_ask", new=AsyncMock(side_effect=_fake_save)):
             await _ask_user_impl("Test question?", state, config, "tc-001")
 
     asyncio.run(run())

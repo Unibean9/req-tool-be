@@ -9,8 +9,8 @@ from unittest.mock import patch
 import pytest
 
 from app.graphs.agent_tools import artifact_stage, current_draft_body
-from app.graphs.decision_graph import create_node, render_view
-from tests.integration.test_graph_nodes import _state
+from app.graphs.decision_graph import create_node
+from tests.factories import _state
 
 
 def _state_with_node(statement: str = "Reduce processing time") -> dict:
@@ -26,30 +26,8 @@ def _state_with_node(statement: str = "Reduce processing time") -> dict:
     return state
 
 
-@pytest.mark.asyncio
-async def test_current_draft_body_renders_decision_graph():
-    state = _state_with_node("Reduce processing time")
-
-    assert await current_draft_body(state) == render_view(state["decision_nodes"], "brd")
-
-
-@pytest.mark.asyncio
-async def test_current_draft_body_ignores_cached_body_without_nodes():
-    state = _state()
-    state["focused_artifact_id"] = "00000000-0000-0000-0000-000000000001"
-    state["draft_body"] = "DB draft cu"
-
-    assert await current_draft_body(state) == ""
-
-
-@pytest.mark.asyncio
-async def test_current_draft_body_ignores_legacy_working_draft():
-    state = _state()
-    state["working_draft"] = "checkpoint cu"
-
-    assert await current_draft_body(state) == ""
-
-
+# current_draft_body's graph/DB/legacy source precedence is owned by test_gate_stack_minimal
+# and test_finalize_gate; this file keeps only the truly-empty edge that neither covers.
 @pytest.mark.asyncio
 async def test_current_draft_body_empty_when_neither_present():
     assert await current_draft_body(_state()) == ""
@@ -92,7 +70,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
     from tests.helpers import create_org, create_project, make_auth_headers
-    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.factories import _config, _make_agent_session, _session_factory
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -106,7 +84,7 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+    with patch("app.graphs.interrupts.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
             state, config, "Cau hoi?", run_id="call_1", interrupt_kind="stream_response"
         )
@@ -120,13 +98,13 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
 
 @pytest.mark.asyncio
 async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_session):
-    """write_draft/respond use default interrupt_kind='ask_human' → WAITING_FOR_HUMAN + ASK_HUMAN (regression guard)."""
+    """Approval flows use default interrupt_kind='ask_human' -> WAITING_FOR_HUMAN + ASK_HUMAN."""
     from sqlalchemy import select
 
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
     from tests.helpers import create_org, create_project, make_auth_headers
-    from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory
+    from tests.factories import _config, _make_agent_session, _session_factory
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -140,7 +118,7 @@ async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_s
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    with patch("app.graphs.nodes.interrupt", return_value={"content": "reply"}):
+    with patch("app.graphs.interrupts.interrupt", return_value={"content": "reply"}):
         await nodes._save_and_interrupt_ask(
             state, config, "Cau hoi?", run_id="call_2"
         )
@@ -174,7 +152,7 @@ def test_legacy_draft_update_field_removed_from_analysis_result_contract():
 
 def test_ask_user_impl_passes_stream_response_interrupt_kind():
     """_ask_user_impl calls _save_and_interrupt_ask with interrupt_kind='stream_response'."""
-    from app.graphs import nodes
+    from app.graphs import interrupts
     from app.graphs.agent_tools import _ask_user_impl
 
     captured = {}
@@ -183,10 +161,29 @@ def test_ask_user_impl_passes_stream_response_interrupt_kind():
         captured["interrupt_kind"] = interrupt_kind
         return "user_reply"
 
-    with patch.object(nodes, "_save_and_interrupt_ask", side_effect=fake_save):
+    with patch.object(interrupts, "_save_and_interrupt_ask", side_effect=fake_save):
         import asyncio
         asyncio.get_event_loop().run_until_complete(
             _ask_user_impl("Q?", _state(), {}, "call_x")
         )
+
+    assert captured["interrupt_kind"] == "stream_response"
+
+
+def test_respond_impl_passes_stream_response_interrupt_kind():
+    """_respond_impl is a conversational pause, so it matches ask_user's stream_response status."""
+    from app.graphs import interrupts
+    from app.graphs.agent_tools import _respond_impl
+
+    captured = {}
+
+    async def fake_save(state, config, content, *, run_id, interrupt_kind="ask_human", **kw):
+        captured["interrupt_kind"] = interrupt_kind
+        return "user_reply"
+
+    with patch.object(interrupts, "_save_and_interrupt_ask", side_effect=fake_save):
+        import asyncio
+
+        asyncio.get_event_loop().run_until_complete(_respond_impl("Assessment", "critique", _state(), {}, "call_x"))
 
     assert captured["interrupt_kind"] == "stream_response"

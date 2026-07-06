@@ -1,11 +1,8 @@
-"""Aggregated-document scenario: build a BRD/PRD-like document from per-type sessions.
+"""Aggregated-document scenario: build a BRD/PRD smoke document from canonical journeys.
 
-The agent has no single "BRD" artifact type — a document is the *collection* of
-artifacts produced across separate sessions. This test runs the full BA→PM
-pipeline (intent → problem → stakeholder → goal → functional/non-functional
-requirements → epic → story) in one project, in topological predecessor order,
-aggregates every produced artifact into one document, and scores the whole set.
-A combined transcript captures every raw message for later validation.
+The agent has no single "BRD" artifact type; a document is the collection of
+artifacts produced across separate sessions. This evidence test now uses a
+short topological smoke pipeline instead of an exhaustive artifact-type matrix.
 """
 
 import uuid
@@ -17,29 +14,23 @@ from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
 from tests.integration.scenarios.library import DOCUMENT_PIPELINE
 from tests.integration.scenarios.recorder import TranscriptRecorder
 
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.integration, pytest.mark.evidence, pytest.mark.asyncio]
 
-# Every artifact type the aggregated document must cover (BA → PM pipeline).
+# Artifact types covered by the reduced BA to PM smoke pipeline.
 _EXPECTED_TYPES = {
     "vision_objectives",
     "problem_statement",
-    "stakeholder_register",
-    "scope_capabilities",
     "functional_requirement",
-    "non_functional_requirement",
-    "use_case",
-    "acceptance_criteria",
 }
 
 
-async def test_document_aggregates_full_pipeline(client, scenario_env, scenario_project):
+async def test_document_aggregates_smoke_pipeline(client, scenario_env, scenario_project, tmp_path):
     headers, project = scenario_project
     project_id = uuid.UUID(project["id"])
     doc = TranscriptRecorder("document-brd-prd")
     document_artifacts: list[dict] = []
 
-    # Predecessor order matters and is honored by DOCUMENT_PIPELINE: each session
-    # runs only after the artifacts it derives from already exist in the project.
+    # Predecessor order matters and is honored by DOCUMENT_PIPELINE.
     for factory in DOCUMENT_PIPELINE:
         scenario = factory()
         driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
@@ -70,5 +61,5 @@ async def test_document_aggregates_full_pipeline(client, scenario_env, scenario_
         artifacts_total=len(document_artifacts),
         mean_overall=(sum(overalls) / len(overalls)) if overalls else None,
     )
-    path = doc.write()
+    path = doc.write(tmp_path / "document-transcripts")
     assert path.exists() and path.stat().st_size > 0

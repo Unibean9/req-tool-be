@@ -29,6 +29,35 @@ async def test_graph_endpoint_returns_nodes_links_and_version_references(client)
     assert graph["links"][0]["relation_type"] == "satisfies"
     fr_node = next(node for node in graph["nodes"] if node["id"] == fr["id"])
     assert fr_node["current_version"]["id"] == fr["current_version_id"]
+    assert fr_node["lifecycle_state"] is not None
+    assert fr_node["lifecycle_reason"]
+
+
+@pytest.mark.asyncio
+async def test_graph_and_detail_expose_lifecycle_from_resolver(client, monkeypatch):
+    from app.services import artifact_service as artifact_service_module
+
+    original_resolve = artifact_service_module.resolve_lifecycle
+    calls = []
+
+    def spy_resolve_lifecycle(artifact_type, artifact, **kwargs):
+        calls.append(artifact.artifact_id if artifact is not None else None)
+        return original_resolve(artifact_type, artifact, **kwargs)
+
+    monkeypatch.setattr(artifact_service_module, "resolve_lifecycle", spy_resolve_lifecycle)
+    headers, project = await _project_context(client)
+    artifact = await _create_artifact(client, headers, project["id"], artifact_type="epic")
+
+    graph_resp = await client.get(f"{BASE}/projects/{project['id']}/artifact-graph", headers=headers)
+    detail_resp = await client.get(f"{BASE}/projects/{project['id']}/artifacts/{artifact['id']}", headers=headers)
+
+    assert graph_resp.status_code == 200, graph_resp.text
+    assert detail_resp.status_code == 200, detail_resp.text
+    graph_node = graph_resp.json()["data"]["nodes"][0]
+    detail = detail_resp.json()["data"]
+    assert graph_node["lifecycle_state"] == detail["lifecycle_state"] == "in_progress"
+    assert graph_node["lifecycle_reason"] == detail["lifecycle_reason"]
+    assert calls.count(artifact["id"]) >= 2
 
 
 @pytest.mark.asyncio
@@ -40,6 +69,8 @@ async def test_graph_endpoint_reports_orphan_warning(client):
 
     warnings = resp.json()["data"]["warnings"]
     assert {"type": "orphan_artifact", "artifact_id": artifact["id"]} in warnings
+    node = resp.json()["data"]["nodes"][0]
+    assert node["lifecycle_state"] != "orphan"
 
 
 @pytest.mark.asyncio

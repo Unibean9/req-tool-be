@@ -2,63 +2,18 @@ from app.graphs.state import WorkflowState, build_initial_workflow_state
 
 
 def test_workflow_state_accepts_document_focus_fields():
-    state: WorkflowState = {
-        "artifact_type": "problem",
-        "workflow_area": "analysis",
-        "step_key": None,
-        "messages": [],
-        "conversation_summary": "",
-        "analysis_result": None,
-        "pending_tool_call_ids": [],
-        "last_agent_run_id": None,
-        "turn_count": 0,
-        "missing_context": [],
-        "user_confirmed": None,
-        "critique_rounds": 0,
-        "quality_report": None,
-        "last_critiqued_draft_hash": None,
-        "locale": None,
-        "turn_type": None,
-        "triage_reply": None,
-        "section_coverage": None,
-        "coverage_complete": None,
-        "section_coverage_stall_count": None,
-        "assumptions": [],
-        "risks": [],
-        "open_questions": [],
-        "key_facts": [],
-        "focused_artifact_id": "00000000-0000-0000-0000-000000000001",
-        "draft_body": None,
-        "candidate_readiness": None,
-        "tool_errors": [],
-        "feedback_summary": None,
-        "verification_status": None,
-        "latest_checked_revision": None,
-        "method_profile": {
-            "method": "bmad_inspired",
-            "planning_track": "quick",
-            "project_type": "unknown",
-            "current_workflow": "brainstorm",
-            "recommended_next_workflow": None,
-        },
-        "artifact_chain": {
-            "brainstorming": "missing",
-            "product_brief": "missing",
-            "prd": "missing",
-        },
-        "readiness": {
-            "requirements_ready": False,
-            "architecture_needed": "unknown",
-            "implementation_ready": False,
-            "blocking_gaps": [],
-            "recommended_next_step": None,
-        },
-        "mode_hint": None,
-    }
+    state: WorkflowState = build_initial_workflow_state(
+        artifact_type="problem",
+        workflow_area="analysis",
+        step_key=None,
+        focused_artifact_id="00000000-0000-0000-0000-000000000001",
+    )
 
     assert state["section_coverage"] is None
     assert state["coverage_complete"] is None
     assert state["focused_artifact_id"] is not None
+    assert "assumptions" not in state
+    assert "open_questions" not in state
 
 
 def test_state_has_key_facts_field():
@@ -76,6 +31,9 @@ def test_state_has_section_coverage_field():
     assert "section_coverage" in WorkflowState.__annotations__
     assert "section_coverage_stall_count" in WorkflowState.__annotations__
     assert "focused_artifact_id" in WorkflowState.__annotations__
+    assert "turn_context_artifacts" in WorkflowState.__annotations__
+    assert "lifecycle_reports" in WorkflowState.__annotations__
+    assert "artifact_history" in WorkflowState.__annotations__
     assert "candidate_readiness" in WorkflowState.__annotations__
     assert "tool_errors" in WorkflowState.__annotations__
     assert "feedback_summary" in WorkflowState.__annotations__
@@ -93,6 +51,18 @@ def test_state_no_longer_has_slot_coverage_field():
     assert "slot_coverage" not in WorkflowState.__annotations__
     assert "last_asked_slot" not in WorkflowState.__annotations__
     assert "coverage_stall_count" not in WorkflowState.__annotations__
+
+
+def test_initial_state_seeds_turn_context_artifacts_empty():
+    state = build_initial_workflow_state(
+        artifact_type="brd",
+        workflow_area="analysis",
+        step_key=None,
+    )
+
+    assert state["turn_context_artifacts"] == []
+    assert state["lifecycle_reports"] == []
+    assert state["artifact_history"] == []
 
 
 def test_initial_workflow_state_seeds_governance_fields():

@@ -43,6 +43,19 @@ class KeyFactObject(TypedDict):
     turn: str
 
 
+class SourceContextEntry(TypedDict, total=False):
+    """A bounded source excerpt the model explicitly loaded before drafting."""
+
+    source_kind: str
+    source_document_id: str
+    artifact_id: str
+    predecessor_version_id: str
+    title: str
+    locator: str
+    excerpt: str
+    truncated: bool
+
+
 class DecisionNode(TypedDict):
     """A node in the decision graph — the unit of truth for an artifact.
 
@@ -54,7 +67,7 @@ class DecisionNode(TypedDict):
     id: str
     kind: str  # objective | scope | assumption | decision | risk | open_question | fact
     statement: str
-    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded
+    status: str  # proposed | confirmed | inferred | needs_confirmation | parked | superseded | dismissed
     origin: dict[str, Any]  # {turn, by, technique, source} — why this node exists
     depends_on: list[str]
     supersedes: str | None
@@ -69,6 +82,9 @@ class DecisionNode(TypedDict):
     # {"goal": ..., "metric": ..., "target": ...}). A single free-text statement cannot fill an N-column
     # table; fields carries that structure. A section renders as a table when its nodes carry fields.
     fields: dict[str, str] | None
+    # Audit trail set only when status becomes "dismissed": {reason, turn, dismissed_by}. Absent on
+    # every other node (backward-compatible: legacy checkpoints have no dismissed nodes at all).
+    dismissal: dict[str, Any] | None
 
 
 def merge_decision_nodes(
@@ -87,6 +103,72 @@ def merge_decision_nodes(
     if not right:
         return left
     return {**left, **right}
+
+
+def merge_section_findings(
+    left: dict[str, list] | None, right: dict[str, list] | None
+) -> dict[str, list]:
+    """Merge section-finding updates per section-key, mirroring merge_decision_nodes.
+
+    Two section-writing tools in one turn each build from the same pre-turn snapshot and return the
+    full dict; per-key union keeps both writes. A passing section is stored as [] (never dropped) so
+    clearing a defect propagates rather than being lost by omission.
+    """
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
+
+
+SOURCE_CONTEXT_LIMIT = 12
+
+
+def _source_context_key(entry: dict[str, Any]) -> str | None:
+    if entry.get("source_document_id"):
+        return f"source_document:{entry['source_document_id']}"
+    if entry.get("predecessor_version_id"):
+        return f"predecessor_version:{entry['predecessor_version_id']}"
+    return None
+
+
+def merge_source_context(
+    left: list[SourceContextEntry] | None, right: list[SourceContextEntry] | None
+) -> list[SourceContextEntry]:
+    """Keep bounded, deduped source excerpts loaded by read tools."""
+    deduped: dict[str, SourceContextEntry] = {}
+    for entry in list(left or []) + list(right or []):
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("__reset__"):
+            deduped.clear()
+            continue
+        key = _source_context_key(entry)
+        if key is None:
+            continue
+        deduped.pop(key, None)
+        deduped[key] = dict(entry)
+    return list(deduped.values())[-SOURCE_CONTEXT_LIMIT:]
+
+
+TOOL_ERRORS_PER_CODE_LIMIT = 3
+
+
+def merge_tool_errors(
+    left: list[dict[str, Any]] | None, right: list[dict[str, Any]] | None
+) -> list[dict[str, Any]]:
+    """Append recoverable tool errors, then keep only the latest N entries per code."""
+    entries = list(left or []) + list(right or [])
+    seen_by_code: dict[str, int] = {}
+    retained_reversed: list[dict[str, Any]] = []
+    for entry in reversed(entries):
+        code = str(entry.get("code") or "__missing_code__")
+        count = seen_by_code.get(code, 0)
+        if count >= TOOL_ERRORS_PER_CODE_LIMIT:
+            continue
+        seen_by_code[code] = count + 1
+        retained_reversed.append(entry)
+    return list(reversed(retained_reversed))
 
 
 class MethodProfile(TypedDict):
@@ -188,20 +270,33 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser, queried by validators and the finalize gate.
-    assumptions: list[AssumptionObject]
-    risks: list[RiskObject]
-    open_questions: list[OpenQuestionObject]
+    # populated by the note parser. assumptions and open_questions are derived from the decision graph;
+    # see decision_graph.derive_assumptions / derive_open_questions.
+    # Additive reducers keep same-turn parallel note writes from colliding.
+    risks: Annotated[list[RiskObject], operator.add]
     # Confirmed facts that must survive conversation compression. Never included in summarize_node
     # compression — they are the ground truth the analyst builds on.
-    key_facts: list[KeyFactObject]
+    key_facts: Annotated[list[KeyFactObject], operator.add]
     # Exact document item this session reads and writes.
     focused_artifact_id: str | None
+    # Artifact rows loaded into the current analyzer turn. Used for write-time provenance snapshots;
+    # replace-on-write so a draft only records the facts the model saw this turn.
+    turn_context_artifacts: list[dict[str, Any]]
+    # Computed lifecycle verdicts for the same per-turn context set. Plain replace-on-write; the DB
+    # stores facts only, not these states.
+    lifecycle_reports: list[dict[str, Any]]
+    # Recent version changes for context artifacts, including change_source so the analyst can tell
+    # human/manual edits from agent-generated versions.
+    artifact_history: list[dict[str, Any]]
+    # Bounded excerpts explicitly loaded from source documents or predecessor artifacts this session.
+    source_context: Annotated[list[SourceContextEntry], merge_source_context]
     # Persisted draft body loaded from the DB each analyze turn. The decision graph renders the live
     # draft view; this field stays as DB context for document workflows.
     draft_body: str | None
     candidate_readiness: dict[str, Any] | None
-    tool_errors: list[dict[str, Any]]
+    # Recoverable tool error log. Multiple tool failures can be returned in one ToolNode superstep, so
+    # this channel merges additively, then trims to the latest entries per code.
+    tool_errors: Annotated[list[dict[str, Any]], merge_tool_errors]
     feedback_summary: dict[str, Any] | None
     verification_status: dict[str, Any] | None
     latest_checked_revision: str | None
@@ -222,6 +317,35 @@ class WorkflowState(TypedDict):
     # default to {} on load without migration or crash. The merge reducer keeps concurrent same-turn
     # node writes from clobbering each other (see merge_decision_nodes).
     decision_nodes: Annotated[dict[str, DecisionNode], merge_decision_nodes]
+    # Bounded fingerprint history of dispatched tool calls (name + sorted-args), newest last. Populated
+    # once per turn in analyze_node at the same site dispatched_tools is built; read by route_node to
+    # detect N consecutive identical calls and exit the analyze/tools cycle early. Plain replace-on-write
+    # (like turn_count) — no special merge needed since it's written at a single site per turn.
+    recent_tool_calls: list[str]
+    # System-selected thinking mode for this turn ("structuring" | "challenging" | "synthesizing" |
+    # "risk_probing"), written every turn by orchestrator_node's heuristic diagnosis step and read by
+    # analyze_node's prompt builder. Plain replace-on-write, mirroring mode_hint's placement — the
+    # system-driven sibling of the user-driven mode_hint steer. None when adaptive diagnosis is
+    # disabled (enable_adaptive_diagnosis=False).
+    thinking_mode: str | None
+    # Diagnosis result backing thinking_mode: {"risk_level": "low"|"high", "signals": [...]}. Plain
+    # replace-on-write, fully overwritten each turn — no accumulation semantics.
+    diagnosis_signal: dict[str, Any] | None
+    # Count of LLM judge calls spent escalating a high-risk diagnosis, session-lifetime. Plain
+    # replace-on-write; compared against DIAGNOSIS_JUDGE_CALLS_MAX to gate further escalation.
+    diagnosis_judge_calls_used: int
+    # Explicit workflow position: "intent"|"elicit"|"draft"|"review"|"finalize" (session_phase.py).
+    # SINGLE WRITER: only orchestrator_node assigns it (via session_phase.transition); readers fall
+    # back to on-the-fly derivation for checkpoints created before this field existed.
+    session_phase: str | None
+    # Count of model tool selections rejected by the per-phase gate, session-lifetime. Written at a
+    # single site per turn (analyze result); read by the behavior eval's out_of_phase metric.
+    out_of_phase_tool_calls: int
+    # Section-scoped structural findings from the last write of each section, keyed by the section
+    # heading. A passing section stores [] (not absent) so a re-validation can clear a
+    # prior defect through the union merge. Two decision tools in one turn each return the full dict
+    # built from the same snapshot, so per-key merge keeps both — mirroring decision_nodes.
+    section_findings: Annotated[dict[str, list[dict[str, Any]]], merge_section_findings]
 
 
 def build_initial_workflow_state(
@@ -256,11 +380,13 @@ def build_initial_workflow_state(
         "section_coverage": None,
         "coverage_complete": None,
         "section_coverage_stall_count": None,
-        "assumptions": [],
         "risks": [],
-        "open_questions": [],
         "key_facts": [],
         "focused_artifact_id": str(focused_artifact_id) if focused_artifact_id is not None else None,
+        "turn_context_artifacts": [],
+        "lifecycle_reports": [],
+        "artifact_history": [],
+        "source_context": [],
         "draft_body": None,
         "candidate_readiness": None,
         "tool_errors": [],
@@ -273,4 +399,11 @@ def build_initial_workflow_state(
         "mode_hint": mode_hint,
         "session_elicit_count": 0,
         "decision_nodes": {},
+        "recent_tool_calls": [],
+        "thinking_mode": None,
+        "diagnosis_signal": None,
+        "diagnosis_judge_calls_used": 0,
+        "session_phase": None,
+        "out_of_phase_tool_calls": 0,
+        "section_findings": {},
     }

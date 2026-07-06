@@ -5,15 +5,16 @@ parallel ToolNode runs the choice. Each tool is a thin `@tool` over a plain asyn
 stay unit-testable without a Runtime.
 
 Idempotency on resume — LangGraph re-executes a ToolNode body from the top when its interrupt is
-resumed: ask_user keys its message insert on the per-invocation ToolCall.id; write_draft keys its
-proposal row on (run_id, tool_name), reusing the existing AgentToolCall.tool_name column (no
-migration). finalize has no insert to dedup — its only DB write is an idempotent-by-value session
-status update — so it needs no key.
+resumed: ask_user keys its message insert on the per-invocation ToolCall.id; approval proposals key
+their AgentToolCall rows on (run_id, proposal-specific tool_name), reusing the existing
+AgentToolCall.tool_name column (no migration). finalize has no insert to dedup — its only DB write is
+an idempotent-by-value session status update — so it needs no key.
 """
 
 import hashlib
 import json
 import logging
+import re
 import uuid
 from typing import Annotated, Any, Literal
 
@@ -25,23 +26,32 @@ from langgraph.types import Command, interrupt
 from sqlalchemy import exists, func, select
 
 from app.config import settings
-from app.documents.registry import children_of, status_score
-from app.graphs import nodes
+from app.documents.registry import children_of, output_contract, status_score
+from app.graphs import interrupts
 from app.graphs.decision_graph import (
     VALID_KINDS,
     VALID_STATUSES,
     create_node,
+    dismiss_node,
     get_dependents,
     impact,
     infer_cascade_mode,
+    render_node_map,
     render_view,
+    scan_parked_questions,
     supersede_node,
+    synthesis_assumption_signals,
     update_node,
 )
+from app.graphs.gate_logging import log_gate_decision
+from app.graphs.lifecycle_context import filter_lifecycle_menu_tools, lifecycle_tool_block_reason
 from app.graphs.note_parser import extract_structured_objects
-from app.graphs.policy import ARTIFACT_PREDECESSORS
+from app.graphs.policy import ancestor_types
+from app.graphs.session_phase import PhaseSignals, derive_phase, phase_allows
 from app.graphs.state import QualityReport, WorkflowState
 from app.graphs.tools import read_current_body
+from app.graphs.tools import read_source_documents as read_source_documents_query
+from app.graphs.validators import validate_proposal
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
@@ -49,26 +59,30 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
-from app.models.artifact import Artifact, ArtifactLink, ArtifactStatus, RelationType
+from app.models.artifact import Artifact, ArtifactLink, ArtifactStatus, ArtifactVersion, RelationType
+from app.models.project import Project
 from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
     ArtifactReadinessState,
     ArtifactSynthesisMetadata,
-    canonical_artifact_body,
     evaluate_candidate_readiness,
 )
-from app.services.artifact_service import ArtifactLinkService
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
 
 
 class RecoverableToolError(Exception):
-    def __init__(self, *, code: str, message: str, user_fixable: bool = False) -> None:
+    def __init__(
+        self, *, code: str, message: str, user_fixable: bool = False, recovery: str | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.user_fixable = user_fixable
+        # A short, code-specific imperative telling the model how to recover. Optional: absent
+        # recovery keeps the legacy behavior (the message alone), so old checkpoints are unchanged.
+        self.recovery = recovery
 
 
 def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Command:
@@ -78,17 +92,20 @@ def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Co
         exc.user_fixable,
         exc.message,
     )
+    entry: dict[str, Any] = {
+        "code": exc.code,
+        "classification": "recoverable",
+        "user_fixable": exc.user_fixable,
+        "message": exc.message,
+    }
+    tool_message = exc.message
+    if exc.recovery:
+        entry["recovery"] = exc.recovery
+        tool_message = f"{exc.message} {exc.recovery}"
     return Command(
         update={
-            "tool_errors": [
-                {
-                    "code": exc.code,
-                    "classification": "recoverable",
-                    "user_fixable": exc.user_fixable,
-                    "message": exc.message,
-                }
-            ],
-            "messages": [ToolMessage(content=exc.message, tool_call_id=tool_call_id, status="error")],
+            "tool_errors": [entry],
+            "messages": [ToolMessage(content=tool_message, tool_call_id=tool_call_id, status="error")],
         }
     )
 
@@ -97,7 +114,8 @@ def _missing_required_arg_update(tool_name: str, arg_name: str, tool_call_id: st
     return _recoverable_tool_update(
         RecoverableToolError(
             code="missing_required_arg",
-            message=f"Cannot {tool_name}: missing required field '{arg_name}'. Call the tool again with a clear value.",
+            message=f"Cannot {tool_name}: missing required field '{arg_name}'.",
+            recovery=f"Provide '{arg_name}' and call {tool_name} again.",
         ),
         tool_call_id,
     )
@@ -108,6 +126,7 @@ def _tool_not_available_update(tool_name: str, message: str, tool_call_id: str) 
         RecoverableToolError(
             code="tool_not_available",
             message=f"Cannot {tool_name}: {message}",
+            recovery="This tool is not offered in the current phase; pick from the tools offered this turn.",
         ),
         tool_call_id,
     )
@@ -129,16 +148,24 @@ async def current_draft_body(
     """Canonical draft body for the whole tool-loop.
 
     Every read site — the critique target, the finalize-gate hash, has-draft checks — MUST route
-    through here. The decision graph is the source of truth; DB-loaded draft text is context, not
-    the live editable artifact view.
+    through here. The decision graph wins when it has nodes; a DB-loaded draft is the fallback for
+    resumed document sessions whose graph has not been rebuilt yet.
     """
     _ = config
-    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
+    return _current_draft_body_sync(state)
 
 
 def _cached_draft_body(state: WorkflowState) -> str:
     """Synchronous draft view used by menu construction and finalize hashing."""
-    return render_view(state.get("decision_nodes") or {}, state.get("artifact_type") or "brd")
+    return _current_draft_body_sync(state)
+
+
+def _current_draft_body_sync(state: WorkflowState) -> str:
+    decision_nodes = state.get("decision_nodes") or {}
+    artifact_type = state.get("artifact_type") or "brd"
+    if decision_nodes:
+        return render_view(decision_nodes, artifact_type)
+    return str(state.get("draft_body") or "")
 
 
 async def artifact_stage(
@@ -209,17 +236,73 @@ async def _audit_interaction_tool_call(
 # ---------------------------------------------------------------------------
 
 
-async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
-    if not str(message or "").strip():
+# Batched question form: up to 3 related, typed facets in one interrupt.
+_MAX_BATCH_QUESTIONS = 3
+_BATCH_QUESTION_TYPES = frozenset({"choice", "text", "confirm"})
+
+
+def _normalize_batch_questions(questions: Any) -> list[dict[str, Any]]:
+    """Keep at most 3 well-formed questions; drop malformed entries rather than erroring the turn.
+
+    A valid entry has a non-empty `prompt` and a `type` in {choice, text, confirm} (defaulting to
+    `text`); `choice` entries keep their string `options`. Anything else is silently dropped so a
+    partially-malformed batch still asks its good questions instead of failing the whole tool call.
+    """
+    if not isinstance(questions, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in questions:
+        if not isinstance(item, dict):
+            continue
+        prompt = str(item.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        q_type = str(item.get("type") or "text").strip().lower()
+        if q_type not in _BATCH_QUESTION_TYPES:
+            q_type = "text"
+        entry: dict[str, Any] = {"prompt": prompt, "type": q_type}
+        if q_type == "choice":
+            entry["options"] = [str(opt).strip() for opt in (item.get("options") or []) if str(opt).strip()]
+        normalized.append(entry)
+        if len(normalized) >= _MAX_BATCH_QUESTIONS:
+            break
+    return normalized
+
+
+def _render_batched_question_text(message: str, questions: list[dict[str, Any]]) -> str:
+    """Joined-text fallback: the header (if any) followed by each numbered question, so a client
+    that renders only free text still surfaces every facet."""
+    lines: list[str] = []
+    header = str(message or "").strip()
+    if header:
+        lines.append(header)
+    for index, question in enumerate(questions, start=1):
+        line = f"{index}. {question['prompt']}"
+        if question["type"] == "choice" and question.get("options"):
+            line += f" ({' / '.join(question['options'])})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+async def _ask_user_impl(
+    message: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    questions: Any = None,
+):
+    batch = _normalize_batch_questions(questions)
+    if not str(message or "").strip() and not batch:
         return _missing_required_arg_update("ask_user", "message", tool_call_id)
+    content = _render_batched_question_text(message, batch) if batch else message
 
     # ToolCall.id is the correct idempotency key here: inside the ToolNode body
     # state["last_agent_run_id"] still belongs to the prior analyze_node, not this invocation.
     # interrupt_kind="stream_response": session stays ACTIVE so the conversation resume path applies
     # (not the approval-gate path). The graph still halts via interrupt() — only the DB fields differ.
-    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=message)
-    user_content = await nodes._save_and_interrupt_ask(
-        state, config, message, run_id=tool_call_id, interrupt_kind="stream_response"
+    await _audit_interaction_tool_call(state, config, tool_name=f"ask_user:{tool_call_id}", message=content)
+    user_content = await interrupts._save_and_interrupt_ask(
+        state, config, content, run_id=tool_call_id, interrupt_kind="stream_response", questions=batch or None
     )
     return Command(
         update={
@@ -233,18 +316,29 @@ async def _ask_user_impl(message: str, state: WorkflowState, config: RunnableCon
 
 @tool
 async def ask_user(
-    message: Annotated[str, "One focused question, written in the user's locale."],
+    message: Annotated[
+        str,
+        "A short header/lead-in, written in the user's locale. May be empty when `questions` is given.",
+    ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    questions: Annotated[
+        list[dict] | None,
+        "Optional batch of up to 3 RELATED questions asked in one turn. Each item: "
+        "{prompt: str, type: 'choice'|'text'|'confirm', options?: [str] for choice}. Batch related "
+        "facets of one topic; ask serially (single question, empty list) only when one answer "
+        "determines the next question.",
+    ] = None,
 ) -> Command:
-    """Ask the user a clarifying question and pause for their reply.
+    """Ask the user for information and pause for their reply.
 
     Use when you need information you do not have and cannot reasonably infer. Do NOT use to deliver
     an opinion or assessment (use respond) or to present a prepared draft (use write_draft /
-    confirm_intent). Ask one focused question, not a checklist.
+    confirm_intent). Keep to ONE topic: either one focused question, or up to 3 related facets of
+    the same topic via `questions` — never an open-ended checklist.
     """
-    return await _ask_user_impl(message, state, config, tool_call_id)
+    return await _ask_user_impl(message, state, config, tool_call_id, questions)
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +365,7 @@ async def _confirm_intent_impl(
     # next turn sees user_confirmed=True — which unlocks the artifact tool menu in get_available_tools.
     # kind="assessment": this is a surfaced intent summary, not a clarifying question.
     await _audit_interaction_tool_call(state, config, tool_name=f"confirm_intent:{tool_call_id}", message=summary)
-    user_content = await nodes._save_and_interrupt_ask(
+    user_content = await interrupts._save_and_interrupt_ask(
         state, config, summary, run_id=tool_call_id, kind="assessment", interrupt_kind="stream_response"
     )
     return Command(
@@ -309,17 +403,122 @@ async def confirm_intent(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
-    """Body write_draft proposes for approval.
+def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
+    try:
+        contract = output_contract(artifact_type)
+    except ValueError:
+        return []
+    return [heading for heading in contract.required_headings if heading not in str(body or "")]
 
-    With the decision graph as source of truth the proposal is the rendered view, not the
-    model-supplied string. Empty graph falls back to the tool body so the user can still draft before
-    any nodes exist.
-    """
+
+def _has_complete_required_headings(artifact_type: str, body: str) -> bool:
+    return bool(str(body or "").strip()) and not _missing_required_headings(artifact_type, body)
+
+
+def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
+    """Pick the proposal body that is safe to canonicalize and persist."""
     decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        return render_view(decision_nodes, state.get("artifact_type") or "brd")
+    if not decision_nodes:
+        return body
+    artifact_type = state.get("artifact_type") or "brd"
+    rendered = render_view(decision_nodes, artifact_type)
+    if not _missing_required_headings(artifact_type, rendered):
+        return rendered
+    if _has_complete_required_headings(artifact_type, body):
+        return body
+    draft_body = state.get("draft_body") or ""
+    if _has_complete_required_headings(artifact_type, draft_body):
+        return draft_body
     return body
+
+
+def _proposal_based_on(state: WorkflowState, artifact_type: str) -> dict[str, str]:
+    predecessor_types = set(ancestor_types(artifact_type))
+    based_on: dict[str, str] = {}
+    for item in state.get("turn_context_artifacts") or []:
+        artifact_id = str(item.get("id") or "").strip()
+        artifact_type_value = str(item.get("type") or "").strip()
+        version_id = str(item.get("current_version_id") or "").strip()
+        if artifact_id and version_id and artifact_type_value in predecessor_types:
+            based_on[artifact_id] = version_id
+    return based_on
+
+
+def _proposal_lifecycle_metadata(state: WorkflowState, artifact_type: str) -> dict[str, Any]:
+    return {
+        "based_on": _proposal_based_on(state, artifact_type),
+        "decision_node_map": render_node_map(state.get("decision_nodes") or {}, artifact_type),
+    }
+
+
+AUTO_EVIDENCE_EXCERPT_MAX_CHARS = 1200
+
+
+def _evidence_excerpt(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) > AUTO_EVIDENCE_EXCERPT_MAX_CHARS:
+        return text[:AUTO_EVIDENCE_EXCERPT_MAX_CHARS]
+    return text
+
+
+def _proposal_source_evidence(state: WorkflowState, based_on: dict[str, str]) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in state.get("source_context") or []:
+        if not isinstance(item, dict):
+            continue
+        excerpt = _evidence_excerpt(item.get("excerpt"))
+        if not excerpt:
+            continue
+        source_document_id = str(item.get("source_document_id") or "").strip()
+        if source_document_id:
+            key = ("source_document", source_document_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            evidence.append(
+                {
+                    "source_document_id": source_document_id,
+                    "source_type": "document",
+                    "locator": f"source_document:{source_document_id}",
+                    "excerpt": excerpt,
+                    "confidence": 1.0,
+                    "metadata": {
+                        "source_kind": "source_document",
+                        "title": item.get("title"),
+                        "source_locator": item.get("locator"),
+                    },
+                }
+            )
+            continue
+
+        predecessor_artifact_id = str(item.get("artifact_id") or "").strip()
+        predecessor_version_id = str(item.get("predecessor_version_id") or "").strip()
+        if not predecessor_artifact_id or not predecessor_version_id:
+            continue
+        if based_on.get(predecessor_artifact_id) != predecessor_version_id:
+            continue
+        key = ("predecessor_version", predecessor_version_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(
+            {
+                "source_type": "ai_output",
+                "locator": f"artifact_version:{predecessor_version_id}",
+                "excerpt": excerpt,
+                "confidence": 1.0,
+                "metadata": {
+                    "source_kind": "predecessor_version",
+                    "predecessor_artifact_id": predecessor_artifact_id,
+                    "predecessor_version_id": predecessor_version_id,
+                    "title": item.get("title"),
+                },
+            }
+        )
+    return evidence
 
 
 def _dedupe_keep_order(items: list[str]) -> list[str]:
@@ -334,30 +533,6 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return result
 
 
-def _graph_assumption_signals(decision_nodes: dict) -> tuple[list[str], list[str]]:
-    """Derive (confirmed, pending) assumption-like statements from the decision graph.
-
-    The readiness gate must see assumptions the model recorded as nodes, not only those captured via
-    the legacy note tools — otherwise a graph-only session reports SUFFICIENT while unresolved nodes
-    remain (the dual-source-of-truth divergence). Pending = anything still awaiting the user:
-    needs_confirmation nodes plus open_questions that are neither parked (deferred on purpose) nor
-    already resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
-    """
-    confirmed: list[str] = []
-    pending: list[str] = []
-    for node in (decision_nodes or {}).values():
-        status = node.get("status")
-        kind = node.get("kind")
-        statement = node.get("statement") or ""
-        if status == "needs_confirmation":
-            pending.append(statement)
-        elif kind == "open_question" and status in {"proposed", None}:
-            pending.append(statement)
-        elif kind == "assumption" and status == "confirmed":
-            confirmed.append(statement)
-    return confirmed, pending
-
-
 def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     if state.get("decision_nodes"):
         return False
@@ -370,10 +545,33 @@ def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     return True
 
 
-async def _write_draft_impl(title: str, body: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
+async def _write_draft_impl(
+    title: str,
+    body: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    curation_action: str | None = None,
+    curation_justification: str | None = None,
+):
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
+    lifecycle_block = lifecycle_tool_block_reason(
+        state,
+        "write_draft",
+        {"curation_action": curation_action, "curation_justification": curation_justification},
+    )
+    if lifecycle_block:
+        log_gate_decision("lifecycle_tool_impl", "blocked", reason=lifecycle_block)
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code=lifecycle_block,
+                message=f"Cannot write_draft: lifecycle state blocks this proposal ({lifecycle_block}).",
+                recovery="Follow the Situation Report allowed actions before proposing a draft.",
+            ),
+            tool_call_id,
+        )
     if _cold_start_draft_blocked(state):
         return _recoverable_tool_update(
             RecoverableToolError(
@@ -429,21 +627,57 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
         if existing_tool_call:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
         else:
-            graph_confirmed, graph_pending = _graph_assumption_signals(state.get("decision_nodes") or {})
+            # Deterministic quality gate before the LLM path: violations block the proposal (no
+            # PROPOSE_ARTIFACTS interrupt) and are returned for the model's repair loop; warnings ride
+            # the synthesis metadata for the critique judge. Escape hatch: enforce_deterministic_gate.
+            gate = validate_proposal(focused.type.value, {"title": title, "body": body})
+            if settings.enforce_deterministic_gate and gate.violations:
+                log_gate_decision(
+                    "deterministic_proposal",
+                    "blocked",
+                    reason="; ".join(gate.violations),
+                    session_id=str(session_id),
+                )
+                return _recoverable_tool_update(
+                    RecoverableToolError(
+                        code="deterministic_gate_failed",
+                        message=(
+                            "Draft blocked by the deterministic quality gate. Fix these before proposing: "
+                            + "; ".join(gate.violations)
+                        ),
+                        user_fixable=True,
+                    ),
+                    tool_call_id,
+                )
+            log_gate_decision(
+                "deterministic_proposal",
+                "pass",
+                reason=f"{len(gate.warnings)} warning(s)" if gate.warnings else None,
+                session_id=str(session_id),
+            )
+            # Single source of truth: assumptions/open-questions are derived from the
+            # decision graph only — no parallel state fields, no key-fact reconciliation shim.
+            graph_confirmed, graph_pending = synthesis_assumption_signals(state.get("decision_nodes") or {})
+            lifecycle_metadata = _proposal_lifecycle_metadata(state, focused.type.value)
+            based_on = (
+                lifecycle_metadata.get("based_on") if isinstance(lifecycle_metadata.get("based_on"), dict) else {}
+            )
+            source_evidence = _proposal_source_evidence(state, based_on)
+            if curation_action or curation_justification:
+                lifecycle_metadata["curation_decision"] = {
+                    "action": str(curation_action or "").strip().upper(),
+                    "justification": str(curation_justification or "").strip(),
+                }
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
                 base_version_id=focused.current_version_id,
                 evidence_refs=[f"agent_run:{run_id}", f"tool_call:{tool_call_id}"],
                 inference_level="medium",
-                confirmed_assumptions=_dedupe_keep_order(
-                    [a["statement"] for a in (state.get("assumptions") or [])] + graph_confirmed
-                ),
-                pending_assumptions=_dedupe_keep_order(
-                    [q["question"] for q in (state.get("open_questions") or [])] + graph_pending
-                ),
+                confirmed_assumptions=_dedupe_keep_order(graph_confirmed),
+                pending_assumptions=_dedupe_keep_order(graph_pending),
+                deterministic_warnings=gate.warnings,
             )
-            body = canonical_artifact_body(body=body, synthesis_metadata=metadata)
             readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
                 body=body,
@@ -456,8 +690,11 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
                 "title": title,
                 "body": body,
                 "synthesis_metadata": metadata.model_dump(mode="json"),
+                "lifecycle_metadata": lifecycle_metadata,
                 "candidate_readiness": readiness,
             }
+            if source_evidence:
+                input_snapshot["source_evidence"] = source_evidence
             db.add(
                 AgentToolCall(
                     run_id=run_id,
@@ -477,7 +714,6 @@ async def _write_draft_impl(title: str, body: str, state: WorkflowState, config:
             "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
             "draft_body": body,
             "candidate_readiness": readiness,
-            "tool_errors": [],
         }
     )
 
@@ -489,25 +725,138 @@ async def write_draft(
         str,
         "Full draft body in Markdown following the artifact's output contract (required headings); "
         "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump. "
-        "Ignored once decision nodes exist — the proposal is rendered from the graph.",
+        "Used when the decision graph is still partial; a complete graph-rendered view takes precedence.",
     ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    curation_action: Annotated[
+        str | None,
+        "Required only for STALE artifacts: ADD | UPDATE | SUPERSEDE | RETIRE | NOOP.",
+    ] = None,
+    curation_justification: Annotated[
+        str | None,
+        "Required only for STALE artifacts: short reason explaining the chosen curation action.",
+    ] = None,
 ) -> Command:
     """Propose an artifact draft and pause for the user to review it.
 
     Use once enough confirmed information exists to produce a structured draft. Available only in the
     artifact phase (after confirm_intent). This is the propose/approval gate: when decision nodes
-    exist the proposal is the view rendered from the graph (record content via the decision-node tools,
-    not here). Without a graph, supply the body — it grows incrementally, never rewritten from scratch.
+    exist and cover the contract, the proposal is the view rendered from the graph (record content via
+    the decision-node tools, not here). Without a complete graph, supply the body — it grows
+    incrementally, never rewritten from scratch.
     """
-    return await _write_draft_impl(title, body, state, config, tool_call_id)
+    return await _write_draft_impl(title, body, state, config, tool_call_id, curation_action, curation_justification)
 
 
 # ---------------------------------------------------------------------------
 # finalize — parity for the `done` enum branch, with a HITL confirmation gate
 # ---------------------------------------------------------------------------
+
+
+def _open_blocker_questions(state: WorkflowState) -> list[dict[str, Any]]:
+    """Parked open_questions whose blockers are resolved but the question itself is still unanswered.
+
+    These are the resurfaced/actionable questions (see scan_parked_questions); dismissed or answered
+    nodes are excluded by construction (dismiss sets status to "dismissed", never "parked").
+
+    Short-circuits when the decision graph is disabled: the only tools that clear a blocker
+    (update_decision_node / dismiss_question) are gated on the same flag, so gating finalize while
+    they are unavailable would wedge the session with no path out.
+    """
+    if not settings.decision_graph_enabled:
+        return []
+    return scan_parked_questions(state.get("decision_nodes") or {})
+
+
+# --- Executive summary synthesis (BRD finalize) -----------------------------
+# executive_summary is no longer elicited; it is synthesized from the BRD's
+# vision/problem/scope at finalize and promoted to a project field.
+_EXEC_SUMMARY_SOURCES = ("problem_statement", "vision_objectives", "scope_capabilities")
+
+
+def synthesize_executive_summary(sources: dict[str, str]) -> str:
+    """Assemble a one-paragraph executive summary from BRD source sections.
+
+    Deterministic template over problem/vision/scope, isolated so it can be
+    swapped for an LLM synthesis and stubbed in tests. The finalize hook calls
+    it exactly once (see `_persist_executive_summary_draft`), so even a
+    non-deterministic implementation yields a stable persisted value across an
+    interrupt/resume cycle.
+    """
+    labels = {
+        "problem_statement": "Problem",
+        "vision_objectives": "Vision & objectives",
+        "scope_capabilities": "Scope",
+    }
+    parts = [
+        f"{labels[key]}: {(sources.get(key) or '').strip()}"
+        for key in _EXEC_SUMMARY_SOURCES
+        if (sources.get(key) or "").strip()
+    ]
+    return " ".join(parts)
+
+
+async def _load_accepted_bodies(db, project_id, types: tuple[str, ...]) -> dict[str, str]:
+    rows = (
+        await db.execute(
+            select(Artifact.type, ArtifactVersion.body)
+            .join(ArtifactVersion, Artifact.current_version_id == ArtifactVersion.id)
+            .where(
+                Artifact.project_id == project_id,
+                Artifact.type.in_(list(types)),
+                Artifact.status == ArtifactStatus.ACCEPTED,
+            )
+        )
+    ).all()
+    return {getattr(t, "value", t): (body or "") for t, body in rows}
+
+
+async def _persist_executive_summary_draft(db, project_id) -> str | None:
+    """Resume-safe synthesis: compute and persist the executive summary once.
+
+    If the project already carries an executive_summary — persisted on a prior
+    execution of this finalize node, before its interrupt — reuse it verbatim and
+    never recompute, so a non-deterministic synthesis cannot drift across resume.
+    The caller commits within its own DB block.
+    """
+    project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+    if project is None:
+        return None
+    if project.executive_summary:
+        return project.executive_summary
+    sources = await _load_accepted_bodies(db, project_id, _EXEC_SUMMARY_SOURCES)
+    draft = synthesize_executive_summary(sources)
+    if not draft.strip():
+        return None
+    project.executive_summary = draft
+    return draft
+
+
+async def _apply_executive_summary_resume(project_id, resume, session_factory) -> None:
+    """Apply the user's finalize confirmation to the synthesized draft.
+
+    Resume payload shape (BRD finalize only): {"executive_summary_action": "edit",
+    "executive_summary": "<text>"} overwrites; {"executive_summary_action": "reject"}
+    clears the field; anything else (approve/default) keeps the persisted draft.
+    """
+    if not isinstance(resume, dict):
+        return
+    action = resume.get("executive_summary_action")
+    if action not in ("edit", "reject"):
+        return
+    async with session_factory() as db:
+        project = (await db.execute(select(Project).where(Project.id == project_id))).scalar_one_or_none()
+        if project is None:
+            return
+        if action == "edit":
+            new_text = str(resume.get("executive_summary") or "").strip()
+            if new_text:
+                project.executive_summary = new_text
+        else:  # reject
+            project.executive_summary = None
+        await db.commit()
 
 
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
@@ -533,17 +882,36 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
             tool_call_id,
         )
 
+    # Loop-closure gate (pure state read, so it runs before any DB work): unresolved blocker-class
+    # parked questions must be answered or explicitly dismissed before finalize.
+    blockers = _open_blocker_questions(state)
+    if blockers:
+        offenders = "; ".join(f"{node['id']} ({node.get('statement', '')})" for node in blockers)
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="finalize_blocker_unresolved",
+                message=f"Cannot finalize: {len(blockers)} blocker question(s) are unresolved: {offenders}.",
+                recovery=(
+                    "Resolve each (answer + confirm its blocker) or call dismiss_question with a reason, "
+                    "then finalize."
+                ),
+            ),
+            tool_call_id,
+        )
+
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
+    artifact_type = state.get("artifact_type") or ""
+    project_id_raw = cfg.get("project_id")
+    finalize_project_id = uuid.UUID(str(project_id_raw)) if project_id_raw else None
+    exec_summary_draft: str | None = None
 
     async with session_factory() as db:
-        project_id_raw = cfg.get("project_id")
-        if project_id_raw:
-            project_id = uuid.UUID(str(project_id_raw))
-            artifact_type = state.get("artifact_type") or ""
+        if finalize_project_id is not None:
+            project_id = finalize_project_id
             missing_predecessors: list[str] = []
-            for pred_type in ARTIFACT_PREDECESSORS.get(artifact_type, []):
+            for pred_type in ancestor_types(artifact_type):
                 count = (
                     await db.execute(
                         select(func.count(Artifact.id)).where(
@@ -567,12 +935,27 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
                     tool_call_id,
                 )
 
+            # Finalizing the BRD container synthesizes the executive summary from
+            # vision/problem/scope and persists it (once) BEFORE the interrupt, so
+            # the resume path reuses the confirmed draft instead of recomputing.
+            if artifact_type == "brd":
+                exec_summary_draft = await _persist_executive_summary_draft(db, project_id)
+
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
         await db.commit()
 
-    interrupt({"type": "finalize", "message": summary})
+    interrupt_payload: dict[str, Any] = {"type": "finalize", "message": summary}
+    if exec_summary_draft:
+        interrupt_payload["executive_summary"] = exec_summary_draft
+    resume = interrupt(interrupt_payload)
+
+    # Apply the user's confirmation of the synthesized executive summary (edit/reject);
+    # approve/default keeps the persisted draft. Runs once (finalize resumes once).
+    if artifact_type == "brd" and finalize_project_id is not None:
+        await _apply_executive_summary_resume(finalize_project_id, resume, session_factory)
+
     return Command(update={"messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)]})
 
 
@@ -611,14 +994,29 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
         )
 
     # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
-    # Beyond that, tagged lines (ASSUMPTION:/RISK:/OPEN_QUESTION:) are parsed into structured state
-    # objects and appended to the accumulating lists so validators and the finalize gate can query
-    # them. Append (prior + new) since these channels have no reducer.
+    # Beyond that, tagged lines are parsed into structured objects. risks/key_facts carry additive
+    # reducers, so emit ONLY the new entries — returning prior+new would re-append every existing
+    # entry through the reducer. ASSUMPTION:/OPEN_QUESTION: lines instead create decision nodes
+    # because the graph is the single source of truth for assumptions/open-questions — assumptions
+    # land needs_confirmation (agent-authored, not user-confirmed), open_questions proposed.
     extracted = extract_structured_objects(content)
     update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
-    for bucket in ("assumptions", "risks", "open_questions", "key_facts"):
+    for bucket in ("risks", "key_facts"):
         if extracted[bucket]:
-            update[bucket] = [*(state.get(bucket) or []), *extracted[bucket]]
+            update[bucket] = extracted[bucket]
+
+    new_nodes: dict[str, Any] = {}
+    origin = _node_origin(state, None)
+    for assumption in extracted["assumptions"]:
+        node = create_node(
+            kind="assumption", statement=assumption["statement"], origin=origin, status="needs_confirmation"
+        )
+        new_nodes[node["id"]] = node
+    for question in extracted["open_questions"]:
+        node = create_node(kind="open_question", statement=question["question"], origin=origin, status="proposed")
+        new_nodes[node["id"]] = node
+    if new_nodes:
+        update["decision_nodes"] = {**(state.get("decision_nodes") or {}), **new_nodes}
     return Command(update=update)
 
 
@@ -672,6 +1070,32 @@ def _decision_graph_off_update(tool_name: str, tool_call_id: str) -> Command:
 
 def _node_origin(state: WorkflowState, technique: str | None) -> dict[str, Any]:
     return {"turn": state.get("turn_count") or 0, "by": "agent", "technique": technique, "source": None}
+
+
+def _section_content(statement: str | None, fields: dict[str, str] | None) -> str:
+    """Text a section write exposes to validation: the statement plus any table-cell values."""
+    parts = [str(statement or "")]
+    if fields:
+        parts.extend(str(value) for value in fields.values())
+    return "\n".join(part for part in parts if part)
+
+
+def _section_findings_update(state: WorkflowState, node: dict[str, Any]) -> dict[str, Any]:
+    """Validate the section a decision-node write touched and record findings.
+
+    Never blocks the write. Keyed by section heading, replace-on-write per key: a passing section
+    stores [] so a re-validation clears a prior defect through the merge reducer. A node with no
+    section has nothing to validate, so the findings map is left untouched.
+    """
+    section = node.get("section")
+    if not section:
+        return {}
+    from app.graphs.analysis.section_validation import validate_section
+
+    findings = validate_section(
+        state.get("artifact_type") or "brd", section, _section_content(node.get("statement"), node.get("fields"))
+    )
+    return {"section_findings": {**(state.get("section_findings") or {}), section: findings}}
 
 
 async def _create_decision_node_impl(
@@ -730,6 +1154,7 @@ async def _create_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=f"node {node['id']} ({kind})", tool_call_id=tool_call_id)],
+            **_section_findings_update(state, node),
         }
     )
 
@@ -778,6 +1203,7 @@ async def _update_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=f"node {node_id} updated", tool_call_id=tool_call_id)],
+            **_section_findings_update(state, updated[node_id]),
         }
     )
 
@@ -810,6 +1236,7 @@ async def _supersede_decision_node_impl(
         update={
             "decision_nodes": updated,
             "messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)],
+            **_section_findings_update(state, updated[new_id]),
         }
     )
 
@@ -896,6 +1323,60 @@ async def supersede_decision_node(
     return await _supersede_decision_node_impl(node_id, new_statement, cascade_mode, state, tool_call_id)
 
 
+async def _dismiss_question_impl(
+    node_id: str,
+    reason: str,
+    state: WorkflowState,
+    tool_call_id: str,
+) -> Command:
+    if not settings.decision_graph_enabled:
+        return _decision_graph_off_update("dismiss_question", tool_call_id)
+    if not str(node_id or "").strip():
+        return _missing_required_arg_update("dismiss_question", "node_id", tool_call_id)
+    if not str(reason or "").strip():
+        return _missing_required_arg_update("dismiss_question", "reason", tool_call_id)
+
+    nodes_state = state.get("decision_nodes") or {}
+    node = nodes_state.get(node_id)
+    if node is None or node.get("kind") != "open_question":
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="dismiss_target_invalid",
+                message=f"Cannot dismiss '{node_id}': not a known open_question node.",
+                recovery="Pass the id of a parked open_question from the feedback signals.",
+            ),
+            tool_call_id,
+        )
+
+    origin = _node_origin(state, None)
+    updated = dismiss_node(nodes_state, node_id, reason, origin)
+    # SECURITY: `reason` is agent/user-supplied text persisted as data on the node's audit trail
+    # (dismiss_node). The confirmation below is a fixed string — the reason is never echoed back as
+    # an instruction.
+    return Command(
+        update={
+            "decision_nodes": updated,
+            "messages": [ToolMessage(content=f"Dismissed {node_id}.", tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def dismiss_question(
+    node_id: Annotated[str, "id of the parked open_question node to dismiss."],
+    reason: Annotated[str, "Substantive reason for dismissing the question, for the audit trail."],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Dismiss a resurfaced open_question with an auditable reason instead of answering it.
+
+    Use when a parked question is no longer worth pursuing (superseded by other decisions, out of
+    scope, etc.) — not an escape hatch for work you should still do. The dismissal (reason + turn) is
+    recorded on the node and the question is removed from the resurfacing/blocker set.
+    """
+    return await _dismiss_question_impl(node_id, reason, state, tool_call_id)
+
+
 def _config_ids(config: RunnableConfig) -> tuple[uuid.UUID | None, uuid.UUID | None, Any]:
     cfg = config.get("configurable") or {}
     project_raw = cfg.get("project_id")
@@ -910,6 +1391,51 @@ async def _session_user_id(session_factory, session_id: uuid.UUID | None) -> uui
         return None
     async with session_factory() as db:
         return await db.scalar(select(AgentSession.created_by_id).where(AgentSession.id == session_id))
+
+
+def _proposal_run_id(state: WorkflowState, tool_call_id: str, tool_name: str) -> uuid.UUID:
+    run_id_raw = state.get("last_agent_run_id")
+    if run_id_raw:
+        return uuid.UUID(str(run_id_raw))
+    # record_run_and_dispatch uses "{run_uuid}-{index}" ids. This fallback keeps proposal tools
+    # idempotent even if a legacy caller did not thread last_agent_run_id into state.
+    try:
+        return uuid.UUID(str(tool_call_id)[:36])
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"{tool_name} requires last_agent_run_id in state — analyze_node must run first") from exc
+
+
+async def _save_approval_proposal(
+    *,
+    config: RunnableConfig,
+    run_id: uuid.UUID,
+    session_id: uuid.UUID,
+    tool_name: str,
+    input_snapshot: dict[str, Any],
+) -> None:
+    session_factory = config["configurable"]["session_factory"]
+    async with session_factory() as db:
+        existing = (
+            await db.execute(
+                select(AgentToolCall).where(
+                    AgentToolCall.run_id == run_id,
+                    AgentToolCall.tool_name == tool_name,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            db.add(
+                AgentToolCall(
+                    run_id=run_id,
+                    tool_name=tool_name,
+                    input_snapshot=input_snapshot,
+                    status=AgentToolCallStatus.PROPOSED,
+                )
+            )
+        session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+        session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS
+        await db.commit()
 
 
 async def _load_artifact_links(config: RunnableConfig) -> list[dict[str, str]]:
@@ -954,11 +1480,12 @@ async def _create_artifact_link_impl(
     source_artifact_id: str,
     target_artifact_id: str,
     relation_type: str,
+    state: WorkflowState,
     config: RunnableConfig,
     tool_call_id: str,
 ) -> Command:
     project_id, session_id, session_factory = _config_ids(config)
-    if project_id is None or session_factory is None:
+    if project_id is None or session_id is None or session_factory is None:
         return _tool_not_available_update("create_artifact_link", "missing project/session context", tool_call_id)
     try:
         body = ArtifactLinkCreateRequest(
@@ -968,27 +1495,31 @@ async def _create_artifact_link_impl(
         )
     except (ValueError, TypeError) as exc:
         return _tool_not_available_update("create_artifact_link", f"invalid input: {exc}", tool_call_id)
-    created_by_id = await _session_user_id(session_factory, session_id)
-    try:
-        async with session_factory() as db:
-            link = await ArtifactLinkService(db).create(
-                project_id=project_id,
-                body=body,
-                created_by_id=created_by_id,
-            )
-            await db.commit()
-    except ValueError as exc:
-        return _tool_not_available_update("create_artifact_link", str(exc), tool_call_id)
-    except Exception:
-        logger.exception("create_artifact_link failed")
-        return _tool_not_available_update(
-            "create_artifact_link", "internal error while creating artifact link", tool_call_id
-        )
+    run_id = _proposal_run_id(state, tool_call_id, "create_artifact_link")
+    proposal_tool_name = (
+        f"create_artifact_link:{body.source_artifact_id}:{body.target_artifact_id}:{body.relation_type.value}"
+    )
+    await _save_approval_proposal(
+        config=config,
+        run_id=run_id,
+        session_id=session_id,
+        tool_name=proposal_tool_name,
+        input_snapshot={
+            "source_artifact_id": str(body.source_artifact_id),
+            "target_artifact_id": str(body.target_artifact_id),
+            "relation_type": body.relation_type.value,
+            "metadata": body.metadata,
+        },
+    )
+    interrupt({"type": "propose_artifacts", "tool_name": "create_artifact_link"})
     return Command(
         update={
             "messages": [
                 ToolMessage(
-                    content=json.dumps(link.model_dump(mode="json"), ensure_ascii=False),
+                    content=(
+                        "create_artifact_link proposal is waiting for human approval; "
+                        "the link is not committed until approved."
+                    ),
                     tool_call_id=tool_call_id,
                 )
             ]
@@ -1001,11 +1532,96 @@ async def create_artifact_link_tool(
     source_artifact_id: Annotated[str, "Source artifact UUID."],
     target_artifact_id: Annotated[str, "Target artifact UUID."],
     relation_type: Annotated[str, "RelationType value, e.g. derives_from, depends_on, satisfies."],
+    state: Annotated[dict, InjectedState],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Create an artifact dependency link, rejecting duplicates and graph cycles."""
-    return await _create_artifact_link_impl(source_artifact_id, target_artifact_id, relation_type, config, tool_call_id)
+    """Propose an artifact dependency link and pause for human approval.
+
+    The link is not committed until the proposal is approved, so do not expect read_artifact_graph to
+    show it in the same turn.
+    """
+    return await _create_artifact_link_impl(
+        source_artifact_id,
+        target_artifact_id,
+        relation_type,
+        state,
+        config,
+        tool_call_id,
+    )
+
+
+async def _propose_retirement_impl(
+    artifact_id: str,
+    reason: str,
+    state: WorkflowState,
+    config: RunnableConfig,
+    tool_call_id: str,
+    superseded_by_artifact_id: str | None = None,
+) -> Command:
+    project_id, session_id, session_factory = _config_ids(config)
+    if project_id is None or session_id is None or session_factory is None:
+        return _tool_not_available_update("propose_retirement", "missing project/session context", tool_call_id)
+    if not str(reason or "").strip():
+        return _missing_required_arg_update("propose_retirement", "reason", tool_call_id)
+    try:
+        retired_id = uuid.UUID(str(artifact_id))
+        superseded_by_id = (
+            uuid.UUID(str(superseded_by_artifact_id)) if str(superseded_by_artifact_id or "").strip() else None
+        )
+    except (TypeError, ValueError) as exc:
+        return _tool_not_available_update("propose_retirement", f"invalid input: {exc}", tool_call_id)
+    run_id = _proposal_run_id(state, tool_call_id, "propose_retirement")
+    proposal_tool_name = f"propose_retirement:{retired_id}"
+    await _save_approval_proposal(
+        config=config,
+        run_id=run_id,
+        session_id=session_id,
+        tool_name=proposal_tool_name,
+        input_snapshot={
+            "artifact_id": str(retired_id),
+            "reason": str(reason).strip(),
+            "superseded_by_artifact_id": str(superseded_by_id) if superseded_by_id else None,
+        },
+    )
+    interrupt({"type": "propose_artifacts", "tool_name": "propose_retirement"})
+    return Command(
+        update={
+            "messages": [
+                ToolMessage(
+                    content=(
+                        "propose_retirement is waiting for human approval; "
+                        "the artifact is not archived until approved."
+                    ),
+                    tool_call_id=tool_call_id,
+                )
+            ]
+        }
+    )
+
+
+@tool("propose_retirement")
+async def propose_retirement_tool(
+    artifact_id: Annotated[str, "Artifact UUID to archive/retire."],
+    reason: Annotated[str, "Concise audit reason for retiring this artifact."],
+    state: Annotated[dict, InjectedState],
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    superseded_by_artifact_id: Annotated[str | None, "Optional replacement artifact UUID."] = None,
+) -> Command:
+    """Propose retiring an artifact and pause for human approval.
+
+    Approval archives the artifact, records the optional superseded_by reference, and rejects the
+    proposal if live downstream dependents still use the artifact.
+    """
+    return await _propose_retirement_impl(
+        artifact_id,
+        reason,
+        state,
+        config,
+        tool_call_id,
+        superseded_by_artifact_id,
+    )
 
 
 async def _run_impact_analysis_impl(
@@ -1072,12 +1688,12 @@ async def _respond_impl(message: str, mode: str, state: WorkflowState, config: R
     if not str(message or "").strip():
         return _missing_required_arg_update("respond", "message", tool_call_id)
 
-    # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id, ASK_HUMAN
-    # interrupt_type so the resume accepts a free-text reply); only the message kind and the carried
-    # mode differ, so the user sees an assessment rather than a question.
+    # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id). respond is a
+    # conversational pause like ask_user/confirm_intent, so it keeps the session ACTIVE with a
+    # STREAM_RESPONSE interrupt instead of entering the approval-gate WAITING state.
     await _audit_interaction_tool_call(state, config, tool_name=f"respond:{tool_call_id}", message=message)
-    user_content = await nodes._save_and_interrupt_ask(
-        state, config, message, run_id=tool_call_id, kind="assessment", mode=mode
+    user_content = await interrupts._save_and_interrupt_ask(
+        state, config, message, run_id=tool_call_id, kind="assessment", mode=mode, interrupt_kind="stream_response"
     )
     return Command(
         update={
@@ -1168,6 +1784,13 @@ async def _run_critique_impl(
     else:
         recommended_next_action = "revise"
 
+    log_gate_decision(
+        "critique",
+        quality_gate_result,
+        score=score,
+        reason=recommended_next_action,
+        session_id=cfg.get("thread_id"),
+    )
     report: QualityReport = {
         "mode": judged["mode"],
         "score": score,
@@ -1212,7 +1835,7 @@ async def run_critique(
 # ---------------------------------------------------------------------------
 
 # First four sections define a product brief; all seven define a PRD (addendum §6).
-_BRIEF_SECTIONS = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
+_BRIEF_SECTIONS = ("problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities")
 
 
 def _compute_recommendation(section_coverage: dict[str, str] | None, planning_track: str) -> dict[str, Any]:
@@ -1375,6 +1998,13 @@ async def _run_readiness_check_impl(
     readiness["blocking_gaps"] = report["blocking_gaps"]
     readiness["recommended_next_step"] = report["recommended_next_step"]
     summary = f"run_readiness_check -> ready={report['ready']} score={report['readiness_score']:.2f}"
+    log_gate_decision(
+        "readiness",
+        "ready" if report["ready"] else "not_ready",
+        score=report["readiness_score"],
+        reason=report["recommended_next_step"],
+        session_id=cfg.get("thread_id"),
+    )
     return Command(
         update={
             "readiness": readiness,
@@ -1409,6 +2039,46 @@ async def run_readiness_check(
 # Cap a single read so a large body cannot dominate the analyze prompt; the head is enough to orient,
 # and a focused draft is reached through write_draft/current_draft_body, not this tool.
 READ_ARTIFACT_MAX_CHARS = 8000
+READ_SOURCE_DOCUMENT_MAX_CHARS = 8000
+READ_SOURCE_DOCUMENT_MAX_ITEMS = 3
+
+
+def _read_artifact_source_context(result: dict[str, Any], excerpt: str) -> list[dict[str, Any]]:
+    version_id = str(result.get("current_version_id") or "").strip()
+    artifact_id = str(result.get("artifact_id") or "").strip()
+    if not version_id or not artifact_id or not excerpt.strip():
+        return []
+    return [
+        {
+            "source_kind": "predecessor_version",
+            "artifact_id": artifact_id,
+            "predecessor_version_id": version_id,
+            "title": result.get("title"),
+            "locator": f"artifact_version:{version_id}",
+            "excerpt": excerpt,
+            "truncated": bool(result.get("truncated")),
+        }
+    ]
+
+
+def _source_document_source_context(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for document in documents:
+        excerpt = str(document.get("excerpt") or "").strip()
+        source_document_id = str(document.get("id") or "").strip()
+        if not source_document_id or not excerpt:
+            continue
+        entries.append(
+            {
+                "source_kind": "source_document",
+                "source_document_id": source_document_id,
+                "title": document.get("title"),
+                "locator": document.get("locator"),
+                "excerpt": excerpt,
+                "truncated": bool(document.get("truncated")),
+            }
+        )
+    return entries
 
 
 async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_call_id: str):
@@ -1440,12 +2110,21 @@ async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_cal
 
     if result is None:
         content = f"read_artifact: artifact not found {artifact_id} (or has no content yet) in project."
+        source_context = []
     else:
         body = result["body"] or ""
+        excerpt = body[:READ_ARTIFACT_MAX_CHARS]
         if len(body) > READ_ARTIFACT_MAX_CHARS:
-            body = body[:READ_ARTIFACT_MAX_CHARS] + "\n\n…(remaining content truncated)"
+            body = excerpt + "\n\n…(remaining content truncated)"
+            result = {**result, "truncated": True}
+        else:
+            body = excerpt
         content = f"# {result['title']}\n\n{body}"
-    return Command(update={"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]})
+        source_context = _read_artifact_source_context(result, excerpt)
+    update: dict[str, Any] = {"messages": [ToolMessage(content=content, tool_call_id=tool_call_id)]}
+    if source_context:
+        update["source_context"] = source_context
+    return Command(update=update)
 
 
 @tool
@@ -1463,6 +2142,76 @@ async def read_artifact(
     return await _read_artifact_impl(id, config, tool_call_id)
 
 
+def _normalize_source_document_ids(ids: Any) -> tuple[bool, list[uuid.UUID], list[str]]:
+    if ids is None:
+        return False, [], []
+    if isinstance(ids, str):
+        raw_items = [ids]
+    else:
+        try:
+            raw_items = list(ids or [])
+        except TypeError:
+            raw_items = [ids]
+    parsed: list[uuid.UUID] = []
+    invalid: list[str] = []
+    for raw in raw_items[:READ_SOURCE_DOCUMENT_MAX_ITEMS]:
+        try:
+            parsed.append(uuid.UUID(str(raw)))
+        except (TypeError, ValueError):
+            invalid.append(str(raw))
+    return True, parsed, invalid
+
+
+async def _read_source_documents_impl(ids: Any, config: RunnableConfig, tool_call_id: str) -> Command:
+    cfg = config["configurable"]
+    project_id_raw = cfg.get("project_id")
+    session_factory = cfg.get("session_factory")
+    ids_supplied, parsed_ids, invalid_ids = _normalize_source_document_ids(ids)
+    documents: list[dict[str, Any]] = []
+    if session_factory is not None and project_id_raw is not None and (parsed_ids or not ids_supplied):
+        async with session_factory() as db:
+            documents = await read_source_documents_query(
+                db=db,
+                project_id=uuid.UUID(str(project_id_raw)),
+                source_document_ids=parsed_ids or None,
+                limit=READ_SOURCE_DOCUMENT_MAX_ITEMS,
+                max_chars=READ_SOURCE_DOCUMENT_MAX_CHARS,
+            )
+    payload = {
+        "documents": documents,
+        "invalid_ids": invalid_ids,
+        "strategy": {
+            "max_items": READ_SOURCE_DOCUMENT_MAX_ITEMS,
+            "max_chars_per_document": READ_SOURCE_DOCUMENT_MAX_CHARS,
+            "mode": "bounded_excerpt",
+        },
+    }
+    source_context = _source_document_source_context(documents)
+    update: dict[str, Any] = {
+        "messages": [ToolMessage(content=json.dumps(payload, ensure_ascii=False), tool_call_id=tool_call_id)]
+    }
+    if source_context:
+        update["source_context"] = source_context
+    return Command(update=update)
+
+
+@tool("read_source_documents")
+async def read_source_documents_tool(
+    config: RunnableConfig,
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    ids: Annotated[
+        list[str] | None,
+        "Optional source document UUIDs. Omit to read the latest project source documents as bounded excerpts.",
+    ] = None,
+) -> Command:
+    """Read bounded stored source-document text for this project.
+
+    Use before drafting when the user references uploaded/pasted source documents. The returned
+    excerpts are available to generation and are snapshotted as evidence only if a draft is proposed.
+    """
+    return await _read_source_documents_impl(ids, config, tool_call_id)
+
+
 # ---------------------------------------------------------------------------
 # get_available_tools — state-driven gate over the tool-loop
 # ---------------------------------------------------------------------------
@@ -1472,17 +2221,31 @@ async def read_artifact(
 # Sourced from config (max_critique_rounds) so the reflection-round cap is a single tunable.
 CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
+# Cap on LLM judge calls the orchestrator's diagnosis step may spend per turn escalating a
+# heuristic high-risk classification.
+DIAGNOSIS_JUDGE_CALLS_MAX = settings.max_diagnosis_judge_calls
+
 
 # ---------------------------------------------------------------------------
 # Elicitation surface — BMAD technique scaffolds + external knowledge
 # ---------------------------------------------------------------------------
 
-ELICIT_TECHNIQUES = ("5_whys", "reverse", "moscow", "first_principles", "comparable_products")
+ELICIT_TECHNIQUES = (
+    "5_whys",
+    "reverse",
+    "moscow",
+    "first_principles",
+    "comparable_products",
+    "pre_mortem",
+    "tree_of_thought",
+    "socratic_questioning",
+    "challenge_assumptions",
+    "event_storming",
+)
 
 
 def _duckduckgo_search(query: str) -> list[dict]:
     """Keyless DuckDuckGo HTML scrape. Best-effort; web_search wraps this in graceful fallback."""
-    import re
 
     import httpx
 
@@ -1578,7 +2341,7 @@ def _elicit_first_principles(seed: str) -> dict:
 
 
 def _elicit_comparable_products(seed: str, search_client) -> dict:
-    res = web_search(f"management software {seed}", client=search_client)
+    res = web_search(seed, client=search_client)
     results = res.get("results") or []
     if res.get("error") or not results:
         return {
@@ -1592,11 +2355,70 @@ def _elicit_comparable_products(seed: str, search_client) -> dict:
                 }
             ],
             "source": "model_knowledge",
+            "evidence_source": "model_knowledge",
         }
     products = [
         {"name": r.get("title", ""), "model": r.get("snippet", ""), "relevance": f"Related to: {seed}"} for r in results
     ]
-    return {"technique": "comparable_products", "seed": seed, "products": products, "source": "web_search"}
+    return {
+        "technique": "comparable_products",
+        "seed": seed,
+        "products": products,
+        "source": "web_search",
+        "evidence_source": "web",
+    }
+
+
+def _elicit_pre_mortem(seed: str) -> dict:
+    return {
+        "technique": "pre_mortem",
+        "seed": seed,
+        "premise": f"Imagine '{seed}' has already failed six months from now.",
+        "failure_causes": [
+            {"cause": "Most likely cause of failure", "prevention_hint": "Turn into a guarded precondition."},
+            {"cause": "Second most likely cause of failure", "prevention_hint": "Turn into a guarded precondition."},
+            {"cause": "Overlooked/silent cause of failure", "prevention_hint": "Turn into a monitored assumption."},
+        ],
+    }
+
+
+def _elicit_tree_of_thought(seed: str) -> dict:
+    return {
+        "technique": "tree_of_thought",
+        "seed": seed,
+        "branches": [
+            {"path": "Conservative approach", "outcome_hint": "Lower risk, slower/narrower payoff."},
+            {"path": "Aggressive approach", "outcome_hint": "Higher risk, faster/broader payoff."},
+            {"path": "Hybrid approach", "outcome_hint": "Combine strengths, watch for added complexity."},
+        ],
+        "evaluation_hint": "Score each branch against feasibility and value, then pick or merge.",
+    }
+
+
+def _elicit_socratic_questioning(seed: str) -> dict:
+    return {
+        "technique": "socratic_questioning",
+        "seed": seed,
+        "questions": [
+            {"probe": f"What does '{seed}' actually mean in this context?", "targets": "clarification"},
+            {"probe": "What evidence supports this being true?", "targets": "assumption"},
+            {"probe": "What would change if this were false?", "targets": "implication"},
+        ],
+    }
+
+
+def _elicit_challenge_assumptions(seed: str) -> dict:
+    return {
+        "technique": "challenge_assumptions",
+        "seed": seed,
+        "assumptions_to_challenge": [
+            {
+                "assumption": f"Implicit assumption behind '{seed}'",
+                "counter_argument": "State the strongest case against it.",
+                "revised_statement": "Rewrite the requirement so it holds even if the assumption is false.",
+            },
+        ],
+    }
 
 
 def elicit(technique: str, seed: str, *, search_client=None) -> dict:
@@ -1616,7 +2438,15 @@ def elicit(technique: str, seed: str, *, search_client=None) -> dict:
         return _elicit_moscow(seed)
     if technique == "first_principles":
         return _elicit_first_principles(seed)
-    return _elicit_comparable_products(seed, search_client)
+    if technique == "comparable_products":
+        return _elicit_comparable_products(seed, search_client)
+    if technique == "pre_mortem":
+        return _elicit_pre_mortem(seed)
+    if technique == "tree_of_thought":
+        return _elicit_tree_of_thought(seed)
+    if technique == "socratic_questioning":
+        return _elicit_socratic_questioning(seed)
+    return _elicit_challenge_assumptions(seed)
 
 
 @tool("web_search")
@@ -1638,7 +2468,17 @@ async def web_search_tool(
 @tool("elicit")
 async def elicit_tool(
     technique: Annotated[
-        Literal["5_whys", "reverse", "moscow", "first_principles", "comparable_products"],
+        Literal[
+            "5_whys",
+            "reverse",
+            "moscow",
+            "first_principles",
+            "comparable_products",
+            "pre_mortem",
+            "tree_of_thought",
+            "socratic_questioning",
+            "challenge_assumptions",
+        ],
         "BMAD elicitation technique applied to the seed.",
     ],
     seed: Annotated[str, "Seed/topic to apply the technique to."],
@@ -1679,6 +2519,7 @@ def get_all_analyzer_tools() -> list:
         critique_note,
         explore_note,
         read_artifact,
+        read_source_documents_tool,
         run_critique,
         recommend_next_workflow,
         run_readiness_check,
@@ -1688,9 +2529,11 @@ def get_all_analyzer_tools() -> list:
         create_decision_node,
         update_decision_node,
         supersede_decision_node,
+        dismiss_question,
         run_impact_analysis,
         read_artifact_graph_tool,
         create_artifact_link_tool,
+        propose_retirement_tool,
     ]
 
 
@@ -1704,21 +2547,50 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     """
     report = state.get("quality_report")
     if not report or report.get("quality_gate_result") != "pass":
+        log_gate_decision("finalize", "blocked", reason="critique_not_passed")
         return False
     readiness = state.get("candidate_readiness")
     if not isinstance(readiness, dict) or readiness.get("state") != ArtifactReadinessState.SUFFICIENT:
+        log_gate_decision("finalize", "blocked", reason="readiness_not_sufficient")
         return False
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
+        log_gate_decision("finalize", "open", reason="rounds_cap")
         return True
     current_hash = hashlib.md5(_cached_draft_body(state).encode()).hexdigest()[:8]
-    return current_hash == state.get("last_critiqued_draft_hash")
+    if current_hash != state.get("last_critiqued_draft_hash"):
+        log_gate_decision("finalize", "blocked", reason="stale_draft")
+        return False
+    log_gate_decision("finalize", "open")
+    return True
+
+
+def _phase_signals(state: WorkflowState) -> PhaseSignals:
+    """State-derived facts the session-phase machine transitions on (single computation site)."""
+    has_draft = bool(_cached_draft_body(state).strip())
+    critique_started = bool(state.get("critique_rounds") or 0) or bool(state.get("quality_report"))
+    return PhaseSignals(
+        user_confirmed=state.get("user_confirmed") is not None,
+        has_draft=has_draft,
+        has_evidence=bool(state.get("decision_nodes")) or bool(state.get("session_elicit_count") or 0),
+        critique_started=critique_started,
+        # Only consult the finalize gate when it can matter — it logs each evaluation.
+        finalize_open=bool(has_draft and critique_started and _finalize_gate_open(state)),
+    )
+
+
+def current_session_phase(state: WorkflowState) -> str:
+    """The phase gating reads: orchestrator's persisted value, derived on the fly for legacy
+    checkpoints (resume paths can re-enter the ToolNode before orchestrator has ever run)."""
+    return state.get("session_phase") or derive_phase(_phase_signals(state))
 
 
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    The menu is intentionally broad. The only hard safety gates left here are draft/quality gates:
-    `finalize` needs a passing current critique, and critique/readiness tools need a rendered draft.
+    The menu is intentionally broad. Two gate layers: the session-phase menu (see
+    app/graphs/session_phase.py — the single authority for which loop tools a phase offers) and
+    the draft/quality conditions (`finalize` needs a passing current critique, critique/readiness
+    tools need a rendered draft). POLICY in policy.py is documentation-only for loop tools.
     """
     tools = [
         ask_user,
@@ -1728,8 +2600,10 @@ def get_available_tools(state: WorkflowState) -> list:
         explore_note,
         confirm_intent,
         read_artifact,
+        read_source_documents_tool,
         read_artifact_graph_tool,
         create_artifact_link_tool,
+        propose_retirement_tool,
         run_impact_analysis,
         elicit_tool,
         web_search_tool,
@@ -1752,7 +2626,9 @@ def get_available_tools(state: WorkflowState) -> list:
     if has_draft and critique_rounds > 0:
         tools.append(run_readiness_check)
     tools.extend(_decision_graph_menu(state))
-    return tools
+    phase = current_session_phase(state)
+    phase_filtered = [t for t in tools if phase_allows(phase, t.name)]
+    return filter_lifecycle_menu_tools(phase_filtered, state)
 
 
 def _decision_graph_menu(state: WorkflowState) -> list:
@@ -1764,6 +2640,9 @@ def _decision_graph_menu(state: WorkflowState) -> list:
     if not settings.decision_graph_enabled:
         return []
     menu = [create_decision_node]
-    if state.get("decision_nodes"):
+    decision_nodes = state.get("decision_nodes") or {}
+    if decision_nodes:
         menu.extend([update_decision_node, supersede_decision_node])
+    if any(n.get("kind") == "open_question" and n.get("status") == "parked" for n in decision_nodes.values()):
+        menu.append(dismiss_question)
     return menu

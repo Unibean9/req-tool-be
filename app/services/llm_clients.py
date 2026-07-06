@@ -1,19 +1,25 @@
 import asyncio
+import base64
+import binascii
 import copy
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
+import httpx
+import jsonschema
 from langchain_core.messages import AIMessage
 
 from app.models.llm_provider import ProviderType
 
 DEFAULT_MODEL_BY_PROVIDER = {
     ProviderType.BEDROCK: "amazon.nova-lite-v1:0",
-    ProviderType.OPENAI: "gpt-4o-mini",
-    ProviderType.GOOGLE: "gemini-1.5-flash",
-    ProviderType.ANTHROPIC: "claude-3-5-haiku-20241022",
+    ProviderType.OPENAI: "gpt-5.4-mini",
+    ProviderType.GOOGLE: "gemini-3.5-flash",
+    ProviderType.ANTHROPIC: "claude-haiku-4-5-20251001",
+    ProviderType.MISTRAL: "mistral-large-latest",
 }
 
 
@@ -23,13 +29,21 @@ class LLMClientConfig:
     model: str
     region: str | None = None
     secret_key: str | None = None
+    base_url: str | None = None
 
 
 _TOOL_CALL_PROBE = {
     "name": "probe",
     "description": "Connectivity probe.",
-    "parameters": {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+    "parameters": {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    },
 }
+
+_PROVIDER_TOOL_CALLS_KEY = "provider_tool_calls"
 
 
 def _to_bedrock_probe_tool() -> dict[str, Any]:
@@ -52,7 +66,11 @@ def _to_anthropic_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": tool_schema["name"],
         "description": tool_schema.get("description", ""),
-        "input_schema": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+        "input_schema": _normalize_json_schema(
+            tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+            require_all_properties=False,
+        ),
+        "strict": True,
     }
 
 
@@ -63,7 +81,22 @@ def _to_openai_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
         "type": "function",
         "name": tool_schema["name"],
         "description": tool_schema.get("description", ""),
-        "parameters": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+        "parameters": _normalize_json_schema(
+            tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+            require_all_properties=True,
+        ),
+        "strict": True,
+    }
+
+
+def _to_openai_chat_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_schema["name"],
+            "description": tool_schema.get("description", ""),
+            "parameters": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+        },
     }
 
 
@@ -71,7 +104,7 @@ def _to_google_tool(tool_schema: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": tool_schema["name"],
         "description": tool_schema.get("description", ""),
-        "parameters": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
+        "parametersJsonSchema": tool_schema.get("parameters") or dict(_EMPTY_PARAMS),
     }
 
 
@@ -119,18 +152,81 @@ def _parse_openai_tool_response(data: dict[str, Any]) -> AIMessage:
     return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
 
 
+def _parse_openai_chat_tool_response(data: dict[str, Any]) -> AIMessage:
+    choices = data.get("choices") or []
+    if not choices:
+        return AIMessage(content="", tool_calls=[])
+
+    message = choices[0].get("message") or {}
+    tool_calls: list[dict[str, Any]] = []
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        tool_calls.append(
+            {
+                "id": call.get("id") or "",
+                "name": function.get("name") or "",
+                "args": _loads_args(function.get("arguments")),
+            }
+        )
+    return AIMessage(content=_chat_content_text(message.get("content")), tool_calls=tool_calls)
+
+
+def _google_part_thought_signature(part: dict[str, Any]) -> Any:
+    return part.get("thoughtSignature") or part.get("thought_signature")
+
+
+def _pack_google_thought_signature(value: Any) -> Any:
+    if isinstance(value, bytes):
+        return {"encoding": "base64", "value": base64.b64encode(value).decode("ascii")}
+    return value
+
+
+def _unpack_google_thought_signature(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    if value.get("encoding") != "base64" or not isinstance(value.get("value"), str):
+        return value
+    try:
+        return base64.b64decode(value["value"], validate=True)
+    except (binascii.Error, ValueError):
+        return value
+
+
+def _google_tool_call_metadata(part: dict[str, Any], function_call: dict[str, Any]) -> dict[str, Any]:
+    google_metadata: dict[str, Any] = {}
+    call_id = function_call.get("id")
+    if call_id:
+        google_metadata["function_call_id"] = call_id
+    thought_signature = _google_part_thought_signature(part)
+    if thought_signature:
+        google_metadata["thoughtSignature"] = _pack_google_thought_signature(thought_signature)
+    if part.get("thought") is not None:
+        google_metadata["thought"] = part["thought"]
+    return {"google": google_metadata} if google_metadata else {}
+
+
 def _parse_google_tool_response(data: dict[str, Any]) -> AIMessage:
     candidates = data.get("candidates") or []
     tool_calls: list[dict[str, Any]] = []
     text_parts: list[str] = []
+    provider_tool_calls: dict[str, dict[str, Any]] = {}
     if candidates:
         for part in candidates[0].get("content", {}).get("parts") or []:
-            fn = part.get("functionCall")
+            fn = part.get("functionCall") or part.get("function_call")
             if fn:
-                tool_calls.append({"id": "", "name": fn.get("name") or "", "args": fn.get("args") or {}})
+                call_id = fn.get("id") or ""
+                tool_calls.append({"id": call_id, "name": fn.get("name") or "", "args": fn.get("args") or {}})
+                metadata = _google_tool_call_metadata(part, fn)
+                if metadata:
+                    provider_tool_calls[str(call_id or f"__index_{len(tool_calls) - 1}")] = metadata
             elif part.get("text"):
                 text_parts.append(part["text"])
-    return AIMessage(content=" ".join(p for p in text_parts if p).strip(), tool_calls=tool_calls)
+    additional_kwargs = {_PROVIDER_TOOL_CALLS_KEY: provider_tool_calls} if provider_tool_calls else {}
+    return AIMessage(
+        content=" ".join(p for p in text_parts if p).strip(),
+        tool_calls=tool_calls,
+        additional_kwargs=additional_kwargs,
+    )
 
 
 def _parse_bedrock_tool_response(data: dict[str, Any]) -> AIMessage:
@@ -159,11 +255,102 @@ def _loads_args(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _has_valid_probe_tool_call(tool_calls: list[dict[str, Any]]) -> bool:
+    for tool_call in tool_calls:
+        if tool_call.get("name") != _TOOL_CALL_PROBE["name"]:
+            continue
+        args = tool_call.get("args")
+        if not isinstance(args, dict):
+            continue
+        try:
+            jsonschema.validate(args, _TOOL_CALL_PROBE["parameters"])
+        except jsonschema.ValidationError:
+            continue
+        return True
+    return False
+
+
+def _plain_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump(by_alias=True, exclude_none=True)
+        if not isinstance(dumped, dict):
+            return {}
+        output_text = getattr(value, "output_text", None)
+        if output_text is not None and "output_text" not in dumped:
+            dumped["output_text"] = output_text
+        return dumped
+    return {}
+
+
+def _create_openai_sdk(*, api_key: str, timeout: float):
+    from openai import AsyncOpenAI
+
+    return AsyncOpenAI(api_key=api_key, timeout=timeout)
+
+
+def _create_anthropic_sdk(*, api_key: str, timeout: float):
+    from anthropic import AsyncAnthropic
+
+    return AsyncAnthropic(api_key=api_key, timeout=timeout)
+
+
+def _create_mistral_sdk(*, api_key: str, timeout: float):
+    _ = timeout
+    try:
+        from mistralai.client import Mistral
+    except ImportError:
+        from mistralai import Mistral
+
+    return Mistral(api_key=api_key)
+
+
+def _create_google_sdk(*, api_key: str, timeout: float):
+    from google import genai
+    from google.genai import types
+
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+
+
+async def _openai_create_response(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+    async with _create_openai_sdk(api_key=api_key, timeout=timeout) as client:
+        response = await client.responses.create(**body)
+    return _plain_dict(response)
+
+
+async def _mistral_create_chat_completion(
+    api_key: str, timeout: float, body: dict[str, Any], *, client: Any = None
+) -> dict[str, Any]:
+    def _complete() -> dict[str, Any]:
+        sdk_client = client if client is not None else _create_mistral_sdk(api_key=api_key, timeout=timeout)
+        return _plain_dict(sdk_client.chat.complete(**body))
+
+    return await asyncio.to_thread(_complete)
+
+
+async def _anthropic_create_message(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+    async with _create_anthropic_sdk(api_key=api_key, timeout=timeout) as client:
+        response = await client.messages.create(**body)
+    return _plain_dict(response)
+
+
+async def _google_generate_content(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+    client = _create_google_sdk(api_key=api_key, timeout=timeout)
+    async with client.aio as aio_client:
+        response = await aio_client.models.generate_content(
+            model=body["model"],
+            contents=body["contents"],
+            config=body.get("config"),
+        )
+    return _plain_dict(response)
+
+
 class LLMClient(Protocol):
     async def ping(self) -> str | None:
         pass
 
-    async def ping_tool_calling(self) -> bool:
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         pass
 
     async def generate(
@@ -184,46 +371,23 @@ class OpenAILLMClient:
         self.config = config
 
     async def ping(self) -> str | None:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-                json={"model": self.config.model, "input": "ping", "max_output_tokens": 5},
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await _openai_create_response(
+            self.config.api_key,
+            5.0,
+            {"model": self.config.model, "input": "ping", "max_output_tokens": 5},
+        )
         return data.get("output_text")
 
-    async def ping_tool_calling(self) -> bool:
-        import httpx
-
-        # Responses API tool calling: "tools" array with function type
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         body = {
             "model": self.config.model,
-            "input": "ok",
+            "input": "Call the probe tool with ok set to true.",
             "max_output_tokens": 20,
-            "tools": [
-                {
-                    "type": "function",
-                    "name": _TOOL_CALL_PROBE["name"],
-                    "description": _TOOL_CALL_PROBE["description"],
-                    "parameters": _TOOL_CALL_PROBE["parameters"],
-                }
-            ],
-            "tool_choice": "required",
+            "tools": [_to_openai_tool(_TOOL_CALL_PROBE)],
+            "tool_choice": "required" if tool_choice == "required" else "auto",
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
-        output = data.get("output") or []
-        return any(item.get("type") == "function_call" for item in output)
+        data = await _openai_create_response(self.config.api_key, 10.0, body)
+        return _has_valid_probe_tool_call(_parse_openai_tool_response(data).tool_calls)
 
     async def generate(
         self,
@@ -235,8 +399,6 @@ class OpenAILLMClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
-        import httpx
-
         if tools:
             return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
@@ -249,14 +411,7 @@ class OpenAILLMClient:
         if response_format:
             body["text"] = {"format": _responses_json_schema_format(response_format)}
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await _openai_create_response(self.config.api_key, 30.0, body)
 
         text = _extract_openai_text(data)
         return _parse_generate_text(text, response_format), _extract_openai_usage(data)
@@ -270,8 +425,6 @@ class OpenAILLMClient:
         *,
         tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
-        import httpx
-
         body = {
             "model": self.config.model,
             "input": _openai_messages(messages, system),
@@ -279,72 +432,33 @@ class OpenAILLMClient:
             "tools": [_to_openai_tool(t) for t in tools],
             "tool_choice": tool_choice,
         }
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.openai.com/v1/responses",
-                headers={"Authorization": f"Bearer {self.config.api_key}"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await _openai_create_response(self.config.api_key, 30.0, body)
         return _parse_openai_tool_response(data), _extract_openai_usage(data)
 
 
-class GoogleLLMClient:
+class ChatCompletionsLLMClient:
+    required_tool_choice = "required"
+
     def __init__(self, config: LLMClientConfig):
         self.config = config
 
     async def ping(self) -> str | None:
-        import httpx
+        data = await self._chat_completion(
+            5.0,
+            {"model": self.config.model, "messages": [{"role": "user", "content": "ping"}], "max_tokens": 5},
+        )
+        return _extract_openai_chat_text(data)
 
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
-                params={"key": self.config.api_key},
-                json={"contents": [{"parts": [{"text": "ping"}]}], "generationConfig": {"maxOutputTokens": 5}},
-            )
-            response.raise_for_status()
-            data = response.json()
-        candidates = data.get("candidates") or []
-        if not candidates:
-            return None
-        parts = candidates[0].get("content", {}).get("parts") or []
-        if not parts:
-            return None
-        return parts[0].get("text")
-
-    async def ping_tool_calling(self) -> bool:
-        import httpx
-
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         body = {
-            "contents": [{"role": "user", "parts": [{"text": "ok"}]}],
-            "tools": [
-                {
-                    "functionDeclarations": [
-                        {
-                            "name": _TOOL_CALL_PROBE["name"],
-                            "description": _TOOL_CALL_PROBE["description"],
-                            "parameters": _TOOL_CALL_PROBE["parameters"],
-                        }
-                    ]
-                }
-            ],
-            "toolConfig": {"functionCallingConfig": {"mode": "ANY"}},
-            "generationConfig": {"maxOutputTokens": 20},
+            "model": self.config.model,
+            "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
+            "max_tokens": 20,
+            "tools": [_to_openai_chat_tool(_TOOL_CALL_PROBE)],
+            "tool_choice": self._wire_tool_choice(tool_choice),
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
-                params={"key": self.config.api_key},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
-        candidates = data.get("candidates") or []
-        if not candidates:
-            return False
-        parts = candidates[0].get("content", {}).get("parts") or []
-        return any("functionCall" in p for p in parts)
+        data = await self._chat_completion(10.0, body)
+        return _has_valid_probe_tool_call(_parse_openai_chat_tool_response(data).tool_calls)
 
     async def generate(
         self,
@@ -356,31 +470,149 @@ class GoogleLLMClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
-        import httpx
-
         if tools:
             return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
-        generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
-        if response_format:
-            generation_config["responseMimeType"] = "application/json"
-            generation_config["responseSchema"] = response_format.get("schema", response_format)
-
-        body: dict[str, Any] = {
-            "contents": _google_contents(messages),
-            "generationConfig": generation_config,
+        body = {
+            "model": self.config.model,
+            "messages": _openai_chat_messages(messages, _system_with_schema_instruction(system, response_format)),
+            "max_tokens": max_tokens,
         }
-        if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
+        data = await self._chat_completion(30.0, body)
+        return _parse_generate_text(_extract_openai_chat_text(data), response_format), _extract_openai_chat_usage(data)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+    async def _generate_with_tools(
+        self,
+        messages: list[dict[str, Any]],
+        system: str | None,
+        max_tokens: int,
+        tools: list[dict[str, Any]],
+        *,
+        tool_choice: str = "auto",
+    ) -> tuple[AIMessage, dict[str, int] | None]:
+        body = {
+            "model": self.config.model,
+            "messages": _openai_chat_messages(messages, system),
+            "max_tokens": max_tokens,
+            "tools": [_to_openai_chat_tool(t) for t in tools],
+            "tool_choice": self._wire_tool_choice(tool_choice),
+        }
+        data = await self._chat_completion(30.0, body)
+        return _parse_openai_chat_tool_response(data), _extract_openai_chat_usage(data)
+
+    async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+        raise NotImplementedError
+
+    def _wire_tool_choice(self, tool_choice: str) -> str:
+        if tool_choice == "required":
+            return self.required_tool_choice
+        if tool_choice == "auto":
+            return "auto"
+        return tool_choice
+
+
+class CustomLLMClient(ChatCompletionsLLMClient):
+    async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+        if not self.config.base_url:
+            raise ValueError("base_url is required for custom provider")
+        request_body = {**body, "stream": False}
+        async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
-                params={"key": self.config.api_key},
-                json=body,
+                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json=request_body,
             )
             response.raise_for_status()
-            data = response.json()
+            return response.json()
+
+
+class MistralLLMClient(ChatCompletionsLLMClient):
+    required_tool_choice = "any"
+
+    def __init__(self, config: LLMClientConfig):
+        super().__init__(config)
+        self._sdk_client: Any = None
+
+    async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+        if self._sdk_client is None:
+            self._sdk_client = _create_mistral_sdk(api_key=self.config.api_key, timeout=timeout)
+        return await _mistral_create_chat_completion(self.config.api_key, timeout, body, client=self._sdk_client)
+
+
+class GoogleLLMClient:
+    def __init__(self, config: LLMClientConfig):
+        self.config = config
+
+    async def ping(self) -> str | None:
+        data = await _google_generate_content(
+            self.config.api_key,
+            10.0,
+            {
+                "model": self.config.model,
+                "contents": [{"parts": [{"text": "ping"}]}],
+                "config": {"maxOutputTokens": 5},
+            },
+        )
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return None
+        parts = candidates[0].get("content", {}).get("parts") or []
+        if not parts:
+            return None
+        return parts[0].get("text")
+
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
+        body = {
+            "model": self.config.model,
+            "contents": [{"role": "user", "parts": [{"text": "Call the probe tool with ok set to true."}]}],
+            "config": {
+                "tools": [
+                    {
+                        "functionDeclarations": [
+                            {
+                                "name": _TOOL_CALL_PROBE["name"],
+                                "description": _TOOL_CALL_PROBE["description"],
+                                "parametersJsonSchema": _TOOL_CALL_PROBE["parameters"],
+                            }
+                        ]
+                    }
+                ],
+                "toolConfig": {
+                    "functionCallingConfig": {"mode": "ANY" if tool_choice == "required" else "AUTO"}
+                },
+                "maxOutputTokens": 20,
+            },
+        }
+        data = await _google_generate_content(self.config.api_key, 10.0, body)
+        return _has_valid_probe_tool_call(_parse_google_tool_response(data).tool_calls)
+
+    async def generate(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        system: str | None,
+        max_tokens: int,
+        response_format: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str = "auto",
+    ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
+        if tools:
+            return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
+
+        config: dict[str, Any] = {"maxOutputTokens": max_tokens}
+        if response_format:
+            config["responseMimeType"] = "application/json"
+            config["responseSchema"] = response_format.get("schema", response_format)
+        if system:
+            config["systemInstruction"] = {"parts": [{"text": system}]}
+
+        body: dict[str, Any] = {
+            "model": self.config.model,
+            "contents": _google_contents(messages),
+            "config": config,
+        }
+
+        data = await _google_generate_content(self.config.api_key, 30.0, body)
 
         text = _extract_google_text(data)
         return _parse_generate_text(text, response_format), _extract_google_usage(data)
@@ -394,26 +626,19 @@ class GoogleLLMClient:
         *,
         tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
-        import httpx
-
-        # Google maps "auto" → AUTO (model decides), "required" → ANY (must call at least one).
         _GOOGLE_MODE = {"auto": "AUTO", "required": "ANY"}
         body: dict[str, Any] = {
+            "model": self.config.model,
             "contents": _google_contents(messages),
-            "tools": [{"functionDeclarations": [_to_google_tool(t) for t in tools]}],
-            "toolConfig": {"functionCallingConfig": {"mode": _GOOGLE_MODE.get(tool_choice, "AUTO")}},
-            "generationConfig": {"maxOutputTokens": max_tokens},
+            "config": {
+                "tools": [{"functionDeclarations": [_to_google_tool(t) for t in tools]}],
+                "toolConfig": {"functionCallingConfig": {"mode": _GOOGLE_MODE.get(tool_choice, "AUTO")}},
+                "maxOutputTokens": max_tokens,
+            },
         }
         if system:
-            body["systemInstruction"] = {"parts": [{"text": system}]}
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{self.config.model}:generateContent",
-                params={"key": self.config.api_key},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
+            body["config"]["systemInstruction"] = {"parts": [{"text": system}]}
+        data = await _google_generate_content(self.config.api_key, 30.0, body)
         return _parse_google_tool_response(data), _extract_google_usage(data)
 
 
@@ -422,46 +647,33 @@ class AnthropicLLMClient:
         self.config = config
 
     async def ping(self) -> str | None:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
-                json={"model": self.config.model, "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]},
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await _anthropic_create_message(
+            self.config.api_key,
+            5.0,
+            {"model": self.config.model, "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]},
+        )
         content = data.get("content") or []
         if not content:
             return None
         return content[0].get("text")
 
-    async def ping_tool_calling(self) -> bool:
-        import httpx
-
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         body = {
             "model": self.config.model,
             "max_tokens": 20,
-            "messages": [{"role": "user", "content": "ok"}],
+            "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
             "tools": [
                 {
                     "name": _TOOL_CALL_PROBE["name"],
                     "description": _TOOL_CALL_PROBE["description"],
                     "input_schema": _TOOL_CALL_PROBE["parameters"],
+                    "strict": True,
                 }
             ],
-            "tool_choice": {"type": "any"},
+            "tool_choice": {"type": "any"} if tool_choice == "required" else {"type": "auto"},
         }
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
-        return any(b.get("type") == "tool_use" for b in (data.get("content") or []))
+        data = await _anthropic_create_message(self.config.api_key, 10.0, body)
+        return _has_valid_probe_tool_call(_parse_anthropic_tool_response(data).tool_calls)
 
     async def generate(
         self,
@@ -473,8 +685,6 @@ class AnthropicLLMClient:
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto",
     ) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
-        import httpx
-
         if tools:
             return await self._generate_with_tools(messages, system, max_tokens, tools, tool_choice=tool_choice)
 
@@ -485,16 +695,9 @@ class AnthropicLLMClient:
         }
         final_system = _system_with_schema_instruction(system, response_format)
         if final_system:
-            body["system"] = final_system
+            body["system"] = _anthropic_system_blocks(final_system)
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
+        data = await _anthropic_create_message(self.config.api_key, 30.0, body)
 
         text = _extract_anthropic_text(data)
         return _parse_generate_text(text, response_format), _extract_anthropic_usage(data)
@@ -508,9 +711,6 @@ class AnthropicLLMClient:
         *,
         tool_choice: str = "auto",
     ) -> tuple[AIMessage, dict[str, int] | None]:
-        import httpx
-
-        # Anthropic maps "auto" → {"type": "auto"}, "required" → {"type": "any"}.
         _ANTHROPIC_CHOICE = {"auto": {"type": "auto"}, "required": {"type": "any"}}
         body: dict[str, Any] = {
             "model": self.config.model,
@@ -520,31 +720,43 @@ class AnthropicLLMClient:
             "tool_choice": _ANTHROPIC_CHOICE.get(tool_choice, {"type": "auto"}),
         }
         if system:
-            body["system"] = system
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": self.config.api_key, "anthropic-version": "2023-06-01"},
-                json=body,
-            )
-            response.raise_for_status()
-            data = response.json()
+            body["system"] = _anthropic_system_blocks(system)
+        data = await _anthropic_create_message(self.config.api_key, 30.0, body)
         return _parse_anthropic_tool_response(data), _extract_anthropic_usage(data)
 
 
 class BedrockLLMClient:
     def __init__(self, config: LLMClientConfig):
         self.config = config
+        self._iam_boto3_client: Any = None
+        self._iam_boto3_client_lock = threading.Lock()
+
+    def _get_iam_boto3_client(self) -> Any:
+        # Runs inside asyncio.to_thread() worker threads — run_critique can dispatch more than
+        # one concurrently via LangGraph's gather-based ToolNode, so the lazy-init check-then-set
+        # needs a real thread lock, not just an asyncio-level guard.
+        if self._iam_boto3_client is None:
+            with self._iam_boto3_client_lock:
+                if self._iam_boto3_client is None:
+                    import boto3
+
+                    self._iam_boto3_client = boto3.client(
+                        "bedrock-runtime",
+                        region_name=self.config.region or "us-east-1",
+                        aws_access_key_id=self.config.api_key,
+                        aws_secret_access_key=self.config.secret_key,
+                    )
+        return self._iam_boto3_client
 
     async def ping(self) -> str | None:
         if self.config.secret_key:
             return await self._ping_with_iam_keys()
         return await self._ping_with_api_key()
 
-    async def ping_tool_calling(self) -> bool:
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         if self.config.secret_key:
-            return await self._ping_tool_calling_with_iam_keys()
-        return await self._ping_tool_calling_with_api_key()
+            return await self._ping_tool_calling_with_iam_keys(tool_choice)
+        return await self._ping_tool_calling_with_api_key(tool_choice)
 
     async def generate(
         self,
@@ -571,14 +783,7 @@ class BedrockLLMClient:
 
     async def _ping_with_iam_keys(self) -> str | None:
         def _ping() -> str | None:
-            import boto3
-
-            client_kwargs: dict[str, Any] = {
-                "region_name": self.config.region or "us-east-1",
-                "aws_access_key_id": self.config.api_key,
-                "aws_secret_access_key": self.config.secret_key,
-            }
-            client = boto3.client("bedrock-runtime", **client_kwargs)
+            client = self._get_iam_boto3_client()
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "ping"}]}],
@@ -606,36 +811,34 @@ class BedrockLLMClient:
             data = response.json()
         return _extract_bedrock_text(data)
 
-    async def _ping_tool_calling_with_iam_keys(self) -> bool:
+    async def _ping_tool_calling_with_iam_keys(self, tool_choice: str = "required") -> bool:
         def _check() -> bool:
-            import boto3
-
-            client = boto3.client(
-                "bedrock-runtime",
-                region_name=self.config.region or "us-east-1",
-                aws_access_key_id=self.config.api_key,
-                aws_secret_access_key=self.config.secret_key,
-            )
+            client = self._get_iam_boto3_client()
+            tool_config: dict[str, Any] = {"tools": [_to_bedrock_probe_tool()]}
+            if tool_choice == "required":
+                tool_config["toolChoice"] = {"any": {}}
             response = client.converse(
                 modelId=self.config.model,
-                messages=[{"role": "user", "content": [{"text": "ok"}]}],
+                messages=[{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
                 inferenceConfig={"maxTokens": 20, "temperature": 0.0},
-                toolConfig={"tools": [_to_bedrock_probe_tool()], "toolChoice": {"any": {}}},
+                toolConfig=tool_config,
             )
-            content = response.get("output", {}).get("message", {}).get("content") or []
-            return any(b.get("toolUse") for b in content)
+            return _has_valid_probe_tool_call(_parse_bedrock_tool_response(response).tool_calls)
 
         return await asyncio.to_thread(_check)
 
-    async def _ping_tool_calling_with_api_key(self) -> bool:
+    async def _ping_tool_calling_with_api_key(self, tool_choice: str = "required") -> bool:
         import httpx
 
         region = self.config.region or "us-east-1"
         model_id = quote(self.config.model, safe="")
+        tool_config: dict[str, Any] = {"tools": [_to_bedrock_probe_tool()]}
+        if tool_choice == "required":
+            tool_config["toolChoice"] = {"any": {}}
         body = {
-            "messages": [{"role": "user", "content": [{"text": "ok"}]}],
+            "messages": [{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
             "inferenceConfig": {"maxTokens": 20, "temperature": 0.0},
-            "toolConfig": {"tools": [_to_bedrock_probe_tool()], "toolChoice": {"any": {}}},
+            "toolConfig": tool_config,
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
@@ -645,8 +848,7 @@ class BedrockLLMClient:
             )
             response.raise_for_status()
             data = response.json()
-        content = data.get("output", {}).get("message", {}).get("content") or []
-        return any(b.get("toolUse") for b in content)
+        return _has_valid_probe_tool_call(_parse_bedrock_tool_response(data).tool_calls)
 
     async def _generate_with_iam_keys(
         self,
@@ -659,14 +861,7 @@ class BedrockLLMClient:
         tool_choice: str = "auto",
     ) -> dict[str, Any]:
         def _generate() -> dict[str, Any]:
-            import boto3
-
-            client_kwargs: dict[str, Any] = {
-                "region_name": self.config.region or "us-east-1",
-                "aws_access_key_id": self.config.api_key,
-                "aws_secret_access_key": self.config.secret_key,
-            }
-            client = boto3.client("bedrock-runtime", **client_kwargs)
+            client = self._get_iam_boto3_client()
             converse_kwargs: dict[str, Any] = {
                 "modelId": self.config.model,
                 "messages": _bedrock_messages(messages),
@@ -731,6 +926,8 @@ class LLMClientFactory:
         ProviderType.OPENAI: OpenAILLMClient,
         ProviderType.GOOGLE: GoogleLLMClient,
         ProviderType.ANTHROPIC: AnthropicLLMClient,
+        ProviderType.MISTRAL: MistralLLMClient,
+        ProviderType.CUSTOM: CustomLLMClient,
     }
 
     @classmethod
@@ -742,14 +939,26 @@ class LLMClientFactory:
         model: str | None = None,
         region: str | None = None,
         secret_key: str | None = None,
+        base_url: str | None = None,
     ) -> LLMClient:
-        client_class = cls._client_classes[provider_type]
+        client_class = cls._client_classes.get(provider_type)
+        if client_class is None:
+            raise ValueError(f"Unsupported LLM provider type: {provider_type.value}")
+        if provider_type == ProviderType.CUSTOM:
+            if not model:
+                raise ValueError("model is required for custom provider")
+            if not base_url:
+                raise ValueError("base_url is required for custom provider")
+            resolved_model = model
+        else:
+            resolved_model = model or DEFAULT_MODEL_BY_PROVIDER[provider_type]
         return client_class(
             LLMClientConfig(
                 api_key=api_key,
                 secret_key=secret_key,
                 region=region,
-                model=model or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+                model=resolved_model,
+                base_url=base_url,
             )
         )
 
@@ -776,6 +985,13 @@ def _extract_openai_usage(data: dict[str, Any]) -> dict[str, int] | None:
     if not usage:
         return None
     return _normalize_usage(usage.get("input_tokens"), usage.get("output_tokens"), usage.get("total_tokens"))
+
+
+def _extract_openai_chat_usage(data: dict[str, Any]) -> dict[str, int] | None:
+    usage = data.get("usage")
+    if not usage:
+        return None
+    return _normalize_usage(usage.get("prompt_tokens"), usage.get("completion_tokens"), usage.get("total_tokens"))
 
 
 def _extract_anthropic_usage(data: dict[str, Any]) -> dict[str, int] | None:
@@ -961,51 +1177,18 @@ def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
     return nullable
 
 
-def _validate_json_schema(value: Any, schema: dict[str, Any], path: str = "$") -> None:
-    expected_type = schema.get("type")
-    if expected_type is not None and not _matches_json_type(value, expected_type):
-        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong type")
-    enum = schema.get("enum")
-    if enum is not None and value not in enum:
-        raise ValueError(f"LLM response does not match JSON Schema at {path}: wrong enum")
-    if value is None:
-        return
-    if isinstance(value, dict):
-        properties = schema.get("properties") or {}
-        required = schema.get("required") or []
-        missing = [key for key in required if key not in value]
-        if missing:
-            raise ValueError(f"LLM response does not match JSON Schema at {path}: missing {missing[0]}")
-        if schema.get("additionalProperties") is False:
-            extra = [key for key in value if key not in properties]
-            if extra:
-                raise ValueError(f"LLM response does not match JSON Schema at {path}: extra {extra[0]}")
-        for key, child_schema in properties.items():
-            if key in value:
-                _validate_json_schema(value[key], child_schema, f"{path}.{key}")
-    elif isinstance(value, list) and isinstance(schema.get("items"), dict):
-        for index, item in enumerate(value):
-            _validate_json_schema(item, schema["items"], f"{path}[{index}]")
+def _validate_json_schema(value: Any, schema: dict[str, Any]) -> None:
+    """Validate a parsed LLM payload against `schema` via the `jsonschema` library.
 
-
-def _matches_json_type(value: Any, expected_type: str | list[str]) -> bool:
-    if isinstance(expected_type, list):
-        return any(_matches_json_type(value, item) for item in expected_type)
-    if expected_type == "null":
-        return value is None
-    if expected_type == "object":
-        return isinstance(value, dict)
-    if expected_type == "array":
-        return isinstance(value, list)
-    if expected_type == "string":
-        return isinstance(value, str)
-    if expected_type == "number":
-        return isinstance(value, int | float) and not isinstance(value, bool)
-    if expected_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if expected_type == "boolean":
-        return isinstance(value, bool)
-    return True
+    Raises `ValueError` (not `jsonschema.ValidationError`) so the retry-on-mismatch paths that catch
+    `ValueError` are unchanged. Replaces a hand-rolled walker that silently ignored constraints such
+    as numeric bounds, nested `oneOf`, and other keywords, degrading judge output without explanation.
+    """
+    try:
+        jsonschema.validate(value, schema)
+    except jsonschema.ValidationError as exc:
+        location = "$" + "".join(f"[{part!r}]" if isinstance(part, str) else f"[{part}]" for part in exc.absolute_path)
+        raise ValueError(f"LLM response does not match JSON Schema at {location}: {exc.message}") from exc
 
 
 def _system_with_schema_instruction(system: str | None, response_format: dict[str, Any] | None) -> str | None:
@@ -1052,6 +1235,19 @@ def _tool_result_name(block: dict[str, Any]) -> str:
     return str(block.get("name") or "tool")
 
 
+def _google_provider_metadata(block: dict[str, Any]) -> dict[str, Any]:
+    provider_metadata = block.get("provider_metadata")
+    if not isinstance(provider_metadata, dict):
+        return {}
+    google_metadata = provider_metadata.get("google")
+    return dict(google_metadata) if isinstance(google_metadata, dict) else {}
+
+
+def _google_function_call_id(block: dict[str, Any]) -> str:
+    google_metadata = _google_provider_metadata(block)
+    return str(google_metadata.get("function_call_id") or _tool_use_id(block))
+
+
 def _openai_messages(messages: list[dict[str, Any]], system: str | None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     if system:
@@ -1088,6 +1284,80 @@ def _openai_messages(messages: list[dict[str, Any]], system: str | None) -> list
     return result
 
 
+def _openai_chat_messages(messages: list[dict[str, Any]], system: str | None) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    if system:
+        result.append({"role": "system", "content": system})
+    for item in messages:
+        role = _assistant_to_model_role(item["role"], "assistant")
+        content = item.get("content", "")
+        if not isinstance(content, list):
+            result.append({"role": role, "content": _content_text(content)})
+            continue
+
+        text_parts: list[str] = []
+        tool_calls: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        for block in _message_blocks(content):
+            block_type = block.get("type")
+            if block_type == "text":
+                text = _block_text(block)
+                if text:
+                    text_parts.append(text)
+            elif block_type == "tool_use":
+                tool_calls.append(
+                    {
+                        "id": _tool_use_id(block),
+                        "type": "function",
+                        "function": {
+                            "name": block.get("name") or "",
+                            "arguments": json.dumps(_tool_input(block), ensure_ascii=False),
+                        },
+                    }
+                )
+            elif block_type == "tool_result":
+                tool_results.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": _tool_use_id(block),
+                        "content": _block_text(block),
+                    }
+                )
+
+        if tool_calls:
+            result.append(
+                {
+                    "role": "assistant",
+                    "content": "\n".join(text_parts) if text_parts else None,
+                    "tool_calls": tool_calls,
+                }
+            )
+            result.extend(tool_results)
+        elif tool_results:
+            result.extend(tool_results)
+            if text_parts:
+                result.append({"role": role, "content": "\n".join(text_parts)})
+        else:
+            result.append({"role": role, "content": "\n".join(text_parts)})
+    return result
+
+
+def _chat_content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    text_parts: list[str] = []
+    for part in content:
+        if not isinstance(part, dict):
+            continue
+        if part.get("text") is not None:
+            text_parts.append(str(part["text"]))
+        elif part.get("type") in {"text", "output_text"} and part.get("content") is not None:
+            text_parts.append(str(part["content"]))
+    return " ".join(p for p in text_parts if p).strip()
+
+
 def _extract_openai_text(data: dict[str, Any]) -> str | None:
     if "output_text" in data:
         return data.get("output_text")
@@ -1099,6 +1369,14 @@ def _extract_openai_text(data: dict[str, Any]) -> str | None:
             if part.get("type") in {"output_text", "text"} and part.get("text") is not None:
                 return part["text"]
     return None
+
+
+def _extract_openai_chat_text(data: dict[str, Any]) -> str | None:
+    choices = data.get("choices") or []
+    if not choices:
+        return None
+    message = choices[0].get("message") or {}
+    return _chat_content_text(message.get("content"))
 
 
 def _anthropic_content(content: Any) -> str | list[dict[str, Any]]:
@@ -1142,6 +1420,16 @@ def _anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _anthropic_system_blocks(system: str) -> list[dict[str, Any]]:
+    """Wrap the system prompt as a single cache-eligible block.
+
+    `system` (get_instruction + artifact contract) is stable for the lifetime of a session, so
+    marking it with an ephemeral cache breakpoint lets Anthropic serve it from cache on turn 2+
+    instead of re-billing it as fresh input tokens every call.
+    """
+    return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+
+
 def _extract_anthropic_text(data: dict[str, Any]) -> str | None:
     content = data.get("content") or []
     for item in content:
@@ -1159,16 +1447,27 @@ def _google_parts(content: Any) -> list[dict[str, Any]]:
             if text:
                 result.append({"text": text})
         elif block_type == "tool_use":
-            result.append({"functionCall": {"name": block.get("name") or "", "args": _tool_input(block)}})
+            function_call = {"name": block.get("name") or "", "args": _tool_input(block)}
+            google_metadata = _google_provider_metadata(block)
+            call_id = _google_function_call_id(block)
+            if call_id:
+                function_call["id"] = call_id
+            part = {"functionCall": function_call}
+            thought_signature = google_metadata.get("thoughtSignature") or google_metadata.get("thought_signature")
+            if thought_signature:
+                part["thoughtSignature"] = _unpack_google_thought_signature(thought_signature)
+            if google_metadata.get("thought") is not None:
+                part["thought"] = google_metadata["thought"]
+            result.append(part)
         elif block_type == "tool_result":
-            result.append(
-                {
-                    "functionResponse": {
-                        "name": _tool_result_name(block),
-                        "response": {"content": _block_text(block)},
-                    }
-                }
-            )
+            function_response = {
+                "name": _tool_result_name(block),
+                "response": {"content": _block_text(block)},
+            }
+            call_id = _google_function_call_id(block)
+            if call_id:
+                function_response["id"] = call_id
+            result.append({"functionResponse": function_response})
     return result or [{"text": ""}]
 
 

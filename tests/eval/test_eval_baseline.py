@@ -20,6 +20,8 @@ import pytest
 from tests.eval import rubric
 from tests.eval.judge import judge_artifact, judge_multiple
 
+pytestmark = pytest.mark.eval
+
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 
@@ -84,6 +86,7 @@ async def test_baseline_runs_over_all_fixtures_with_mock(capsys):
 
 
 @pytest.mark.integration
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_baseline_with_real_judge(capsys):
     from tests.eval.config import judge_settings

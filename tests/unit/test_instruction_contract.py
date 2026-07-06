@@ -48,17 +48,19 @@ def test_no_shared_layer_duplicated_across_roles():
     assert ba_shared == pm_shared
 
 
-def test_taxonomy_uses_7_sections_not_9_slots():
+def test_taxonomy_uses_6_brd_sections_not_9_slots():
     """The taxonomy catalog moved out of the static prompt into the per-turn chain block
-    (memory/context holds evidence); the registry remains the 7-section source of truth."""
+    (memory/context holds evidence); the registry remains the 6-section BRD source of truth
+    (risks_issues merged into constraints_assumptions; executive_summary promoted)."""
     from app.documents.registry import all_item_types
 
     types = all_item_types()
     for section in (
-        "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
-        "business_rules", "constraints_assumptions", "risks_issues",
+        "problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities",
+        "business_rules", "constraints_assumptions",
     ):
         assert section in types, section
+    assert "risks_issues" not in types
     assert "why_now" not in types
     # The static prompt no longer dumps the full catalog or legacy mode phrasing.
     assert "qa | critique | explore | draft" not in _ba()
@@ -76,6 +78,18 @@ def test_tool_policy_references_current_tools():
         assert tool in instruction, tool
 
 
+def test_decision_tool_layer_matches_current_graph_and_elicit_contract():
+    instruction = _ba()
+
+    assert "When decision-graph tools" in instruction
+    assert "When decision-graph tools are not offered" in instruction
+    assert "body` argument is the fallback" in instruction
+    assert "ignored once any node exists" not in instruction
+    for technique in ("pre_mortem", "tree_of_thought", "socratic_questioning", "challenge_assumptions"):
+        assert technique in instruction
+    assert "On first contact" not in instruction
+
+
 def test_output_contract_does_not_restate_json_schema():
     instruction = _ba()
     # No raw JSON schema fragments embedded.
@@ -89,7 +103,8 @@ def test_bmad_method_layer_present_and_bounded():
     assert "BMAD Method" in instruction
     assert "brainstorm → brief → prd" in instruction
     # The whole static contract stays high-signal/short — a guard against re-bloating the system prompt.
-    assert len(instruction.split()) < 1700
+    # Ceiling re-baselined to 1900 when the deliberate 04-feedback-response layer was added; keep it tight.
+    assert len(instruction.split()) < 1900
 
 
 def test_get_instruction_falls_back_to_workflow_area():
@@ -122,6 +137,47 @@ def test_output_contract_carries_content_depth_rule():
     assert "evidence" in instruction
     assert "never paste the transcript" in instruction
     assert "needs_confirmation" in instruction
+
+
+# ---------------------------------------------------------------------------
+# Feedback response contract (04-feedback-response.md)
+# ---------------------------------------------------------------------------
+
+# Every signal key rendered by _build_feedback_control_block + the diagnosis block must have a
+# defined response row in the assembled contract. Kept in sync with prompt_assembly.py.
+_FEEDBACK_SIGNAL_MARKERS = (
+    "resurfaced_questions",
+    "depth_signal",
+    "sweep_gaps",
+    "created_parked_questions",
+    "stale_warning",
+    "stale_base_version",
+    "lifecycle_persist_rejection",
+    "candidate_readiness_rejection",
+    "dropped tools",
+    "out-of-phase tools",
+    "diagnosis_risk",
+    "tool_errors",
+)
+
+
+def test_feedback_response_layer_present_for_every_role():
+    for instruction in (_ba(), _pm()):
+        assert "Feedback Response" in instruction
+        assert "FEEDBACK CONTROL:" in instruction
+
+
+def test_feedback_response_layer_covers_every_rendered_signal():
+    instruction = _ba()
+    for marker in _FEEDBACK_SIGNAL_MARKERS:
+        assert marker in instruction, marker
+
+
+def test_feedback_response_layer_survives_pre_draft():
+    """Feedback signals fire before a draft exists, so the layer is kept when has_draft is False."""
+    result = get_instruction("brd", "product_analysis", None, context={"has_draft": False})
+    assert result is not None
+    assert "Feedback Response" in result
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,467 @@
+{
+  "scenario": "behavior-brd-happy-path",
+  "summary": {
+    "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+    "artifact_type": "intent",
+    "final_status": "completed",
+    "final_interrupt": null,
+    "brain_turns_consumed": 3
+  },
+  "steps": [
+    {
+      "step": 1,
+      "action": {
+        "type": "create_session",
+        "artifact_type": "intent"
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": null
+        },
+        "messages": [],
+        "tool_calls": [],
+        "state": {
+          "turn_count": null,
+          "critique_rounds": null,
+          "quality_report": null,
+          "diagnosis_signal": null,
+          "section_coverage": null,
+          "out_of_phase_tool_calls": null
+        }
+      }
+    },
+    {
+      "step": 2,
+      "action": {
+        "type": "send",
+        "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "active",
+          "interrupt_type": "stream_response"
+        },
+        "messages": [
+          {
+            "id": "d54ea330-5ac9-4d5a-80a7-2b3400d4f25e",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "3125315c-d2d7-4ac5-b3fa-2097c7d513a9",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Who is the primary user of the tool?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "1b4a2e2e-32d8-4e46-8714-81ddff3ac1cc-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          }
+        ],
+        "tool_calls": [],
+        "state": {
+          "turn_count": 1,
+          "critique_rounds": 0,
+          "quality_report": null,
+          "diagnosis_signal": {
+            "risk_level": "low",
+            "signals": [],
+            "escalation": "not_needed"
+          },
+          "section_coverage": {
+            "executive_summary": "missing",
+            "vision_objectives": "missing",
+            "problem_statement": "missing",
+            "stakeholder_register": "missing",
+            "scope_capabilities": "missing",
+            "business_rules": "missing",
+            "constraints_assumptions": "missing",
+            "risks_issues": "missing"
+          },
+          "out_of_phase_tool_calls": null
+        }
+      }
+    },
+    {
+      "step": 3,
+      "action": {
+        "type": "send",
+        "content": "Mainly university students studying in groups.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "active",
+          "interrupt_type": "stream_response"
+        },
+        "messages": [
+          {
+            "id": "d54ea330-5ac9-4d5a-80a7-2b3400d4f25e",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "3125315c-d2d7-4ac5-b3fa-2097c7d513a9",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Who is the primary user of the tool?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "1b4a2e2e-32d8-4e46-8714-81ddff3ac1cc-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "0cda3e4a-723c-4b1a-ac1c-cc09f87bd886",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Mainly university students studying in groups.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "e3a5e8e5-00c5-412d-b330-1e3642efe215",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Study-scheduling coordination tool for university student groups.",
+            "payload": {
+              "kind": "assessment",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "a37a015a-2955-43f4-8f1f-e8f269b61f45-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          }
+        ],
+        "tool_calls": [],
+        "state": {
+          "turn_count": 1,
+          "critique_rounds": 0,
+          "quality_report": null,
+          "diagnosis_signal": {
+            "risk_level": "low",
+            "signals": [
+              "low_coverage"
+            ],
+            "escalation": "not_needed"
+          },
+          "section_coverage": {
+            "executive_summary": "missing",
+            "vision_objectives": "missing",
+            "problem_statement": "missing",
+            "stakeholder_register": "missing",
+            "scope_capabilities": "missing",
+            "business_rules": "missing",
+            "constraints_assumptions": "missing",
+            "risks_issues": "missing"
+          },
+          "out_of_phase_tool_calls": null
+        }
+      }
+    },
+    {
+      "step": 4,
+      "action": {
+        "type": "send",
+        "content": "Dung roi, tiep tuc giup toi.",
+        "http_status": 200
+      },
+      "snapshot": {
+        "session": {
+          "status": "waiting_for_human",
+          "interrupt_type": "propose_artifacts"
+        },
+        "messages": [
+          {
+            "id": "d54ea330-5ac9-4d5a-80a7-2b3400d4f25e",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "3125315c-d2d7-4ac5-b3fa-2097c7d513a9",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Who is the primary user of the tool?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "1b4a2e2e-32d8-4e46-8714-81ddff3ac1cc-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "0cda3e4a-723c-4b1a-ac1c-cc09f87bd886",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Mainly university students studying in groups.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "e3a5e8e5-00c5-412d-b330-1e3642efe215",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Study-scheduling coordination tool for university student groups.",
+            "payload": {
+              "kind": "assessment",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "a37a015a-2955-43f4-8f1f-e8f269b61f45-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "368a1a53-2ef8-4c56-9e89-b1899210a07f",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Dung roi, tiep tuc giup toi.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "9186d31f-c407-4a53-b69f-5212af5d14ec",
+            "run_id": "a657034d-6827-4b32-b262-7a38280fc8b0",
+            "tool_name": "write_draft:94a2885c-1364-4192-b2e1-d05e5d4682d5",
+            "input_snapshot": {
+              "artifact_type": "vision_objectives",
+              "focused_artifact_id": "94a2885c-1364-4192-b2e1-d05e5d4682d5",
+              "base_version_id": "a5a9b07d-919a-4370-8a8b-d8e32b6d94f2",
+              "title": "Vision: study scheduling coordination",
+              "body": "## Vision\nThe product targets student groups that need a shared study scheduling tool to reduce schedule conflicts.\n\n## Objectives\n- Create study groups and sync personal calendars.\n- Suggest common free time slots for the whole group.\n- Increase group session attendance.\n\n## Success Metrics\n- Reduce coordination time from 30 minutes to under 10 minutes per week within 3 months.",
+              "synthesis_metadata": {
+                "artifact_type": "vision_objectives",
+                "focused_artifact_id": "94a2885c-1364-4192-b2e1-d05e5d4682d5",
+                "base_version_id": "a5a9b07d-919a-4370-8a8b-d8e32b6d94f2",
+                "evidence_refs": [
+                  "agent_run:a657034d-6827-4b32-b262-7a38280fc8b0",
+                  "tool_call:a657034d-6827-4b32-b262-7a38280fc8b0-0"
+                ],
+                "inference_level": "medium",
+                "confirmed_assumptions": [],
+                "pending_assumptions": [],
+                "deterministic_warnings": [],
+                "synthesis_source": "bmad_synthesis"
+              },
+              "candidate_readiness": {
+                "state": "sufficient",
+                "missing": [],
+                "needs_confirmation": [],
+                "inferred": [],
+                "blocking_reasons": [],
+                "can_persist": true
+              }
+            },
+            "status": "proposed",
+            "created_artifact_id": null,
+            "created_version_id": null,
+            "resolved_at": null,
+            "created_at": "2026-07-02T08:36:31",
+            "updated_at": "2026-07-02T08:36:31"
+          }
+        ],
+        "state": {
+          "turn_count": 1,
+          "critique_rounds": 0,
+          "quality_report": null,
+          "diagnosis_signal": {
+            "risk_level": "low",
+            "signals": [
+              "low_coverage"
+            ],
+            "escalation": "not_needed"
+          },
+          "section_coverage": {
+            "executive_summary": "missing",
+            "vision_objectives": "missing",
+            "problem_statement": "missing",
+            "stakeholder_register": "missing",
+            "scope_capabilities": "missing",
+            "business_rules": "missing",
+            "constraints_assumptions": "missing",
+            "risks_issues": "missing"
+          },
+          "out_of_phase_tool_calls": null
+        }
+      }
+    },
+    {
+      "step": 5,
+      "action": {
+        "type": "approve_all",
+        "resolved": [
+          {
+            "tool_call_id": "9186d31f-c407-4a53-b69f-5212af5d14ec",
+            "decision": "approve",
+            "http_status": 200
+          }
+        ]
+      },
+      "snapshot": {
+        "session": {
+          "status": "completed",
+          "interrupt_type": null
+        },
+        "messages": [
+          {
+            "id": "d54ea330-5ac9-4d5a-80a7-2b3400d4f25e",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "3125315c-d2d7-4ac5-b3fa-2097c7d513a9",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Who is the primary user of the tool?",
+            "payload": {
+              "kind": "question",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "1b4a2e2e-32d8-4e46-8714-81ddff3ac1cc-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "0cda3e4a-723c-4b1a-ac1c-cc09f87bd886",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Mainly university students studying in groups.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "e3a5e8e5-00c5-412d-b330-1e3642efe215",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "agent",
+            "content": "Study-scheduling coordination tool for university student groups.",
+            "payload": {
+              "kind": "assessment",
+              "locale": "vi",
+              "options": [],
+              "blocks": [],
+              "run_id": "a37a015a-2955-43f4-8f1f-e8f269b61f45-0"
+            },
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          },
+          {
+            "id": "368a1a53-2ef8-4c56-9e89-b1899210a07f",
+            "session_id": "6b18cc4d-fd02-49f8-972e-5ef6f4a03cad",
+            "role": "user",
+            "content": "Dung roi, tiep tuc giup toi.",
+            "payload": null,
+            "created_at": "2026-07-02T08:36:30",
+            "updated_at": "2026-07-02T08:36:30"
+          }
+        ],
+        "tool_calls": [
+          {
+            "id": "9186d31f-c407-4a53-b69f-5212af5d14ec",
+            "run_id": "a657034d-6827-4b32-b262-7a38280fc8b0",
+            "tool_name": "write_draft:94a2885c-1364-4192-b2e1-d05e5d4682d5",
+            "input_snapshot": {
+              "artifact_type": "vision_objectives",
+              "focused_artifact_id": "94a2885c-1364-4192-b2e1-d05e5d4682d5",
+              "base_version_id": "a5a9b07d-919a-4370-8a8b-d8e32b6d94f2",
+              "title": "Vision: study scheduling coordination",
+              "body": "## Vision\nThe product targets student groups that need a shared study scheduling tool to reduce schedule conflicts.\n\n## Objectives\n- Create study groups and sync personal calendars.\n- Suggest common free time slots for the whole group.\n- Increase group session attendance.\n\n## Success Metrics\n- Reduce coordination time from 30 minutes to under 10 minutes per week within 3 months.",
+              "synthesis_metadata": {
+                "artifact_type": "vision_objectives",
+                "focused_artifact_id": "94a2885c-1364-4192-b2e1-d05e5d4682d5",
+                "base_version_id": "a5a9b07d-919a-4370-8a8b-d8e32b6d94f2",
+                "evidence_refs": [
+                  "agent_run:a657034d-6827-4b32-b262-7a38280fc8b0",
+                  "tool_call:a657034d-6827-4b32-b262-7a38280fc8b0-0"
+                ],
+                "inference_level": "medium",
+                "confirmed_assumptions": [],
+                "pending_assumptions": [],
+                "deterministic_warnings": [],
+                "synthesis_source": "bmad_synthesis"
+              },
+              "candidate_readiness": {
+                "state": "sufficient",
+                "missing": [],
+                "needs_confirmation": [],
+                "inferred": [],
+                "blocking_reasons": [],
+                "can_persist": true
+              }
+            },
+            "status": "executed",
+            "created_artifact_id": "94a2885c-1364-4192-b2e1-d05e5d4682d5",
+            "created_version_id": "028d39e6-4200-46e2-b35a-0eeb75104d5b",
+            "resolved_at": "2026-07-02T08:36:31.247019",
+            "created_at": "2026-07-02T08:36:31",
+            "updated_at": "2026-07-02T08:36:31"
+          }
+        ],
+        "state": {
+          "turn_count": 1,
+          "critique_rounds": 0,
+          "quality_report": null,
+          "diagnosis_signal": {
+            "risk_level": "low",
+            "signals": [
+              "low_coverage"
+            ],
+            "escalation": "not_needed"
+          },
+          "section_coverage": {
+            "executive_summary": "missing",
+            "vision_objectives": "missing",
+            "problem_statement": "missing",
+            "stakeholder_register": "missing",
+            "scope_capabilities": "missing",
+            "business_rules": "missing",
+            "constraints_assumptions": "missing",
+            "risks_issues": "missing"
+          },
+          "out_of_phase_tool_calls": null
+        }
+      }
+    }
+  ],
+  "eval": []
+}

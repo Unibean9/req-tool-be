@@ -44,8 +44,9 @@ def test_business_alignment_has_guidance():
     assert isinstance(guidance, str) and guidance.strip()
 
 
-def test_risk_awareness_references_risks_issues_section():
-    assert "risks_issues" in rubric.RUBRIC_CRITERIA["risk_awareness"]["guidance"]
+def test_risk_awareness_references_constraints_assumptions_section():
+    # risks_issues merged into constraints_assumptions.
+    assert "constraints_assumptions" in rubric.RUBRIC_CRITERIA["risk_awareness"]["guidance"]
 
 
 def test_rubric_is_pure_no_llm_dependency():

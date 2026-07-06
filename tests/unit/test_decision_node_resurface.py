@@ -83,15 +83,21 @@ def test_brd_not_stable_with_needs_confirmation(decision_graph_factory):
     assert is_brd_stable(nodes) is False
 
 
-def test_completeness_sweep_identifies_prd_edge_case_gaps(decision_graph_factory):
+def test_completeness_sweep_identifies_prd_registry_gaps(decision_graph_factory):
     nodes = decision_graph_factory(
-        {"id": "R1", "kind": "fact", "statement": "Business rule: 1 visit / customer / day", "status": "confirmed"},
-        {"id": "F1", "kind": "scope", "statement": "Main flow: enter phone number and add points", "status": "confirmed"},
+        {
+            "id": "F1",
+            "kind": "fact",
+            "statement": "Functional Requirements are partially drafted.",
+            "status": "confirmed",
+            "section": "## Functional Requirements",
+        },
     )
 
     gaps = completeness_sweep(nodes, artifact_type="prd")
 
-    assert any("Edge-case" in gap for gap in gaps)
+    assert any("Business Capabilities" in gap for gap in gaps)
+    assert all("customer forgot phone number" not in gap for gap in gaps)
 
 
 def test_completeness_sweep_creates_parked_questions(decision_graph_factory):
@@ -107,7 +113,10 @@ def test_completeness_sweep_creates_parked_questions(decision_graph_factory):
 
 
 def test_completeness_sweep_deduplicates_existing_gaps(decision_graph_factory):
-    existing = "Edge-case: customer forgot phone number at purchase -> can points be added later?"
+    existing = (
+        "Need Business Capabilities for the PRD: "
+        "A business capability: the boundary of a domain or a major business flow."
+    )
     nodes = decision_graph_factory(
         {"id": "Q5", "kind": "open_question", "statement": existing, "status": "parked"},
     )
