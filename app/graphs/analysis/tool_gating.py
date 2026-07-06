@@ -74,7 +74,7 @@ def gate_model_selection(
     by the state-driven tool surface. Returns (model_tool_calls, gated_tools, dropped_tools,
     next_feedback, out_of_phase_tools)."""
     model_tool_calls = _model_tool_calls(ai_message)
-    raw_tools = [{"name": tc["name"], "args": dict(tc["args"])} for tc in model_tool_calls]
+    raw_tools = [_tool_call_for_gate(tc) for tc in model_tool_calls]
     phase = current_session_phase(state)
     out_of_phase_tools = [
         str(item.get("name") or "") for item in raw_tools if not phase_allows(phase, str(item.get("name") or ""))
@@ -114,14 +114,30 @@ def _build_tool_schemas(tools: list[BaseTool]) -> list[dict[str, Any]]:
 
 
 def _model_tool_calls(ai_message: AIMessage) -> list[dict[str, Any]]:
-    return [
-        {
+    provider_tool_calls = getattr(ai_message, "additional_kwargs", {}).get("provider_tool_calls") or {}
+    result: list[dict[str, Any]] = []
+    for index, tc in enumerate(getattr(ai_message, "tool_calls", None) or []):
+        tool_call = {
             "id": tc.get("id"),
             "name": tc.get("name") or "",
             "args": dict(tc.get("args") or {}),
         }
-        for tc in (getattr(ai_message, "tool_calls", None) or [])
-    ]
+        key = str(tc.get("id") or f"__index_{index}")
+        provider_metadata = provider_tool_calls.get(key)
+        if isinstance(provider_metadata, dict):
+            tool_call["provider_metadata"] = provider_metadata
+        result.append(tool_call)
+    return result
+
+
+def _tool_call_for_gate(tool_call: dict[str, Any]) -> dict[str, Any]:
+    result = {"name": tool_call.get("name") or "", "args": dict(tool_call.get("args") or {})}
+    if tool_call.get("id") is not None:
+        result["id"] = tool_call.get("id")
+    provider_metadata = tool_call.get("provider_metadata")
+    if isinstance(provider_metadata, dict):
+        result["provider_metadata"] = provider_metadata
+    return result
 
 
 def _ai_text_content(ai_message: AIMessage) -> str:
@@ -213,8 +229,8 @@ def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[d
     interrupt-bearing tools: keep the first interrupt plus side-effect-free notes, drop the rest.
     Tools still decide unavailable/missing-arg via a tool_result error.
     """
-    # Normalize to a stable {name, args} shape; the model's chosen tools are never substituted.
-    validated = [{"name": item.get("name") or "", "args": dict(item.get("args") or {})} for item in requested]
+    # Normalize to a stable dispatch shape; the model's chosen tools are never substituted.
+    validated = [_tool_call_for_gate(item) for item in requested]
 
     # Per-phase menu enforcement (defense in depth — the provider only sees in-phase schemas, but
     # replayed/edited selections can still arrive here out of phase).

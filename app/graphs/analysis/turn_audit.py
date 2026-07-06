@@ -222,7 +222,11 @@ async def record_run_and_dispatch(
                         args["message"] = _RESPOND_FALLBACK_BY_LOCALE.get(locale, _RESPOND_FALLBACK_BY_LOCALE["en"])
                     args["mode"] = args.get("mode") or "critique"
                 dispatched_tools.append({"name": tool, "args": args})
-                dispatched_tool_calls.append({"id": f"{run_id}-{i}", "name": tool, "args": args})
+                dispatched_tool_call = {"id": f"{run_id}-{i}", "name": tool, "args": args}
+                provider_metadata = item.get("provider_metadata")
+                if isinstance(provider_metadata, dict):
+                    dispatched_tool_call["provider_metadata"] = provider_metadata
+                dispatched_tool_calls.append(dispatched_tool_call)
         if not dispatched_tool_calls and _ai_text_content(ai_message):
             fallback_tool = _plain_response_tool(ai_message, locale)
             dispatched_tools.append(fallback_tool)

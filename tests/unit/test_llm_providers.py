@@ -452,14 +452,17 @@ async def test_update_non_custom_base_url_rejected(client, db_session, monkeypat
 @pytest.mark.asyncio
 async def test_ping_provider_passes_custom_base_url(db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "tool_choice_mode", "auto")
     crypto._get_fernet.cache_clear()
     captured = {}
 
     class FakeClient:
         async def ping(self):
-            return "pong"
+            captured["ping_called"] = True
+            raise TimeoutError()
 
-        async def ping_tool_calling(self):
+        async def ping_tool_calling(self, tool_choice="required"):
+            captured["tool_choice"] = tool_choice
             return True
 
     def fake_create(**kwargs):
@@ -478,12 +481,39 @@ async def test_ping_provider_passes_custom_base_url(db_session, monkeypatch):
 
     reply, tool_calling_supported = await _ping_provider(config)
 
-    assert reply == "pong"
+    assert reply is None
     assert tool_calling_supported is True
+    assert "ping_called" not in captured
     assert captured["provider_type"] == ProviderType.CUSTOM
     assert captured["api_key"] == "sk-custom"
     assert captured["model"] == "custom-model"
     assert captured["base_url"] == "https://custom.example/v1"
+    assert captured["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_ping_provider_propagates_tool_probe_errors(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+
+    class FakeClient:
+        async def ping(self):
+            return "pong"
+
+        async def ping_tool_calling(self, tool_choice="required"):
+            raise RuntimeError("tool probe rejected")
+
+    monkeypatch.setattr("app.services.llm_provider_service.LLMClientFactory.create", lambda **_kwargs: FakeClient())
+    config = LLMProviderConfig(
+        user_id=uuid.uuid4(),
+        provider_type=ProviderType.OPENAI,
+        name="openai",
+        model_name="model",
+        encrypted_api_key=crypto.encrypt_token("sk-custom"),
+    )
+
+    with pytest.raises(RuntimeError, match="tool probe rejected"):
+        await _ping_provider(config)
 
 
 @pytest.mark.asyncio

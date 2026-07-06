@@ -2,7 +2,7 @@ import json
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from app.models.llm_provider import ProviderType
 from app.services import llm_clients as llm_client_module
@@ -17,9 +17,14 @@ from app.services.llm_clients import (
     MistralLLMClient,
     OpenAILLMClient,
     _extract_bedrock_text,
+    _google_contents,
     _parse_generate_text,
+    _parse_google_tool_response,
     _plain_dict,
     _responses_json_schema_format,
+    _to_anthropic_tool,
+    _to_openai_chat_tool,
+    _to_openai_tool,
 )
 
 ANALYSIS_RESULT_SCHEMA = {
@@ -401,6 +406,19 @@ _ASK_TOOL = {
     "parameters": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]},
 }
 
+def test_strict_tool_schema_for_providers_that_support_it():
+    openai_tool = _to_openai_tool(_ASK_TOOL)
+    anthropic_tool = _to_anthropic_tool(_ASK_TOOL)
+    chat_tool = _to_openai_chat_tool(_ASK_TOOL)
+
+    assert openai_tool["strict"] is True
+    assert openai_tool["parameters"]["additionalProperties"] is False
+    assert openai_tool["parameters"]["required"] == ["message"]
+    assert anthropic_tool["strict"] is True
+    assert anthropic_tool["input_schema"]["additionalProperties"] is False
+    assert "strict" not in chat_tool["function"]
+
+
 _TOOL_RESPONSE_BY_PROVIDER = {
     OpenAILLMClient: {
         "output": [
@@ -458,6 +476,60 @@ _TOOL_RESPONSE_BY_PROVIDER = {
                             "id": "m1",
                             "type": "function",
                             "function": {"name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    },
+}
+
+
+_PROBE_TOOL_RESPONSE_BY_PROVIDER = {
+    OpenAILLMClient: {
+        "output": [
+            {"type": "function_call", "call_id": "p1", "name": "probe", "arguments": "{\"ok\": true}"},
+        ]
+    },
+    AnthropicLLMClient: {
+        "content": [{"type": "tool_use", "id": "p1", "name": "probe", "input": {"ok": True}}],
+    },
+    GoogleLLMClient: {
+        "candidates": [
+            {"content": {"parts": [{"functionCall": {"id": "p1", "name": "probe", "args": {"ok": True}}}]}}
+        ],
+    },
+    BedrockLLMClient: {
+        "output": {
+            "message": {"content": [{"toolUse": {"toolUseId": "p1", "name": "probe", "input": {"ok": True}}}]}
+        }
+    },
+    CustomLLMClient: {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "p1",
+                            "type": "function",
+                            "function": {"name": "probe", "arguments": "{\"ok\": true}"},
+                        }
+                    ],
+                }
+            }
+        ]
+    },
+    MistralLLMClient: {
+        "choices": [
+            {
+                "message": {
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "p1",
+                            "type": "function",
+                            "function": {"name": "probe", "arguments": "{\"ok\": true}"},
                         }
                     ],
                 }
@@ -596,6 +668,159 @@ async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, cl
         assert body["messages"][2]["content"][0] == {
             "toolResult": {"toolUseId": "call_1", "content": [{"text": "Da ghi nhan key fact."}]}
         }
+
+
+def test_google_function_call_replay_preserves_thought_signature_and_original_id():
+    from app.graphs.analysis.prompt_assembly import _client_message_from_state
+    from app.graphs.analysis.tool_gating import _model_tool_calls
+    from app.graphs.nodes import _dispatch_ai_message
+
+    model_message = _parse_google_tool_response(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {
+                                "functionCall": {
+                                    "id": "google-call-1",
+                                    "name": "confirm_intent",
+                                    "args": {"summary": "Need attendance workflow."},
+                                },
+                                "thoughtSignature": b"encrypted-signature",
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    stored_signature = model_message.additional_kwargs["provider_tool_calls"]["google-call-1"]["google"][
+        "thoughtSignature"
+    ]
+    assert stored_signature["encoding"] == "base64"
+    assert not isinstance(stored_signature, bytes)
+    model_tool_call = _model_tool_calls(model_message)[0]
+    dispatch_message = _dispatch_ai_message(
+        [
+            {
+                "id": "runtime-call-1",
+                "name": model_tool_call["name"],
+                "args": model_tool_call["args"],
+                "provider_metadata": model_tool_call["provider_metadata"],
+            }
+        ]
+    )
+
+    tool_names_by_id: dict[str, str] = {}
+    tool_provider_metadata_by_id: dict[str, dict] = {}
+    assistant_message = _client_message_from_state(
+        dispatch_message,
+        tool_names_by_id,
+        tool_provider_metadata_by_id,
+    )
+    tool_result_message = _client_message_from_state(
+        ToolMessage(content="Confirmed.", tool_call_id="runtime-call-1"),
+        tool_names_by_id,
+        tool_provider_metadata_by_id,
+    )
+
+    contents = _google_contents([assistant_message, tool_result_message])
+
+    function_call_part = contents[0]["parts"][0]
+    assert function_call_part["functionCall"]["id"] == "google-call-1"
+    assert function_call_part["thoughtSignature"] == b"encrypted-signature"
+    assert contents[1]["parts"][0]["functionResponse"]["id"] == "google-call-1"
+
+
+# ---------------------------------------------------------------------------
+# Health-check tool probe — verifies provider calls the expected probe tool with valid args.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("client_class", list(_PROBE_TOOL_RESPONSE_BY_PROVIDER))
+async def test_ping_tool_calling_accepts_valid_probe_call(monkeypatch, client_class):
+    recorder = _install_httpx_recorder(monkeypatch, _PROBE_TOOL_RESPONSE_BY_PROVIDER[client_class])
+    client = client_class(_client_config(client_class))
+
+    assert await client.ping_tool_calling("auto") is True
+
+    body = recorder.requests[0]["json"]
+    if client_class is OpenAILLMClient:
+        assert body["tool_choice"] == "auto"
+        assert body["tools"][0]["strict"] is True
+    elif client_class is AnthropicLLMClient:
+        assert body["tool_choice"] == {"type": "auto"}
+        assert body["tools"][0]["strict"] is True
+    elif client_class is GoogleLLMClient:
+        assert body["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
+    elif client_class is BedrockLLMClient:
+        assert "toolChoice" not in body["toolConfig"]
+    elif client_class is MistralLLMClient:
+        assert body["tool_choice"] == "auto"
+    else:
+        assert body["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider_payload",
+    [
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "p1",
+                                "type": "function",
+                                "function": {"name": "wrong_probe", "arguments": "{\"ok\": true}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "p1",
+                                "type": "function",
+                                "function": {"name": "probe", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "p1",
+                                "type": "function",
+                                "function": {"name": "probe", "arguments": "{\"ok\": \"yes\"}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        },
+    ],
+)
+async def test_ping_tool_calling_rejects_invalid_probe_call(monkeypatch, provider_payload):
+    _install_httpx_recorder(monkeypatch, provider_payload)
+    client = CustomLLMClient(_client_config(CustomLLMClient))
+
+    assert await client.ping_tool_calling() is False
 
 
 # ---------------------------------------------------------------------------
@@ -771,7 +996,7 @@ async def test_bedrock_tool_choice_required_sends_any(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_bedrock_ping_tool_calling_forces_any_tool_choice(monkeypatch):
-    recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
+    recorder = _install_httpx_recorder(monkeypatch, _PROBE_TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient])
     client = BedrockLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
 
     assert await client.ping_tool_calling() is True

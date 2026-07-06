@@ -39,7 +39,7 @@ class Settings(BaseSettings):
 
     # External web search for elicitation (comparable_products). "" disables it (graceful fallback to
     # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
-    search_provider: str = "duckduckgo"
+    search_provider: str = ""
 
     # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
     # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.

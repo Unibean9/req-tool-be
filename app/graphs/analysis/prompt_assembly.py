@@ -68,8 +68,9 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
     """
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
+    tool_provider_metadata_by_id: dict[str, dict[str, Any]] = {}
     for raw in _analyzer_history_messages(state):
-        message = _client_message_from_state(raw, tool_names_by_id)
+        message = _client_message_from_state(raw, tool_names_by_id, tool_provider_metadata_by_id)
         if message is not None:
             _append_client_message(messages, message)
     _append_analyzer_prompt(messages, prompt)
@@ -185,13 +186,19 @@ def _append_latest_user_emphasis(messages: list[dict[str, Any]], human_text: str
         messages.append({"role": "user", "content": [block]})
 
 
-def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -> dict[str, Any] | None:
+def _client_message_from_state(
+    message: Any,
+    tool_names_by_id: dict[str, str],
+    tool_provider_metadata_by_id: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    provider_metadata_by_id = tool_provider_metadata_by_id if tool_provider_metadata_by_id is not None else {}
     if isinstance(message, dict):
         role = str(message.get("role") or "user")
         content = message.get("content", "")
         tool_call_id = message.get("tool_call_id")
         name = message.get("name")
         tool_calls = message.get("tool_calls") or []
+        additional_kwargs = message.get("additional_kwargs") or {}
     else:
         raw_role = getattr(message, "type", "user")
         role = {"human": "user", "ai": "assistant", "tool": "tool"}.get(raw_role, str(raw_role))
@@ -199,19 +206,25 @@ def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -
         tool_call_id = getattr(message, "tool_call_id", None)
         name = getattr(message, "name", None)
         tool_calls = getattr(message, "tool_calls", None) or []
+        additional_kwargs = getattr(message, "additional_kwargs", {}) or {}
+    provider_tool_calls = additional_kwargs.get("provider_tool_calls") if isinstance(additional_kwargs, dict) else {}
+    if not isinstance(provider_tool_calls, dict):
+        provider_tool_calls = {}
 
     if role == "tool" or tool_call_id:
         call_id = str(tool_call_id or "")
+        block = {
+            "type": "tool_result",
+            "tool_use_id": call_id,
+            "name": str(name or tool_names_by_id.get(call_id) or "tool"),
+            "content": str(content or ""),
+        }
+        provider_metadata = provider_metadata_by_id.get(call_id)
+        if isinstance(provider_metadata, dict):
+            block["provider_metadata"] = provider_metadata
         return {
             "role": "user",
-            "content": [
-                {
-                    "type": "tool_result",
-                    "tool_use_id": call_id,
-                    "name": str(name or tool_names_by_id.get(call_id) or "tool"),
-                    "content": str(content or ""),
-                }
-            ],
+            "content": [block],
         }
 
     if role == "assistant" and tool_calls:
@@ -221,14 +234,17 @@ def _client_message_from_state(message: Any, tool_names_by_id: dict[str, str]) -
             tool_name = str(call.get("name") or "")
             if call_id and tool_name:
                 tool_names_by_id[call_id] = tool_name
-            blocks.append(
-                {
-                    "type": "tool_use",
-                    "id": call_id,
-                    "name": tool_name,
-                    "input": dict(call.get("args") or {}),
-                }
-            )
+            block = {
+                "type": "tool_use",
+                "id": call_id,
+                "name": tool_name,
+                "input": dict(call.get("args") or {}),
+            }
+            provider_metadata = provider_tool_calls.get(call_id)
+            if isinstance(provider_metadata, dict):
+                provider_metadata_by_id[call_id] = provider_metadata
+                block["provider_metadata"] = provider_metadata
+            blocks.append(block)
         return {"role": "assistant", "content": blocks}
 
     if role not in {"user", "assistant"}:

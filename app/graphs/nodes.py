@@ -651,10 +651,27 @@ def _analysis_turn_result(
     # Bedrock Anthropic rejects ":" in replayed tool_use ids; keep ids within ^[a-zA-Z0-9_-]+$.
     if dispatched_tool_calls:
         dispatch_stop_reason = _pending_dispatch_stop_reason(next_turn_count, recent_tool_calls)
-        result["messages"] = [AIMessage(content="", tool_calls=dispatched_tool_calls)]
+        result["messages"] = [_dispatch_ai_message(dispatched_tool_calls)]
         if dispatch_stop_reason:
             result["messages"].extend(_synthetic_tool_results(dispatched_tool_calls, dispatch_stop_reason))
     return result
+
+
+def _dispatch_ai_message(dispatched_tool_calls: list[dict[str, Any]]) -> AIMessage:
+    tool_calls: list[dict[str, Any]] = []
+    provider_tool_calls: dict[str, dict[str, Any]] = {}
+    for tool_call in dispatched_tool_calls:
+        public_tool_call = {
+            "id": str(tool_call.get("id") or ""),
+            "name": tool_call.get("name") or "",
+            "args": dict(tool_call.get("args") or {}),
+        }
+        tool_calls.append(public_tool_call)
+        provider_metadata = tool_call.get("provider_metadata")
+        if isinstance(provider_metadata, dict):
+            provider_tool_calls[public_tool_call["id"]] = provider_metadata
+    additional_kwargs = {"provider_tool_calls": provider_tool_calls} if provider_tool_calls else {}
+    return AIMessage(content="", tool_calls=tool_calls, additional_kwargs=additional_kwargs)
 
 
 def _pending_dispatch_stop_reason(next_turn_count: int, recent_tool_calls: list[str]) -> str | None:

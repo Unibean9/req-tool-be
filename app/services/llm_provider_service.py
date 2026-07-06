@@ -283,9 +283,5 @@ async def _ping_provider(config: LLMProviderConfig) -> tuple[str | None, bool | 
         model=config.model_name,
         base_url=config.base_url,
     )
-    reply = await client.ping()
-    try:
-        tool_calling_supported = await client.ping_tool_calling()
-    except Exception:
-        tool_calling_supported = None
-    return reply, tool_calling_supported
+    tool_calling_supported = await client.ping_tool_calling(settings.tool_choice_mode)
+    return None, tool_calling_supported
