@@ -5,12 +5,11 @@ from app.services import llm_clients as llm_client_module
 from app.services.llm_clients import (
     AnthropicLLMClient,
     BedrockLLMClient,
-    DeepSeekLLMClient,
+    CustomLLMClient,
     GoogleLLMClient,
     LLMClientConfig,
     MistralLLMClient,
     OpenAILLMClient,
-    OpenRouterLLMClient,
 )
 
 # Payload with usage for each provider — all normalize to {"input": 11, "output": 22, "total": 33}
@@ -31,15 +30,11 @@ _PAYLOAD_WITH_USAGE = {
         "output": {"message": {"content": [{"text": "raw answer"}]}},
         "usage": {"inputTokens": 11, "outputTokens": 22, "totalTokens": 33},
     },
-    DeepSeekLLMClient: {
+    CustomLLMClient: {
         "choices": [{"message": {"content": "raw answer"}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
     },
     MistralLLMClient: {
-        "choices": [{"message": {"content": "raw answer"}}],
-        "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
-    },
-    OpenRouterLLMClient: {
         "choices": [{"message": {"content": "raw answer"}}],
         "usage": {"prompt_tokens": 11, "completion_tokens": 22, "total_tokens": 33},
     },
@@ -51,9 +46,8 @@ _PAYLOAD_NO_USAGE = {
     AnthropicLLMClient: {"content": [{"type": "text", "text": "raw answer"}]},
     GoogleLLMClient: {"candidates": [{"content": {"parts": [{"text": "raw answer"}]}}]},
     BedrockLLMClient: {"output": {"message": {"content": [{"text": "raw answer"}]}}},
-    DeepSeekLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
+    CustomLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
     MistralLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
-    OpenRouterLLMClient: {"choices": [{"message": {"content": "raw answer"}}]},
 }
 
 
@@ -61,7 +55,7 @@ _PAYLOAD_NO_USAGE = {
 @pytest.mark.parametrize("client_class", list(_PAYLOAD_WITH_USAGE))
 async def test_generate_returns_text_and_normalized_usage(monkeypatch, client_class):
     _install_httpx_recorder(monkeypatch, _PAYLOAD_WITH_USAGE[client_class])
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     text, usage = await client.generate(
         messages=[{"role": "user", "content": "Ping"}],
@@ -78,7 +72,7 @@ async def test_generate_returns_text_and_normalized_usage(monkeypatch, client_cl
 @pytest.mark.parametrize("client_class", list(_PAYLOAD_NO_USAGE))
 async def test_generate_returns_none_usage_when_absent(monkeypatch, client_class):
     _install_httpx_recorder(monkeypatch, _PAYLOAD_NO_USAGE[client_class])
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     text, usage = await client.generate(
         messages=[{"role": "user", "content": "Ping"}],
@@ -98,9 +92,6 @@ def _install_httpx_recorder(monkeypatch, payload):
     def openai_client(**_kwargs):
         return _RecordingOpenAIClient(payload)
 
-    def openai_chat_client(**_kwargs):
-        return _RecordingOpenAIChatClient(payload)
-
     def anthropic_client(**_kwargs):
         return _RecordingAnthropicClient(payload)
 
@@ -112,10 +103,16 @@ def _install_httpx_recorder(monkeypatch, payload):
 
     monkeypatch.setattr(httpx, "AsyncClient", client_class)
     monkeypatch.setattr(llm_client_module, "_create_openai_sdk", openai_client)
-    monkeypatch.setattr(llm_client_module, "_create_openai_chat_sdk", openai_chat_client)
     monkeypatch.setattr(llm_client_module, "_create_anthropic_sdk", anthropic_client)
     monkeypatch.setattr(llm_client_module, "_create_google_sdk", google_client)
     monkeypatch.setattr(llm_client_module, "_create_mistral_sdk", mistral_client)
+
+
+def _client_config(client_class):
+    kwargs = {"api_key": "key-test", "model": "model-test"}
+    if client_class is CustomLLMClient:
+        kwargs["base_url"] = "https://custom.example/v1"
+    return LLMClientConfig(**kwargs)
 
 
 class _RecordingAsyncClient:
@@ -143,17 +140,6 @@ class _RecordingOpenAIClient:
         return None
 
 
-class _RecordingOpenAIChatClient:
-    def __init__(self, payload):
-        self.chat = _RecordingChatNamespace(payload)
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc, traceback):
-        return None
-
-
 class _RecordingAnthropicClient:
     def __init__(self, payload):
         self.messages = _RecordingSDKResource(payload)
@@ -171,11 +157,6 @@ class _RecordingSDKResource:
 
     async def create(self, **kwargs):
         return self.payload
-
-
-class _RecordingChatNamespace:
-    def __init__(self, payload):
-        self.completions = _RecordingSDKResource(payload)
 
 
 class _RecordingMistralClient:

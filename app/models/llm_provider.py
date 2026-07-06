@@ -15,9 +15,8 @@ class ProviderType(enum.StrEnum):
     OPENAI = "openai"
     GOOGLE = "google"
     ANTHROPIC = "anthropic"
-    DEEPSEEK = "deepseek"
     MISTRAL = "mistral"
-    OPENROUTER = "openrouter"
+    CUSTOM = "custom"
 
 
 class LLMProviderStatus(enum.StrEnum):

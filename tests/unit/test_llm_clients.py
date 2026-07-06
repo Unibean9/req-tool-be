@@ -10,13 +10,12 @@ from app.services.llm_clients import (
     DEFAULT_MODEL_BY_PROVIDER,
     AnthropicLLMClient,
     BedrockLLMClient,
-    DeepSeekLLMClient,
+    CustomLLMClient,
     GoogleLLMClient,
     LLMClientConfig,
     LLMClientFactory,
     MistralLLMClient,
     OpenAILLMClient,
-    OpenRouterLLMClient,
     _extract_bedrock_text,
     _parse_generate_text,
     _plain_dict,
@@ -50,6 +49,14 @@ CHAT_RAW_ANSWER = {"choices": [{"message": {"content": "raw answer"}}]}
 CHAT_INVALID_JSON = {"choices": [{"message": {"content": "not json"}}]}
 
 
+def _client_config(client_class, **overrides):
+    values = {"api_key": "key-test", "model": "model-test"}
+    if client_class is CustomLLMClient:
+        values["base_url"] = "https://custom.example/v1"
+    values.update(overrides)
+    return LLMClientConfig(**values)
+
+
 @pytest.mark.parametrize(
     ("provider_type", "client_class"),
     [
@@ -57,9 +64,7 @@ CHAT_INVALID_JSON = {"choices": [{"message": {"content": "not json"}}]}
         (ProviderType.OPENAI, OpenAILLMClient),
         (ProviderType.GOOGLE, GoogleLLMClient),
         (ProviderType.ANTHROPIC, AnthropicLLMClient),
-        (ProviderType.DEEPSEEK, DeepSeekLLMClient),
         (ProviderType.MISTRAL, MistralLLMClient),
-        (ProviderType.OPENROUTER, OpenRouterLLMClient),
     ],
 )
 def test_llm_client_factory_supports_current_provider_types(provider_type, client_class):
@@ -68,6 +73,29 @@ def test_llm_client_factory_supports_current_provider_types(provider_type, clien
     assert isinstance(client, client_class)
     assert client.config.api_key == "key-test"
     assert client.config.model == DEFAULT_MODEL_BY_PROVIDER[provider_type]
+
+
+def test_llm_client_factory_supports_custom_provider_type():
+    client = LLMClientFactory.create(
+        provider_type=ProviderType.CUSTOM,
+        api_key="key-test",
+        model="custom-model",
+        base_url="https://custom.example/v1",
+    )
+
+    assert isinstance(client, CustomLLMClient)
+    assert client.config.api_key == "key-test"
+    assert client.config.model == "custom-model"
+    assert client.config.base_url == "https://custom.example/v1"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"model": None, "base_url": "https://custom.example/v1"}, {"model": "custom-model", "base_url": None}],
+)
+def test_llm_client_factory_rejects_incomplete_custom_provider(kwargs):
+    with pytest.raises(ValueError):
+        LLMClientFactory.create(provider_type=ProviderType.CUSTOM, api_key="key-test", **kwargs)
 
 
 def test_llm_client_factory_keeps_provider_specific_credentials():
@@ -103,14 +131,13 @@ def test_extract_bedrock_text_returns_first_content_text():
             {"candidates": [{"content": {"parts": [{"text": '{"answer": "ok"}'}]}}]},
         ),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": '{"answer": "ok"}'}]}}}),
-        (DeepSeekLLMClient, CHAT_JSON_OK),
+        (CustomLLMClient, CHAT_JSON_OK),
         (MistralLLMClient, CHAT_JSON_OK),
-        (OpenRouterLLMClient, CHAT_JSON_OK),
     ],
 )
 async def test_generate_with_response_format_returns_dict(monkeypatch, client_class, provider_payload):
     recorder = _install_httpx_recorder(monkeypatch, provider_payload)
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     result, _ = await client.generate(
         messages=[{"role": "user", "content": "Analyze requirements"}],
@@ -235,14 +262,13 @@ def test_parse_generate_text_recovers_object_wrapped_in_prose(wrapped):
         (AnthropicLLMClient, {"content": [{"type": "text", "text": "not json"}]}),
         (GoogleLLMClient, {"candidates": [{"content": {"parts": [{"text": "not json"}]}}]}),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": "not json"}]}}}),
-        (DeepSeekLLMClient, CHAT_INVALID_JSON),
+        (CustomLLMClient, CHAT_INVALID_JSON),
         (MistralLLMClient, CHAT_INVALID_JSON),
-        (OpenRouterLLMClient, CHAT_INVALID_JSON),
     ],
 )
 async def test_generate_with_response_format_rejects_invalid_json(monkeypatch, client_class, provider_payload):
     _install_httpx_recorder(monkeypatch, provider_payload)
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     with pytest.raises(ValueError, match="Could not parse JSON"):
         await client.generate(
@@ -261,14 +287,13 @@ async def test_generate_with_response_format_rejects_invalid_json(monkeypatch, c
         (AnthropicLLMClient, {"content": [{"type": "text", "text": "raw answer"}]}),
         (GoogleLLMClient, {"candidates": [{"content": {"parts": [{"text": "raw answer"}]}}]}),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": "raw answer"}]}}}),
-        (DeepSeekLLMClient, CHAT_RAW_ANSWER),
+        (CustomLLMClient, CHAT_RAW_ANSWER),
         (MistralLLMClient, CHAT_RAW_ANSWER),
-        (OpenRouterLLMClient, CHAT_RAW_ANSWER),
     ],
 )
 async def test_generate_without_response_format_returns_raw_text_and_no_extra_params(monkeypatch, client_class, provider_payload):
     recorder = _install_httpx_recorder(monkeypatch, provider_payload)
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     result, _ = await client.generate(
         messages=[{"role": "user", "content": "Ping"}],
@@ -288,7 +313,7 @@ async def test_generate_without_response_format_returns_raw_text_and_no_extra_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "client_class",
-    [AnthropicLLMClient, BedrockLLMClient, DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient],
+    [AnthropicLLMClient, BedrockLLMClient, CustomLLMClient, MistralLLMClient],
 )
 async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, client_class):
     recorder = _install_httpx_recorder(
@@ -300,12 +325,12 @@ async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, c
             monkeypatch,
             {"output": {"message": {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}},
         )
-    elif client_class in {DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient}:
+    elif client_class in {CustomLLMClient, MistralLLMClient}:
         recorder = _install_httpx_recorder(
             monkeypatch,
             {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
         )
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     await client.generate(
         messages=[{"role": "user", "content": "Analyze"}],
@@ -332,22 +357,18 @@ async def test_generate_injects_schema_for_prompt_based_providers(monkeypatch, c
         ),
         (BedrockLLMClient, {"output": {"message": {"content": [{"text": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}]}}}),
         (
-            DeepSeekLLMClient,
+            CustomLLMClient,
             {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
         ),
         (
             MistralLLMClient,
             {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
         ),
-        (
-            OpenRouterLLMClient,
-            {"choices": [{"message": {"content": json.dumps(ANALYSIS_RESULT, ensure_ascii=False)}}]},
-        ),
     ],
 )
 async def test_generate_parses_analysis_result_schema_for_each_provider(monkeypatch, client_class, provider_payload):
     _install_httpx_recorder(monkeypatch, provider_payload)
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     result, _ = await client.generate(
         messages=[{"role": "user", "content": "Analyze"}],
@@ -363,7 +384,6 @@ def _install_httpx_recorder(monkeypatch, payload):
     recorder = _HttpxRecorder(payload)
     monkeypatch.setattr(httpx, "AsyncClient", recorder.client_class)
     monkeypatch.setattr(llm_client_module, "_create_openai_sdk", recorder.openai_client)
-    monkeypatch.setattr(llm_client_module, "_create_openai_chat_sdk", recorder.openai_chat_client)
     monkeypatch.setattr(llm_client_module, "_create_anthropic_sdk", recorder.anthropic_client)
     monkeypatch.setattr(llm_client_module, "_create_google_sdk", recorder.google_client)
     monkeypatch.setattr(llm_client_module, "_create_mistral_sdk", recorder.mistral_client)
@@ -412,7 +432,7 @@ _TOOL_RESPONSE_BY_PROVIDER = {
             {"toolUse": {"toolUseId": "b1", "name": "ask_user", "input": {"message": "hi"}}},
         ]}}
     },
-    DeepSeekLLMClient: {
+    CustomLLMClient: {
         "choices": [
             {
                 "message": {
@@ -444,22 +464,6 @@ _TOOL_RESPONSE_BY_PROVIDER = {
             }
         ]
     },
-    OpenRouterLLMClient: {
-        "choices": [
-            {
-                "message": {
-                    "content": "draft text",
-                    "tool_calls": [
-                        {
-                            "id": "or1",
-                            "type": "function",
-                            "function": {"name": "ask_user", "arguments": "{\"message\": \"hi\"}"},
-                        }
-                    ],
-                }
-            }
-        ]
-    },
 }
 
 
@@ -468,7 +472,7 @@ _TOOL_RESPONSE_BY_PROVIDER = {
 async def test_generate_with_tools_returns_ai_message(monkeypatch, client_class):
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
     # Bedrock api-key path (no secret_key) uses httpx — the recorder covers it.
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     # Call exactly like analyze_node does: tools set, response_format OMITTED. Guards the regression
     # where the real clients declared response_format without a default and raised TypeError.
@@ -521,7 +525,7 @@ _THREAD_WITH_TOOL_BLOCKS = [
 @pytest.mark.parametrize("client_class", list(_TOOL_RESPONSE_BY_PROVIDER))
 async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, client_class):
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
 
     await client.generate(
         messages=_THREAD_WITH_TOOL_BLOCKS,
@@ -566,7 +570,7 @@ async def test_generate_with_tools_serializes_thread_tool_blocks(monkeypatch, cl
                 "response": {"content": "Da ghi nhan key fact."},
             }
         }
-    elif client_class in {DeepSeekLLMClient, MistralLLMClient, OpenRouterLLMClient}:
+    elif client_class in {CustomLLMClient, MistralLLMClient}:
         assert body["messages"][2]["tool_calls"][0] == {
             "id": "call_1",
             "type": "function",
@@ -677,10 +681,10 @@ async def test_google_tool_choice_required_sends_mode_any(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("client_class", [DeepSeekLLMClient, OpenRouterLLMClient])
-async def test_openai_compatible_chat_tool_choice_required_sends_required(monkeypatch, client_class):
+async def test_custom_chat_tool_choice_required_sends_required(monkeypatch):
+    client_class = CustomLLMClient
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[client_class])
-    client = client_class(LLMClientConfig(api_key="key-test", model="model-test"))
+    client = client_class(_client_config(client_class))
     await client.generate(
         messages=[{"role": "user", "content": "x"}],
         system=None,
@@ -689,6 +693,19 @@ async def test_openai_compatible_chat_tool_choice_required_sends_required(monkey
         tool_choice="required",
     )
     assert recorder.requests[0]["json"]["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_custom_chat_completion_posts_to_configured_base_url(monkeypatch):
+    recorder = _install_httpx_recorder(monkeypatch, CHAT_RAW_ANSWER)
+    client = CustomLLMClient(_client_config(CustomLLMClient))
+
+    await client.generate(messages=[{"role": "user", "content": "x"}], system=None, max_tokens=16)
+
+    request = recorder.requests[0]
+    assert request["url"] == "https://custom.example/v1/chat/completions"
+    assert request["headers"]["Authorization"] == "Bearer key-test"
+    assert request["json"]["model"] == "model-test"
 
 
 @pytest.mark.asyncio

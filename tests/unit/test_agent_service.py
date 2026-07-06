@@ -198,6 +198,50 @@ async def test_resolve_llm_client_returns_strong_when_configured(db_session, mon
 
 
 @pytest.mark.asyncio
+async def test_resolve_llm_client_passes_custom_base_url_to_default_and_strong(db_session, monkeypatch):
+    original_key = settings.encryption_key
+    original_previous = settings.encryption_key_previous
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    monkeypatch.setattr(settings, "encryption_key_previous", "")
+    crypto._get_fernet.cache_clear()
+
+    try:
+        created = []
+
+        def fake_create(**kwargs):
+            client = object()
+            created.append((kwargs, client))
+            return client
+
+        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        config = LLMProviderConfig(
+            user_id=uuid.uuid4(),
+            provider_type=ProviderType.CUSTOM,
+            name="custom",
+            base_url="https://custom.example/v1",
+            encrypted_api_key=encrypt_token("sk-test"),
+            model_name="custom-default",
+            strong_model_name="custom-strong",
+            status=LLMProviderStatus.ACTIVE,
+        )
+        db_session.add(config)
+        await db_session.flush()
+
+        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
+
+        assert default_client is created[0][1]
+        assert strong_client is created[1][1]
+        assert [item[0]["model"] for item in created] == ["custom-default", "custom-strong"]
+        assert all(item[0]["provider_type"] == ProviderType.CUSTOM for item in created)
+        assert all(item[0]["api_key"] == "sk-test" for item in created)
+        assert all(item[0]["base_url"] == "https://custom.example/v1" for item in created)
+    finally:
+        monkeypatch.setattr(settings, "encryption_key", original_key)
+        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
+        crypto._get_fernet.cache_clear()
+
+
+@pytest.mark.asyncio
 async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch):
     original_key = settings.encryption_key
     original_previous = settings.encryption_key_previous

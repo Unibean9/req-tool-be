@@ -1308,6 +1308,7 @@ class AgentService:
             secret_key=secret_key,
             model=config_row.model_name,
             region=config_row.region,
+            base_url=config_row.base_url,
         )
         strong_client = None
         if config_row.strong_model_name:
@@ -1317,6 +1318,7 @@ class AgentService:
                 secret_key=secret_key,
                 model=config_row.strong_model_name,
                 region=config_row.region,
+                base_url=config_row.base_url,
             )
         return default_client, strong_client
 

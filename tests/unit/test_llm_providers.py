@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import HTTPException
 from sqlalchemy import select
 
 from app.config import settings
@@ -17,6 +18,7 @@ from app.services.llm_provider_service import (
     LLMProviderService,
     ProviderCapabilityError,
     ProviderUnavailableError,
+    _ping_provider,
     _resolve_api_key,
     _sanitize_error,
 )
@@ -190,7 +192,7 @@ async def test_create_rejects_secret_ref_payload(client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("provider_type", ["bedrock", "openai", "google", "anthropic", "deepseek", "mistral", "openrouter"])
+@pytest.mark.parametrize("provider_type", ["bedrock", "openai", "google", "anthropic", "mistral"])
 async def test_supported_provider_types_are_accepted(client, provider_type):
     headers = await make_auth_headers(client)
 
@@ -205,12 +207,94 @@ async def test_supported_provider_types_are_accepted(client, provider_type):
 
 
 @pytest.mark.asyncio
-async def test_unsupported_provider_type_is_rejected(client):
+async def test_custom_provider_type_is_accepted_with_base_url_and_model(client):
     headers = await make_auth_headers(client)
 
     resp = await client.post(
         f"{BASE}/users/me/llm-provider-configs",
-        json={"provider_type": "openai_compatible", "api_key": "sk-provider"},
+        json={
+            "provider_type": "custom",
+            "base_url": "https://custom.example/v1/",
+            "api_key": "sk-provider",
+            "model_name": "custom-model",
+        },
+        headers=headers,
+    )
+
+    assert resp.status_code == 201, resp.text
+    data = resp.json()["data"]
+    assert data["provider_type"] == "custom"
+    assert data["base_url"] == "https://custom.example/v1"
+    assert data["model_name"] == "custom-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_type", ["openai_compatible", "deepseek", "openrouter"])
+async def test_unsupported_provider_type_is_rejected(client, provider_type):
+    headers = await make_auth_headers(client)
+
+    resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={"provider_type": provider_type, "api_key": "sk-provider"},
+        headers=headers,
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"provider_type": "custom", "api_key": "sk-provider", "model_name": "custom-model"},
+        {"provider_type": "custom", "api_key": "sk-provider", "base_url": "https://custom.example/v1"},
+    ],
+)
+async def test_custom_provider_requires_base_url_and_model(client, payload):
+    headers = await make_auth_headers(client)
+
+    resp = await client.post(f"{BASE}/users/me/llm-provider-configs", json=payload, headers=headers)
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "http://custom.example/v1",
+        "https://localhost/v1",
+        "https://127.0.0.1/v1",
+        "https://10.0.0.1/v1",
+        "https://user:pass@custom.example/v1",
+        "https://custom.example/v1?token=x",
+        "https://custom.example/v1#frag",
+    ],
+)
+async def test_custom_provider_rejects_unsafe_base_url(client, base_url):
+    headers = await make_auth_headers(client)
+
+    resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={
+            "provider_type": "custom",
+            "base_url": base_url,
+            "api_key": "sk-provider",
+            "model_name": "custom-model",
+        },
+        headers=headers,
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_non_custom_provider_rejects_base_url(client):
+    headers = await make_auth_headers(client)
+
+    resp = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={"provider_type": "openai", "base_url": "https://custom.example/v1", "api_key": "sk-provider"},
         headers=headers,
     )
 
@@ -293,6 +377,87 @@ async def test_create_updates_existing_user_config(client, db_session, monkeypat
     assert second.is_default is True
     assert len(rows) == 1
     assert _resolve_api_key(second) == "sk-two"
+
+
+@pytest.mark.asyncio
+async def test_update_custom_base_url_resets_status_to_draft(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(
+        user_id=user_id,
+        body={
+            "provider_type": "custom",
+            "base_url": "https://custom.example/v1",
+            "api_key": "sk-old",
+            "model_name": "custom-model",
+        },
+    )
+    row.status = LLMProviderStatus.ACTIVE
+    row.last_checked_at = datetime.now(UTC)
+    row.last_check_error = None
+    await db_session.flush()
+
+    updated = await service.update(user_id=user_id, config_id=row.id, body={"base_url": "https://custom2.example/v1/"})
+
+    assert updated.status == LLMProviderStatus.DRAFT
+    assert updated.base_url == "https://custom2.example/v1"
+    assert updated.last_checked_at is None
+    assert updated.last_check_error is None
+    assert _resolve_api_key(updated) == "sk-old"
+
+
+@pytest.mark.asyncio
+async def test_update_non_custom_base_url_rejected(client, db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(user_id=user_id, body=_create_body(api_key="sk-old"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.update(user_id=user_id, config_id=row.id, body={"base_url": "https://custom.example/v1"})
+    assert exc_info.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_ping_provider_passes_custom_base_url(db_session, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    captured = {}
+
+    class FakeClient:
+        async def ping(self):
+            return "pong"
+
+        async def ping_tool_calling(self):
+            return True
+
+    def fake_create(**kwargs):
+        captured.update(kwargs)
+        return FakeClient()
+
+    monkeypatch.setattr("app.services.llm_provider_service.LLMClientFactory.create", fake_create)
+    config = LLMProviderConfig(
+        user_id=uuid.uuid4(),
+        provider_type=ProviderType.CUSTOM,
+        name="custom",
+        base_url="https://custom.example/v1",
+        model_name="custom-model",
+        encrypted_api_key=crypto.encrypt_token("sk-custom"),
+    )
+
+    reply, tool_calling_supported = await _ping_provider(config)
+
+    assert reply == "pong"
+    assert tool_calling_supported is True
+    assert captured["provider_type"] == ProviderType.CUSTOM
+    assert captured["api_key"] == "sk-custom"
+    assert captured["model"] == "custom-model"
+    assert captured["base_url"] == "https://custom.example/v1"
 
 
 @pytest.mark.asyncio

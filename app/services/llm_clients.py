@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.parse import quote
 
+import httpx
 import jsonschema
 from langchain_core.messages import AIMessage
 
@@ -16,9 +17,7 @@ DEFAULT_MODEL_BY_PROVIDER = {
     ProviderType.OPENAI: "gpt-5.4-mini",
     ProviderType.GOOGLE: "gemini-3.5-flash",
     ProviderType.ANTHROPIC: "claude-haiku-4-5-20251001",
-    ProviderType.DEEPSEEK: "deepseek-v4-flash",
     ProviderType.MISTRAL: "mistral-large-latest",
-    ProviderType.OPENROUTER: "~openai/gpt-latest",
 }
 
 
@@ -28,6 +27,7 @@ class LLMClientConfig:
     model: str
     region: str | None = None
     secret_key: str | None = None
+    base_url: str | None = None
 
 
 _TOOL_CALL_PROBE = {
@@ -216,15 +216,6 @@ def _create_openai_sdk(*, api_key: str, timeout: float):
     return AsyncOpenAI(api_key=api_key, timeout=timeout)
 
 
-def _create_openai_chat_sdk(*, api_key: str, timeout: float, base_url: str | None = None):
-    from openai import AsyncOpenAI
-
-    kwargs: dict[str, Any] = {"api_key": api_key, "timeout": timeout}
-    if base_url:
-        kwargs["base_url"] = base_url
-    return AsyncOpenAI(**kwargs)
-
-
 def _create_anthropic_sdk(*, api_key: str, timeout: float):
     from anthropic import AsyncAnthropic
 
@@ -251,14 +242,6 @@ def _create_google_sdk(*, api_key: str, timeout: float):
 async def _openai_create_response(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
     async with _create_openai_sdk(api_key=api_key, timeout=timeout) as client:
         response = await client.responses.create(**body)
-    return _plain_dict(response)
-
-
-async def _openai_create_chat_completion(
-    api_key: str, timeout: float, body: dict[str, Any], *, base_url: str | None = None
-) -> dict[str, Any]:
-    async with _create_openai_chat_sdk(api_key=api_key, timeout=timeout, base_url=base_url) as client:
-        response = await client.chat.completions.create(**body)
     return _plain_dict(response)
 
 
@@ -388,7 +371,6 @@ class OpenAILLMClient:
 
 
 class ChatCompletionsLLMClient:
-    base_url: str | None = None
     required_tool_choice = "required"
 
     def __init__(self, config: LLMClientConfig):
@@ -453,12 +435,7 @@ class ChatCompletionsLLMClient:
         return _parse_openai_chat_tool_response(data), _extract_openai_chat_usage(data)
 
     async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
-        return await _openai_create_chat_completion(
-            self.config.api_key,
-            timeout,
-            body,
-            base_url=self.base_url,
-        )
+        raise NotImplementedError
 
     def _wire_tool_choice(self, tool_choice: str) -> str:
         if tool_choice == "required":
@@ -468,8 +445,18 @@ class ChatCompletionsLLMClient:
         return tool_choice
 
 
-class DeepSeekLLMClient(ChatCompletionsLLMClient):
-    base_url = "https://api.deepseek.com"
+class CustomLLMClient(ChatCompletionsLLMClient):
+    async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
+        if not self.config.base_url:
+            raise ValueError("base_url is required for custom provider")
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                f"{self.config.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {self.config.api_key}"},
+                json=body,
+            )
+            response.raise_for_status()
+            return response.json()
 
 
 class MistralLLMClient(ChatCompletionsLLMClient):
@@ -483,10 +470,6 @@ class MistralLLMClient(ChatCompletionsLLMClient):
         if self._sdk_client is None:
             self._sdk_client = _create_mistral_sdk(api_key=self.config.api_key, timeout=timeout)
         return await _mistral_create_chat_completion(self.config.api_key, timeout, body, client=self._sdk_client)
-
-
-class OpenRouterLLMClient(ChatCompletionsLLMClient):
-    base_url = "https://openrouter.ai/api/v1"
 
 
 class GoogleLLMClient:
@@ -873,9 +856,8 @@ class LLMClientFactory:
         ProviderType.OPENAI: OpenAILLMClient,
         ProviderType.GOOGLE: GoogleLLMClient,
         ProviderType.ANTHROPIC: AnthropicLLMClient,
-        ProviderType.DEEPSEEK: DeepSeekLLMClient,
         ProviderType.MISTRAL: MistralLLMClient,
-        ProviderType.OPENROUTER: OpenRouterLLMClient,
+        ProviderType.CUSTOM: CustomLLMClient,
     }
 
     @classmethod
@@ -887,14 +869,26 @@ class LLMClientFactory:
         model: str | None = None,
         region: str | None = None,
         secret_key: str | None = None,
+        base_url: str | None = None,
     ) -> LLMClient:
-        client_class = cls._client_classes[provider_type]
+        client_class = cls._client_classes.get(provider_type)
+        if client_class is None:
+            raise ValueError(f"Unsupported LLM provider type: {provider_type.value}")
+        if provider_type == ProviderType.CUSTOM:
+            if not model:
+                raise ValueError("model is required for custom provider")
+            if not base_url:
+                raise ValueError("base_url is required for custom provider")
+            resolved_model = model
+        else:
+            resolved_model = model or DEFAULT_MODEL_BY_PROVIDER[provider_type]
         return client_class(
             LLMClientConfig(
                 api_key=api_key,
                 secret_key=secret_key,
                 region=region,
-                model=model or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+                model=resolved_model,
+                base_url=base_url,
             )
         )
 

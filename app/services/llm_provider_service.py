@@ -220,14 +220,23 @@ class LLMProviderService:
         return LLMProviderUpdateRequest.model_validate(body)
 
     def _values_from_key_request(self, body: LLMProviderKeyRequest) -> dict[str, Any]:
-        provider_type = body.provider_type or DEFAULT_PROVIDER_TYPE
+        provider_type = ProviderType((body.provider_type or DEFAULT_PROVIDER_TYPE).value)
         provider_name = provider_type.value
+        if provider_type == ProviderType.CUSTOM:
+            if not body.base_url or not body.model_name:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="base_url and model_name are required",
+                )
+            model_name = body.model_name
+        else:
+            model_name = body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type]
         values: dict[str, Any] = {
             "provider_type": provider_type,
             "name": provider_name,
-            "base_url": None,
+            "base_url": body.base_url if provider_type == ProviderType.CUSTOM else None,
             "region": body.region,
-            "model_name": body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+            "model_name": model_name,
             "strong_model_name": body.strong_model_name,
             "encrypted_api_key": encrypt_token(body.api_key),
             "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
@@ -241,8 +250,22 @@ class LLMProviderService:
         values: dict[str, Any] = {}
         if "region" in sent_fields:
             values["region"] = body.region
+        if "base_url" in sent_fields:
+            if config.provider_type != ProviderType.CUSTOM:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="base_url is only supported for custom provider",
+                )
+            if not body.base_url:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="base_url is required")
+            values["base_url"] = body.base_url
         if "model_name" in sent_fields:
-            values["model_name"] = body.model_name or DEFAULT_MODEL_BY_PROVIDER[config.provider_type]
+            if config.provider_type == ProviderType.CUSTOM:
+                if not body.model_name:
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="model_name is required")
+                values["model_name"] = body.model_name
+            else:
+                values["model_name"] = body.model_name or DEFAULT_MODEL_BY_PROVIDER[config.provider_type]
         if "strong_model_name" in sent_fields:
             values["strong_model_name"] = body.strong_model_name
         return values
@@ -257,6 +280,7 @@ async def _ping_provider(config: LLMProviderConfig) -> tuple[str | None, bool | 
         secret_key=secret_key,
         region=config.region,
         model=config.model_name,
+        base_url=config.base_url,
     )
     reply = await client.ping()
     try:
