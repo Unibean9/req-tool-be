@@ -450,8 +450,8 @@ async def test_agent_events_route_rejects_project_member_who_is_not_session_owne
 
 # ---------------------------------------------------------------------------
 # _document_for_session — container detection is registry-driven, not a
-# hardcoded {"brd", "prd", "sad"} set. event_storming must resolve the same
-# way brd/prd/sad already do.
+# hardcoded {"brd", "prd", "add"} set. event_storming must resolve the same
+# way brd/prd/add already do.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -501,7 +501,7 @@ async def test_document_for_session_resolves_event_storming_via_focused_containe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
 async def test_document_for_session_regression_via_artifact_type(client, db_session, container_type):
     project_id = await _project(client)
     session = AgentSession(
@@ -520,7 +520,7 @@ async def test_document_for_session_regression_via_artifact_type(client, db_sess
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
 async def test_document_for_session_regression_via_focused_container(client, db_session, container_type):
     project_id = await _project(client)
     container = Artifact(

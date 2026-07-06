@@ -59,9 +59,9 @@ def test_completeness_sweep_brd_uses_hardcoded_gaps_unchanged():
     ]
 
 
-def test_completeness_sweep_sad_uses_registry_children():
-    """SAD gaps derive from SAD's own registry children, not BRD's hardcoded questions."""
-    gaps = completeness_sweep({}, "sad")
+def test_completeness_sweep_add_uses_registry_children():
+    """ADD gaps derive from ADD's own registry children, not BRD's hardcoded questions."""
+    gaps = completeness_sweep({}, "add")
     joined = " ".join(gaps)
     assert "for the BRD" not in joined
     for label in ("Tech Stack", "Domain Entity", "Component", "Interface", "Technical Decision"):

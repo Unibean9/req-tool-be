@@ -12,7 +12,7 @@ from app.documents.registry import (
 
 
 def test_registry_has_all_document_containers():
-    assert all_container_types() == ("brd", "prd", "sad", "event_storming")
+    assert all_container_types() == ("brd", "prd", "event_storming", "add")
 
 
 def test_brd_registry_has_six_items():
@@ -37,8 +37,8 @@ def test_prd_registry_has_three_active_items():
     )
 
 
-def test_sad_registry_has_five_scaffold_items():
-    assert children_of("sad") == (
+def test_add_registry_has_five_scaffold_items():
+    assert children_of("add") == (
         "tech_stack",
         "domain_entity",
         "component",
@@ -50,7 +50,7 @@ def test_sad_registry_has_five_scaffold_items():
 def test_registry_maps_items_to_containers():
     assert container_for("vision_objectives") == "brd"
     assert container_for("functional_requirement") == "prd"
-    assert container_for("component") == "sad"
+    assert container_for("component") == "add"
     assert container_for("epic") is None
 
 
@@ -58,7 +58,7 @@ def test_registry_item_metadata_is_complete():
     assert set(all_item_types()) == {
         *children_of("brd"),
         *children_of("prd"),
-        *children_of("sad"),
+        *children_of("add"),
         *children_of("event_storming"),
     }
     for item_type in all_item_types():

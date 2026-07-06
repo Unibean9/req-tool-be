@@ -44,7 +44,7 @@ ARTIFACT_ROLE_MAP: dict[str, str] = {
     "use_case": "product_manager",
     "acceptance_criteria": "product_manager",
     # Architecture items currently reuse the product-manager overlay until a dedicated role lands.
-    "sad": "product_manager",
+    "add": "product_manager",
     "tech_stack": "product_manager",
     "domain_entity": "product_manager",
     "component": "product_manager",

@@ -30,7 +30,7 @@ class ArtifactPriority(enum.StrEnum):
 class ArtifactType(enum.StrEnum):
     BRD = "brd"
     PRD = "prd"
-    SAD = "sad"
+    ADD = "add"
     EXECUTIVE_SUMMARY = "executive_summary"
     VISION_OBJECTIVES = "vision_objectives"
     PROBLEM_STATEMENT = "problem_statement"
@@ -211,11 +211,11 @@ class Artifact(AuditMixin, Base):
             sqlite_where=text("type = 'prd' AND status != 'archived'"),
         ),
         Index(
-            "uq_artifacts_project_sad",
+            "uq_artifacts_project_add",
             "project_id",
             unique=True,
-            postgresql_where=text("type = 'sad' AND status != 'archived'"),
-            sqlite_where=text("type = 'sad' AND status != 'archived'"),
+            postgresql_where=text("type = 'add' AND status != 'archived'"),
+            sqlite_where=text("type = 'add' AND status != 'archived'"),
         ),
     )
 

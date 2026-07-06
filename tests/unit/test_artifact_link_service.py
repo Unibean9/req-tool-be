@@ -217,7 +217,7 @@ async def test_create_link_rejects_transitive_cycle(db_session):
     for title, artifact_type in (
         ("BRD", ArtifactType.BRD),
         ("PRD", ArtifactType.PRD),
-        ("SAD", ArtifactType.SAD),
+        ("ADD", ArtifactType.ADD),
     ):
         artifact = Artifact(
             project_id=project.id,

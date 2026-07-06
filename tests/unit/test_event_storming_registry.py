@@ -73,8 +73,8 @@ def test_existing_registry_lookups_unaffected():
     """Pre-existing containers and items are untouched by the additive registration."""
     assert "brd" in all_container_types()
     assert "prd" in all_container_types()
-    assert "sad" in all_container_types()
-    assert children_of("sad") == ("tech_stack", "domain_entity", "component", "interface", "tech_decision")
+    assert "add" in all_container_types()
+    assert children_of("add") == ("tech_stack", "domain_entity", "component", "interface", "tech_decision")
     assert output_contract("use_case").id_prefix == "BC"
 
 

@@ -27,7 +27,7 @@ POLICY = policy_table()
 
 # The intentional, acyclic artifact chain. Advisory only: shapes
 # ancestor_types() prompt-context loading and the finalize predecessor check —
-# never a hard gate. Event Storming sits between PRD and SAD: SAD depends on
+# never a hard gate. Event Storming sits between PRD and ADD: ADD depends on
 # event_storming instead of prd directly, and the ES item types form their own
 # flow chain (use_case -> actor_command -> domain_event -> policy/aggregate).
 # interface and tech_decision are intentional pipeline leaves (nothing consumes
@@ -46,7 +46,7 @@ ARTIFACT_PREDECESSORS = {
     "functional_requirement": ["use_case", "business_rules"],
     "non_functional_requirement": ["constraints_assumptions"],
     "event_storming": ["prd"],
-    "sad": ["event_storming"],
+    "add": ["event_storming"],
     "tech_stack": ["constraints_assumptions", "non_functional_requirement"],
     "domain_entity": ["functional_requirement"],
     "component": ["domain_entity", "functional_requirement"],

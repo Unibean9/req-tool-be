@@ -37,7 +37,7 @@ _ITEM_CONTAINERS = {
     "non_functional_requirement": "prd",
     "use_case": "prd",
     "acceptance_criteria": "prd",
-    "tech_decision": "sad",
+    "tech_decision": "add",
 }
 
 # Checkpoint fields mirrored into every snapshot so metric extraction stays pure over the

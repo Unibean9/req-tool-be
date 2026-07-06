@@ -105,7 +105,7 @@ def test_artifact_enum_values_are_constrained():
         ArtifactType: {
             "brd",
             "prd",
-            "sad",
+            "add",
             "executive_summary",
             "vision_objectives",
             "problem_statement",

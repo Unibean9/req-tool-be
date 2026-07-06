@@ -106,18 +106,18 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         description="Product behavior, quality attributes, and use cases.",
     ),
     DocumentTypeConfig(
-        artifact_type="sad",
-        label="Software Architecture Document",
-        children=("tech_stack", "domain_entity", "component", "interface", "tech_decision"),
-        is_container=True,
-        description="Architecture domains, components, interfaces, and technical decisions.",
-    ),
-    DocumentTypeConfig(
         artifact_type="event_storming",
         label="Event Storming",
         children=("domain_event", "actor_command", "policy", "aggregate"),
         is_container=True,
         description="Domain events, actors/commands, policies, and aggregates discovered via event storming.",
+    ),
+    DocumentTypeConfig(
+        artifact_type="add",
+        label="Architecture Design Document",
+        children=("tech_stack", "domain_entity", "component", "interface", "tech_decision"),
+        is_container=True,
+        description="Architecture domains, components, interfaces, and technical decisions.",
     ),
     # executive_summary is retired as an elicited item — it is synthesized from
     # vision/problem/scope and promoted to a project-level field. The enum value
@@ -463,7 +463,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "small `flowchart LR` mermaid diagram showing that flow's command -> event -> policy -> "
             "aggregate chain only, not one global diagram covering every flow. Record only Trigger, "
             "Triggered By, and Downstream Effects for each event — no structured data/schema table; "
-            "that is SAD's `domain_entity`, derived later, not an event storming input. Events are "
+            "that is ADD's `domain_entity`, derived later, not an event storming input. Events are "
             "past-tense facts: a `...Requested` event records that a request was received, and "
             "commands are not restated as events. Under `## Hotspots`, list one row per unresolved "
             "point of confusion or conflict surfaced during the timeline walkthrough, with columns "

@@ -279,24 +279,24 @@ def test_elicit_renders_type_profile_for_event_storming_item():
     assert "elicit(technique='event_storming')" in prompt
 
 
-# --- ES -> SAD integration (context and prompt provenance) ------------------
+# --- ES -> ADD integration (context and prompt provenance) ------------------
 
 
-def test_sad_turn_context_types_include_event_storming_ancestry():
-    """SAD's source-candidate context (not just the finalize gate) must expose ES types.
+def test_add_turn_context_types_include_event_storming_ancestry():
+    """ADD's source-candidate context (not just the finalize gate) must expose ES types.
 
     `_context_artifact_types` backs the artifact rows read for a turn (context_loader.py); this
-    pins that a SAD-focused turn sees `event_storming` (and its own ancestor, `prd`) as context.
+    pins that an ADD-focused turn sees `event_storming` (and its own ancestor, `prd`) as context.
     """
-    context_types = _context_artifact_types("sad")
+    context_types = _context_artifact_types("add")
     assert "event_storming" in context_types
     assert "prd" in context_types
 
 
-def test_sad_prompt_provenance_chain_includes_event_storming():
-    """The ancestor chain rendered into SAD's system prompt (prompt_assembly) includes event_storming."""
+def test_add_prompt_provenance_chain_includes_event_storming():
+    """The ancestor chain rendered into ADD's system prompt (prompt_assembly) includes event_storming."""
     load_instructions()
-    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="sad"), None, has_draft=True)
+    prompt = build_system_prompt(_phase_state(DRAFT, artifact_type="add"), None, has_draft=True)
     assert _ARTIFACT_CONTRACT_MARKER in prompt
     assert "event_storming" in prompt
 

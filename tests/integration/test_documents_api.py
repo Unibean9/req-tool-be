@@ -21,7 +21,7 @@ async def test_document_types_require_auth_and_come_from_registry(client):
     response = await client.get(f"{BASE}/documents/types", headers=headers)
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert [item["artifact_type"] for item in data["containers"]] == ["brd", "prd", "sad"]
+    assert [item["artifact_type"] for item in data["containers"]] == ["brd", "prd", "event_storming", "add"]
     functional = next(item for item in data["items"] if item["artifact_type"] == "functional_requirement")
     assert functional["output_contract"]["format"] == "markdown"
     assert "## Functional Requirements" in functional["output_contract"]["required_headings"]

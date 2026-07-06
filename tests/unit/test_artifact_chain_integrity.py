@@ -10,7 +10,7 @@ from app.graphs.policy import ARTIFACT_PREDECESSORS, ancestor_types
 
 # Types that are intentionally terminal — nothing downstream consumes them.
 _INTENTIONAL_LEAVES = {
-    "sad",
+    "add",
     "interface",
     "tech_decision",
     "tech_stack",
@@ -69,10 +69,10 @@ def test_predecessors_match_intended_pre_es_shape():
     assert ARTIFACT_PREDECESSORS["functional_requirement"] == ["use_case", "business_rules"]
     assert ARTIFACT_PREDECESSORS["non_functional_requirement"] == ["constraints_assumptions"]
     assert ARTIFACT_PREDECESSORS["domain_entity"] == ["functional_requirement"]
-    assert ARTIFACT_PREDECESSORS["sad"] == ["event_storming"]
+    assert ARTIFACT_PREDECESSORS["add"] == ["event_storming"]
 
 
-def test_ancestor_chain_routes_sad_through_event_storming():
-    assert "event_storming" in ancestor_types("sad")
+def test_ancestor_chain_routes_add_through_event_storming():
+    assert "event_storming" in ancestor_types("add")
     assert "prd" in ancestor_types("event_storming")
     assert "brd" in ancestor_types("event_storming")

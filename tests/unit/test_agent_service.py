@@ -2448,8 +2448,8 @@ async def test_first_user_message_starts_graph_fresh(client, db_session, _no_bac
 
 # ---------------------------------------------------------------------------
 # _document_type_for_session — container detection is registry-driven, not a
-# hardcoded {"brd", "prd", "sad"} set. event_storming must resolve the same
-# way brd/prd/sad already do.
+# hardcoded {"brd", "prd", "add"} set. event_storming must resolve the same
+# way brd/prd/add already do.
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
@@ -2499,7 +2499,7 @@ async def test_document_type_for_session_resolves_event_storming_via_focused_con
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
 async def test_document_type_for_session_regression_via_artifact_type(client, db_session, container_type):
     project_id = await _setup(client)
     svc = _make_service(db_session)
@@ -2518,7 +2518,7 @@ async def test_document_type_for_session_regression_via_artifact_type(client, db
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "sad"])
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
 async def test_document_type_for_session_regression_via_focused_container(client, db_session, container_type):
     project_id = await _setup(client)
     svc = _make_service(db_session)
