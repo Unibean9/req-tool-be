@@ -709,6 +709,37 @@ async def test_custom_chat_completion_posts_to_configured_base_url(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_custom_chat_completion_disables_streaming(monkeypatch):
+    requests = []
+
+    class StreamSensitiveAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def post(self, url, **kwargs):
+            requests.append({"url": url, **kwargs})
+            if kwargs["json"].get("stream") is False:
+                return httpx.Response(200, json=CHAT_RAW_ANSWER, request=httpx.Request("POST", url))
+            return httpx.Response(
+                200,
+                content=b'{"choices":[{"message":{"content":"pong"}}]}\n{"choices":[{"message":{"content":"extra"}}]}',
+                request=httpx.Request("POST", url),
+            )
+
+    monkeypatch.setattr(httpx, "AsyncClient", StreamSensitiveAsyncClient)
+    client = CustomLLMClient(_client_config(CustomLLMClient))
+
+    assert await client.ping() == "raw answer"
+    assert requests[0]["json"]["stream"] is False
+
+
+@pytest.mark.asyncio
 async def test_mistral_tool_choice_required_sends_any(monkeypatch):
     recorder = _install_httpx_recorder(monkeypatch, _TOOL_RESPONSE_BY_PROVIDER[MistralLLMClient])
     client = MistralLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))

@@ -30,7 +30,7 @@ class ProviderCapabilityError(Exception):
 
 SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
 DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
-TOOL_CALLING_REQUIRED_MESSAGE = "Model khong ho tro tool calling"
+TOOL_CALLING_REQUIRED_MESSAGE = "Model does not support tool calling. Please use a model that supports tool calling."
 
 
 def _sanitize_error(exc: Exception) -> str:

@@ -449,11 +449,12 @@ class CustomLLMClient(ChatCompletionsLLMClient):
     async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
         if not self.config.base_url:
             raise ValueError("base_url is required for custom provider")
+        request_body = {**body, "stream": False}
         async with httpx.AsyncClient(timeout=timeout) as client:
             response = await client.post(
                 f"{self.config.base_url.rstrip('/')}/chat/completions",
                 headers={"Authorization": f"Bearer {self.config.api_key}"},
-                json=body,
+                json=request_body,
             )
             response.raise_for_status()
             return response.json()
