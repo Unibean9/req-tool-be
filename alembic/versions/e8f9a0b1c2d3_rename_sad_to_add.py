@@ -16,56 +16,13 @@ down_revision: str | Sequence[str] | None = "d7e8f9a0b2"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
-_ARTIFACT_TYPES_WITH_ADD = (
-    "brd",
-    "prd",
-    "add",
-    "executive_summary",
-    "vision_objectives",
-    "problem_statement",
-    "stakeholder_register",
-    "scope_capabilities",
-    "business_rules",
-    "constraints_assumptions",
-    "risks_issues",
-    "domain_entity",
-    "functional_requirement",
-    "non_functional_requirement",
-    "use_case",
-    "component",
-    "interface",
-    "tech_decision",
-    "tech_stack",
-    "event_storming",
-    "domain_event",
-    "actor_command",
-    "policy",
-    "aggregate",
-    "epic",
-    "story",
-    "acceptance_criteria",
-)
-
-_ARTIFACT_TYPES_WITH_SAD = tuple("sad" if item == "add" else item for item in _ARTIFACT_TYPES_WITH_ADD)
-
-
-def _create_artifact_type(values: tuple[str, ...]) -> None:
-    quoted = ", ".join(f"'{value}'" for value in values)
-    op.execute(sa.text(f"CREATE TYPE artifacttype AS ENUM ({quoted})"))
-
-
 def upgrade() -> None:
+    bind = op.get_bind()
     op.drop_index("uq_artifacts_project_sad", table_name="artifacts")
-    op.execute(sa.text("ALTER TYPE artifacttype RENAME TO artifacttype_old"))
-    _create_artifact_type(_ARTIFACT_TYPES_WITH_ADD)
-    op.execute(
-        sa.text(
-            "ALTER TABLE artifacts "
-            "ALTER COLUMN type TYPE artifacttype "
-            "USING (CASE WHEN type::text = 'sad' THEN 'add' ELSE type::text END)::artifacttype"
-        )
-    )
-    op.execute(sa.text("DROP TYPE artifacttype_old"))
+    if bind.dialect.name == "postgresql":
+        op.execute(sa.text("ALTER TYPE artifacttype RENAME VALUE 'sad' TO 'add'"))
+    else:
+        op.execute(sa.text("UPDATE artifacts SET type = 'add' WHERE type = 'sad'"))
     op.execute(sa.text("UPDATE agent_sessions SET artifact_type = 'add' WHERE artifact_type = 'sad'"))
     op.create_index(
         "uq_artifacts_project_add",
@@ -78,17 +35,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    bind = op.get_bind()
     op.drop_index("uq_artifacts_project_add", table_name="artifacts")
-    op.execute(sa.text("ALTER TYPE artifacttype RENAME TO artifacttype_new"))
-    _create_artifact_type(_ARTIFACT_TYPES_WITH_SAD)
-    op.execute(
-        sa.text(
-            "ALTER TABLE artifacts "
-            "ALTER COLUMN type TYPE artifacttype "
-            "USING (CASE WHEN type::text = 'add' THEN 'sad' ELSE type::text END)::artifacttype"
-        )
-    )
-    op.execute(sa.text("DROP TYPE artifacttype_new"))
+    if bind.dialect.name == "postgresql":
+        op.execute(sa.text("ALTER TYPE artifacttype RENAME VALUE 'add' TO 'sad'"))
+    else:
+        op.execute(sa.text("UPDATE artifacts SET type = 'sad' WHERE type = 'add'"))
     op.execute(sa.text("UPDATE agent_sessions SET artifact_type = 'sad' WHERE artifact_type = 'add'"))
     op.create_index(
         "uq_artifacts_project_sad",
