@@ -91,11 +91,22 @@ class AgentEventService:
                 return
 
             await asyncio.sleep(interval_seconds)
-            next_snapshot = await self.build_snapshot(
-                project_id=project_id,
-                session_id=session_id,
-                user_id=user_id,
-            )
+            try:
+                next_snapshot = await self.build_snapshot(
+                    project_id=project_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+            except HTTPException:
+                # Session was deleted (or became inaccessible) while this stream was polling.
+                # The response already started, so raising here would crash the connection
+                # with "response already started" instead of a clean close.
+                yield _sse(
+                    event="stream_closed",
+                    data={"type": "stream_closed", "status": "deleted"},
+                    event_id=_event_id(session_id, sequence),
+                )
+                return
             next_fingerprint = _snapshot_fingerprint(next_snapshot)
             if next_fingerprint != fingerprint:
                 sequence += 1

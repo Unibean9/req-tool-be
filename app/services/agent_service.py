@@ -1088,7 +1088,11 @@ class AgentService:
             # timeout branch) rather than mislabel it COMPLETED.
             turn_limit_hit = graph_ended and _result_has_pending_tool_calls(result)
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
                     row.status = AgentSessionStatus.FAILED
                     db.add(
@@ -1103,7 +1107,11 @@ class AgentService:
                 await db.commit()
         except TimeoutError:
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
                     row.status = AgentSessionStatus.FAILED
                     db.add(
@@ -1116,7 +1124,11 @@ class AgentService:
                 await db.commit()
         except Exception as exc:
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
                     row.status = AgentSessionStatus.FAILED
                     db.add(
