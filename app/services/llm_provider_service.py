@@ -79,6 +79,7 @@ class LLMProviderService:
             existing.last_checked_at = None
             existing.last_check_error = None
             await self.db.flush()
+            await self.db.refresh(existing)
             return existing
         await self._unset_user_default(user_id)
         values = self._values_from_key_request(body)
