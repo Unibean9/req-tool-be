@@ -84,8 +84,8 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         artifact_type="brd",
         label="Business Requirements Document",
         children=(
-            "vision_objectives",
             "problem_statement",
+            "vision_objectives",
             "stakeholder_register",
             "scope_capabilities",
             "business_rules",
@@ -123,6 +123,19 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     # vision/problem/scope and promoted to a project-level field. The enum value
     # is kept for historical rows; it is no longer a BRD child.
     _item(
+        "problem_statement",
+        "Problem Statement",
+        "Problem statement: who faces which obstacle, root cause, frequency, and impact.",
+        sub_dimensions={
+            "who": "Audience directly affected by the problem.",
+            "obstacle": "Specific obstacle the audience faces.",
+            "root_cause": "Root cause after problem exploration.",
+            "frequency": "Frequency or repeated scale of the problem.",
+            "impact": "Impact on users, process, or business.",
+        },
+        threshold=0.8,
+    ),
+    _item(
         "vision_objectives",
         "Vision and Objectives",
         "Vision and objectives: why this exists, what success looks like, and how it is measured.",
@@ -134,19 +147,6 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
             "timeframe": "Timeline or completion deadline.",
             "intent": "Reason and motivation for the initiative.",
             "success_definition": "Ideal state when the initiative succeeds.",
-        },
-        threshold=0.8,
-    ),
-    _item(
-        "problem_statement",
-        "Problem Statement",
-        "Problem statement: who faces which obstacle, root cause, frequency, and impact.",
-        sub_dimensions={
-            "who": "Audience directly affected by the problem.",
-            "obstacle": "Specific obstacle the audience faces.",
-            "root_cause": "Root cause after problem exploration.",
-            "frequency": "Frequency or repeated scale of the problem.",
-            "impact": "Impact on users, process, or business.",
         },
         threshold=0.8,
     ),

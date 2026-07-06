@@ -56,7 +56,7 @@ def test_taxonomy_uses_6_brd_sections_not_9_slots():
 
     types = all_item_types()
     for section in (
-        "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
+        "problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities",
         "business_rules", "constraints_assumptions",
     ):
         assert section in types, section

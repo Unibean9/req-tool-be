@@ -1835,7 +1835,7 @@ async def run_critique(
 # ---------------------------------------------------------------------------
 
 # First four sections define a product brief; all seven define a PRD (addendum §6).
-_BRIEF_SECTIONS = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
+_BRIEF_SECTIONS = ("problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities")
 
 
 def _compute_recommendation(section_coverage: dict[str, str] | None, planning_track: str) -> dict[str, Any]:

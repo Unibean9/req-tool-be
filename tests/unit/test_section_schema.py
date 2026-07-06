@@ -19,8 +19,8 @@ def test_brd_registry_has_six_items():
     # executive_summary promoted to a project field; risks_issues merged into
     # constraints_assumptions.
     assert children_of("brd") == (
-        "vision_objectives",
         "problem_statement",
+        "vision_objectives",
         "stakeholder_register",
         "scope_capabilities",
         "business_rules",
@@ -66,6 +66,11 @@ def test_registry_item_metadata_is_complete():
         assert config.is_container is False
         assert config.label
         assert config.description
+
+
+def test_all_item_types_preserves_brd_order_first():
+    brd_children = children_of("brd")
+    assert all_item_types()[: len(brd_children)] == brd_children
 
 
 def test_children_of_rejects_non_container():

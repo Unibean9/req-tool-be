@@ -39,7 +39,7 @@ class ExportService:
 
 async def render_product_brief(project_id: uuid.UUID, db: AsyncSession) -> str:
     sections = await _load_document_items(project_id, db, "brd")
-    keys = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
+    keys = ("problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities")
     return _document("Product Brief", [(get_config(key).label, sections.get(key)) for key in keys])
 
 

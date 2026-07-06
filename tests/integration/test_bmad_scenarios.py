@@ -17,7 +17,7 @@ from app.graphs.readiness import compute_readiness_score
 from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _session_factory, _state
 
 _ALL_SECTIONS = [
-    "vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities",
+    "problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities",
     "business_rules", "constraints_assumptions",
 ]
 

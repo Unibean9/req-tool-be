@@ -138,7 +138,7 @@ def _derive_artifact_chain(section_coverage: dict[str, str] | None) -> dict[str,
     else:
         brainstorming = "partial"
 
-    brief_sections = ["vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities"]
+    brief_sections = ["problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities"]
     brief_scores = [scores[s] for s in brief_sections]
     if all(v >= 0.6 for v in brief_scores):
         product_brief = "complete"

@@ -33,7 +33,7 @@ async def test_brd_export_renders_requirements_sections_and_research_basis(clien
         "## Research Basis",
     ]:
         assert heading in text
-    assert "Increase retention rate" in text
+    assert "Increase user retention by 20%." in text
     assert "Interview: Users need a dashboard ro rang" in text
 
 
@@ -50,7 +50,7 @@ async def test_product_brief_renders_first_four_sections_only(client):
     assert "## Vision and Objectives" in text
     assert "## Scope and Capabilities" in text
     assert "## Business Rules" not in text
-    assert "Dashboard theo doi" in text
+    assert "Tracking dashboard and approval flow." in text
 
 
 @pytest.mark.asyncio
