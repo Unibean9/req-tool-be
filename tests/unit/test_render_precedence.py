@@ -1,7 +1,7 @@
 """draft_body precedence: the rendered graph view wins over any stored body.
 
-A stale draft_body from a prior session must never shadow the live decision graph. Both the async
-canonical reader (critique input) and the sync cached reader (finalize-gate hash) honor this.
+A stale draft_body from a prior session must never shadow the live decision graph. When no graph
+exists yet, the DB draft is the current body so resumed sessions can critique/finalize it.
 """
 
 import pytest
@@ -24,12 +24,12 @@ async def test_current_draft_body_returns_rendered_view_when_nodes_present(decis
 
 
 @pytest.mark.asyncio
-async def test_current_draft_body_ignores_db_body_when_nodes_empty():
+async def test_current_draft_body_uses_db_body_when_nodes_empty():
     state = {"decision_nodes": {}, "draft_body": "BODY DB", "artifact_type": "brd"}
 
     body = await current_draft_body(state)
 
-    assert body == ""
+    assert body == "BODY DB"
 
 
 def test_cached_draft_body_returns_view_when_nodes_present(decision_graph_factory):
@@ -42,7 +42,7 @@ def test_cached_draft_body_returns_view_when_nodes_present(decision_graph_factor
     assert _cached_draft_body(state) == render_view(nodes, "brd")
 
 
-def test_cached_draft_body_ignores_db_body_when_nodes_empty():
+def test_cached_draft_body_uses_db_body_when_nodes_empty():
     state = {"decision_nodes": {}, "draft_body": "BODY DB"}
 
-    assert _cached_draft_body(state) == ""
+    assert _cached_draft_body(state) == "BODY DB"

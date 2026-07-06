@@ -13,22 +13,17 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
 )
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from app.models.organization import OrgMember
 from app.services.agent_event_service import AgentEventService, _ui_status
 from tests.conftest import BASE, TestSessionFactory
+from tests.factories import _project
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
 def _user_id(headers: dict) -> uuid.UUID:
     token = headers["Authorization"].removeprefix("Bearer ")
     return uuid.UUID(decode_token(token)["sub"])
-
-
-async def _project_id(client):
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
 
 
 async def _project_with_owner(client):
@@ -40,7 +35,7 @@ async def _project_with_owner(client):
 
 @pytest.mark.asyncio
 async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_calls(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -102,7 +97,7 @@ async def test_agent_event_snapshot_contains_safe_session_messages_and_tool_call
 
 @pytest.mark.asyncio
 async def test_agent_event_snapshot_refreshes_status_committed_by_graph_session(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -133,7 +128,7 @@ async def test_agent_event_snapshot_refreshes_status_committed_by_graph_session(
 
 @pytest.mark.asyncio
 async def test_agent_event_snapshot_hides_internal_audit_tool_calls(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -208,14 +203,14 @@ async def _snapshot_for(db_session, project_id, *, status, interrupt_type=None):
 
 @pytest.mark.asyncio
 async def test_ui_status_active(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.ACTIVE)
     assert snapshot["session"]["ui_status"] == "processing"
 
 
 @pytest.mark.asyncio
 async def test_ui_status_stream_response(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(
         db_session, project_id,
         status=AgentSessionStatus.ACTIVE,
@@ -226,7 +221,7 @@ async def test_ui_status_stream_response(client, db_session):
 
 @pytest.mark.asyncio
 async def test_ui_status_waiting_approval(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(
         db_session, project_id,
         status=AgentSessionStatus.WAITING_FOR_HUMAN,
@@ -237,7 +232,7 @@ async def test_ui_status_waiting_approval(client, db_session):
 
 @pytest.mark.asyncio
 async def test_ui_status_waiting_input(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(
         db_session, project_id,
         status=AgentSessionStatus.WAITING_FOR_HUMAN,
@@ -248,21 +243,21 @@ async def test_ui_status_waiting_input(client, db_session):
 
 @pytest.mark.asyncio
 async def test_ui_status_failed(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.FAILED)
     assert snapshot["session"]["ui_status"] == "error"
 
 
 @pytest.mark.asyncio
 async def test_ui_status_completed(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.COMPLETED)
     assert snapshot["session"]["ui_status"] == "idle"
 
 
 @pytest.mark.asyncio
 async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     snapshot = await _snapshot_for(
         db_session, project_id,
         status=AgentSessionStatus.WAITING_FOR_HUMAN,
@@ -277,7 +272,7 @@ async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_ses
 
 @pytest.mark.asyncio
 async def test_snapshot_messages_include_payload(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -309,7 +304,7 @@ async def test_snapshot_messages_include_payload(client, db_session):
 
 @pytest.mark.asyncio
 async def test_snapshot_mixed_legacy_and_new_messages(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -342,7 +337,7 @@ async def test_snapshot_mixed_legacy_and_new_messages(client, db_session):
 
 @pytest.mark.asyncio
 async def test_snapshot_with_payload_still_no_graph_checkpoint(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     session = AgentSession(
         project_id=project_id,
@@ -373,7 +368,7 @@ async def test_snapshot_with_payload_still_no_graph_checkpoint(client, db_sessio
 
 @pytest.mark.asyncio
 async def test_agent_event_snapshot_rejects_non_owner(client, db_session):
-    project_id = await _project_id(client)
+    project_id = await _project(client)
     session = AgentSession(
         project_id=project_id,
         artifact_type="goal",
@@ -451,3 +446,103 @@ async def test_agent_events_route_rejects_project_member_who_is_not_session_owne
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# _document_for_session — container detection is registry-driven, not a
+# hardcoded {"brd", "prd", "add"} set. event_storming must resolve the same
+# way brd/prd/add already do.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_document_for_session_resolves_event_storming_via_artifact_type(client, db_session):
+    project_id = await _project(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="event_storming",
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType.EVENT_STORMING
+
+
+@pytest.mark.asyncio
+async def test_document_for_session_resolves_event_storming_via_focused_container(client, db_session):
+    project_id = await _project(client)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType.EVENT_STORMING,
+        status=ArtifactStatus.DRAFT,
+        title="Event Storming",
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType.EVENT_STORMING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
+async def test_document_for_session_regression_via_artifact_type(client, db_session, container_type):
+    project_id = await _project(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type=container_type,
+        workflow_area="analysis",
+        graph_checkpoint={},
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType(container_type)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
+async def test_document_for_session_regression_via_focused_container(client, db_session, container_type):
+    project_id = await _project(client)
+    container = Artifact(
+        project_id=project_id,
+        type=ArtifactType(container_type),
+        status=ArtifactStatus.DRAFT,
+        title=container_type.upper(),
+        extra_metadata={},
+    )
+    db_session.add(container)
+    await db_session.flush()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        focused_artifact_id=container.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    document = await AgentEventService(db_session)._document_for_session(session, project_id)
+
+    assert document is not None
+    assert document.document_type == ArtifactType(container_type)

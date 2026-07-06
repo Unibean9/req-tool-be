@@ -108,7 +108,7 @@ def _confirm_intent_sets_user_confirmed_stream_response() -> GateResult:
 
         state = {"messages": [], "user_confirmed": None}
         config = {"configurable": {"thread_id": str(uuid.uuid4())}}
-        with patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new=AsyncMock(side_effect=_fake_save)):
+        with patch("app.graphs.interrupts._save_and_interrupt_ask", new=AsyncMock(side_effect=_fake_save)):
             command = await _confirm_intent_impl("Build Y for audience A", state, config, "tc-001")
 
         ok_confirmed = command.update.get("user_confirmed") is True

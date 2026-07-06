@@ -24,6 +24,17 @@ _INTENT_BODY = (
     "- Reduce coordination time from 30 minutes to under 10 minutes per week within 3 months."
 )
 
+_INTENT_BODY_CLARIFIED = (
+    "## Vision\n"
+    "The MVP serves university study groups of 4-6 members who lose study sessions to scheduling conflicts.\n\n"
+    "## Objectives\n"
+    "- Sync each member's calendar into a shared free/busy view.\n"
+    "- Suggest at least 3 common free slots per group each week.\n"
+    "- Keep the first release focused on students, not lecturers.\n\n"
+    "## Success Metrics\n"
+    "- Group session attendance rises from 60% to 80% within one semester."
+)
+
 _PROBLEM_BODY = (
     "## Problem Statement\n"
     "Sinh vien hien sap study scheduling thu cong qua chat, dan toi trung lich va bo buoi.\n\n"
@@ -104,7 +115,6 @@ def _confirm_turn():
     return tool_select(
         "confirm_intent",
         summary="Xay cong cu orchestration study scheduling cho sinh vien, uu tien tim khung gio ranh chung.",
-        active_mode="discovery",
     )
 
 
@@ -125,7 +135,7 @@ def _draft_approve(
     """
     llm = ScriptedLLM(tool_brain=[
         _confirm_turn(),
-        tool_select("write_draft", title=title, body=body, active_mode="structuring"),
+        tool_select("write_draft", title=title, body=body),
     ])
     return _scenario(
         name,
@@ -133,6 +143,108 @@ def _draft_approve(
         llm,
         actions=[
             {"type": "send", "content": opening},
+            _CONTINUE,
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+
+
+def clarify_draft_approve() -> Scenario:
+    """Canonical journey: clarify context, draft once, then approve."""
+    llm = ScriptedLLM(
+        tool_brain=[
+            tool_select("ask_user", message="Who is the primary user of the tool?"),
+            _confirm_turn(),
+            tool_select(
+                "write_draft",
+                title="Intent: study scheduling coordination",
+                body=_INTENT_BODY,
+            ),
+        ]
+    )
+    return _scenario(
+        "canonical-clarify-draft-approve",
+        "intent",
+        llm,
+        actions=[
+            {"type": "send", "content": "Toi muon xay cong cu giup sinh vien orchestration study scheduling."},
+            {"type": "send", "content": "Mainly university students studying in groups."},
+            _CONTINUE,
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+
+
+def reject_critique_redraft() -> Scenario:
+    """Canonical journey: ambiguous brief, rejected draft, critique, clarify, redraft."""
+    llm = ScriptedLLM(
+        tool_brain=[
+            tool_select("ask_user", message="What problem should the product solve first?"),
+            tool_select(
+                "ask_user",
+                message="You mentioned both lecturers and students as primary users - which one is it for the MVP?",
+            ),
+            _confirm_turn(),
+            tool_select(
+                "create_decision_node",
+                node_id="D1",
+                kind="objective",
+                statement="Reduce schedule conflicts for study groups",
+            ),
+            tool_select("update_decision_node", node_id="D1", status="confirmed"),
+            tool_select("write_draft", title="Intent: study scheduling draft", body=_INTENT_BODY),
+            tool_select("run_critique", target="draft", mode="consistency"),
+            tool_select(
+                "ask_user",
+                message="The draft still mixes primary users. Confirm: students only for the MVP?",
+            ),
+            tool_select(
+                "write_draft",
+                title="Intent: study scheduling for student MVP",
+                body=_INTENT_BODY_CLARIFIED,
+            ),
+        ],
+        critique=[
+            {
+                "score": 0.55,
+                "findings": ["Objectives contradict the stated primary user"],
+                "suggestions": ["Pick one primary user for the MVP and align objectives"],
+            }
+        ],
+    )
+    return _scenario(
+        "canonical-reject-critique-redraft",
+        "intent",
+        llm,
+        actions=[
+            {"type": "send", "content": "Toi co mot y tuong app nhung chua ro lam."},
+            {"type": "send", "content": "Chac la giup giang vien theo doi sinh vien... hay la giup sinh vien tu hoc?"},
+            {"type": "send", "content": "Ca hai deu can, nhung sinh vien truoc di."},
+            _CONTINUE,
+            {"type": "reject_all"},
+            {"type": "send", "content": "Dung, MVP chi cho sinh vien thoi."},
+            {"type": "approve_all"},
+        ],
+        expect={"final_status": "completed", "min_artifacts": 1},
+    )
+
+
+def context_artifact_from_predecessors() -> Scenario:
+    """Canonical journey: derive a downstream artifact from accepted predecessor context."""
+    llm = ScriptedLLM(
+        tool_brain=[
+            _confirm_turn(),
+            tool_select("write_draft", title="FR: compute common free slots", body=_FR_BODY),
+        ]
+    )
+    return _scenario(
+        "canonical-context-artifact-from-predecessors",
+        "functional_requirement",
+        llm,
+        actions=[
+            {"type": "send", "content": "BRD da chot roi, viet functional requirement cho tinh khung gio chung."},
             _CONTINUE,
             {"type": "approve_all"},
         ],
@@ -155,12 +267,12 @@ def multi_turn_qna() -> Scenario:
     """Multi-turn Q&A (one-question rhythm) before drafting."""
     llm = ScriptedLLM(
         tool_brain=[
-            tool_select("ask_user", message="Who is the primary user of the tool?", active_mode="discovery"),
+            tool_select("ask_user", message="Who is the primary user of the tool?"),
             tool_select("ask_user", message="What is their biggest scheduling coordination problem?",
-                        active_mode="discovery", acknowledgment="Ro roi, la sinh vien."),
+                        acknowledgment="Ro roi, la sinh vien."),
             _confirm_turn(),
             tool_select("write_draft", title="Intent: Dieu phoi study scheduling cho sinh vien",
-                        body=_INTENT_BODY, active_mode="structuring"),
+                        body=_INTENT_BODY),
         ]
     )
     return _scenario(
@@ -183,11 +295,11 @@ def reject_then_explore() -> Scenario:
     llm = ScriptedLLM(
         tool_brain=[
             _confirm_turn(),
-            tool_select("write_draft", title="Intent (draft)", body=_INTENT_BODY, active_mode="structuring"),
-            tool_select("ask_user", active_mode="structuring",
+            tool_select("write_draft", title="Intent (draft)", body=_INTENT_BODY),
+            tool_select("ask_user",
                         message="Ban muon kham pha them khia canh nao — doi tuong, pham vi hay gia tri mang lai?"),
             tool_select("write_draft", title="Intent: Dieu phoi study scheduling (da lam ro pham vi)",
-                        body=_INTENT_BODY, active_mode="structuring"),
+                        body=_INTENT_BODY),
         ]
     )
     return _scenario(
@@ -210,7 +322,7 @@ def reject_proposal() -> Scenario:
     llm = ScriptedLLM(
         tool_brain=[
             _confirm_turn(),
-            tool_select("write_draft", title="Intent: proposal", body=_INTENT_BODY, active_mode="structuring"),
+            tool_select("write_draft", title="Intent: proposal", body=_INTENT_BODY),
         ]
     )
     return _scenario(
@@ -235,7 +347,6 @@ def problem_propose_approve() -> Scenario:
                 "write_draft",
                 title="Van de: Dieu phoi study scheduling thu cong",
                 body=_PROBLEM_BODY,
-                active_mode="structuring",
             ),
         ]
     )
@@ -312,32 +423,20 @@ def story_propose_approve() -> Scenario:
     )
 
 
-# Ordered registry — used to parametrize the scenario test. Behavior scenarios
-# (intent flows) first, then one happy-path per artifact type for output scoring.
-ALL_SCENARIOS = [
-    intent_propose_approve,
-    multi_turn_qna,
-    reject_then_explore,
-    reject_proposal,
-    problem_propose_approve,
-    stakeholder_propose_approve,
-    goal_propose_approve,
-    functional_requirement_propose_approve,
-    non_functional_requirement_propose_approve,
-    epic_propose_approve,
-    story_propose_approve,
+# Ordered registry used by integration, eval, live smoke, and benchmark lanes.
+# Keep this small: high-level tests are canaries, not an artifact-type matrix.
+CANONICAL_SCENARIOS = [
+    clarify_draft_approve,
+    reject_critique_redraft,
+    context_artifact_from_predecessors,
 ]
 
-# Topological pipeline order for the aggregated document (BA → PM). Predecessors
-# are soft (recorded as missing_context, non-blocking); `capability` is omitted by
-# design, so functional/non_functional requirements carry that soft warning.
+ALL_SCENARIOS = CANONICAL_SCENARIOS
+
+# Reduced topological document smoke. The exhaustive artifact-type matrix was
+# high-maintenance and overlapped with lower-level schema/validator tests.
 DOCUMENT_PIPELINE = [
-    intent_propose_approve,
+    clarify_draft_approve,
     problem_propose_approve,
-    stakeholder_propose_approve,
-    goal_propose_approve,
-    functional_requirement_propose_approve,
-    non_functional_requirement_propose_approve,
-    epic_propose_approve,
-    story_propose_approve,
+    context_artifact_from_predecessors,
 ]

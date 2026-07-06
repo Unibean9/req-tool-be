@@ -7,8 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
-from tests.integration.test_graph_nodes import _config, _make_agent_session, _session_factory, _state
-from tests.unit.test_tool_parity import _project
+from tests.factories import _config, _make_agent_session, _project, _session_factory, _state
 
 # ---------------------------------------------------------------------------
 # _gate_selected_tools unit tests
@@ -24,12 +23,14 @@ def test_gate_passes_non_interrupt_tools_through():
     assert [r["name"] for r in result] == ["critique_note", "explore_note"]
 
 
-def test_gate_passes_unavailable_tool_to_tool_feedback():
-    state = _state()  # finalize not available (no working_draft, no passed critique)
+def test_gate_drops_out_of_phase_tool():
+    # The gate supersedes the old "dispatch unavailable tool for a tool-level error" behavior for
+    # out-of-phase tools: _state() is INTENT phase (user_confirmed=None), which excludes finalize,
+    # so the gate drops it (the model is told the phase via the feedback block instead).
+    state = _state()
     requested = [{"name": "finalize", "args": {"summary": "done"}}]
     result = _gate_selected_tools(state, requested)
-    assert len(result) == 1
-    assert result[0]["name"] == "finalize"
+    assert result == []
 
 
 def test_gate_keeps_note_alongside_interrupt_tool():
@@ -67,15 +68,30 @@ def test_gate_drops_second_interrupt_but_keeps_note():
     assert [g["name"] for g in gated] == ["ask_user", "explore_note"]
 
 
-def test_gate_keeps_unavailable_interrupt_tool_for_tool_feedback_and_note():
-    """Unavailable finalize still dispatches so the tool can respond; side-effect-free note is kept in the same turn."""
-    state = _state()  # finalize not available
+def test_gate_drops_read_artifact_when_bundled_with_interrupt_tool():
+    """read_artifact is safe, but not interrupt-safe: read first, then draft/ask on the next turn."""
+    state = _state()
+    state["user_confirmed"] = True
+    requested = [
+        {"name": "read_artifact", "args": {"id": "00000000-0000-0000-0000-000000000001"}},
+        {"name": "write_draft", "args": {"title": "Vision", "body": "## Vision\nDraft"}},
+    ]
+
+    result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["write_draft"]
+
+
+def test_gate_drops_out_of_phase_interrupt_tool_but_keeps_note():
+    """Out-of-phase finalize (INTENT phase) is dropped; the in-phase side-effect-free note
+    still passes through so its structured facts reach state this turn."""
+    state = _state()  # INTENT phase: finalize out of phase, explore_note in phase
     requested = [
         {"name": "finalize", "args": {"summary": "done"}},
         {"name": "explore_note", "args": {"content": "note"}},
     ]
     result = _gate_selected_tools(state, requested)
-    assert [r["name"] for r in result] == ["finalize", "explore_note"]
+    assert [r["name"] for r in result] == ["explore_note"]
 
 
 def test_gate_interrupt_tools_set_is_complete():

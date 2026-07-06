@@ -27,16 +27,15 @@ def test_open_question_object_shape():
     }
 
 
-def test_state_has_assumptions_field():
-    assert "assumptions" in WorkflowState.__annotations__
-
-
 def test_state_has_risks_field():
     assert "risks" in WorkflowState.__annotations__
 
 
-def test_state_has_open_questions_field():
-    assert "open_questions" in WorkflowState.__annotations__
+def test_assumptions_open_questions_are_not_state_fields():
+    # Assumptions/open-questions live in the decision graph. The note parser still emits the
+    # buckets, but they are routed to decision nodes, not accumulated in WorkflowState.
+    assert "assumptions" not in WorkflowState.__annotations__
+    assert "open_questions" not in WorkflowState.__annotations__
 
 
 def test_extract_assumption_from_note_content():

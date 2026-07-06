@@ -27,6 +27,7 @@ from app.schemas.artifact import (
 )
 from app.schemas.response import ApiResponse
 from app.services.artifact_service import (
+    ArtifactInUseError,
     ArtifactService,
     ArtifactVersionService,
     InvalidArtifactStatusTransition,
@@ -86,6 +87,21 @@ async def list_artifacts(
     )
 
 
+@router.get("/{artifact_id}", response_model=ApiResponse[ArtifactResponse], deprecated=True)
+async def get_artifact(
+    project_id: uuid.UUID,
+    artifact_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await require_project_access(project_id, user, db)
+    try:
+        artifact = await ArtifactService(db).get(project_id=project_id, artifact_id=artifact_id, user_id=user.id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    return ok(artifact)
+
+
 @router.patch("/{artifact_id}", response_model=ApiResponse[ArtifactResponse], deprecated=True)
 async def update_artifact(
     project_id: uuid.UUID,
@@ -119,6 +135,14 @@ async def delete_artifact(
     await require_project_access(project_id, user, db)
     try:
         await ArtifactService(db).delete(project_id=project_id, artifact_id=artifact_id, user_id=user.id)
+    except ArtifactInUseError as exc:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Artifact has live downstream dependents",
+                "artifact_ids": [str(artifact_id) for artifact_id in exc.artifact_ids],
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -210,6 +234,8 @@ async def restore_artifact_version(
             version_id=version_id,
             user_id=user.id,
         )
+    except InvalidArtifactStatusTransition as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ok(artifact)

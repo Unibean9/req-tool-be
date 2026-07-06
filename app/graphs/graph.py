@@ -44,7 +44,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         route_after_triage,
         {
             "converse": "converse",
-            "analyze": "orchestrator",
+            "orchestrator": "orchestrator",
         },
     )
     builder.add_edge("converse", "orchestrator")
@@ -62,7 +62,7 @@ def build_graph(checkpointer: BaseCheckpointSaver | None = None):
         route_before_analyze,
         {
             "summarize": "summarize",
-            "analyze": "orchestrator",
+            "orchestrator": "orchestrator",
         },
     )
     builder.add_edge("summarize", "orchestrator")

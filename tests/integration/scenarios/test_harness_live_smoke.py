@@ -72,6 +72,7 @@ async def _create_session(client, headers, project_id: str) -> uuid.UUID:
 
 
 @pytest.mark.integration
+@pytest.mark.live
 @pytest.mark.asyncio
 async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, scenario_project):
     if not judge_settings.llm_api_key:
@@ -106,7 +107,6 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
         trajectory.append({
             "turn": label,
             "tools": tools,
-            "active_mode": (analysis or {}).get("active_mode") if isinstance(analysis, dict) else None,
             "status": status,
             "tool_errors": [e.get("code") for e in (errors or [])] if isinstance(errors, list) else errors,
         })
@@ -114,7 +114,7 @@ async def test_thinned_prompt_drives_correct_tool_intent(client, scenario_env, s
     print(f"\n=== LIVE SMOKE TRAJECTORY (model={judge_settings.llm_model_name}) ===")
     for row in trajectory:
         print(
-            f"  [{row['turn']:>13}] tools={row['tools']!s:<26} mode={row['active_mode']!s:<12} "
+            f"  [{row['turn']:>13}] tools={row['tools']!s:<26} "
             f"status={row['status']} errors={row['tool_errors']}"
         )
 

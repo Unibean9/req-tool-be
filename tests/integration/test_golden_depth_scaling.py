@@ -1,7 +1,7 @@
 """Golden depth-scaling and parked resurface contract.
 
-A parked question resurfaces the same turn its blocker resolves; PRD depth adds business
-rules + edge-cases; completeness sweep creates parked questions for gaps.
+A parked question resurfaces the same turn its blocker resolves; PRD sweep creates generic
+registry-derived gaps instead of scenario-specific edge cases.
 """
 
 import pytest
@@ -30,7 +30,7 @@ def test_parked_question_resurfaces_when_blocker_resolved():
     assert [node["id"] for node in resurfaced] == ["Q4"]
 
 
-def test_depth_scaling_prd_includes_rules_and_edge_cases():
+def test_depth_scaling_prd_sweep_uses_registry_gaps():
     nodes = {
         "R1": {
             "id": "R1", "kind": "fact", "statement": "Business rule: 1 visit / customer / day",
@@ -50,7 +50,9 @@ def test_depth_scaling_prd_includes_rules_and_edge_cases():
 
     assert "Business Rules" in out
     assert out.count("Business rule") >= 2
-    assert out.count("Edge-case") >= 3
+    assert "Business Capabilities" in out
+    assert "Functional Requirements" in out
+    assert "customer forgot phone number" not in out
 
 
 @pytest.mark.asyncio

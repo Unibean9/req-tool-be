@@ -1,6 +1,11 @@
 """D6 — confirm_intent tool, schema registration, and self-validation.
 
-Intent menu gate removed; confirm_intent still self-rejects when intent is already confirmed.
+The current design supersedes the quick-wins "broad menu, tools self-reject" design here: the
+per-phase menu now hides out-of-phase tools (INTENT hides
+write_draft; ELICIT hides confirm_intent), and `_gate_selected_tools` DROPS an out-of-phase
+selection rather than dispatching it for a tool-level error. The self-correction channel is
+preserved via the feedback block (the phase is named back to the model); tools still self-reject
+for CONDITION gates (missing arg, unmet critique) when they are in phase.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -48,12 +53,13 @@ def test_confirm_intent_is_interrupt_bearing():
 
 
 # ---------------------------------------------------------------------------
-# Menu no longer has intent gate
+# Per-phase menu: INTENT hides drafting/quality tools, ELICIT hides confirm_intent
 # ---------------------------------------------------------------------------
 
-def test_intent_phase_keeps_broad_tool_menu():
+def test_intent_phase_hides_draft_and_quality_tools():
+    # INTENT phase excludes write_draft/run_critique/finalize so the agent cannot draft pre-intent.
     names = _names({"messages": [], "user_confirmed": None})
-    assert "write_draft" in names
+    assert "write_draft" not in names
     assert "finalize" not in names
     assert "run_critique" not in names
 
@@ -63,10 +69,10 @@ def test_intent_phase_offers_confirm_intent():
     assert "confirm_intent" in names
 
 
-def test_artifact_phase_keeps_confirm_intent_and_write_draft_available():
-    # confirm_intent self-rejects if called again; menu no longer has a one-shot gate.
+def test_elicit_phase_hides_confirm_intent_but_offers_write_draft():
+    # user_confirmed with no evidence yet -> ELICIT phase: confirm_intent is behind us, drafting opens.
     names = _names({"messages": [], "user_confirmed": True})
-    assert "confirm_intent" in names
+    assert "confirm_intent" not in names
     assert "write_draft" in names
 
 
@@ -99,7 +105,7 @@ async def test_confirm_intent_sets_user_confirmed():
     config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
 
     with patch(
-        "app.graphs.agent_tools.nodes._save_and_interrupt_ask", new_callable=AsyncMock
+        "app.graphs.interrupts._save_and_interrupt_ask", new_callable=AsyncMock
     ) as mock_save:
         mock_save.return_value = "ok"
         command = await _confirm_intent_impl("Building Y for audience A", state, config, "tc-001")
@@ -214,12 +220,11 @@ async def test_audit_idempotent_when_row_exists():
     mock_db.commit.assert_not_awaited()
 
 
-def test_write_draft_in_intent_phase_passes_gate_for_tool_feedback():
-    # write_draft is unavailable but still dispatched so the tool returns an error for model self-correction.
+def test_write_draft_in_intent_phase_is_dropped_by_gate():
+    # write_draft is out of phase in INTENT, so the gate drops it (model is told via feedback).
     state = {"messages": [], "user_confirmed": None}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {"title": "Vision doc", "body": "## Vision\nBuild X for Y."}}])
-    assert len(gated) == 1
-    assert gated[0]["name"] == "write_draft"
+    assert gated == []
 
 
 def test_write_draft_in_artifact_phase_not_coerced():
@@ -229,14 +234,15 @@ def test_write_draft_in_artifact_phase_not_coerced():
     assert gated[0]["name"] == "write_draft"
 
 
-def test_write_draft_available_before_confirm_intent():
-    assert "write_draft" in _names({"messages": [], "user_confirmed": None})
+def test_write_draft_unavailable_before_confirm_intent():
+    # Drafting is not offered until intent is confirmed.
+    assert "write_draft" not in _names({"messages": [], "user_confirmed": None})
 
 
 @pytest.mark.asyncio
 async def test_write_draft_without_body_returns_tool_error():
-    # Empty body is a tool-level error and is no longer coerced to ask_user.
-    state = {"messages": [], "user_confirmed": None}
+    # In phase (confirmed), empty body is a tool-level error and is no longer coerced to ask_user.
+    state = {"messages": [], "user_confirmed": True}
     gated = _gate_selected_tools(state, [{"name": "write_draft", "args": {}}])
     assert gated[0]["name"] == "write_draft"
 
@@ -251,7 +257,7 @@ async def test_confirm_intent_impl_calls_audit():
     config = {"configurable": {"thread_id": "00000000-0000-0000-0000-000000000001"}}
 
     with (
-        patch("app.graphs.agent_tools.nodes._save_and_interrupt_ask", new_callable=AsyncMock) as mock_save,
+        patch("app.graphs.interrupts._save_and_interrupt_ask", new_callable=AsyncMock) as mock_save,
         patch("app.graphs.agent_tools._audit_interaction_tool_call", new_callable=AsyncMock) as mock_audit,
     ):
         mock_save.return_value = "ok"

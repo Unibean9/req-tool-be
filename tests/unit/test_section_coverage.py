@@ -2,7 +2,7 @@
 
 from app.graphs.nodes import _build_tool_selection_prompt
 from app.instructions import get_instruction, load_instructions
-from tests.integration.test_graph_nodes import _state
+from tests.factories import _state
 
 
 def test_taxonomy_contract_uses_database_coverage():

@@ -212,16 +212,23 @@ def _runtime_recovery_eval() -> RuntimeGateResult:
 
 
 def _turn_budget_eval() -> RuntimeGateResult:
-    turn_count = 4
-    threshold = 8
-    passed = turn_count <= threshold
+    # Measured from a recorded behavior-scenario transcript (see tests/eval/test_behavior_scenarios.py;
+    # the fixture is the committed brd-happy-path stub run). Refresh the fixture when scenario flows
+    # change.
+    from app.eval.behavior_metrics import turns_to_first_draft
+
+    transcript_path = Path(__file__).parent / "fixtures" / "behavior_reference_transcript.json"
+    transcript = json.loads(transcript_path.read_text(encoding="utf-8"))
+    turn_count = turns_to_first_draft(transcript)
+    budget = 8
+    passed = turn_count is not None and turn_count <= budget
     return RuntimeGateResult(
         gate="turn_budget_eval",
         passed=passed,
         score=1.0 if passed else 0.0,
         threshold=1.0,
         critical=False,
-        reason=f"turn_count={turn_count}, limit={threshold}",
+        reason=f"turns_to_first_draft={turn_count} (scenario {transcript.get('scenario')}), budget={budget}",
     )
 
 

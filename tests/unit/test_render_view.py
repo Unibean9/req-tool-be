@@ -4,7 +4,7 @@ The view is derived, never the source: superseded hidden, parked folded into its
 active nodes (confirmed/inferred/needs_confirmation) shown. brd and prd use distinct templates.
 """
 
-from app.graphs.decision_graph import create_node, render_view
+from app.graphs.decision_graph import create_node, render_node_map, render_view
 
 
 def test_render_view_shows_confirmed_and_inferred(decision_graph_factory):
@@ -150,6 +150,41 @@ def test_render_view_functional_requirement_assigns_trace_ids_and_placeholders()
     assert "_(cần bổ sung)_" in out
 
 
+def test_render_node_map_uses_rendered_trace_ids_and_sections():
+    nodes = {
+        "F1": create_node(
+            kind="decision",
+            statement="Scan QR to check in",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="F1",
+            fields={"requirement": "Scan rotating QR", "behavior": "Validate within 30s", "priority": "Must"},
+        ),
+        "F2": create_node(
+            kind="decision",
+            statement="Verify GPS",
+            origin={"source": "test"},
+            status="needs_confirmation",
+            node_id="F2",
+            fields={"requirement": "Check geofence"},
+        ),
+        "OLD": create_node(
+            kind="decision",
+            statement="Old requirement",
+            origin={"source": "test"},
+            status="superseded",
+            node_id="OLD",
+        ),
+    }
+
+    mapping = render_node_map(nodes, "functional_requirement")
+
+    assert mapping == {
+        "F1": {"section": "## Functional Requirements", "rendered_tag": "FR-01"},
+        "F2": {"section": "## Functional Requirements", "rendered_tag": "FR-02"},
+    }
+
+
 def test_render_view_business_capability_renders_id_tagged_entries():
     nodes = {
         "U1": create_node(
@@ -158,7 +193,7 @@ def test_render_view_business_capability_renders_id_tagged_entries():
             origin={"source": "test"},
             status="confirmed",
             node_id="U1",
-            fields={"goal": "Let students check in fast", "users": "Students"},
+            fields={"goal": "Let students check in fast", "user_segment": "Students"},
         ),
     }
 
@@ -167,6 +202,6 @@ def test_render_view_business_capability_renders_id_tagged_entries():
     assert "## Business Capabilities" in out
     assert "### BC-01: Attendance check-in" in out
     assert "- **goal:** Let students check in fast" in out
-    assert "- **users:** Students" in out
+    assert "- **user_segment:** Students" in out
     # Unfilled brief fields still placeholder so the gate can flag them.
-    assert "- **value:** _(cần bổ sung)_" in out
+    assert "- **business_value:** _(cần bổ sung)_" in out

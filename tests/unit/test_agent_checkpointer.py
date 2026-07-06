@@ -9,6 +9,7 @@ from sqlalchemy import select
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.models.agent import AgentSession
 from tests.conftest import TestSessionFactory
+from tests.factories import _session_factory
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -115,6 +116,25 @@ async def test_aput_falls_back_to_session_id_when_config_has_no_thread_id(client
     assert config["configurable"]["thread_id"] == str(session.id)
 
 
+@pytest.mark.asyncio
+async def test_write_paths_lock_session_row(client, db_session, monkeypatch):
+    session = await _create_agent_session(client, db_session)
+    checkpointer = AgentSessionCheckpointer(session_id=str(session.id), session_factory=_session_factory())
+    original_get_session = checkpointer._get_session
+    flags = []
+
+    async def tracked_get_session(db, *, for_update=False):
+        flags.append(for_update)
+        return await original_get_session(db, for_update=for_update)
+
+    monkeypatch.setattr(checkpointer, "_get_session", tracked_get_session)
+
+    config = await checkpointer.aput(_config(session.id), _checkpoint(), {}, {})
+    await checkpointer.aput_writes(config, [("messages", [{"role": "user", "content": "ok"}])], task_id="task-1")
+
+    assert flags == [True, True]
+
+
 async def _create_agent_session(client, db_session) -> AgentSession:
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -128,15 +148,6 @@ async def _create_agent_session(client, db_session) -> AgentSession:
     db_session.add(session)
     await db_session.commit()
     return session
-
-
-def _session_factory():
-    @asynccontextmanager
-    async def factory():
-        async with TestSessionFactory() as db:
-            yield db
-
-    return factory
 
 
 async def _load_agent_session(session_id: uuid.UUID) -> AgentSession:

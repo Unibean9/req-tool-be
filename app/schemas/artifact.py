@@ -80,6 +80,8 @@ class ArtifactResponse(BaseModel):
     created_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
     current_version: ArtifactVersionResponse | None = None
+    lifecycle_state: str | None = None
+    lifecycle_reason: str | None = None
 
 
 class ArtifactReviewRequest(BaseModel):
@@ -182,6 +184,8 @@ class ArtifactNode(BaseModel):
     title: str
     current_version_id: uuid.UUID | None = None
     current_version: ArtifactVersionResponse | None = None
+    lifecycle_state: str | None = None
+    lifecycle_reason: str | None = None
 
 
 class ArtifactGraphResponse(BaseModel):

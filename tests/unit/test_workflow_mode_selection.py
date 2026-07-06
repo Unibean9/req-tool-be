@@ -1,7 +1,7 @@
 """Tests for workflow_mode / planning_track assignment in analyze_node (addendum §5, §11, §12)."""
 
 from app.graphs.nodes import _infer_workflow_mode
-from tests.integration.test_graph_nodes import _state
+from tests.factories import _state
 
 
 def test_infer_workflow_mode_low_coverage_returns_brainstorm():

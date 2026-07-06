@@ -348,7 +348,7 @@ async def test_live_sufficient_context_reaches_write_draft(
 ):
     """Real LLM must reach write_draft when given enough context + explicit request.
 
-    This is the behavioral contract from golden-conversation.md Phase 1→2:
+    This is the behavioral contract from golden-conversation.md:
     once the analyst has sufficient signal and the user asks to draft, the model drafts.
     """
     _skip_without_key()

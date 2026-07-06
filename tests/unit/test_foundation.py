@@ -4,7 +4,7 @@
 def test_rubric_importable_from_app():
     from app.graphs.rubric import RUBRIC_CRITERIA, render_criteria_block
 
-    # 8 base (29148 + INVEST/SMART) + 3 business dimensions added in phase-06.
+    # 8 base (29148 + INVEST/SMART) + 3 business dimensions.
     assert len(RUBRIC_CRITERIA) == 11
     assert isinstance(render_criteria_block(), str)
 

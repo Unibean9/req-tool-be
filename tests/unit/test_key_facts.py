@@ -7,7 +7,7 @@ import pytest
 
 from app.graphs.nodes import _build_key_facts_block, _build_tool_selection_prompt
 from app.graphs.note_parser import extract_structured_objects
-from tests.integration.test_graph_nodes import _state
+from tests.factories import _state
 
 # ---------------------------------------------------------------------------
 # note_parser

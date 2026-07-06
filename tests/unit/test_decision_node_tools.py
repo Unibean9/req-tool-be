@@ -70,6 +70,56 @@ async def test_create_records_section_and_fields(graph_on):
 
 
 @pytest.mark.asyncio
+async def test_create_records_section_finding_same_turn_without_blocking(graph_on):
+    """A weasel-worded write still succeeds (node written) AND records a section finding this turn."""
+    state = {
+        "messages": [],
+        "user_confirmed": True,
+        "turn_count": 1,
+        "artifact_type": "brd",
+        "decision_nodes": {},
+        "section_findings": {},
+    }
+
+    command = await _create_decision_node_impl(
+        "fact", "The system is fast and flexible.", [], None, state, "tc1", section="## Business Rules"
+    )
+
+    # Write is not blocked: the node is present in state.
+    assert len(command.update["decision_nodes"]) == 1
+    findings = command.update["section_findings"]["## Business Rules"]
+    assert any(f["severity"] == "violation" for f in findings)  # business rule missing condition/outcome
+
+
+@pytest.mark.asyncio
+async def test_clean_section_write_stores_empty_findings(graph_on):
+    state = {
+        "messages": [],
+        "user_confirmed": True,
+        "turn_count": 1,
+        "artifact_type": "brd",
+        "decision_nodes": {},
+        "section_findings": {"## Stakeholders": [{"severity": "violation", "message": "old"}]},
+    }
+
+    command = await _create_decision_node_impl(
+        "fact", "The product owner signs off scope.", [], None, state, "tc1", section="## Stakeholders"
+    )
+
+    # Re-validated clean -> [] (not absent) so the merge reducer clears the prior defect.
+    assert command.update["section_findings"]["## Stakeholders"] == []
+
+
+@pytest.mark.asyncio
+async def test_sectionless_write_records_no_findings(graph_on):
+    state = {"messages": [], "user_confirmed": True, "turn_count": 1, "artifact_type": "brd", "decision_nodes": {}}
+
+    command = await _create_decision_node_impl("decision", "v1 = operations-first", [], None, state, "tc1")
+
+    assert "section_findings" not in command.update
+
+
+@pytest.mark.asyncio
 async def test_create_noop_when_flag_off(graph_off):
     state = {"messages": [], "decision_nodes": {}}
 

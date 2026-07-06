@@ -33,13 +33,15 @@ def _quality_pass(body: str) -> dict:
     }
 
 
-def test_only_safety_gates_remain_without_intent_or_note_filter(decision_graph_factory):
+def test_draft_phase_offers_drafting_and_critique_but_not_finalize(decision_graph_factory):
+    # A confirmed session with evidence sits in DRAFT phase, which offers drafting/critique tools and
+    # keeps finalize gated.
     nodes = decision_graph_factory(
         {"id": "N1", "kind": "objective", "statement": "Reduce processing time", "status": "confirmed"},
     )
     state = {
         "messages": [_note_turn(f"n{i}") for i in range(5)],
-        "user_confirmed": None,
+        "user_confirmed": True,
         "decision_nodes": nodes,
         "artifact_type": "brd",
         "session_elicit_count": 0,
@@ -83,12 +85,15 @@ def test_finalize_quality_gate_still_active(decision_graph_factory):
 
 
 def test_solo_interrupt_enforcement_still_active():
-    first, second = list(_INTERRUPT_BEARING_TOOLS)[:2]
-    raw = [{"name": first, "args": {}}, {"name": second, "args": {}}]
+    # ask_user + respond are both in-phase in ELICIT, so this isolates solo enforcement from the
+    # per-phase gate (arbitrary interrupt tools could include finalize/confirm_intent, which
+    # ELICIT excludes — that drop would be phase gating, not solo enforcement).
+    assert {"ask_user", "respond"} <= _INTERRUPT_BEARING_TOOLS
+    raw = [{"name": "ask_user", "args": {}}, {"name": "respond", "args": {}}]
 
     gated = _gate_selected_tools({"messages": [], "user_confirmed": True}, raw)
 
-    assert [tool["name"] for tool in gated] == [first]
+    assert [tool["name"] for tool in gated] == ["ask_user"]
 
 
 def test_working_draft_field_removed_from_state():

@@ -1,6 +1,9 @@
 # syntax=docker/dockerfile:1
 
 ARG PYTHON_VERSION=3.13
+ARG UV_VERSION=0.9.30
+
+FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
 FROM python:${PYTHON_VERSION}-slim AS builder
 
@@ -11,11 +14,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
-RUN --mount=type=cache,target=/root/.cache/pip \
-    python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --upgrade pip \
-    && /opt/venv/bin/pip install -r requirements.txt
+COPY --from=uv /uv /uvx /bin/
+COPY pyproject.toml uv.lock ./
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_LINK_MODE=copy
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project
 
 
 FROM python:${PYTHON_VERSION}-slim AS runtime

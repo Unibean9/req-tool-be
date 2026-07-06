@@ -16,19 +16,12 @@ from app.models.agent import (
 )
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactType
 from app.schemas.agent import AgentToolCallResponse
-from tests.helpers import create_org, create_project, make_auth_headers
-
-
-async def create_project_id(client) -> uuid.UUID:
-    headers = await make_auth_headers(client)
-    org = await create_org(client, headers)
-    project = await create_project(client, headers, org["id"])
-    return uuid.UUID(project["id"])
+from tests.factories import _project
 
 
 @pytest.mark.asyncio
 async def test_agent_session_can_be_saved_and_loaded(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     parent = Artifact(
         project_id=project_id,
         type=ArtifactType.BRD,
@@ -75,7 +68,7 @@ async def test_agent_session_can_be_saved_and_loaded(client, db_session):
 
 @pytest.mark.asyncio
 async def test_agent_message_and_tool_call_cascade_from_session(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     session = AgentSession(
         project_id=project_id,
         artifact_type="intent",
@@ -138,7 +131,7 @@ def test_agent_tool_call_response_hides_contract_version_but_keeps_trace():
 
 @pytest.mark.asyncio
 async def test_agent_session_status_rejects_unknown_value(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     session = AgentSession(
         project_id=project_id,
         artifact_type="risk",
@@ -153,7 +146,7 @@ async def test_agent_session_status_rejects_unknown_value(client, db_session):
 
 @pytest.mark.asyncio
 async def test_one_active_agent_session_per_project_artifact_type_and_user(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     owner_id = uuid.uuid4()
     db_session.add(
         AgentSession(
@@ -182,7 +175,7 @@ async def test_one_active_agent_session_per_project_artifact_type_and_user(clien
 
 @pytest.mark.asyncio
 async def test_active_agent_sessions_with_same_artifact_type_are_allowed_for_different_users(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     db_session.add(
         AgentSession(
             project_id=project_id,
@@ -215,7 +208,7 @@ async def test_active_agent_sessions_with_same_artifact_type_are_allowed_for_dif
 
 @pytest.mark.asyncio
 async def test_completed_agent_session_does_not_block_new_session(client, db_session):
-    project_id = await create_project_id(client)
+    project_id = await _project(client)
     db_session.add(
         AgentSession(
             project_id=project_id,

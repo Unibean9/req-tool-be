@@ -19,11 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent import AgentSession
 
-# Per-session locks serialize the read-modify-write on the single graph_checkpoint
-# JSON column. LangGraph issues checkpoint writes concurrently within a turn; without
-# this, concurrent aput/aput_writes clobber each other's pending_writes, corrupting
-# resume non-deterministically. All checkpoint ops for a thread run in one event loop,
-# so an in-process asyncio.Lock is sufficient.
+# Per-session locks serialize in-process writes; row locks cover multi-worker checkpoint writes.
 _session_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -82,7 +78,7 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         checkpoint_id = checkpoint["id"]
         async with _lock_for(str(self.session_id)):
             async with self.session_factory() as db:
-                session = await self._get_session(db)
+                session = await self._get_session(db, for_update=True)
                 prior = session.graph_checkpoint or {}
                 # Keep only writes already recorded for THIS checkpoint (LangGraph
                 # writes a step's values before its aput); drop superseded checkpoints'
@@ -133,7 +129,7 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         checkpoint_id = (config.get("configurable") or {}).get("checkpoint_id")
         async with _lock_for(str(self.session_id)):
             async with self.session_factory() as db:
-                session = await self._get_session(db)
+                session = await self._get_session(db, for_update=True)
                 payload = dict(session.graph_checkpoint or {})
                 cid = checkpoint_id or payload.get("checkpoint_id")
                 payload["pending_writes"] = [
@@ -157,12 +153,11 @@ class AgentSessionCheckpointer(BaseCheckpointSaver):
         if item is not None:
             yield item
 
-    async def _get_session(self, db: AsyncSession) -> AgentSession:
-        session = (
-            await db.execute(
-                select(AgentSession).where(AgentSession.id == self.session_id),
-            )
-        ).scalar_one()
+    async def _get_session(self, db: AsyncSession, *, for_update: bool = False) -> AgentSession:
+        stmt = select(AgentSession).where(AgentSession.id == self.session_id)
+        if for_update:
+            stmt = stmt.with_for_update()
+        session = (await db.execute(stmt)).scalar_one()
         return session
 
     def _load_checkpoint(self, payload: dict[str, Any]) -> Checkpoint:
