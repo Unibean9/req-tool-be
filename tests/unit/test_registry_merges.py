@@ -64,7 +64,13 @@ def test_completeness_sweep_add_uses_registry_children():
     gaps = completeness_sweep({}, "add")
     joined = " ".join(gaps)
     assert "for the BRD" not in joined
-    for label in ("Tech Stack", "Domain Entity", "Component", "Interface", "Technical Decision"):
+    for label in (
+        "Technology Stack",
+        "Domain Entities",
+        "Architecture Components",
+        "Interface Contracts",
+        "Architecture Decisions",
+    ):
         assert label in joined
 
 

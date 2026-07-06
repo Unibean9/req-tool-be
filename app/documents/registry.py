@@ -92,7 +92,9 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
             "constraints_assumptions",
         ),
         is_container=True,
-        description="Business context, scope, rules, constraints, and risks.",
+        description=(
+            "Business requirements: problem, vision, stakeholders, scope, rules, constraints, assumptions, and risks."
+        ),
     ),
     DocumentTypeConfig(
         artifact_type="prd",
@@ -103,21 +105,27 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
             "non_functional_requirement",
         ),
         is_container=True,
-        description="Product behavior, quality attributes, and use cases.",
+        description=(
+            "Product requirements: business capabilities, functional behavior, "
+            "and measurable quality attributes."
+        ),
     ),
     DocumentTypeConfig(
         artifact_type="event_storming",
-        label="Event Storming",
+        label="Event Storming Canvas",
         children=("domain_event", "actor_command", "policy", "aggregate"),
         is_container=True,
-        description="Domain events, actors/commands, policies, and aggregates discovered via event storming.",
+        description="Domain discovery canvas for events, commands, policies, aggregates, and hotspots.",
     ),
     DocumentTypeConfig(
         artifact_type="add",
         label="Architecture Design Document",
         children=("tech_stack", "domain_entity", "component", "interface", "tech_decision"),
         is_container=True,
-        description="Architecture domains, components, interfaces, and technical decisions.",
+        description=(
+            "Architecture design: technology selections, domain model, components, "
+            "interfaces, and architecture decisions."
+        ),
     ),
     # executive_summary is retired as an elicited item — it is synthesized from
     # vision/problem/scope and promoted to a project-level field. The enum value
@@ -125,7 +133,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "problem_statement",
         "Problem Statement",
-        "Problem statement: who faces which obstacle, root cause, frequency, and impact.",
+        "Defines the affected audience, obstacle, root cause, frequency, and impact.",
         sub_dimensions={
             "who": "Audience directly affected by the problem.",
             "obstacle": "Specific obstacle the audience faces.",
@@ -138,7 +146,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "vision_objectives",
         "Vision and Objectives",
-        "Vision and objectives: why this exists, what success looks like, and how it is measured.",
+        "Defines the product vision, measurable objectives, success metrics, targets, and timeframe.",
         sub_dimensions={
             "business_goal": "Specific business goal to achieve.",
             "user_goal": "Outcome the user wants to achieve.",
@@ -153,7 +161,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "stakeholder_register",
         "Stakeholder Register",
-        "Stakeholder register: primary users, secondary stakeholders, decision makers, and operators.",
+        "Identifies users, stakeholders, decision makers, operators, responsibilities, and concerns.",
         sub_dimensions={
             "primary_user": "Direct end user or primary persona.",
             "secondary_stakeholders": "Indirect stakeholders and how they are affected.",
@@ -165,7 +173,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "scope_capabilities",
         "Scope and Capabilities",
-        "Scope and capabilities: what is in scope, out of scope, required capabilities, and priority.",
+        "Defines in-scope and out-of-scope capabilities, priorities, rationale, and dependencies.",
         sub_dimensions={
             "in_scope": "Capabilities and items in scope for this iteration.",
             "out_of_scope": "Items explicitly excluded from scope.",
@@ -177,7 +185,7 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     _item(
         "business_rules",
         "Business Rules",
-        "Business rules: conditions, outcomes, triggers, and applicability scope.",
+        "Captures testable business policies with conditions, triggers, outcomes, scope, and exceptions.",
         sub_dimensions={
             "condition": "Condition that triggers the business rule.",
             "outcome": "Outcome or action when the condition is satisfied.",
@@ -188,8 +196,8 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
     ),
     _item(
         "constraints_assumptions",
-        "Constraints and Assumptions",
-        "Constraints and assumptions: hard limits, relied-on assumptions, and validation approach.",
+        "Constraints, Assumptions, and Risks",
+        "Captures hard constraints, assumptions to validate, dependencies, risks, and mitigations.",
         sub_dimensions={
             "constraint": "Hard constraint on time, budget, technology, or legal scope.",
             "assumption": "Assumption currently relied on for decisions.",
@@ -199,39 +207,78 @@ _CONFIGS: tuple[DocumentTypeConfig, ...] = (
         threshold=0.75,
     ),
     # risks_issues is retired as a standalone item — risks and mitigation are
-    # merged into constraints_assumptions ("Constraints, Assumptions & Risks").
+    # merged into constraints_assumptions ("Constraints, Assumptions, and Risks").
     # The enum value is kept for historical rows.
-    _item("functional_requirement", "Functional Requirements", "A testable product behavior."),
+    _item(
+        "functional_requirement",
+        "Functional Requirements",
+        "Testable product behaviors with inputs, outputs, acceptance signals, priority, and dependencies.",
+    ),
     _item(
         "use_case",
         "Business Capabilities",
-        "A business capability: the boundary of a domain or a major business flow.",
+        "Business capabilities that define domain boundaries or major business flows.",
         sub_dimensions={
             "business_value": "Business value the capability delivers, not the mechanics of using it.",
             "user_segment": "Target user segment or persona the capability serves.",
         },
     ),
-    _item("non_functional_requirement", "Non-Functional Requirements", "A measurable quality constraint."),
+    _item(
+        "non_functional_requirement",
+        "Non-Functional Requirements",
+        "Measurable quality attributes, constraints, and verification methods.",
+    ),
     # acceptance_criteria is retired as a standalone item — Given/When/Then
     # acceptance is merged into the functional_requirement contract. The enum
     # value is kept for historical rows.
     _item(
         "tech_stack",
-        "Tech Stack",
-        "The definitive technology selection: options considered, the chosen technology, and pinned version.",
+        "Technology Stack",
+        "Technology selections by category, alternatives considered, pinned versions, and rationale.",
     ),
-    _item("domain_entity", "Domain Entity", "A core domain concept and its responsibilities."),
-    _item("component", "Component", "A deployable or logical architecture component."),
-    _item("interface", "Interface", "A contract between architecture components."),
-    _item("tech_decision", "Technical Decision", "A technical choice, rationale, and consequences."),
-    _item("domain_event", "Domain Events", "A past-tense fact that happened in the domain, grouped by business flow."),
-    _item("actor_command", "Actors and Commands", "An actor-initiated intent that triggers a domain event."),
+    _item(
+        "domain_entity",
+        "Domain Entities",
+        "Core domain concepts, responsibilities, attributes, relationships, and lifecycle.",
+    ),
+    _item(
+        "component",
+        "Architecture Components",
+        "Deployable or logical architecture components, responsibilities, interfaces, dependencies, and constraints.",
+    ),
+    _item(
+        "interface",
+        "Interface Contracts",
+        "Provider/consumer contracts, data exchanged, error cases, and compatibility notes.",
+    ),
+    _item(
+        "tech_decision",
+        "Architecture Decisions",
+        (
+            "ADR-style architecture decisions with context, options, rationale, consequences, "
+            "and event-storming references."
+        ),
+    ),
+    _item(
+        "domain_event",
+        "Domain Events",
+        "Past-tense domain facts grouped by business flow, with triggers, downstream effects, and hotspots.",
+    ),
+    _item(
+        "actor_command",
+        "Actors and Commands",
+        "Actors, commands, preconditions, resulting events, and participating business flows.",
+    ),
     _item(
         "policy",
         "Policies",
-        "A 'Whenever {event}, then {command/event}' reaction, often crossing an aggregate boundary.",
+        "Event-triggered reactions that connect events to commands or events and note aggregate-boundary crossings.",
     ),
-    _item("aggregate", "Aggregates", "A consistency boundary that handles commands and emits events."),
+    _item(
+        "aggregate",
+        "Aggregates",
+        "Consistency boundaries, responsibilities, handled commands, emitted events, invariants, and flows.",
+    ),
 )
 
 _BY_TYPE = {config.artifact_type: config for config in _CONFIGS}
@@ -303,7 +350,7 @@ _OUTPUT_CONTRACTS: dict[str, ArtifactOutputContract] = {
             "No two rules contradict each other.",
         ),
     ),
-    # Constraints, Assumptions & Risks — risks_issues was merged in here. Risks
+    # Constraints, Assumptions, and Risks — risks_issues was merged in here. Risks
     # live in a second table under ## Risks with strategy under ## Mitigation Plan.
     "constraints_assumptions": ArtifactOutputContract(
         artifact_type="constraints_assumptions",

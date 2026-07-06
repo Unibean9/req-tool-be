@@ -29,7 +29,7 @@ async def test_brd_export_renders_requirements_sections_and_research_basis(clien
         "## Stakeholder Register",
         "## Scope and Capabilities",
         "## Business Rules",
-        "## Constraints and Assumptions",
+        "## Constraints, Assumptions, and Risks",
         "## Research Basis",
     ]:
         assert heading in text
