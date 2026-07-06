@@ -512,6 +512,20 @@ class ChatCompletionsLLMClient:
 
 
 class CustomLLMClient(ChatCompletionsLLMClient):
+    async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
+        # Custom providers may route to reasoning models that emit a "reasoning"
+        # block before the tool call — the base 20-token budget cuts them off
+        # mid-thought (finish_reason: length) before tool_calls ever appears.
+        body = {
+            "model": self.config.model,
+            "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
+            "max_tokens": 500,
+            "tools": [_to_openai_chat_tool(_TOOL_CALL_PROBE)],
+            "tool_choice": self._wire_tool_choice(tool_choice),
+        }
+        data = await self._chat_completion(20.0, body)
+        return _has_valid_probe_tool_call(_parse_openai_chat_tool_response(data).tool_calls)
+
     async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
         if not self.config.base_url:
             raise ValueError("base_url is required for custom provider")
