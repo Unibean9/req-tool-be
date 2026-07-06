@@ -161,6 +161,32 @@ async def test_post_config_accepts_model_name_and_returns_it(client, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_post_config_updates_existing_config_without_response_validation_error(client, monkeypatch):
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+
+    first = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={"provider_type": "openai", "api_key": "sk-first", "model_name": "gpt-4.1-mini"},
+        headers=headers,
+    )
+    assert first.status_code == 201, first.text
+
+    second = await client.post(
+        f"{BASE}/users/me/llm-provider-configs",
+        json={"provider_type": "openai", "api_key": "sk-second", "model_name": "gpt-5.4-mini"},
+        headers=headers,
+    )
+
+    assert second.status_code == 201, second.text
+    data = second.json()["data"]
+    assert data["id"] == first.json()["data"]["id"]
+    assert data["model_name"] == "gpt-5.4-mini"
+    assert data["updated_at"]
+
+
+@pytest.mark.asyncio
 async def test_read_config_response_redacts_key(client, db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()
