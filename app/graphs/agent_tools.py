@@ -85,7 +85,9 @@ class RecoverableToolError(Exception):
         self.recovery = recovery
 
 
-def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Command:
+def _recoverable_tool_update(
+    exc: RecoverableToolError, tool_call_id: str, extra_update: dict[str, Any] | None = None
+) -> Command:
     logger.info(
         "tool-error code=%s classification=recoverable user_fixable=%s message=%s",
         exc.code,
@@ -106,6 +108,7 @@ def _recoverable_tool_update(exc: RecoverableToolError, tool_call_id: str) -> Co
         update={
             "tool_errors": [entry],
             "messages": [ToolMessage(content=tool_message, tool_call_id=tool_call_id, status="error")],
+            **(extra_update or {}),
         }
     )
 
@@ -678,11 +681,43 @@ async def _write_draft_impl(
                 pending_assumptions=_dedupe_keep_order(graph_pending),
                 deterministic_warnings=gate.warnings,
             )
-            readiness = evaluate_candidate_readiness(
+            candidate_readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
                 body=body,
                 synthesis_metadata=metadata,
-            ).model_dump(mode="json")
+            )
+            if not candidate_readiness.can_persist:
+                reject_streak = (state.get("readiness_reject_streak") or 0) + 1
+                reason = "; ".join(candidate_readiness.blocking_reasons) or "candidate is not persistable"
+                log_gate_decision(
+                    "candidate_readiness_propose",
+                    "blocked",
+                    reason=reason,
+                    session_id=str(session_id),
+                )
+                if reject_streak >= 2:
+                    recovery = (
+                        "Do not retry write_draft again. Call ask_user, presenting these blocking "
+                        f"reasons/missing items to the human so they can supply what's missing: {reason}"
+                    )
+                else:
+                    recovery = f"Repair the draft body to address: {reason}"
+                return _recoverable_tool_update(
+                    RecoverableToolError(
+                        code="candidate_readiness_not_ready",
+                        message="Draft blocked: it would not pass the approval readiness check.",
+                        recovery=recovery,
+                        user_fixable=True,
+                    ),
+                    tool_call_id,
+                    extra_update={"readiness_reject_streak": reject_streak},
+                )
+            log_gate_decision(
+                "candidate_readiness_propose",
+                "pass",
+                session_id=str(session_id),
+            )
+            readiness = candidate_readiness.model_dump(mode="json")
             input_snapshot = {
                 "artifact_type": focused.type.value,
                 "focused_artifact_id": str(focused.id),

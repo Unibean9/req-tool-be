@@ -67,7 +67,8 @@ async def test_clean_draft_passes_and_warnings_ride_metadata(mock_interrupt, cli
     state, config, run = await _seed(client, db_session)
 
     # "fast" is a weasel word -> warning (non-blocking); the proposal proceeds to the interrupt.
-    command = await _write_draft_impl("Vision", "## Vision\nA fast onboarding flow.", state, config, "call_1")
+    body = "## Vision\nA fast onboarding flow.\n\n## Objectives\n- Ship it.\n\n## Success Metrics\n- Adoption reaches 80%."
+    command = await _write_draft_impl("Vision", body, state, config, "call_1")
 
     assert not (command.update.get("tool_errors") or [])
     mock_interrupt.assert_called_once()
@@ -84,7 +85,11 @@ async def test_flag_off_restores_pre_phase_behavior(mock_interrupt, client, db_s
     state, config, run = await _seed(client, db_session)
 
     # Same violation as the blocking test, but the flag bypasses the gate -> proposal proceeds.
-    command = await _write_draft_impl("", "## Vision\nA concrete vision statement.", state, config, "call_1")
+    body = (
+        "## Vision\nA concrete vision statement.\n\n## Objectives\n- Ship it.\n\n"
+        "## Success Metrics\n- Adoption reaches 80%."
+    )
+    command = await _write_draft_impl("", body, state, config, "call_1")
 
     assert not (command.update.get("tool_errors") or [])
     mock_interrupt.assert_called_once()

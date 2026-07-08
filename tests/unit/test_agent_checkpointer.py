@@ -4,9 +4,12 @@ from contextlib import asynccontextmanager
 
 import pytest
 from langgraph.checkpoint.base import CheckpointTuple, empty_checkpoint
+from langgraph.graph import END, StateGraph
 from sqlalchemy import select
 
 from app.graphs.checkpointer import AgentSessionCheckpointer
+from app.graphs.decision_graph import create_node
+from app.graphs.state import WorkflowState, build_initial_workflow_state
 from app.models.agent import AgentSession
 from tests.conftest import TestSessionFactory
 from tests.factories import _session_factory
@@ -133,6 +136,60 @@ async def test_write_paths_lock_session_row(client, db_session, monkeypatch):
     await checkpointer.aput_writes(config, [("messages", [{"role": "user", "content": "ok"}])], task_id="task-1")
 
     assert flags == [True, True]
+
+
+@pytest.mark.asyncio
+async def test_turn_failed_resume_preserves_plain_overwrite_state_via_real_graph(client, db_session):
+    """Empirically validates the phase-03 checkpoint-consistency assumption (decision 5) against a
+    REAL compiled LangGraph graph and the REAL AgentSessionCheckpointer — not mocked _run_graph.
+
+    Turn 1 completes normally and commits draft_body/decision_nodes to the checkpoint (prior
+    analytical progress). Turn 2's node raises mid-node — simulating a crash — so its task never
+    reaches aput_writes/aput and nothing about it is committed. Turn 3 then invokes the graph with
+    ONLY the minimal partial-state update TURN_FAILED continuation uses (new message + turn_count
+    reset, per agent_service.py's is_turn_failed branch) — never build_initial_workflow_state — and
+    must still see turn 1's plain-overwrite fields untouched, proving the partial-state merge
+    preserves prior channels rather than wiping them."""
+    session = await _create_agent_session(client, db_session)
+    checkpointer = AgentSessionCheckpointer(session_id=str(session.id), session_factory=_session_factory())
+    config = {"configurable": {"thread_id": str(session.id)}}
+
+    calls = {"n": 0}
+    node_state = {"n1": create_node(kind="decision", statement="use REST", origin={"turn": 1})}
+
+    async def work_node(state: WorkflowState) -> dict:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"draft_body": "draft-from-completed-turn-1", "decision_nodes": node_state, "turn_count": 1}
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash mid-node")
+        return {"turn_count": state["turn_count"] + 1}
+
+    builder = StateGraph(WorkflowState)
+    builder.add_node("work", work_node)
+    builder.set_entry_point("work")
+    builder.add_edge("work", END)
+    graph = builder.compile(checkpointer=checkpointer)
+
+    # Turn 1: completes normally, commits draft_body/decision_nodes to the real checkpoint.
+    initial_state = build_initial_workflow_state(artifact_type="goal", workflow_area="analysis", step_key=None)
+    turn1_result = await graph.ainvoke(initial_state, config)
+    assert turn1_result["draft_body"] == "draft-from-completed-turn-1"
+    assert turn1_result["decision_nodes"] == node_state
+
+    # Turn 2: the node crashes mid-turn (like a cancelled/timed-out node per checkpointer.py's
+    # aput/aput_writes ordering) — nothing about this turn is ever committed.
+    crash_state = {"messages": [{"role": "user", "content": "keep going"}], "turn_count": 0}
+    with pytest.raises(RuntimeError, match="simulated crash mid-node"):
+        await graph.ainvoke(crash_state, config)
+
+    # Turn 3: the TURN_FAILED continuation's exact minimal partial-state shape (agent_service.py's
+    # is_turn_failed branch) — never build_initial_workflow_state's full-default dict.
+    resume_state = {"messages": [{"role": "user", "content": "tiep tuc"}], "turn_count": 0}
+    turn3_result = await graph.ainvoke(resume_state, config)
+
+    assert turn3_result["draft_body"] == "draft-from-completed-turn-1"
+    assert turn3_result["decision_nodes"] == node_state
 
 
 async def _create_agent_session(client, db_session) -> AgentSession:

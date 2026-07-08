@@ -334,6 +334,11 @@ class WorkflowState(TypedDict):
     # Count of LLM judge calls spent escalating a high-risk diagnosis, session-lifetime. Plain
     # replace-on-write; compared against DIAGNOSIS_JUDGE_CALLS_MAX to gate further escalation.
     diagnosis_judge_calls_used: int
+    # Consecutive candidate_readiness_not_ready rejections for write_draft within the current turn.
+    # Plain replace-on-write (like turn_count/diagnosis_judge_calls_used) — an additive reducer would
+    # make _resume_command's zero-write a no-op, so the counter would never reset. Resets at the same
+    # human-turn resume boundary as those two fields.
+    readiness_reject_streak: int
     # Explicit workflow position: "intent"|"elicit"|"draft"|"review"|"finalize" (session_phase.py).
     # SINGLE WRITER: only orchestrator_node assigns it (via session_phase.transition); readers fall
     # back to on-the-fly derivation for checkpoints created before this field existed.
@@ -403,6 +408,7 @@ def build_initial_workflow_state(
         "thinking_mode": None,
         "diagnosis_signal": None,
         "diagnosis_judge_calls_used": 0,
+        "readiness_reject_streak": 0,
         "session_phase": None,
         "out_of_phase_tool_calls": 0,
         "section_findings": {},

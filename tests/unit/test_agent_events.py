@@ -180,6 +180,7 @@ def test_ui_status_function_unit():
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.ASK_HUMAN) == "waiting_input"
     assert _ui_status(AgentSessionStatus.WAITING_FOR_HUMAN, None) == "waiting_input"
     assert _ui_status(AgentSessionStatus.FAILED, None) == "error"
+    assert _ui_status(AgentSessionStatus.TURN_FAILED, None) == "error"
     assert _ui_status(AgentSessionStatus.COMPLETED, None) == "idle"
 
 
@@ -249,6 +250,15 @@ async def test_ui_status_failed(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_ui_status_turn_failed(client, db_session):
+    """TURN_FAILED maps to 'error' like FAILED, not the 'idle' fallthrough — otherwise a resumable
+    failed turn would look like nothing happened even though the error message is in the transcript."""
+    project_id = await _project(client)
+    snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.TURN_FAILED)
+    assert snapshot["session"]["ui_status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_ui_status_completed(client, db_session):
     project_id = await _project(client)
     snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.COMPLETED)
@@ -264,6 +274,44 @@ async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_ses
         interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
     )
     assert "graph_checkpoint" not in snapshot["session"]
+
+
+class _NeverDisconnectedRequest:
+    """Stays connected so the stream loop must close on its own via the status check."""
+
+    async def is_disconnected(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_stream_closes_on_turn_failed(client, db_session):
+    """The SSE stream must close on TURN_FAILED exactly as it does on FAILED — the turn is over and
+    the client should reconnect only after sending its next message, not poll a dead turn forever."""
+    project_id = await _project(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.TURN_FAILED,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    frames = []
+    async for frame in AgentEventService(db_session).stream_session_events(
+        project_id=project_id,
+        session_id=session.id,
+        user_id=owner_id,
+        request=_NeverDisconnectedRequest(),
+        interval_seconds=0.01,
+        heartbeat_seconds=1.0,
+    ):
+        frames.append(frame)
+
+    assert any("event: stream_closed" in f and '"status":"turn_failed"' in f for f in frames)
 
 
 # ---------------------------------------------------------------------------

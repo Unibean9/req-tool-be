@@ -296,7 +296,7 @@ class AgentService:
                 return await self._queue_message(session.id, content, mode_hint)
         if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
             raise HTTPException(400, detail="Session has ended and cannot accept more messages")
-        # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
+        # status == WAITING_FOR_HUMAN, TURN_FAILED, or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
             return await self._queue_message(session.id, content, mode_hint)
@@ -307,7 +307,11 @@ class AgentService:
         ):
             raise HTTPException(400, detail="Session is not waiting for a user message")
 
-        is_first_message = session.interrupt_type is None
+        # TURN_FAILED also has interrupt_type is None (cleared when the turn failed), so it must be
+        # checked before is_first_message or it would wrongly take the build_initial_workflow_state
+        # path and wipe plain-overwrite WorkflowState channels the crashed turn had already populated.
+        is_turn_failed = session.status == AgentSessionStatus.TURN_FAILED
+        is_first_message = not is_turn_failed and session.interrupt_type is None
 
         strong_llm_client = None
         if llm_client is None:
@@ -319,7 +323,20 @@ class AgentService:
         session.interrupt_type = None
         await self.db.commit()
 
-        if is_first_message:
+        if is_turn_failed:
+            # Minimal partial-state update against the existing checkpoint: only the new message and
+            # the per-turn counters (turn_count, readiness_reject_streak, diagnosis_judge_calls_used)
+            # reset, matching _resume_command's reset convention for the same channels, so prior
+            # WorkflowState channels (decision_nodes, draft_body, etc.) carry forward untouched
+            # instead of being reset by build_initial_workflow_state.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+            resume_command = None
+        elif is_first_message:
             initial_state = build_initial_workflow_state(
                 artifact_type=session.artifact_type,
                 workflow_area=session.workflow_area,
@@ -1094,6 +1111,8 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
+                    logger.error("turn failed: reason_code=turn_limit session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_limit", session_id=str(session_id))
                     row.status = AgentSessionStatus.FAILED
                     db.add(
                         AgentMessage(
@@ -1113,7 +1132,12 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=turn_timeout session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_timeout", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout
+                    # (see checkpointer read in phase-03 evidence), so the session is resumable.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -1130,7 +1154,11 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=graph_exception session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "graph_exception", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: same resumability reasoning as the timeout branch above.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -1172,7 +1200,11 @@ class AgentService:
             session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
             # Only drain after a turn truly ended. WAITING_FOR_HUMAN means the graph paused on a
             # specific question/approval — feeding a queued message here would be the wrong input.
-            if session_row.status not in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+            if session_row.status not in (
+                AgentSessionStatus.COMPLETED,
+                AgentSessionStatus.FAILED,
+                AgentSessionStatus.TURN_FAILED,
+            ):
                 return
 
             queued = (
@@ -1197,19 +1229,32 @@ class AgentService:
             content = queued.content
             queued_mode_hint = new_payload.get("mode_hint")
 
+            was_turn_failed = session_row.status == AgentSessionStatus.TURN_FAILED
             session_row.status = AgentSessionStatus.ACTIVE
             session_row.interrupt_type = None
             await db.commit()
 
-        initial_state = build_initial_workflow_state(
-            artifact_type=artifact_type,
-            workflow_area=workflow_area,
-            step_key=step_key,
-            messages=[{"role": "user", "content": content}],
-            missing_context=missing_context,
-            focused_artifact_id=session_row.focused_artifact_id,
-            mode_hint=queued_mode_hint,
-        )
+        if was_turn_failed:
+            # Same minimal partial-state mechanism as handle_user_message's TURN_FAILED branch: the
+            # queued message drains without wiping the failing turn's prior WorkflowState progress.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+        else:
+            # COMPLETED (and legacy FAILED) sessions keep the full-reset behavior — that boundary is
+            # intentional for a genuinely finished session's next queued message.
+            initial_state = build_initial_workflow_state(
+                artifact_type=artifact_type,
+                workflow_area=workflow_area,
+                step_key=step_key,
+                messages=[{"role": "user", "content": content}],
+                missing_context=missing_context,
+                focused_artifact_id=session_row.focused_artifact_id,
+                mode_hint=queued_mode_hint,
+            )
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
             self._run_graph(
@@ -1259,7 +1304,15 @@ class AgentService:
         # otherwise only the first high-risk section in a session could ever escalate.
         # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        return Command(resume=resume, update={"turn_count": 0, "diagnosis_judge_calls_used": 0, **(state_update or {})})
+        return Command(
+            resume=resume,
+            update={
+                "turn_count": 0,
+                "diagnosis_judge_calls_used": 0,
+                "readiness_reject_streak": 0,
+                **(state_update or {}),
+            },
+        )
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -1379,6 +1432,6 @@ def _session_ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
     return "idle"

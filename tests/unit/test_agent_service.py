@@ -544,7 +544,11 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
     assert command.resume == {INTERRUPT_ID: {"content": "Co"}}
     # Every human resume resets the per-request silent-loop counter so conversations are unbounded,
     # and the per-turn diagnosis judge budget so a later turn can escalate again.
-    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0}
+    assert command.update == {
+        "turn_count": 0,
+        "diagnosis_judge_calls_used": 0,
+        "readiness_reject_streak": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -558,7 +562,12 @@ async def test_resume_command_merges_turn_count_reset_with_state_update(db_sessi
 
     command = svc._resume_command(session, {"content": "Co"}, state_update={"mode_hint": "critique"})
 
-    assert command.update == {"turn_count": 0, "diagnosis_judge_calls_used": 0, "mode_hint": "critique"}
+    assert command.update == {
+        "turn_count": 0,
+        "diagnosis_judge_calls_used": 0,
+        "readiness_reject_streak": 0,
+        "mode_hint": "critique",
+    }
 
 
 @pytest.mark.asyncio
@@ -756,8 +765,9 @@ async def test_drain_queue_does_not_fire_after_waiting_for_human(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_run_graph_timeout_sets_session_failed(client, db_session, monkeypatch):
-    """An ainvoke timeout is caught inside _run_graph and marks the session FAILED."""
+async def test_run_graph_timeout_sets_session_turn_failed(client, db_session, monkeypatch, caplog):
+    """An ainvoke timeout is caught inside _run_graph and marks the session TURN_FAILED (not FAILED)
+    with interrupt_type cleared — the failing turn ends, but the session stays resumable."""
     project_id = await _setup(client)
 
     async def _slow(*args, **kwargs):
@@ -775,18 +785,23 @@ async def test_run_graph_timeout_sets_session_failed(client, db_session, monkeyp
     db_session.add(session)
     await db_session.flush()
 
-    await svc._run_graph(
-        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
-        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
-        initial_state=None, resume_command=None,
-    )
+    with caplog.at_level(logging.DEBUG):
+        await svc._run_graph(
+            session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+            workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+            initial_state=None, resume_command=None,
+        )
 
     updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
     messages = (
         await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
     ).scalars().all()
-    assert updated.status == AgentSessionStatus.FAILED
+    assert updated.status == AgentSessionStatus.TURN_FAILED
+    assert updated.interrupt_type is None
     assert any(m.role == AgentMessageRole.AGENT for m in messages)
+    assert any(
+        "turn_timeout" in r.getMessage() and str(session.id) in r.getMessage() for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -815,7 +830,7 @@ async def test_run_graph_timeout_does_not_affect_normal_flow(client, db_session,
 
 
 @pytest.mark.asyncio
-async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session):
+async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session, caplog):
     """A graph that ENDs with an undispatched tool_call (route_node hit the turn cap before the
     pending ask_user ran) must be marked FAILED, not COMPLETED — it did not finish, it ran out of turns."""
     from langchain_core.messages import AIMessage
@@ -837,11 +852,12 @@ async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session)
     db_session.add(session)
     await db_session.flush()
 
-    await svc._run_graph(
-        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
-        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
-        initial_state=None, resume_command=None,
-    )
+    with caplog.at_level(logging.DEBUG):
+        await svc._run_graph(
+            session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+            workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+            initial_state=None, resume_command=None,
+        )
 
     updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
     messages = (
@@ -849,6 +865,9 @@ async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session)
     ).scalars().all()
     assert updated.status == AgentSessionStatus.FAILED
     assert any(m.role == AgentMessageRole.AGENT for m in messages)
+    assert any(
+        "turn_limit" in r.getMessage() and str(session.id) in r.getMessage() for r in caplog.records
+    )
 
 
 @pytest.mark.asyncio
@@ -909,7 +928,9 @@ async def test_drain_json_path_query_correctness(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_run_graph_failure_marks_session_failed_and_saves_agent_message(client, db_session):
+async def test_run_graph_failure_marks_session_turn_failed_and_saves_agent_message(client, db_session, caplog):
+    """An unhandled exception inside ainvoke marks the session TURN_FAILED (not FAILED), same
+    resumability contract as the timeout branch."""
     project_id = await _setup(client)
     graph = _mock_graph()
     graph.ainvoke = AsyncMock(side_effect=RuntimeError("provider rejected request"))
@@ -925,31 +946,37 @@ async def test_run_graph_failure_marks_session_failed_and_saves_agent_message(cl
     db_session.add(session)
     await db_session.flush()
 
-    await svc._run_graph(
-        session_id=session.id,
-        project_id=project_id,
-        artifact_type="research_output",
-        step_key="intent_vision",
-        workflow_area="analysis",
-        agent_role=None,
-        missing_context=[],
-        llm_client=AsyncMock(),
-        initial_state=None,
-        resume_command=None,
-    )
+    with caplog.at_level(logging.DEBUG):
+        await svc._run_graph(
+            session_id=session.id,
+            project_id=project_id,
+            artifact_type="research_output",
+            step_key="intent_vision",
+            workflow_area="analysis",
+            agent_role=None,
+            missing_context=[],
+            llm_client=AsyncMock(),
+            initial_state=None,
+            resume_command=None,
+        )
 
     updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
     messages = (
         await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
     ).scalars().all()
-    assert updated.status == AgentSessionStatus.FAILED
+    assert updated.status == AgentSessionStatus.TURN_FAILED
+    assert updated.interrupt_type is None
     assert len(messages) == 1
     assert messages[0].role == AgentMessageRole.AGENT
     assert "provider rejected request" in messages[0].content
+    assert any(
+        "graph_exception" in r.getMessage() and str(session.id) in r.getMessage() for r in caplog.records
+    )
+    assert any(r.exc_info for r in caplog.records if "graph_exception" in r.getMessage())
 
 
 @pytest.mark.asyncio
-async def test_run_graph_resume_failure_marks_session_failed_and_saves_agent_message(client, db_session):
+async def test_run_graph_resume_failure_marks_session_turn_failed_and_saves_agent_message(client, db_session):
     project_id = await _setup(client)
     graph = _mock_graph()
     graph.ainvoke = AsyncMock(side_effect=RuntimeError("resume rejected request"))
@@ -984,10 +1011,312 @@ async def test_run_graph_resume_failure_marks_session_failed_and_saves_agent_mes
     messages = (
         await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
     ).scalars().all()
-    assert updated.status == AgentSessionStatus.FAILED
+    assert updated.status == AgentSessionStatus.TURN_FAILED
+    assert updated.interrupt_type is None
     assert len(messages) == 1
     assert messages[0].role == AgentMessageRole.AGENT
     assert "resume rejected request" in messages[0].content
+
+
+# ---------------------------------------------------------------------------
+# TURN_FAILED resumability (phase-03): timeout/exception fail only the turn, not the session; a
+# follow-up message resumes via a minimal partial state (never build_initial_workflow_state), and a
+# message queued during the failing turn still drains.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_turn_failed_timeout_follow_up_resumes_with_minimal_state_not_full_reset(
+    client, db_session, monkeypatch, _no_background_tasks
+):
+    """(a) A timeout leaves the session TURN_FAILED with interrupt_type None; the follow-up message
+    invokes _run_graph with the minimal partial state (new message + turn_count reset only) and
+    resume_command=None — never build_initial_workflow_state, which would wipe plain-overwrite
+    WorkflowState channels (decision_nodes, draft_body, ...) the crashed turn had already populated."""
+    project_id = await _setup(client)
+
+    async def _slow(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    graph = _mock_graph()
+    graph.ainvoke = _slow
+    svc = _make_service(db_session, graph)
+    monkeypatch.setattr(settings, "agent_turn_timeout_seconds", 0.01)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.TURN_FAILED
+    assert session.interrupt_type is None
+
+    with (
+        patch("app.services.agent_service.build_initial_workflow_state") as build_mock,
+        patch.object(svc, "_run_graph", new=AsyncMock()) as run_graph_mock,
+    ):
+        await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tiep tuc")
+
+    build_mock.assert_not_called()
+    run_graph_mock.assert_called_once()
+    passed = run_graph_mock.call_args.kwargs
+    assert passed["initial_state"] == {
+        "messages": [{"role": "user", "content": "tiep tuc"}],
+        "turn_count": 0,
+        "readiness_reject_streak": 0,
+        "diagnosis_judge_calls_used": 0,
+    }
+    assert passed["resume_command"] is None
+
+
+@pytest.mark.asyncio
+async def test_turn_failed_exception_follow_up_resumes_with_minimal_state_not_full_reset(
+    client, db_session, _no_background_tasks
+):
+    """(b) Same contract as (a) but for a generic unhandled exception instead of a timeout."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.TURN_FAILED
+    assert session.interrupt_type is None
+
+    with (
+        patch("app.services.agent_service.build_initial_workflow_state") as build_mock,
+        patch.object(svc, "_run_graph", new=AsyncMock()) as run_graph_mock,
+    ):
+        await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tiep tuc")
+
+    build_mock.assert_not_called()
+    run_graph_mock.assert_called_once()
+    passed = run_graph_mock.call_args.kwargs
+    assert passed["initial_state"] == {
+        "messages": [{"role": "user", "content": "tiep tuc"}],
+        "turn_count": 0,
+        "readiness_reject_streak": 0,
+        "diagnosis_judge_calls_used": 0,
+    }
+    assert passed["resume_command"] is None
+
+
+@pytest.mark.asyncio
+async def test_turn_failed_400_guard_does_not_reject(client, db_session):
+    """The 400-guard (COMPLETED/FAILED reject) must not reject TURN_FAILED — it stays usable."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.TURN_FAILED, interrupt_type=None,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    # Must not raise HTTPException(400, ...).
+    await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tiep tuc")
+
+
+@pytest.mark.asyncio
+async def test_queued_message_drained_after_turn_times_out(client, db_session, monkeypatch, _no_background_tasks):
+    """(c) A message queued while a turn is in flight is not stranded when that turn later times out.
+    _run_graph unconditionally calls _drain_queue at the end of every turn (including the exception
+    paths), so once the timeout sets TURN_FAILED, the SAME _run_graph call's trailing _drain_queue
+    must see the newly-allowed TURN_FAILED status and dispatch the queued message via a new graph
+    task — this is the review-ACCEPTED BLOCK-1 acceptance test."""
+    project_id = await _setup(client)
+
+    # A message arriving while ACTIVE is queued (S2's busy-queuing path, already covered directly by
+    # test_handle_user_message_when_active_returns_200_and_queues); seed the row directly the same
+    # way the existing COMPLETED-drain test does, so this test isolates the TURN_FAILED-drain
+    # behavior triggered by _run_graph's own trailing _drain_queue call.
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    msg = AgentMessage(
+        session_id=session.id, role=AgentMessageRole.USER, content="tao di", payload={"queued": True}
+    )
+    db_session.add(msg)
+    await db_session.flush()
+
+    # The in-flight turn times out. _run_graph's TimeoutError branch sets TURN_FAILED, then its
+    # unconditional trailing _drain_queue call fires within the SAME call and (since TURN_FAILED is
+    # now an allowed drain status) schedules a new graph task via asyncio.create_task — intercept
+    # that scheduling to capture the initial_state passed to the recursive _run_graph call before the
+    # autouse fixture closes the coroutine.
+    captured = {}
+    original_side_effect = _no_background_tasks.side_effect
+
+    def _capture_then_close(coro, *args, **kwargs):
+        if getattr(coro, "cr_frame", None) is not None and coro.cr_code.co_name == "_run_graph":
+            captured["initial_state"] = coro.cr_frame.f_locals.get("initial_state")
+            captured["resume_command"] = coro.cr_frame.f_locals.get("resume_command")
+        return original_side_effect(coro, *args, **kwargs)
+
+    _no_background_tasks.side_effect = _capture_then_close
+
+    async def _slow(*args, **kwargs):
+        await asyncio.sleep(5)
+
+    timeout_graph = _mock_graph()
+    timeout_graph.ainvoke = _slow
+    svc_timeout = _make_service(db_session, timeout_graph)
+    monkeypatch.setattr(settings, "agent_turn_timeout_seconds", 0.01)
+    await svc_timeout._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    await db_session.refresh(msg)
+    assert msg.payload["queued"] is False
+    assert captured["initial_state"] == {
+        "messages": [{"role": "user", "content": "tao di"}],
+        "turn_count": 0,
+        "readiness_reject_streak": 0,
+        "diagnosis_judge_calls_used": 0,
+    }
+    assert captured["resume_command"] is None
+    # _drain_queue resets the session back to ACTIVE for the newly-dispatched turn — the session is
+    # not left dangling in TURN_FAILED once the queued message has been picked up.
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_turn_limit_case_stays_failed_unchanged():
+    """(e) The turn-limit branch is unchanged by this phase (decision 3) — already covered by
+    test_run_graph_turn_cap_marks_failed_not_completed above; this is a documentation marker so the
+    Step 8(e) requirement has an explicit, named anchor in the suite."""
+    # See test_run_graph_turn_cap_marks_failed_not_completed: it asserts AgentSessionStatus.FAILED
+    # (not TURN_FAILED) and passes unmodified against the phase-03 implementation.
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_no_duplicate_row_across_turn_failed_resume(mock_interrupt, client, db_session):
+    """(d) DUPLICATE-ROW CHECK for write_draft/create_artifact-style proposal tools: these couple the
+    AgentToolCall insert with the session's WAITING_FOR_HUMAN/PROPOSE_ARTIFACTS transition in the
+    SAME commit (agent_tools.py's _write_draft_impl / _save_approval_proposal). Because _run_graph's
+    exception/timeout handler only overwrites to TURN_FAILED when
+    `row.status not in (WAITING_FOR_HUMAN, COMPLETED)`, a crash occurring after that commit finds the
+    session already WAITING_FOR_HUMAN and never gets rewritten to TURN_FAILED — so this tool's
+    proposal path cannot reach the TURN_FAILED-continuation branch with a completed-but-unacked
+    write. Empirically: calling the real _write_draft_impl once produces exactly one row."""
+    from app.graphs.agent_tools import _write_draft_impl
+    from tests.factories import _config, _focused_items, _make_agent_run, _make_agent_session, _project, _state
+    from app.models.artifact import ArtifactType
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+
+    body = "\n\n".join([
+        "## Vision\nA concrete vision statement.",
+        "## Objectives\n- Ship the thing.",
+        "## Success Metrics\n- Adoption reaches 80%.",
+    ])
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    config = _config(str(agent_session.id), str(project_id))
+
+    await _write_draft_impl("Vision", body, state, config, "call_1")
+
+    rows = (
+        await db_session.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
+    ).scalars().all()
+    assert len(rows) == 1
+    await db_session.refresh(agent_session)
+    assert agent_session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+    assert agent_session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS
+
+
+@pytest.mark.asyncio
+async def test_recommend_next_workflow_creates_duplicate_audit_row_across_turn_failed_resume(client, db_session):
+    """(d) DUPLICATE-ROW CHECK, empirical finding for audit-only tools: unlike write_draft,
+    recommend_next_workflow/run_readiness_check are "best-effort audit" writes
+    (agent_tools.py's _recommend_next_workflow_impl) that do NOT transition the session to
+    WAITING_FOR_HUMAN. If a timeout/exception fires on a LATER node in the same turn (after this
+    audit row already committed under run_id R1), _run_graph's guard sees a status that is neither
+    WAITING_FOR_HUMAN nor COMPLETED and DOES set TURN_FAILED. The dedup key for this row is
+    `(run_id, tool_name)` (agent_tools.py ~1935), and a TURN_FAILED continuation always gets a brand
+    new run_id (decision 9) — so the dedup key never matches across the crash boundary.
+
+    RESULT (reproduced here against the real implementation): calling
+    _recommend_next_workflow_impl once under run_id R1 and again under a fresh run_id R2 (simulating
+    the resumed turn re-calling the same tool) produces TWO AgentToolCall rows for the same
+    recommendation, not one. This is a real duplicate-row gap for audit-style tool calls under the
+    TURN_FAILED continuation design — reported as a finding, not silently patched here."""
+    from app.graphs.agent_tools import _recommend_next_workflow_impl
+    from tests.factories import _config, _make_agent_run, _make_agent_session, _project, _state
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    run1 = await _make_agent_run(db_session, agent_session)
+
+    state1 = _state(artifact_type="goal")
+    state1["last_agent_run_id"] = str(run1.id)
+    config1 = _config(str(agent_session.id), str(project_id))
+
+    await _recommend_next_workflow_impl("goal", "quick", state1, config1, "call_1")
+
+    rows_after_first_turn = (
+        await db_session.execute(select(AgentToolCall).where(AgentToolCall.tool_name == "recommend_next_workflow"))
+    ).scalars().all()
+    assert len(rows_after_first_turn) == 1
+
+    # Simulate: a later node in the same turn times out/crashes -> session moves to TURN_FAILED
+    # without ever having reached WAITING_FOR_HUMAN (this audit tool never sets that status).
+    agent_session.status = AgentSessionStatus.TURN_FAILED
+    agent_session.interrupt_type = None
+    await db_session.commit()
+
+    # The TURN_FAILED continuation is a fresh turn -> a new AgentRun/run_id (decision 9), and the
+    # model calls the same tool again since it lost track of having already called it.
+    run2 = await _make_agent_run(db_session, agent_session)
+    state2 = _state(artifact_type="goal")
+    state2["last_agent_run_id"] = str(run2.id)
+    config2 = _config(str(agent_session.id), str(project_id))
+
+    await _recommend_next_workflow_impl("goal", "quick", state2, config2, "call_2")
+
+    rows_after_resume = (
+        await db_session.execute(select(AgentToolCall).where(AgentToolCall.tool_name == "recommend_next_workflow"))
+    ).scalars().all()
+    # FINDING: two rows exist for run1 and run2 respectively — a duplicate audit entry for
+    # functionally the same recommendation, because the dedup key never spans a TURN_FAILED resume's
+    # new run_id. This is the empirical answer decision 9 asked Step 8(d) to produce.
+    assert {row.run_id for row in rows_after_resume} == {run1.id, run2.id}
+    assert len(rows_after_resume) == 2
 
 
 # ---------------------------------------------------------------------------

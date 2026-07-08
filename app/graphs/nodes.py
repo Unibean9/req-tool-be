@@ -1,3 +1,4 @@
+import logging
 import time
 import uuid
 from typing import Any
@@ -102,6 +103,8 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 # Native tool calling replaces the old JSON tool-selection schema: analyze_node binds the available
 # tool schemas to the provider API (see _build_tool_schemas) and the model returns native tool_calls.
@@ -237,6 +240,7 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
         "If turn_type='converse', set 'reply' to a short, friendly sentence in the user's exact language "
         "- greet back, briefly say what you can help with, and invite them to share what they want to build."
     )
+    started_at = time.monotonic()
     try:
         result, _usage = await llm_client.generate(
             messages=[{"role": "user", "content": prompt}],
@@ -248,6 +252,7 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
         # A non-conforming classifier response must not crash the turn — default to a work turn so
         # it falls through to the full analyst pass (the safe, non-conversational branch).
         result = {}
+    logger.debug("node=triage latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     reported = result if isinstance(result, dict) else {}
     turn_type = reported.get("turn_type") or "work"
     locale = state.get("locale") or reported.get("locale")
@@ -404,7 +409,9 @@ async def _apply_judge_escalation(
     from app.graphs.critique import _invoke_judge
 
     llm_client = _diagnosis_llm_client(config)
+    started_at = time.monotonic()
     judge_result = await _invoke_judge(state.get("draft_body") or "", "risk_review", llm_client)
+    logger.debug("node=judge latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     return {"escalation": "escalated", "judge_calls_used": calls_used + 1, "judge_result": judge_result}
 
 
@@ -705,6 +712,7 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     prompt = _build_summary_prompt(state)
+    started_at = time.monotonic()
     try:
         result, _usage = await llm_client.generate(
             messages=[{"role": "user", "content": prompt}],
@@ -716,6 +724,7 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         # The summary is an optional running aid (prompt context only), so a non-conforming LLM
         # response must not crash the turn — keep the prior summary and continue to analyze.
         return {"conversation_summary": state.get("conversation_summary", "")}
+    logger.debug("node=summarize latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     if isinstance(result, dict):
         summary = str(result.get("summary", "")).strip()
     else:

@@ -82,7 +82,11 @@ class AgentEventService:
         idle_seconds = 0.0
         while not await request.is_disconnected():
             status = snapshot["session"]["status"]
-            if status in {AgentSessionStatus.COMPLETED.value, AgentSessionStatus.FAILED.value}:
+            if status in {
+                AgentSessionStatus.COMPLETED.value,
+                AgentSessionStatus.FAILED.value,
+                AgentSessionStatus.TURN_FAILED.value,
+            }:
                 yield _sse(
                     event="stream_closed",
                     data={"type": "stream_closed", "status": status},
@@ -255,7 +259,7 @@ def _ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
     return "idle"
 
