@@ -222,3 +222,32 @@ async def test_run_critique_degrades_when_output_unparseable():
     assert set(result) == {"mode", "score", "findings", "suggestions"}
     assert result["score"] == 0.0
     assert result["suggestions"] == ["judge_unparseable"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exc", [TimeoutError("provider timed out"), RuntimeError("connection reset")])
+async def test_run_critique_degrades_on_provider_error(exc):
+    """Provider-side failures (network, timeout, SDK errors) must degrade, not crash the tool-loop."""
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.generate = AsyncMock(side_effect=exc)
+
+    result = await _invoke_judge("body", "completeness", llm_client=client)
+
+    assert set(result) == {"mode", "score", "findings", "suggestions"}
+    assert result["score"] == 0.0
+    assert result["suggestions"] == ["judge_provider_error"]
+
+
+@pytest.mark.asyncio
+async def test_run_critique_does_not_swallow_cancellation():
+    """CancelledError must propagate so the turn-timeout mechanism can still cancel the task."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    client = AsyncMock()
+    client.generate = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await _invoke_judge("body", "completeness", llm_client=client)
