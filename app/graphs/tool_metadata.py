@@ -53,12 +53,6 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     "finalize": ToolMetadata(
         "finalize", readonly=False, interrupts=True, writes_db=True, policy="require_critique"
     ),
-    "finalize_prd": ToolMetadata(
-        "finalize_prd", readonly=False, interrupts=False, writes_db=True, policy="require_human_approval"
-    ),
-    "lock_scope": ToolMetadata(
-        "lock_scope", readonly=False, interrupts=False, writes_db=True, policy="require_human_approval"
-    ),
     # Native analyzer loop tools.
     "ask_user": ToolMetadata("ask_user", readonly=False, interrupts=True, writes_db=True),
     "respond": ToolMetadata("respond", readonly=False, interrupts=True, writes_db=True),

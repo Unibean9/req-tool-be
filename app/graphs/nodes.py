@@ -54,7 +54,6 @@ from app.graphs.analysis.tool_gating import (  # noqa: F401
     _INTERRUPT_BEARING_TOOLS,
     _RESPOND_FALLBACK_BY_LOCALE,
     _SIDE_EFFECT_FREE_NOTE_TOOLS,
-    _TOOL_REQUIRED_ARGS,
     _ai_text_content,
     _build_tool_schemas,
     _dropped_tool_names,
@@ -65,6 +64,7 @@ from app.graphs.analysis.tool_gating import (  # noqa: F401
     _plain_response_tool,
     _response_message_incomplete,
     gate_model_selection,
+    required_args,
 )
 from app.graphs.analysis.turn_audit import (  # noqa: F401
     _RECENT_TOOL_CALLS_MAXLEN,

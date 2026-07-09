@@ -20,9 +20,9 @@ from app.graphs.agent_tools import (
 )
 from app.graphs.nodes import (
     _INTERRUPT_BEARING_TOOLS,
-    _TOOL_REQUIRED_ARGS,
     _build_tool_schemas,
     _gate_selected_tools,
+    required_args,
 )
 
 
@@ -45,7 +45,7 @@ def test_confirm_intent_arg_and_required_keys():
     tool = next(t for t in get_available_tools(state) if t.name == "confirm_intent")
     parameters = _build_tool_schemas([tool])[0]["parameters"]
     assert list(parameters["properties"].keys()) == ["summary"]
-    assert _TOOL_REQUIRED_ARGS["confirm_intent"] == ["summary"]
+    assert required_args(tool) == ["summary"]
 
 
 def test_confirm_intent_is_interrupt_bearing():

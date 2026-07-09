@@ -16,8 +16,6 @@ def test_policy_table_matches_pre_refactor_values():
         "delete_artifact_link": "require_approval",
         "create_artifact_review": "require_approval",
         "finalize": "require_critique",
-        "finalize_prd": "require_human_approval",
-        "lock_scope": "require_human_approval",
     }
 
 

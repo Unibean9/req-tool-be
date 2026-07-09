@@ -49,15 +49,16 @@ def _confirm_intent_in_schema_enum() -> GateResult:
 
 def _confirm_intent_arg_keys() -> GateResult:
     from app.graphs.agent_tools import confirm_intent
-    from app.graphs.nodes import _TOOL_REQUIRED_ARGS, _build_tool_schemas
+    from app.graphs.nodes import _build_tool_schemas, required_args
 
     params = _build_tool_schemas([confirm_intent])[0]["parameters"]
     arg_ok = list(params.get("properties", {}).keys()) == ["summary"]
-    req_ok = _TOOL_REQUIRED_ARGS.get("confirm_intent") == ["summary"]
+    derived_required = required_args(confirm_intent)
+    req_ok = derived_required == ["summary"]
     passed = arg_ok and req_ok
     reason = (
         f"params={list(params.get('properties', {}).keys())}, "
-        f"_TOOL_REQUIRED_ARGS={_TOOL_REQUIRED_ARGS.get('confirm_intent')}"
+        f"required_args={derived_required}"
     )
     return GateResult(
         gate="confirm_intent native arg = ['summary']; summary is required",

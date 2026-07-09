@@ -27,7 +27,7 @@ from sqlalchemy import exists, func, select
 
 from app.config import settings
 from app.documents.registry import children_of, output_contract, status_score
-from app.graphs import interrupts
+from app.graphs import gating, interrupts
 from app.graphs.decision_graph import (
     VALID_KINDS,
     VALID_STATUSES,
@@ -44,10 +44,10 @@ from app.graphs.decision_graph import (
     update_node,
 )
 from app.graphs.gate_logging import log_gate_decision
-from app.graphs.lifecycle_context import filter_lifecycle_menu_tools, lifecycle_tool_block_reason
+from app.graphs.gating import Mode, dispatch_rules, menu_rules
 from app.graphs.note_parser import extract_structured_objects
 from app.graphs.policy import ancestor_types
-from app.graphs.session_phase import PhaseSignals, derive_phase, phase_allows
+from app.graphs.session_phase import PhaseSignals, derive_phase
 from app.graphs.state import QualityReport, WorkflowState
 from app.graphs.tools import read_current_body
 from app.graphs.tools import read_source_documents as read_source_documents_query
@@ -560,13 +560,15 @@ async def _write_draft_impl(
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
         return _missing_required_arg_update("write_draft", "body", tool_call_id)
-    lifecycle_block = lifecycle_tool_block_reason(
+    lifecycle_verdict = dispatch_rules.LifecycleWriteDraftBlockRule().evaluate(
+        {
+            "name": "write_draft",
+            "args": {"curation_action": curation_action, "curation_justification": curation_justification},
+        },
         state,
-        "write_draft",
-        {"curation_action": curation_action, "curation_justification": curation_justification},
     )
-    if lifecycle_block:
-        log_gate_decision("lifecycle_tool_impl", "blocked", reason=lifecycle_block)
+    if not lifecycle_verdict.is_allow:
+        lifecycle_block = lifecycle_verdict.reason
         return _recoverable_tool_update(
             RecoverableToolError(
                 code=lifecycle_block,
@@ -575,7 +577,8 @@ async def _write_draft_impl(
             ),
             tool_call_id,
         )
-    if _cold_start_draft_blocked(state):
+    cold_start_verdict = dispatch_rules.ColdStartDraftBlockRule().evaluate({"name": "write_draft"}, state)
+    if not cold_start_verdict.is_allow:
         return _recoverable_tool_update(
             RecoverableToolError(
                 code="cold_start_requires_elicitation",
@@ -2622,12 +2625,15 @@ def current_session_phase(state: WorkflowState) -> str:
 def get_available_tools(state: WorkflowState) -> list:
     """Tools the loop may pick this turn, gated on state.
 
-    The menu is intentionally broad. Two gate layers: the session-phase menu (see
-    app/graphs/session_phase.py — the single authority for which loop tools a phase offers) and
-    the draft/quality conditions (`finalize` needs a passing current critique, critique/readiness
-    tools need a rendered draft). POLICY in policy.py is documentation-only for loop tools.
+    Single chokepoint: every candidate tool in the fixed universe below is offered to
+    `gating.check(..., Mode.MENU)`, which runs the registered per-call rules in order — the
+    draft/quality/decision-graph rules first, then a combined session-phase + artifact-lifecycle
+    rule last (see app/graphs/gating/menu_rules.py). That last rule is silent in menu-mode; a
+    dispatch-mode counterpart logs its decisions once dispatch-time gating is wired through the
+    same rule. POLICY in policy.py governs repository tools via `@governed` and does not gate loop
+    tools.
     """
-    tools = [
+    candidates = [
         ask_user,
         respond,
         write_draft,
@@ -2642,28 +2648,24 @@ def get_available_tools(state: WorkflowState) -> list:
         run_impact_analysis,
         elicit_tool,
         web_search_tool,
+        finalize,
+        run_critique,
+        recommend_next_workflow,
+        run_readiness_check,
+        create_decision_node,
+        update_decision_node,
+        supersede_decision_node,
+        dismiss_question,
     ]
-    has_draft = bool(_cached_draft_body(state).strip())
-    critique_rounds = state.get("critique_rounds") or 0
-    if has_draft and critique_rounds > 0 and _finalize_gate_open(state):
-        tools.append(finalize)
-    if has_draft and critique_rounds < CRITIQUE_ROUNDS_MAX:
-        tools.append(run_critique)
-    # recommend_next_workflow: available once there is a draft, or once >= 2 sections have any
-    # coverage (lets the quick track recommend early, before a draft exists).
-    coverage = state.get("section_coverage") or {}
-    sections_with_signal = sum(1 for v in coverage.values() if status_score(v) > 0.0)
-    if has_draft or sections_with_signal >= 2:
-        tools.append(recommend_next_workflow)
-    # run_readiness_check needs an artifact AND a prior critique round — readiness is meaningless
-    # before any quality signal exists. Routes through current_draft_body (has_draft) so a DB-loaded
-    # draft qualifies, same as finalize.
-    if has_draft and critique_rounds > 0:
-        tools.append(run_readiness_check)
-    tools.extend(_decision_graph_menu(state))
+    menu_rules.ensure_menu_rules_registered()
+    # Computed once (not per candidate tool): current_session_phase can invoke _finalize_gate_open
+    # (via _phase_signals), which logs — a call per candidate would multiply that logging.
     phase = current_session_phase(state)
-    phase_filtered = [t for t in tools if phase_allows(phase, t.name)]
-    return filter_lifecycle_menu_tools(phase_filtered, state)
+    return [
+        tool
+        for tool in candidates
+        if gating.check({"name": tool.name, "phase": phase}, state, Mode.MENU).is_allow
+    ]
 
 
 def _decision_graph_menu(state: WorkflowState) -> list:

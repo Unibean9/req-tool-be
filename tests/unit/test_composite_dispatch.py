@@ -100,6 +100,55 @@ def test_gate_interrupt_tools_set_is_complete():
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 Test A: solo-invariant equivalence through the Policy-layer batch rule
+# ---------------------------------------------------------------------------
+
+def test_gate_solo_invariant_batch_rule_equivalence_and_log_calls():
+    """interrupt + interrupt + side-effect-free note -> keep [first interrupt, note], drop the
+    second interrupt with exactly the pre-Phase-4 `_log_tool_error` code/message, routed through
+    `SoloInvariantBatchRule` (a registered batch rule) instead of inline logic."""
+    from unittest.mock import patch
+
+    state = _state()  # intent phase: ask_user/respond/explore_note all available
+    requested = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
+        result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
+    mock_log.assert_called_once_with(
+        "dropped_interrupt_tool",
+        "respond",
+        "dropped: an interrupt-bearing tool was already selected this turn",
+    )
+
+
+def test_gate_solo_invariant_drops_non_note_paired_with_interrupt_and_logs():
+    """A non-note, non-interrupt tool paired with an interrupt tool is dropped via
+    `dropped_with_interrupt_tool`, matching the pre-Phase-4 inline logic exactly."""
+    from unittest.mock import patch
+
+    state = _state()
+    state["user_confirmed"] = True
+    requested = [
+        {"name": "read_artifact", "args": {"id": "00000000-0000-0000-0000-000000000001"}},
+        {"name": "write_draft", "args": {"title": "Vision", "body": "## Vision\nDraft"}},
+    ]
+    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
+        result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["write_draft"]
+    mock_log.assert_called_once_with(
+        "dropped_with_interrupt_tool",
+        "read_artifact",
+        "dropped: paired with an interrupt-bearing tool",
+    )
+
+
+# ---------------------------------------------------------------------------
 # analyze_node composite dispatch integration
 # ---------------------------------------------------------------------------
 
