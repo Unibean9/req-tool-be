@@ -320,9 +320,10 @@ async def _write_draft_impl(
             # first write instead of re-querying — consistent with what was actually recorded and adds
             # no extra DB read on this path.
             existing_metadata = (existing_tool_call.input_snapshot or {}).get("synthesis_metadata") or {}
+            deterministic_warnings = list(existing_metadata.get("deterministic_warnings") or [])
             stale_warnings = [
                 warning
-                for warning in existing_metadata.get("deterministic_warnings") or []
+                for warning in deterministic_warnings
                 if str(warning).startswith("stale_predecessor:")
             ]
         else:
@@ -373,6 +374,7 @@ async def _write_draft_impl(
                 for item in state.get("turn_context_artifacts") or []
             }
             stale_warnings = await _stale_predecessor_warnings(db, project_id, based_on, predecessor_types)
+            deterministic_warnings = [*gate.warnings, *stale_warnings]
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
@@ -381,7 +383,7 @@ async def _write_draft_impl(
                 inference_level="medium",
                 confirmed_assumptions=_dedupe_keep_order(graph_confirmed),
                 pending_assumptions=_dedupe_keep_order(graph_pending),
-                deterministic_warnings=[*gate.warnings, *stale_warnings],
+                deterministic_warnings=deterministic_warnings,
             )
             candidate_readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
@@ -447,8 +449,8 @@ async def _write_draft_impl(
 
     agent_tools.interrupt({"type": "propose_artifacts", "tool_name": "write_draft"})
     message_content = title
-    if stale_warnings:
-        message_content = title + "\n" + "\n".join(stale_warnings)
+    if deterministic_warnings:
+        message_content = title + "\n" + "\n".join(str(warning) for warning in deterministic_warnings)
     return Command(
         update={
             "messages": [ToolMessage(content=message_content, tool_call_id=tool_call_id)],

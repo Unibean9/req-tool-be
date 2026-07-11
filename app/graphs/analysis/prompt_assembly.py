@@ -504,8 +504,6 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
     if created_parked:
         rendered = "; ".join(f"{item.get('id')}: {item.get('statement')}" for item in created_parked[:3])
         parts.append(f"- created_parked_questions: {rendered}")
-    if feedback_summary.get("stale_warning"):
-        parts.append(f"- stale_warning: {feedback_summary['stale_warning']}")
     stale_base = feedback_summary.get("stale_base_version") or {}
     if stale_base:
         parts.append(

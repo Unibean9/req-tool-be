@@ -292,26 +292,20 @@ async def _run_impact_analysis_impl(
     links = await _load_artifact_links(config)
     result = impact(change_description, nodes_state, links, changed_artifact_id=changed_artifact_id)
     affected = result["affected_node_ids"]
-    feedback = dict(state.get("feedback_summary") or {})
+    tool_result = {
+        "affected_node_ids": affected,
+        "stale_artifact_ids": result["stale_artifact_ids"],
+    }
     if affected:
-        feedback["stale_warning"] = f"{len(affected)} node need reconfirmation due to change: {', '.join(affected)}"
-        feedback["impact_result"] = {
-            "affected_node_ids": affected,
-            "stale_artifact_ids": result["stale_artifact_ids"],
-        }
+        tool_result["stale_warning"] = (
+            f"{len(affected)} node need reconfirmation due to change: {', '.join(affected)}"
+        )
     return Command(
         update={
             "decision_nodes": result["decision_nodes"],
-            "feedback_summary": feedback,
             "messages": [
                 ToolMessage(
-                    content=json.dumps(
-                        {
-                            "affected_node_ids": affected,
-                            "stale_artifact_ids": result["stale_artifact_ids"],
-                        },
-                        ensure_ascii=False,
-                    ),
+                    content=json.dumps(tool_result, ensure_ascii=False),
                     tool_call_id=tool_call_id,
                 )
             ],

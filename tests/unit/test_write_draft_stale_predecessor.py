@@ -8,6 +8,7 @@ turn) — while the draft itself is still written and the interrupt still fires 
 """
 
 import uuid
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -163,3 +164,47 @@ async def test_current_predecessor_produces_no_warning(mock_interrupt, client, d
         row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
         warnings = row.input_snapshot["synthesis_metadata"]["deterministic_warnings"]
         assert not any(str(w).startswith("stale_predecessor:") for w in warnings)
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_deterministic_gate_warning_is_model_facing_and_snapshot_compatible(
+    mock_interrupt, client, db_session
+):
+    state, config, run, _project_id = await _seed(client, db_session)
+    warning = "Weasel word (weasel word): 'very'"
+
+    with patch(
+        "app.graphs.agent_tools.draft_lifecycle.validate_proposal",
+        return_value=SimpleNamespace(violations=[], warnings=[warning]),
+    ):
+        command = await _write_draft_impl("Vision", COMPLETE_BODY, state, config, "call_1")
+
+    assert command.update["messages"][0].content == f"Vision\n{warning}"
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        assert row.input_snapshot["synthesis_metadata"]["deterministic_warnings"] == [warning]
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
+async def test_resume_replays_all_persisted_deterministic_warnings(mock_interrupt, client, db_session):
+    state, config, run, _project_id = await _seed(client, db_session)
+    gate_warning = "gate warning"
+    stale_warning = "stale_predecessor:problem_statement:missing_predecessor"
+
+    with patch(
+        "app.graphs.agent_tools.draft_lifecycle.validate_proposal",
+        return_value=SimpleNamespace(violations=[], warnings=[gate_warning, stale_warning]),
+    ):
+        await _write_draft_impl("Vision", COMPLETE_BODY, state, config, "call_1")
+
+    resumed = await _write_draft_impl("Vision", COMPLETE_BODY, state, config, "call_1")
+
+    assert resumed.update["messages"][0].content == f"Vision\n{gate_warning}\n{stale_warning}"
+    async with TestSessionFactory() as db:
+        row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
+        assert row.input_snapshot["synthesis_metadata"]["deterministic_warnings"] == [
+            gate_warning,
+            stale_warning,
+        ]
