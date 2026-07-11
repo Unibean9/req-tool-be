@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -466,6 +467,57 @@ async def test_create_session_duplicate_active_raises_409(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_create_session_expires_stale_conflicting_session_and_succeeds(client, db_session):
+    """A conflicting session past session_abandoned_ttl is flipped to EXPIRED and the new session
+    creation is retried and succeeds, instead of raising 409."""
+    project_id = await _setup(client)
+    owner_id = uuid.uuid4()
+    svc = _make_service(db_session)
+
+    first = await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=owner_id)
+    stale = await db_session.get(AgentSession, uuid.UUID(first["session_id"]))
+    stale.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
+    await db_session.commit()
+
+    result = await _make_service(db_session).create_session(
+        project_id=project_id,
+        artifact_type="intent",
+        created_by_id=owner_id,
+    )
+
+    assert result["session_id"] != first["session_id"]
+    assert stale.status == AgentSessionStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_create_session_expiry_races_safely_against_pending_resume(client, db_session):
+    """If create_session's expire-on-conflict path wins the race and flips a WAITING_FOR_HUMAN
+    session past TTL to EXPIRED, a resume already in flight for that same session (guarded by the
+    `status != WAITING_FOR_HUMAN` check in _check_and_resume) must safely no-op instead of
+    double-transitioning the row or raising. Modeled as a sequential simulation (expire wins the
+    lock first, then the resume guard runs against the now-EXPIRED row), matching this codebase's
+    existing style for race/guard tests."""
+    project_id = await _setup(client)
+    owner_id = uuid.uuid4()
+    svc = _make_service(db_session)
+
+    stale = await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=owner_id)
+    stale_id = uuid.UUID(stale["session_id"])
+    stale_row = await db_session.get(AgentSession, stale_id)
+    stale_row.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
+    await db_session.commit()
+
+    # create_session's IntegrityError path wins the race: it locks and expires the stale session.
+    await svc.create_session(project_id=project_id, artifact_type="intent", created_by_id=owner_id)
+    assert stale_row.status == AgentSessionStatus.EXPIRED
+
+    # A resume already in flight for that same session must no-op — not crash, not revive it.
+    await svc._check_and_resume(project_id=project_id, session_id=stale_id)
+
+    assert stale_row.status == AgentSessionStatus.EXPIRED
+
+
+@pytest.mark.asyncio
 async def test_create_session_same_artifact_allowed_for_different_users(client, db_session):
     project_id = await _setup(client)
     svc = _make_service(db_session)
@@ -762,6 +814,55 @@ async def test_drain_queue_does_not_fire_after_waiting_for_human(client, db_sess
     await db_session.refresh(queued)
     assert queued.payload["queued"] is True
     _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_does_not_fire_after_expired(client, db_session, _no_background_tasks):
+    """EXPIRED is terminal-and-inert: draining must not revive it to ACTIVE."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.EXPIRED,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    queued = AgentMessage(
+        session_id=session.id, role=AgentMessageRole.USER, content="tao di", payload={"queued": True}
+    )
+    db_session.add(queued)
+    await db_session.flush()
+
+    await svc._drain_queue(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+    )
+
+    await db_session.refresh(queued)
+    await db_session.refresh(session)
+    assert queued.payload["queued"] is True
+    assert session.status == AgentSessionStatus.EXPIRED
+    _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_400_guard_rejects_expired(client, db_session):
+    """The 400-guard (COMPLETED/FAILED reject) must also reject EXPIRED."""
+    project_id = await _setup(client)
+    svc = _make_service(db_session)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.EXPIRED, interrupt_type=None,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await svc.handle_user_message(project_id=project_id, session_id=session.id, content="tiep tuc")
+
+    assert exc.value.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1484,37 @@ async def test_approve_tool_call_rejects_non_owner(client, db_session):
         )
 
     assert exc.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_rejects_expired_session(client, db_session):
+    """Approval on a tool call whose parent session has expired must be rejected, mirroring
+    the COMPLETED/FAILED terminal-session guard."""
+    project_id = await _setup(client)
+    session, _, tc1, _ = await _make_propose_session(db_session, project_id)
+    session.status = AgentSessionStatus.EXPIRED
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await _make_service(db_session).approve_tool_call(
+            project_id=project_id, tool_call_id=tc1.id, created_by_id=None
+        )
+
+    assert exc.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_reject_tool_call_rejects_expired_session(client, db_session):
+    """Rejection on a tool call whose parent session has expired must also be rejected."""
+    project_id = await _setup(client)
+    session, _, tc1, _ = await _make_propose_session(db_session, project_id)
+    session.status = AgentSessionStatus.EXPIRED
+    await db_session.flush()
+
+    with pytest.raises(HTTPException) as exc:
+        await _make_service(db_session).reject_tool_call(project_id=project_id, tool_call_id=tc1.id)
+
+    assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -2873,3 +3005,90 @@ async def test_document_type_for_session_regression_via_focused_container(client
     document_type = await svc._document_type_for_session(session)
 
     assert document_type == container_type
+
+
+# ---------------------------------------------------------------------------
+# expire_abandoned_session (lazy EXPIRED foundation, no call sites wired yet)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN])
+async def test_expire_abandoned_session_marks_stale_active_or_waiting_session_expired(
+    client, db_session, status
+):
+    from app.services.agent_service import expire_abandoned_session
+
+    project_id = await _setup(client)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=status, interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
+
+    expired = expire_abandoned_session(session)
+
+    assert expired is True
+    assert session.status == AgentSessionStatus.EXPIRED
+    assert session.interrupt_type is None
+
+
+@pytest.mark.asyncio
+async def test_expire_abandoned_session_leaves_recent_session_alone(client, db_session):
+    from app.services.agent_service import expire_abandoned_session
+
+    project_id = await _setup(client)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    session.updated_at = datetime.now(UTC) - timedelta(hours=1)
+
+    expired = expire_abandoned_session(session)
+
+    assert expired is False
+    assert session.status == AgentSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_expire_abandoned_session_never_touches_turn_failed(client, db_session):
+    """TURN_FAILED is a resumable resting state, not an abandonment candidate — the expiry helper
+    must leave it alone regardless of how far past TTL updated_at is."""
+    from app.services.agent_service import expire_abandoned_session
+
+    project_id = await _setup(client)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.TURN_FAILED,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl * 10)
+
+    expired = expire_abandoned_session(session)
+
+    assert expired is False
+    assert session.status == AgentSessionStatus.TURN_FAILED
+
+
+@pytest.mark.asyncio
+async def test_expire_abandoned_session_never_touches_completed_or_failed(client, db_session):
+    from app.services.agent_service import expire_abandoned_session
+
+    project_id = await _setup(client)
+    for status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+        session = AgentSession(
+            project_id=project_id, artifact_type="goal", workflow_area="analysis",
+            graph_checkpoint={}, status=status,
+        )
+        db_session.add(session)
+        await db_session.flush()
+        session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl * 10)
+
+        expired = expire_abandoned_session(session)
+
+        assert expired is False
+        assert session.status == status

@@ -19,8 +19,10 @@ class ArtifactSynthesisMetadata(BaseModel):
     inference_level: InferenceLevel = "medium"
     confirmed_assumptions: list[str] = Field(default_factory=list)
     pending_assumptions: list[str] = Field(default_factory=list)
-    # Non-blocking findings from the deterministic proposal gate (validators.validate_proposal),
-    # surfaced so the LLM critique judge can reference them. Violations block earlier and never reach here.
+    # Non-blocking findings (e.g. deterministic proposal gate warnings, stale-predecessor notices) —
+    # violations that would block the proposal never reach here. Read by the human reviewer at
+    # approval time via the FE snapshot, and by the model at its next turn via the write_draft
+    # ToolMessage content.
     deterministic_warnings: list[str] = Field(default_factory=list)
     synthesis_source: SynthesisSource = "bmad_synthesis"
 

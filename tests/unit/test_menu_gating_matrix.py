@@ -93,12 +93,22 @@ def test_has_draft_critique_gt_zero_gate_open():
 
 
 def test_critique_rounds_at_max():
-    """run_critique requires critique_rounds < CRITIQUE_ROUNDS_MAX; at the cap it disappears (even
-    though run_readiness_check, which only needs > 0, stays). No quality_report -> finalize gate
-    closed -> phase REVIEW (excludes confirm_intent/elicit/web_search)."""
+    """run_critique requires critique_rounds < CRITIQUE_ROUNDS_MAX, unless the draft hash differs
+    from the last-critiqued hash (grace round). Here the hash matches (no edit since the last
+    critique), so it stays gated off at the cap (even though run_readiness_check, which only needs
+    > 0, stays). No quality_report -> finalize gate closed -> phase REVIEW (excludes
+    confirm_intent/elicit/web_search)."""
+    import hashlib
+
     from app.graphs.agent_tools import CRITIQUE_ROUNDS_MAX
 
-    state = {"user_confirmed": True, "draft_body": "A draft", "critique_rounds": CRITIQUE_ROUNDS_MAX}
+    draft = "A draft"
+    state = {
+        "user_confirmed": True,
+        "draft_body": draft,
+        "critique_rounds": CRITIQUE_ROUNDS_MAX,
+        "last_critiqued_draft_hash": hashlib.md5(draft.encode()).hexdigest()[:8],
+    }
     expected = (_UNCONDITIONAL - {"confirm_intent", "elicit", "web_search"}) | {
         "run_readiness_check",
         "recommend_next_workflow",

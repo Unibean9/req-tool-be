@@ -98,16 +98,17 @@ def test_finalize_blocked_logs_reason(caplog):
     assert "critique_not_passed" in lines[0].getMessage()
 
 
-def test_finalize_open_at_rounds_cap(caplog):
+def test_finalize_blocked_at_rounds_cap_on_stale_hash(caplog):
     state = {
         "quality_report": {"quality_gate_result": "pass"},
         "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT},
         "critique_rounds": CRITIQUE_ROUNDS_MAX,
     }
-    assert _finalize_gate_open(state) is True
+    assert _finalize_gate_open(state) is False
     lines = [r for r in _gate_lines(caplog) if "gate=finalize" in r.getMessage()]
     assert len(lines) == 1
-    assert "verdict=open" in lines[0].getMessage()
+    assert "verdict=blocked" in lines[0].getMessage()
+    assert "stale_draft" in lines[0].getMessage()
 
 
 # --- diagnosis ---------------------------------------------------------------

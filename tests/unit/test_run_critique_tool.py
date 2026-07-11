@@ -1,5 +1,7 @@
 """Tests for the in-loop run_critique tool and its gating (spec §6.6, §5.5)."""
 
+import hashlib
+
 import pytest
 
 from app.graphs.agent_tools import (
@@ -41,7 +43,17 @@ def test_run_critique_not_available_without_draft():
 def test_run_critique_gated_after_max_rounds():
     state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
+    # Hash matches the current draft (no edit since the last critique) → no grace round.
+    state["last_critiqued_draft_hash"] = hashlib.md5(_draft_body(state).encode()).hexdigest()[:8]
     assert "run_critique" not in _tool_names(state)
+
+
+def test_run_critique_available_after_max_rounds_when_draft_edited():
+    """Grace round: at the cap, an edit since the last critique (hash mismatch) reopens run_critique."""
+    state = _draft_state()
+    state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
+    state["last_critiqued_draft_hash"] = "deadbeef"
+    assert "run_critique" in _tool_names(state)
 
 
 @pytest.mark.asyncio
@@ -59,6 +71,8 @@ async def test_run_critique_bypass_without_draft_returns_tool_error():
 async def test_run_critique_bypass_after_max_rounds_returns_tool_error():
     state = _draft_state()
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX
+    # Hash matches the current draft (no edit since the last critique) → the cap guard denies.
+    state["last_critiqued_draft_hash"] = hashlib.md5(_draft_body(state).encode()).hexdigest()[:8]
     config = {"configurable": {"llm_client": None}}
 
     command = await _run_critique_impl("draft", "completeness", state, config, "call_1")

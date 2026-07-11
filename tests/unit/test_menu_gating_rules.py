@@ -4,6 +4,7 @@ Covers the pass-through-for-irrelevant-tools contract and, since nothing else ex
 phase, `PhaseLifecycleMenuRule`'s dispatch-mode branch.
 """
 
+import hashlib
 from unittest.mock import patch
 
 from app.graphs.gating.menu_rules import (
@@ -89,8 +90,20 @@ def test_finalize_rule_does_not_consult_gate_when_precondition_fails():
 def test_run_critique_rule_denies_at_rounds_cap(monkeypatch):
     monkeypatch.setattr("app.graphs.gating.menu_rules.settings.max_critique_rounds", 2)
     rule = RunCritiqueMenuRule()
-    verdict = rule.evaluate({"name": "run_critique"}, {"draft_body": "x", "critique_rounds": 2})
+    # Hash matches the draft body: no edit since the last critique, so no grace round is available.
+    matching_hash = hashlib.md5(b"x").hexdigest()[:8]
+    state = {"draft_body": "x", "critique_rounds": 2, "last_critiqued_draft_hash": matching_hash}
+    verdict = rule.evaluate({"name": "run_critique"}, state)
     assert verdict.kind is VerdictKind.DENY
+
+
+def test_run_critique_rule_allows_grace_round_at_rounds_cap_when_hash_stale(monkeypatch):
+    monkeypatch.setattr("app.graphs.gating.menu_rules.settings.max_critique_rounds", 2)
+    rule = RunCritiqueMenuRule()
+    # Draft edited after the last critique (hash mismatch) at the rounds cap → grace round allowed.
+    state = {"draft_body": "x", "critique_rounds": 2, "last_critiqued_draft_hash": "deadbeef"}
+    verdict = rule.evaluate({"name": "run_critique"}, state)
+    assert verdict.kind is VerdictKind.ALLOW
 
 
 def test_run_critique_rule_allows_below_cap(monkeypatch):

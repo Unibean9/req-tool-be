@@ -18,6 +18,7 @@ class AgentSessionStatus(enum.StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     TURN_FAILED = "turn_failed"
+    EXPIRED = "expired"
 
 
 class AgentSessionInterruptType(enum.StrEnum):

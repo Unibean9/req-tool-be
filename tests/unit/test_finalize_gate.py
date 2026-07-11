@@ -106,12 +106,21 @@ def test_finalize_not_available_when_draft_edited_after_critique():
     assert "finalize" not in _names(state)
 
 
-def test_finalize_available_on_escape_hatch_at_rounds_cap():
+def test_finalize_not_available_on_stale_hash_at_rounds_cap():
     from app.graphs.agent_tools import CRITIQUE_ROUNDS_MAX
 
     state = _passing_state(critique_rounds=CRITIQUE_ROUNDS_MAX)
-    # Stale hash, but the rounds cap is reached → escape hatch keeps finalize available.
+    # Stale hash: the rounds cap no longer opens finalize unconditionally — the escape hatch is gone.
     state["last_critiqued_draft_hash"] = "deadbeef"
+    assert "finalize" not in _names(state)
+
+
+def test_finalize_available_at_rounds_cap_when_hash_matches():
+    from app.graphs.agent_tools import CRITIQUE_ROUNDS_MAX
+
+    # Matching hash exactly at the cap (no edit since the last critique) is still the normal,
+    # non-grace path — removing the bypass branch must not accidentally block it.
+    state = _passing_state(critique_rounds=CRITIQUE_ROUNDS_MAX)
     assert "finalize" in _names(state)
 
 

@@ -58,8 +58,11 @@ class FinalizeMenuRule:
 
 
 class RunCritiqueMenuRule:
-    """`run_critique`: candidate iff a draft exists and the critique-rounds cap
-    has not been reached."""
+    """`run_critique`: candidate iff a draft exists and either the critique-rounds
+    cap has not been reached, or (at/past the cap) the draft has been edited since
+    the last critique — a single grace round to re-score the edited draft. Uses
+    `agent_tools._draft_hash_stale` so this condition can never drift from the
+    one `_run_critique_impl`'s cap guard enforces at call time."""
 
     name = "run_critique_menu"
     side_effecting = False
@@ -68,7 +71,11 @@ class RunCritiqueMenuRule:
         if tool_call.get("name") != "run_critique":
             return Verdict.allow()
         has_draft, critique_rounds = _has_draft_and_critique_rounds(state)
-        if has_draft and critique_rounds < settings.max_critique_rounds:
+        if not has_draft:
+            return Verdict.deny("run_critique_unavailable")
+        if critique_rounds < settings.max_critique_rounds:
+            return Verdict.allow()
+        if agent_tools._draft_hash_stale(state):
             return Verdict.allow()
         return Verdict.deny("run_critique_unavailable")
 

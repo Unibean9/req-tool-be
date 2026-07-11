@@ -24,6 +24,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command, interrupt
 from sqlalchemy import exists, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.documents.registry import children_of, output_contract, status_score
@@ -536,6 +537,45 @@ def _dedupe_keep_order(items: list[str]) -> list[str]:
     return result
 
 
+async def _stale_predecessor_warnings(
+    db: AsyncSession,
+    project_id: uuid.UUID | None,
+    based_on: dict[str, str],
+    predecessor_types: dict[str, str],
+) -> list[str]:
+    """Advisory, read-only check of each `based_on` predecessor's current version/status.
+
+    Mirrors the 3 staleness reasons the approval-time guard uses, without locking any row — this is
+    a non-blocking heads-up surfaced early so the reviewer and the model both see it sooner; approval
+    remains the sole authority that can actually block a stale predecessor.
+    """
+    if not based_on:
+        return []
+    warnings: list[str] = []
+    for predecessor_id, based_on_version_id in based_on.items():
+        try:
+            artifact_id = uuid.UUID(predecessor_id)
+        except (TypeError, ValueError):
+            continue
+        query = select(Artifact).where(Artifact.id == artifact_id)
+        if project_id is not None:
+            query = query.where(Artifact.project_id == project_id)
+        predecessor = (await db.execute(query)).scalar_one_or_none()
+        if predecessor is None:
+            artifact_type = predecessor_types.get(predecessor_id) or "unknown"
+            warnings.append(f"stale_predecessor:{artifact_type}:missing_predecessor")
+            continue
+        current_version_id = str(predecessor.current_version_id) if predecessor.current_version_id else None
+        if predecessor.status == ArtifactStatus.ARCHIVED:
+            reason = "retired_predecessor"
+        elif current_version_id != based_on_version_id:
+            reason = "predecessor_version_changed"
+        else:
+            continue
+        warnings.append(f"stale_predecessor:{predecessor.type.value}:{reason}")
+    return warnings
+
+
 def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     if state.get("decision_nodes"):
         return False
@@ -610,12 +650,13 @@ async def _write_draft_impl(
             tool_call_id,
         )
     tool_key = f"write_draft:{focused_artifact_id}"
+    project_id = uuid.UUID(str(cfg["project_id"])) if cfg.get("project_id") else None
 
     async with session_factory() as db:
         try:
             focused = await DocumentService(db).get_document_item_artifact(
                 artifact_id=uuid.UUID(str(focused_artifact_id)),
-                project_id=uuid.UUID(str(cfg["project_id"])) if cfg.get("project_id") else None,
+                project_id=project_id,
             )
         except ValueError as exc:
             raise RuntimeError("write_draft focused artifact must be an existing document item") from exc
@@ -632,10 +673,20 @@ async def _write_draft_impl(
         ).scalar_one_or_none()
         if existing_tool_call:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
+            # Resume-of-same-run: reuse the warnings already baked into the persisted snapshot on the
+            # first write instead of re-querying — consistent with what was actually recorded and adds
+            # no extra DB read on this path.
+            existing_metadata = (existing_tool_call.input_snapshot or {}).get("synthesis_metadata") or {}
+            stale_warnings = [
+                warning
+                for warning in existing_metadata.get("deterministic_warnings") or []
+                if str(warning).startswith("stale_predecessor:")
+            ]
         else:
             # Deterministic quality gate before the LLM path: violations block the proposal (no
             # PROPOSE_ARTIFACTS interrupt) and are returned for the model's repair loop; warnings ride
-            # the synthesis metadata for the critique judge. Escape hatch: enforce_deterministic_gate.
+            # the synthesis metadata for the human reviewer (FE snapshot) and the model (write_draft
+            # ToolMessage). Escape hatch: enforce_deterministic_gate.
             gate = validate_proposal(focused.type.value, {"title": title, "body": body})
             if settings.enforce_deterministic_gate and gate.violations:
                 log_gate_decision(
@@ -674,6 +725,11 @@ async def _write_draft_impl(
                     "action": str(curation_action or "").strip().upper(),
                     "justification": str(curation_justification or "").strip(),
                 }
+            predecessor_types = {
+                str(item.get("id") or "").strip(): str(item.get("type") or "").strip()
+                for item in state.get("turn_context_artifacts") or []
+            }
+            stale_warnings = await _stale_predecessor_warnings(db, project_id, based_on, predecessor_types)
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
@@ -682,7 +738,7 @@ async def _write_draft_impl(
                 inference_level="medium",
                 confirmed_assumptions=_dedupe_keep_order(graph_confirmed),
                 pending_assumptions=_dedupe_keep_order(graph_pending),
-                deterministic_warnings=gate.warnings,
+                deterministic_warnings=[*gate.warnings, *stale_warnings],
             )
             candidate_readiness = evaluate_candidate_readiness(
                 artifact_type=focused.type.value,
@@ -747,9 +803,12 @@ async def _write_draft_impl(
         await db.commit()
 
     interrupt({"type": "propose_artifacts", "tool_name": "write_draft"})
+    message_content = title
+    if stale_warnings:
+        message_content = title + "\n" + "\n".join(stale_warnings)
     return Command(
         update={
-            "messages": [ToolMessage(content=title, tool_call_id=tool_call_id)],
+            "messages": [ToolMessage(content=message_content, tool_call_id=tool_call_id)],
             "draft_body": body,
             "candidate_readiness": readiness,
         }
@@ -1778,7 +1837,7 @@ async def _run_critique_impl(
 
     if not str(mode or "").strip():
         return _missing_required_arg_update("run_critique", "mode", tool_call_id)
-    if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
+    if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX and not _draft_hash_stale(state):
         return _tool_not_available_update(
             "run_critique",
             "critique round limit reached; revise, respond/escalate, or finalize if the gate has passed.",
@@ -2575,13 +2634,24 @@ def get_all_analyzer_tools() -> list:
     ]
 
 
+def _draft_hash_stale(state: WorkflowState) -> bool:
+    """True iff the current draft body's hash differs from the hash of the last-critiqued draft.
+
+    Pure function of state (no I/O), shared by `_finalize_gate_open`, the `run_critique` menu rule,
+    and `_run_critique_impl`'s cap guard so the three can never drift apart on what counts as an
+    edit since the last critique.
+    """
+    current_hash = hashlib.md5(_cached_draft_body(state).encode()).hexdigest()[:8]
+    return current_hash != state.get("last_critiqued_draft_hash")
+
+
 def _finalize_gate_open(state: WorkflowState) -> bool:
     """Quality side of the finalize gate: gate passed AND the scored draft is still current.
 
     The current draft body comes from `current_draft_body` — the SAME helper `_run_critique_impl`
-    writes the hash from — so the gate body can never diverge from the scored body. Escape hatch: at
-    the rounds cap a passing gate finalizes regardless of hash, so an edit after the final critique
-    cannot wedge the loop (run_critique is capped, finalize would otherwise be stuck on a stale hash).
+    writes the hash from — so the gate body can never diverge from the scored body. The hash must
+    always match the last-critiqued hash for finalize to open; there is no rounds-based exception —
+    an edit after the last critique always re-blocks finalize until the draft is re-scored.
     """
     report = state.get("quality_report")
     if not report or report.get("quality_gate_result") != "pass":
@@ -2591,11 +2661,7 @@ def _finalize_gate_open(state: WorkflowState) -> bool:
     if not isinstance(readiness, dict) or readiness.get("state") != ArtifactReadinessState.SUFFICIENT:
         log_gate_decision("finalize", "blocked", reason="readiness_not_sufficient")
         return False
-    if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX:
-        log_gate_decision("finalize", "open", reason="rounds_cap")
-        return True
-    current_hash = hashlib.md5(_cached_draft_body(state).encode()).hexdigest()[:8]
-    if current_hash != state.get("last_critiqued_draft_hash"):
+    if _draft_hash_stale(state):
         log_gate_decision("finalize", "blocked", reason="stale_draft")
         return False
     log_gate_decision("finalize", "open")

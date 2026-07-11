@@ -1,7 +1,9 @@
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.config import settings
 from app.core.security import decode_token
 from app.models.agent import (
     AgentMessage,
@@ -182,6 +184,7 @@ def test_ui_status_function_unit():
     assert _ui_status(AgentSessionStatus.FAILED, None) == "error"
     assert _ui_status(AgentSessionStatus.TURN_FAILED, None) == "error"
     assert _ui_status(AgentSessionStatus.COMPLETED, None) == "idle"
+    assert _ui_status(AgentSessionStatus.EXPIRED, None) == "idle"
 
 
 async def _snapshot_for(db_session, project_id, *, status, interrupt_type=None):
@@ -266,6 +269,14 @@ async def test_ui_status_completed(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_ui_status_expired(client, db_session):
+    """EXPIRED maps to 'idle' via an explicit case, not 'error' — expiry is not a system failure."""
+    project_id = await _project(client)
+    snapshot = await _snapshot_for(db_session, project_id, status=AgentSessionStatus.EXPIRED)
+    assert snapshot["session"]["ui_status"] == "idle"
+
+
+@pytest.mark.asyncio
 async def test_snapshot_no_graph_checkpoint_after_ui_status_added(client, db_session):
     project_id = await _project(client)
     snapshot = await _snapshot_for(
@@ -312,6 +323,100 @@ async def test_stream_closes_on_turn_failed(client, db_session):
         frames.append(frame)
 
     assert any("event: stream_closed" in f and '"status":"turn_failed"' in f for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_stream_closes_on_expired(client, db_session):
+    """EXPIRED must close the SSE stream exactly as COMPLETED/FAILED/TURN_FAILED do."""
+    project_id = await _project(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.EXPIRED,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    frames = []
+    async for frame in AgentEventService(db_session).stream_session_events(
+        project_id=project_id,
+        session_id=session.id,
+        user_id=owner_id,
+        request=_NeverDisconnectedRequest(),
+        interval_seconds=0.01,
+        heartbeat_seconds=1.0,
+    ):
+        frames.append(frame)
+
+    assert any("event: stream_closed" in f and '"status":"expired"' in f for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_build_snapshot_expires_stale_session_and_persists(client, db_session):
+    """build_snapshot lazily flips a WAITING_FOR_HUMAN session past session_abandoned_ttl to
+    EXPIRED via its own dedicated transaction, and the same poll cycle's snapshot reflects it."""
+    project_id = await _project(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+    session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
+    await db_session.commit()
+
+    snapshot = await AgentEventService(db_session, session_factory=TestSessionFactory).build_snapshot(
+        project_id=project_id, session_id=session.id, user_id=owner_id
+    )
+
+    assert snapshot["session"]["status"] == AgentSessionStatus.EXPIRED
+
+    async with TestSessionFactory() as check_db:
+        row = await check_db.get(AgentSession, session.id)
+        assert row.status == AgentSessionStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_stream_closes_when_poll_triggers_ttl_expiry(client, db_session):
+    """Unlike test_stream_closes_on_expired (which starts already-EXPIRED), this session starts
+    WAITING_FOR_HUMAN and only becomes EXPIRED inside build_snapshot's TTL check during the
+    stream's first poll — the loop must still close on the very next iteration."""
+    project_id = await _project(client)
+    owner_id = uuid.uuid4()
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.WAITING_FOR_HUMAN,
+        created_by_id=owner_id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+    session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
+    await db_session.commit()
+
+    frames = []
+    async for frame in AgentEventService(db_session, session_factory=TestSessionFactory).stream_session_events(
+        project_id=project_id,
+        session_id=session.id,
+        user_id=owner_id,
+        request=_NeverDisconnectedRequest(),
+        interval_seconds=0.01,
+        heartbeat_seconds=1.0,
+    ):
+        frames.append(frame)
+
+    assert any("event: stream_closed" in f and '"status":"expired"' in f for f in frames)
 
 
 # ---------------------------------------------------------------------------

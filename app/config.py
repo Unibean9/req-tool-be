@@ -62,6 +62,10 @@ class Settings(BaseSettings):
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
 
+    # Lazy expiry: an ACTIVE/WAITING_FOR_HUMAN session with no activity for this many hours is
+    # eligible to be marked EXPIRED the next time it is read.
+    session_abandoned_ttl: int = 72
+
     # Behavior thresholds kept as settings so eval grid sweeps can vary them via env without a
     # code edit. Values below are the calibrated defaults.
     # low_coverage_ratio: below this the diagnosis loop treats a section as weakly covered.
