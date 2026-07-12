@@ -30,7 +30,6 @@ from app.graphs.agent_tools._shared import (
 from app.graphs.decision_graph import (
     render_node_map,
     render_view,
-    scan_parked_questions,
     synthesis_assumption_signals,
 )
 from app.graphs.gating import dispatch_rules
@@ -466,8 +465,7 @@ async def write_draft(
     body: Annotated[
         str,
         "Full draft body in Markdown following the artifact's output contract (required headings); "
-        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump. "
-        "Used when the decision graph is still partial; a complete graph-rendered view takes precedence.",
+        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump.",
     ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -484,27 +482,9 @@ async def write_draft(
     """Propose an artifact draft and pause for the user to review it.
 
     Use once enough confirmed information exists to produce a structured draft. Available only in the
-    artifact phase (after confirm_intent). This is the propose/approval gate: when decision nodes
-    exist and cover the contract, the proposal is the view rendered from the graph (record content via
-    the decision-node tools, not here). Without a complete graph, supply the body — it grows
-    incrementally, never rewritten from scratch.
+    artifact phase (after confirm_intent). The body grows incrementally, never rewritten from scratch.
     """
     return await _write_draft_impl(title, body, state, config, tool_call_id, curation_action, curation_justification)
-
-
-def _open_blocker_questions(state: WorkflowState) -> list[dict[str, Any]]:
-    """Parked open_questions whose blockers are resolved but the question itself is still unanswered.
-
-    These are the resurfaced/actionable questions (see scan_parked_questions); dismissed or answered
-    nodes are excluded by construction (dismiss sets status to "dismissed", never "parked").
-
-    Short-circuits when the decision graph is disabled: the only tools that clear a blocker
-    (update_decision_node / dismiss_question) are gated on the same flag, so gating finalize while
-    they are unavailable would wedge the session with no path out.
-    """
-    if not settings.decision_graph_enabled:
-        return []
-    return scan_parked_questions(state.get("decision_nodes") or {})
 
 
 # --- Executive summary synthesis (BRD finalize) -----------------------------
@@ -617,23 +597,6 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
             RecoverableToolError(
                 code="finalize_gate_blocked",
                 message=f"Cannot finalize: quality gate has not passed ({detail}).",
-            ),
-            tool_call_id,
-        )
-
-    # Loop-closure gate (pure state read, so it runs before any DB work): unresolved blocker-class
-    # parked questions must be answered or explicitly dismissed before finalize.
-    blockers = _open_blocker_questions(state)
-    if blockers:
-        offenders = "; ".join(f"{node['id']} ({node.get('statement', '')})" for node in blockers)
-        return _recoverable_tool_update(
-            RecoverableToolError(
-                code="finalize_blocker_unresolved",
-                message=f"Cannot finalize: {len(blockers)} blocker question(s) are unresolved: {offenders}.",
-                recovery=(
-                    "Resolve each (answer + confirm its blocker) or call dismiss_question with a reason, "
-                    "then finalize."
-                ),
             ),
             tool_call_id,
         )

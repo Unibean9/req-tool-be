@@ -101,7 +101,7 @@ def _resume_answer_text(user_response: Any, questions: list[dict[str, Any]] | No
         if isinstance(answers, list) and questions:
             paired = [
                 f"- {str(q.get('prompt') or '').strip()}: {str(answer).strip()}"
-                for q, answer in zip(questions, answers)
+                for q, answer in zip(questions, answers, strict=False)
                 if str(answer).strip()
             ]
             if paired:

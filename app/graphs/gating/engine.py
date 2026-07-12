@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.graphs.gating.registry import Registry
-from app.graphs.gating.rules import Mode, Rule, BatchRule
+from app.graphs.gating.rules import BatchRule, Mode, Rule
 from app.graphs.gating.verdict import Verdict
 
 _registry = Registry()

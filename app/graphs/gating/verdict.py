@@ -7,10 +7,10 @@ reason), or needs_human (optionally with a reason).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 
 
-class VerdictKind(str, Enum):
+class VerdictKind(StrEnum):
     ALLOW = "allow"
     DENY = "deny"
     NEEDS_HUMAN = "needs_human"
@@ -22,15 +22,15 @@ class Verdict:
     reason: str | None = None
 
     @staticmethod
-    def allow() -> "Verdict":
+    def allow() -> Verdict:
         return Verdict(kind=VerdictKind.ALLOW)
 
     @staticmethod
-    def deny(reason: str) -> "Verdict":
+    def deny(reason: str) -> Verdict:
         return Verdict(kind=VerdictKind.DENY, reason=reason)
 
     @staticmethod
-    def needs_human(reason: str | None = None) -> "Verdict":
+    def needs_human(reason: str | None = None) -> Verdict:
         return Verdict(kind=VerdictKind.NEEDS_HUMAN, reason=reason)
 
     @property

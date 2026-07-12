@@ -42,7 +42,7 @@ class SoloInvariantBatchRule:
 
     name = "solo_invariant"
 
-    def evaluate(self, tool_calls: list[dict[str, Any]], state: Any) -> list[dict[str, Any]]:
+    def evaluate(self, tool_calls: list[dict[str, Any]], _state: Any) -> list[dict[str, Any]]:
         interrupt_bearing = tool_gating._INTERRUPT_BEARING_TOOLS
         side_effect_free = tool_gating._SIDE_EFFECT_FREE_NOTE_TOOLS
         if not any(item["name"] in interrupt_bearing for item in tool_calls):
@@ -97,7 +97,7 @@ class ColdStartDraftBlockRule:
     name = "cold_start_draft_block"
     side_effecting = True
 
-    def evaluate(self, tool_call: dict[str, Any], state: Any) -> Verdict:
+    def evaluate(self, _tool_call: dict[str, Any], state: Any) -> Verdict:
         if agent_tools._cold_start_draft_blocked(state):
             return Verdict.deny("cold_start_requires_elicitation")
         return Verdict.allow()

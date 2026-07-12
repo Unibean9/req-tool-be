@@ -27,10 +27,6 @@ from app.graphs.gating.verdict import Verdict
 from app.graphs.lifecycle_context import focused_lifecycle_report, lifecycle_tool_block_reason
 from app.graphs.session_phase import phase_allows
 
-_DECISION_GRAPH_TOOLS = frozenset(
-    {"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"}
-)
-
 
 def _has_draft_and_critique_rounds(state: Any) -> tuple[bool, int]:
     has_draft = bool(agent_tools._cached_draft_body(state).strip())
@@ -114,27 +110,6 @@ class RunReadinessCheckMenuRule:
         return Verdict.deny("run_readiness_check_unavailable")
 
 
-class DecisionGraphMenuRule:
-    """`create_decision_node`/`update_decision_node`/`supersede_decision_node`/
-    `dismiss_question`: gated on the decision-graph feature flag, node
-    existence, and (for `dismiss_question`) a parked open-question node.
-
-    Delegates to `agent_tools._decision_graph_menu` (unchanged) rather than
-    duplicating its conditions, so the two can never drift apart."""
-
-    name = "decision_graph_menu"
-    side_effecting = False
-
-    def evaluate(self, tool_call: Any, state: Any) -> Verdict:
-        name = tool_call.get("name")
-        if name not in _DECISION_GRAPH_TOOLS:
-            return Verdict.allow()
-        offered_names = {tool.name for tool in agent_tools._decision_graph_menu(state)}
-        if name in offered_names:
-            return Verdict.allow()
-        return Verdict.deny("decision_graph_menu_excluded")
-
-
 class PhaseLifecycleMenuRule:
     """Combined session-phase + artifact-lifecycle gate, applied to every tool
     name after all tool-specific candidacy checks above.
@@ -213,7 +188,6 @@ def ensure_menu_rules_registered() -> None:
     register_rule(RunCritiqueMenuRule(), (Mode.MENU,))
     register_rule(RecommendNextWorkflowMenuRule(), (Mode.MENU,))
     register_rule(RunReadinessCheckMenuRule(), (Mode.MENU,))
-    register_rule(DecisionGraphMenuRule(), (Mode.MENU,))
     register_rule(PhaseLifecycleMenuRule(mode=Mode.MENU), (Mode.MENU,))
 
 

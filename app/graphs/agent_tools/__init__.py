@@ -131,23 +131,6 @@ from app.graphs.agent_tools.critique_tool import (  # noqa: E402
     run_critique,
 )
 
-# decision-graph tools moved to agent_tools.decision_nodes; re-exported for stable imports
-# (create/update/supersede/dismiss must live in this namespace so _decision_graph_menu resolves).
-from app.graphs.agent_tools.decision_nodes import (  # noqa: E402
-    _TOOL_EDITABLE_STATUSES,
-    _create_decision_node_impl,
-    _decision_graph_off_update,
-    _dismiss_question_impl,
-    _section_content,
-    _section_findings_update,
-    _supersede_decision_node_impl,
-    _update_decision_node_impl,
-    create_decision_node,
-    dismiss_question,
-    supersede_decision_node,
-    update_decision_node,
-)
-
 # draft-lifecycle tools moved to agent_tools.draft_lifecycle; re-exported for stable imports.
 # _cold_start_draft_blocked is re-exported because gating/dispatch_rules reaches it via
 # agent_tools._cold_start_draft_blocked. Draft-cache + gates stay defined in this module below.
@@ -161,7 +144,6 @@ from app.graphs.agent_tools.draft_lifecycle import (  # noqa: E402
     _has_complete_required_headings,
     _load_accepted_bodies,
     _missing_required_headings,
-    _open_blocker_questions,
     _persist_executive_summary_draft,
     _proposal_based_on,
     _proposal_lifecycle_metadata,
@@ -245,10 +227,6 @@ def get_all_analyzer_tools() -> list:
         confirm_intent,
         elicit_tool,
         web_search_tool,
-        create_decision_node,
-        update_decision_node,
-        supersede_decision_node,
-        dismiss_question,
         run_impact_analysis,
         read_artifact_graph_tool,
         create_artifact_link_tool,
@@ -340,10 +318,6 @@ def get_available_tools(state: WorkflowState) -> list:
         run_critique,
         recommend_next_workflow,
         run_readiness_check,
-        create_decision_node,
-        update_decision_node,
-        supersede_decision_node,
-        dismiss_question,
     ]
     menu_rules.ensure_menu_rules_registered()
     # Computed once (not per candidate tool): current_session_phase can invoke _finalize_gate_open
@@ -354,23 +328,6 @@ def get_available_tools(state: WorkflowState) -> list:
         for tool in candidates
         if gating.check({"name": tool.name, "phase": phase}, state, Mode.MENU).is_allow
     ]
-
-
-def _decision_graph_menu(state: WorkflowState) -> list:
-    """Decision-graph tools available this turn — empty when the feature flag is off.
-
-    create is always offered (nodes can be created from a fresh graph); update/supersede only once at
-    least one node exists.
-    """
-    if not settings.decision_graph_enabled:
-        return []
-    menu = [create_decision_node]
-    decision_nodes = state.get("decision_nodes") or {}
-    if decision_nodes:
-        menu.extend([update_decision_node, supersede_decision_node])
-    if any(n.get("kind") == "open_question" and n.get("status") == "parked" for n in decision_nodes.values()):
-        menu.append(dismiss_question)
-    return menu
 
 
 __all__ = [
@@ -385,7 +342,6 @@ __all__ = [
     '_BATCH_QUESTION_TYPES',
     '_BRIEF_SECTIONS',
     '_MAX_BATCH_QUESTIONS',
-    '_TOOL_EDITABLE_STATUSES',
     '_apply_executive_summary_resume',
     '_ask_user_impl',
     '_audit_interaction_tool_call',
@@ -395,13 +351,9 @@ __all__ = [
     '_config_ids',
     '_confirm_intent_impl',
     '_create_artifact_link_impl',
-    '_create_decision_node_impl',
     '_current_draft_body_sync',
-    '_decision_graph_menu',
-    '_decision_graph_off_update',
     '_dedupe_keep_order',
     '_default_search_client',
-    '_dismiss_question_impl',
     '_draft_hash_stale',
     '_duckduckgo_search',
     '_evidence_excerpt',
@@ -415,7 +367,6 @@ __all__ = [
     '_node_origin',
     '_normalize_batch_questions',
     '_normalize_source_document_ids',
-    '_open_blocker_questions',
     '_persist_executive_summary_draft',
     '_phase_signals',
     '_proposal_based_on',
@@ -436,26 +387,20 @@ __all__ = [
     '_run_impact_analysis_impl',
     '_run_readiness_check_impl',
     '_save_approval_proposal',
-    '_section_content',
-    '_section_findings_update',
     '_session_user_id',
     '_source_document_source_context',
     '_stale_predecessor_warnings',
-    '_supersede_decision_node_impl',
     '_tool_is_available',
     '_tool_not_available_update',
-    '_update_decision_node_impl',
     '_write_draft_impl',
     '_write_note_impl',
     'artifact_stage',
     'ask_user',
     'confirm_intent',
     'create_artifact_link_tool',
-    'create_decision_node',
     'critique_note',
     'current_draft_body',
     'current_session_phase',
-    'dismiss_question',
     'elicit',
     'elicit_tool',
     'explore_note',
@@ -474,9 +419,7 @@ __all__ = [
     'run_critique',
     'run_impact_analysis',
     'run_readiness_check',
-    'supersede_decision_node',
     'synthesize_executive_summary',
-    'update_decision_node',
     'web_search',
     'web_search_tool',
     'write_draft',

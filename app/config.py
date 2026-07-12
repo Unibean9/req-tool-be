@@ -41,10 +41,6 @@ class Settings(BaseSettings):
     # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
     search_provider: str = ""
 
-    # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
-    # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.
-    decision_graph_enabled: bool = False
-
     app_env: str = "development"
     app_debug: bool = False
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]

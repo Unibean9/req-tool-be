@@ -17,8 +17,6 @@ from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, ge
 # names are re-exported here because existing tests/evals import them from nodes.
 from app.graphs.analysis.context_loader import (  # noqa: F401
     TurnContext,
-    _build_decision_view_block,
-    _decision_view_can_hide_draft,
     _document_coverage,
     _missing_required_headings,
     load_turn_context,
@@ -548,9 +546,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     ctx = await load_turn_context(state, config)
     effective_state, coverage = ctx.effective_state, ctx.coverage
 
-    prompt = _build_tool_selection_prompt(
-        effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body, str(session_id)
-    )
+    prompt = _build_tool_selection_prompt(effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body)
     system_prompt = build_system_prompt(effective_state, cfg.get("agent_role"), has_draft=ctx.draft_body is not None)
     available_tools = get_available_tools(effective_state)
     tool_schemas = _build_tool_schemas(available_tools)

@@ -74,12 +74,6 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     ),
     "elicit": ToolMetadata("elicit", readonly=False, interrupts=False, writes_db=False),
     "web_search": ToolMetadata("web_search", readonly=True, interrupts=False, writes_db=False),
-    "create_decision_node": ToolMetadata("create_decision_node", readonly=False, interrupts=False, writes_db=False),
-    "update_decision_node": ToolMetadata("update_decision_node", readonly=False, interrupts=False, writes_db=False),
-    "supersede_decision_node": ToolMetadata(
-        "supersede_decision_node", readonly=False, interrupts=False, writes_db=False
-    ),
-    "dismiss_question": ToolMetadata("dismiss_question", readonly=False, interrupts=False, writes_db=False),
     "run_impact_analysis": ToolMetadata("run_impact_analysis", readonly=False, interrupts=False, writes_db=False),
 }
 

@@ -6,10 +6,6 @@ from typing import Any
 from app.config import settings
 from app.documents.registry import get_config, output_contract
 from app.graphs.agent_tools import get_available_tools
-from app.graphs.analysis.context_loader import (
-    _build_decision_view_block,
-    _decision_view_can_hide_draft,
-)
 from app.graphs.analysis.turn_audit import _REPEATED_TOOL_CALL_EXIT_THRESHOLD
 from app.graphs.lifecycle_context import render_artifact_history, render_situation_report
 from app.graphs.policy import ancestor_types
@@ -353,24 +349,19 @@ def _build_artifact_history_block(state: WorkflowState) -> str:
 
 
 def _build_artifact_reference_policy_block(artifacts: list[dict], current_artifact_type: str) -> str:
+    if not any(str(item.get("type") or "") != current_artifact_type for item in artifacts):
+        return ""
     lines = [
         "- If the latest user turn references uploaded/pasted source documents, call "
         "`read_source_documents` before drafting; omit ids when you need bounded excerpts from the "
         "latest project source documents.",
-    ]
-    if any(str(item.get("type") or "") != current_artifact_type for item in artifacts):
-        lines.extend(
-            [
-                "- If the latest user turn asks to base this work on a named artifact in Current context, "
-                "call `read_artifact` for that artifact id before asking the user for content or an id.",
-                "- Ask the user to paste content or provide an artifact id only after no matching Current "
-                "context artifact exists, or `read_artifact` reports that it was not found.",
-            ]
-        )
-    lines.append(
+        "- If the latest user turn asks to base this work on a named artifact in Current context, "
+        "call `read_artifact` for that artifact id before asking the user for content or an id.",
+        "- Ask the user to paste content or provide an artifact id only after no matching Current "
+        "context artifact exists, or `read_artifact` reports that it was not found.",
         "- Do not bundle `read_artifact` or `read_source_documents` with `ask_user`, `respond`, "
-        "`write_draft`, or `finalize`; read first, then synthesize, draft, or ask on the next turn."
-    )
+        "`write_draft`, or `finalize`; read first, then synthesize, draft, or ask on the next turn.",
+    ]
     return "\n\nARTIFACT REFERENCE POLICY:\n" + "\n".join(lines) + "\n\n"
 
 
@@ -379,7 +370,6 @@ def _build_tool_selection_prompt(
     artifacts: list[dict],
     draft_body: str | None = None,
     previous_draft_body: str | None = None,
-    session_id: str | None = None,
 ) -> str:
     """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
@@ -408,18 +398,13 @@ def _build_tool_selection_prompt(
     )
 
     tool_menu = ", ".join(t.name for t in get_available_tools(state))
-    if _phase_includes(state, "decision_view"):
-        decision_view_block = _build_decision_view_block(state, session_id)
-        draft_block = (
-            ""
-            if _decision_view_can_hide_draft(state, decision_view_block, draft_body)
-            else _build_draft_delta_block(state, draft_body, previous_draft_body)
-        )
-    else:
-        # INTENT/ELICIT have no draft to reason over; FINALIZE reasons over the readiness summary,
-        # not the full body — so the draft and its rendered view stay out of those phases' payload.
-        decision_view_block = ""
-        draft_block = ""
+    # INTENT/ELICIT have no draft to reason over; FINALIZE reasons over the readiness summary, not
+    # the full body — so the draft stays out of those phases' payload.
+    draft_block = (
+        _build_draft_delta_block(state, draft_body, previous_draft_body)
+        if _phase_includes(state, "decision_view")
+        else ""
+    )
     section_coverage_hint = _build_section_coverage_hint(state) if _phase_includes(state, "section_coverage") else ""
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
@@ -440,7 +425,6 @@ def _build_tool_selection_prompt(
         f"{key_facts_block}"
         f"{feedback_block}"
         f"{draft_block}"
-        f"{decision_view_block}"
         f"{_build_mode_hint_directive(state)}"
         f"{language_lock}"
     )
@@ -720,30 +704,6 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
-    # When the contract carries an id_prefix the first column is an auto-assigned trace tag the agent
-    # must not fill; other artifacts reference an entry by that tag instead of restating it.
-    id_rule = (
-        "\nEvery node must fill all of these fields; if a value is genuinely unknown, set it to "
-        "'(needs confirmation)' rather than leaving it empty.\n"
-        f"The 'id' column is assigned automatically as {contract.id_prefix}-NN — do not set it. Reference "
-        f"another requirement by its id (e.g. {contract.id_prefix}-01) instead of restating its text.\n"
-        if contract.id_prefix
-        else ""
-    )
-    # Graph-first: the artifact view renders from decision nodes, so the contract is a coverage target
-    # for the nodes to fill — not a Markdown body to hand-write. Only the flag-off rollback path still
-    # authors a body directly, so keep the body-shape contract for that case.
-    if settings.decision_graph_enabled:
-        # Keep only artifact-specific content in the per-turn payload; node/status/no-fabrication
-        # policy already lives in the system prompt, so do not repeat it here.
-        return (
-            "\n\nSECTION COVERAGE REQUIRED (view rendered from the decision graph - "
-            "create nodes to fill it, do not hand-write the Markdown body):\n"
-            f"{headings}\n"
-            f"Table columns when using a table: {columns}\n"
-            f"{id_rule}"
-            "Prioritize current/accepted artifact versions and accepted predecessors over chat history."
-        )
     return (
         "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"

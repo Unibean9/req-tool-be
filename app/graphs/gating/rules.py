@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 from typing import Any, Protocol
 
 from app.graphs.gating.verdict import Verdict
 
 
-class Mode(str, Enum):
+class Mode(StrEnum):
     """When a per-call rule is evaluated."""
 
     MENU = "menu"
