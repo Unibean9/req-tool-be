@@ -88,7 +88,7 @@ async def test_create_link_rejects_non_project_member(db_session):
 
     service = ArtifactService(db_session)
 
-    with pytest.raises(PermissionError, match="no project access"):
+    with pytest.raises(PermissionError, match="does not have access to the project"):
         await service.create_link(
             project_id=project.id,
             source_artifact_id=source.id,

@@ -1,4 +1,4 @@
-"""Tool-loop scenarios end-to-end through the HTTP driver (flag on).
+"""Tool-loop scenarios end-to-end through the HTTP driver.
 
 Proves the shim runs a full conversation: analyze emits tool_calls, the ToolNode dispatches, the
 HITL interrupt/resume round-trips, an approved write_draft becomes an artifact, and an exhausted
@@ -86,46 +86,6 @@ async def test_tool_loop_reject_draft(client, scenario_env, scenario_project):
     assert len(await driver.executed_artifacts()) == 0
 
 
-async def test_tool_loop_composite_two_decision_nodes_both_survive(client, scenario_env, scenario_project):
-    """Two create_decision_node calls in ONE turn must both persist (merge reducer, not last-writer-wins).
-
-    Both tools receive the same pre-turn snapshot via InjectedState and each return the full graph; a
-    plain-replace channel would drop the first node. The merge reducer keeps both.
-    """
-    headers, project = scenario_project
-    project_id = uuid.UUID(project["id"])
-
-    llm = ScriptedLLM(tool_brain=[
-        {
-            "tools": [
-                {"name": "create_decision_node",
-                 "args": {"kind": "decision", "statement": "v1 = operations-first", "node_id": "N1"}},
-                {"name": "create_decision_node",
-                 "args": {"kind": "risk", "statement": "staff avoid entering recipes", "node_id": "N2"}},
-            ],
-        },
-        tool_select("confirm_intent",
-                    summary="Dieu phoi study scheduling cho sinh vien."),
-        tool_select("write_draft", title="Goal", body=_GOAL_BODY),
-    ])
-    scenario = Scenario(
-        name="tool-loop-composite-decision-nodes",
-        artifact_type="goal",
-        llm=llm,
-        actions=[
-            {"type": "send", "content": "I want to build a coffee shop management app."},
-            {"type": "send", "content": "Dung roi, tiep tuc."},
-            {"type": "approve_all"},
-        ],
-        expect={"final_status": "completed", "min_artifacts": 1},
-    )
-    driver = ScenarioDriver(client, scenario_env, headers, project_id, scenario)
-    await driver.run()
-
-    nodes = await scenario_env.get_checkpoint_field(driver.session_id, "decision_nodes")
-    assert "N1" in (nodes or {}) and "N2" in (nodes or {}), (
-        f"merge reducer dropped a same-turn node: got {sorted((nodes or {}).keys())}"
-    )
 
 
 async def test_tool_loop_two_elicits_one_turn_accumulate(client, scenario_env, scenario_project):

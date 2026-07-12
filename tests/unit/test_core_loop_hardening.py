@@ -69,8 +69,8 @@ async def test_save_and_interrupt_ask_stream_response_sets_active_status(client,
 
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
-    from tests.helpers import create_org, create_project, make_auth_headers
     from tests.factories import _config, _make_agent_session, _session_factory
+    from tests.helpers import create_org, create_project, make_auth_headers
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -103,8 +103,8 @@ async def test_save_and_interrupt_ask_ask_human_sets_waiting_status(client, db_s
 
     from app.graphs import nodes
     from app.models.agent import AgentSession, AgentSessionInterruptType, AgentSessionStatus
-    from tests.helpers import create_org, create_project, make_auth_headers
     from tests.factories import _config, _make_agent_session, _session_factory
+    from tests.helpers import create_org, create_project, make_auth_headers
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)

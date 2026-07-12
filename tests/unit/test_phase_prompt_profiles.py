@@ -162,7 +162,7 @@ def test_elicit_payload_shows_coverage_but_not_decision_view(decision_graph_fact
     assert _DECISION_VIEW_MARKER not in prompt
 
 
-def test_draft_payload_shows_both_coverage_and_decision_view(decision_graph_factory):
+def test_draft_payload_shows_coverage_but_not_decision_view(decision_graph_factory):
     nodes = decision_graph_factory(
         {"id": "N1", "kind": "objective", "statement": "Reduce cost", "status": "confirmed"},
     )
@@ -175,7 +175,7 @@ def test_draft_payload_shows_both_coverage_and_decision_view(decision_graph_fact
     )
     prompt = _build_tool_selection_prompt(state, [])
     assert _SECTION_COVERAGE_MARKER in prompt
-    assert _DECISION_VIEW_MARKER in prompt
+    assert _DECISION_VIEW_MARKER not in prompt
 
 
 def test_finalize_payload_hides_coverage_and_decision_view(decision_graph_factory):

@@ -27,8 +27,8 @@ db_module.async_session_factory = TestSessionFactory
 # app.main (and the routers it pulls in) must import after the patch above, since routers bind
 # `async_session_factory` by name at import time — importing earlier would capture the real,
 # unpatched production session factory.
-from app.main import app  # noqa: E402
 import app.main as main_module  # noqa: E402
+from app.main import app  # noqa: E402
 
 main_module.engine = test_engine
 

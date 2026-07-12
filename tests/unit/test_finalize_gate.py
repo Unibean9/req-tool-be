@@ -1,7 +1,7 @@
 """Finalize gate: graph view non-empty AND critique_rounds > 0 AND quality gate passed AND candidate_readiness sufficient.
 
-Also covers the Phase-3 blocker gate: finalize additionally rejects while a resurfaced (blocker-
-resolved-but-unanswered) parked open_question exists, and passes again once it is resolved or dismissed.
+Also covers the blocker-question edge case: a resurfaced (blocker-resolved-but-unanswered) parked
+open_question must never gate finalize, since no tool exists to clear it.
 """
 
 import hashlib
@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.graphs.agent_tools import _dismiss_question_impl, _finalize_impl, current_draft_body, get_available_tools
+from app.graphs.agent_tools import _finalize_impl, current_draft_body, get_available_tools
 from app.graphs.decision_graph import create_node, render_view
 from app.schemas.artifact_synthesis import ArtifactReadinessState
 
@@ -248,9 +248,9 @@ async def test_finalize_hard_blocks_when_focused_artifact_was_not_critiqued():
 
 
 # ---------------------------------------------------------------------------
-# Phase-3 blocker gate: a resurfaced (blocker-resolved-but-unanswered) parked open_question blocks
-# finalize; resolving (answer+confirm) or dismissing it reopens the gate. A non-blocker parked
-# question (no `blocks`) never gates.
+# A resurfaced (blocker-resolved-but-unanswered) parked open_question never gates finalize: the
+# tools that once cleared a blocker (update_decision_node/dismiss_question) no longer exist, so
+# finalize must not wait on one regardless of its status.
 # ---------------------------------------------------------------------------
 
 
@@ -283,33 +283,12 @@ def _state_with_blocker(extra_nodes: dict | None = None) -> dict:
 
 
 @pytest.mark.asyncio
-async def test_finalize_blocked_on_open_blocker_question():
+async def test_finalize_passes_with_unresolved_blocker_question():
+    """Anti-wedge: a parked open_question with an active blocker must never gate finalize, since
+    no tool remains to clear it."""
     factory, _ = _working_session_factory()
     config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
     state = _state_with_blocker()
-
-    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
-        command = await _finalize_impl("Session complete.", state, config, "call_1")
-
-    mock_interrupt.assert_not_called()
-    assert command.update["tool_errors"][0]["code"] == "finalize_blocker_unresolved"
-    msg = command.update["messages"][0]
-    assert "Q1" in msg.content
-    assert "Confirm rollout timeline" in msg.content
-
-
-@pytest.mark.asyncio
-async def test_finalize_passes_after_dismissing_blocker(monkeypatch):
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
-    factory, _ = _working_session_factory()
-    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
-    state = _state_with_blocker()
-
-    dismiss_command = await _dismiss_question_impl("Q1", "No longer relevant.", state, "tc1")
-    state["decision_nodes"] = dismiss_command.update["decision_nodes"]
-    # Dismissal changes the rendered body (Q1 drops out of Parked); recompute the critiqued hash to
-    # isolate the blocker gate from the unrelated stale-draft gate.
-    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
         command = await _finalize_impl("Session complete.", state, config, "call_1")
@@ -349,6 +328,92 @@ async def test_finalize_not_gated_by_non_blocker_parked_question():
     state = _state_with_blocker(extra_nodes=extra)
     state["decision_nodes"]["Q1"]["status"] = "confirmed"
     state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+
+    with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
+        command = await _finalize_impl("Session complete.", state, config, "call_1")
+
+    mock_interrupt.assert_called_once()
+    assert "tool_errors" not in command.update
+
+
+# ---------------------------------------------------------------------------
+# Required parity + anti-wedge tests: empty decision_nodes must behave exactly like
+# flag-off did before this phase; a resurfaced parked open_question (built via the same
+# create_node shape notes/sweep use) must never wedge finalize nor render the removed
+# "DRAFT IN PROGRESS" block.
+# ---------------------------------------------------------------------------
+
+
+def test_parity_empty_decision_nodes_matches_prior_flag_off_behavior():
+    """Empty decision_nodes: prompt carries no decision-view block, and the tool menu/finalize
+    gate behave exactly as flag-off already did before this phase's removal."""
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    draft = "Draft tai tu DB"
+    state = {
+        "messages": [],
+        "user_confirmed": True,
+        "artifact_type": "brd",
+        "decision_nodes": {},
+        "draft_body": draft,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "last_critiqued_draft_hash": _hash(draft),
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
+    }
+
+    prompt = _build_tool_selection_prompt(state, [])
+    assert "DRAFT IN PROGRESS" not in prompt
+
+    names = _names(state)
+    assert "finalize" in names
+    assert "run_readiness_check" in names
+
+
+@pytest.mark.asyncio
+async def test_anti_wedge_assumption_plus_resurfaced_question_finalizes_without_draft_view():
+    """A confirmed assumption node plus a resurfaced parked open_question (blocker resolved, same
+    create_node shape notes/completeness_sweep produce) must not show the removed "DRAFT IN
+    PROGRESS" block and must not block finalize."""
+    from app.graphs.nodes import _build_tool_selection_prompt
+
+    nodes = {
+        "A1": create_node(
+            kind="assumption",
+            statement="Sinh vien co the truy cap internet on dinh",
+            origin={"source": "test"},
+            status="confirmed",
+            node_id="A1",
+        ),
+        "N1": create_node(
+            kind="objective", statement="A draft", origin={"source": "test"}, status="confirmed", node_id="N1"
+        ),
+        "Q1": create_node(
+            kind="open_question",
+            statement="Confirm rollout timeline",
+            origin={"source": "test"},
+            status="parked",
+            blocks=["N1"],
+            node_id="Q1",
+        ),
+    }
+
+    prompt = _build_tool_selection_prompt({"artifact_type": "brd", "decision_nodes": nodes}, [])
+    assert "DRAFT IN PROGRESS" not in prompt
+
+    state = {
+        "messages": [],
+        "user_confirmed": True,
+        "artifact_type": "brd",
+        "decision_nodes": nodes,
+        "critique_rounds": 1,
+        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
+        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
+    }
+    state["last_critiqued_draft_hash"] = _hash(_current_body(state))
+
+    factory, _ = _working_session_factory()
+    config = {"configurable": {"session_factory": factory, "thread_id": "00000000-0000-0000-0000-000000000001"}}
 
     with patch("app.graphs.agent_tools.interrupt") as mock_interrupt:
         command = await _finalize_impl("Session complete.", state, config, "call_1")

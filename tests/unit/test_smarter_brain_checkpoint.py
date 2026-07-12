@@ -62,7 +62,7 @@ def test_checkpoint_fails_when_eval_delta_is_too_small():
 
 
 def test_checkpoint_rejects_missing_token_usage():
-    with pytest.raises(ValueError, match="Thieu session token_usage"):
+    with pytest.raises(ValueError, match="Missing session token_usage"):
         evaluate_checkpoint(
             baseline_sessions=[],
             candidate_sessions=[{"session_id": "c1", "token_usage": [{"total": 100}]}],
@@ -159,7 +159,9 @@ def test_checkpoint_cli_returns_2_for_invalid_input_without_encoding_error(tmp_p
     out = capsys.readouterr().out
     assert exit_code == 2
     assert '"passed": false' in out
-    assert "\\u" in out
+    payload = json.loads(out)
+    assert payload["passed"] is False
+    assert payload["error"]
 
 
 def test_checkpoint_cli_help_survives_cp1252_encoding():

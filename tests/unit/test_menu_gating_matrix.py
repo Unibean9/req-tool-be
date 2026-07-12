@@ -7,7 +7,6 @@ menu (session_phase.py's PHASE_EXCLUDED_TOOLS), derived from each state's signal
 """
 
 from app.graphs.agent_tools import get_available_tools
-from app.graphs.decision_graph import create_node
 from app.graphs.session_phase import INTENT
 from app.schemas.artifact_synthesis import ArtifactReadinessState
 
@@ -134,40 +133,20 @@ def test_coverage_signal_without_draft():
     assert _names(state) == expected
 
 
-def test_decision_graph_disabled(monkeypatch):
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", False)
+def test_decision_nodes_never_offer_removed_graph_tools():
+    """decision_nodes channel is preserved for notes/impact, but the create/update/supersede/
+    dismiss tools no longer exist regardless of node content."""
     state = {"user_confirmed": True, "decision_nodes": {"N1": {"kind": "objective", "status": "confirmed"}}}
     names = _names(state)
     assert not ({"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"} & names)
 
 
-def test_decision_graph_enabled_no_nodes(monkeypatch):
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
-    state = {"user_confirmed": True, "decision_nodes": {}}
-    names = _names(state)
-    assert "create_decision_node" in names
-    assert "update_decision_node" not in names
-    assert "supersede_decision_node" not in names
-    assert "dismiss_question" not in names
+def test_analyzer_tool_registry_no_longer_carries_the_4_removed_tools():
+    from app.graphs.agent_tools import get_all_analyzer_tools
 
-
-def test_decision_graph_enabled_with_nodes(monkeypatch):
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
-    node = create_node(kind="objective", statement="A goal", origin={"source": "test"}, status="confirmed")
-    state = {"user_confirmed": True, "decision_nodes": {"N1": node}}
-    names = _names(state)
-    assert {"create_decision_node", "update_decision_node", "supersede_decision_node"} <= names
-    assert "dismiss_question" not in names
-
-
-def test_decision_graph_dismiss_question(monkeypatch):
-    """A parked open_question node present -> dismiss_question joins the menu."""
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
-    node = create_node(kind="open_question", statement="Confirm scope", origin={"source": "test"}, status="parked")
-    state = {"user_confirmed": True, "decision_nodes": {"N1": node}}
-    names = _names(state)
-    assert "dismiss_question" in names
-    assert {"create_decision_node", "update_decision_node", "supersede_decision_node"} <= names
+    names = {t.name for t in get_all_analyzer_tools()}
+    assert len(names) == 18
+    assert not ({"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"} & names)
 
 
 def test_phase_excludes_tool():

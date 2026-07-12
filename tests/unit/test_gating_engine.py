@@ -103,7 +103,7 @@ def test_check_batch_no_rules_returns_input_unchanged():
 
 def test_check_batch_filters_selection():
     tool_calls = [{"name": "a"}, {"name": "b"}]
-    drop_b = FakeBatchRule("drop_b", lambda calls, state: [c for c in calls if c["name"] != "b"])
+    drop_b = FakeBatchRule("drop_b", lambda calls, _state: [c for c in calls if c["name"] != "b"])
     register_batch_rule(drop_b)
 
     result = check_batch(tool_calls, {})
@@ -113,8 +113,8 @@ def test_check_batch_filters_selection():
 
 def test_check_batch_chains_rules_in_order():
     tool_calls = [{"name": "a"}, {"name": "b"}, {"name": "c"}]
-    drop_first = FakeBatchRule("drop_first", lambda calls, state: calls[1:])
-    reverse = FakeBatchRule("reverse", lambda calls, state: list(reversed(calls)))
+    drop_first = FakeBatchRule("drop_first", lambda calls, _state: calls[1:])
+    reverse = FakeBatchRule("reverse", lambda calls, _state: list(reversed(calls)))
     register_batch_rule(drop_first)
     register_batch_rule(reverse)
 

@@ -1329,8 +1329,8 @@ async def test_write_draft_no_duplicate_row_across_turn_failed_resume(mock_inter
     proposal path cannot reach the TURN_FAILED-continuation branch with a completed-but-unacked
     write. Empirically: calling the real _write_draft_impl once produces exactly one row."""
     from app.graphs.agent_tools import _write_draft_impl
-    from tests.factories import _config, _focused_items, _make_agent_run, _make_agent_session, _project, _state
     from app.models.artifact import ArtifactType
+    from tests.factories import _config, _focused_items, _make_agent_run, _make_agent_session, _project, _state
 
     project_id = await _project(client)
     agent_session = await _make_agent_session(client, db_session, project_id)
@@ -1391,7 +1391,12 @@ async def test_recommend_next_workflow_creates_duplicate_audit_row_across_turn_f
     await _recommend_next_workflow_impl("goal", "quick", state1, config1, "call_1")
 
     rows_after_first_turn = (
-        await db_session.execute(select(AgentToolCall).where(AgentToolCall.tool_name == "recommend_next_workflow"))
+        await db_session.execute(
+            select(AgentToolCall).where(
+                AgentToolCall.tool_name == "recommend_next_workflow",
+                AgentToolCall.run_id == run1.id,
+            )
+        )
     ).scalars().all()
     assert len(rows_after_first_turn) == 1
 
@@ -1411,7 +1416,12 @@ async def test_recommend_next_workflow_creates_duplicate_audit_row_across_turn_f
     await _recommend_next_workflow_impl("goal", "quick", state2, config2, "call_2")
 
     rows_after_resume = (
-        await db_session.execute(select(AgentToolCall).where(AgentToolCall.tool_name == "recommend_next_workflow"))
+        await db_session.execute(
+            select(AgentToolCall).where(
+                AgentToolCall.tool_name == "recommend_next_workflow",
+                AgentToolCall.run_id.in_([run1.id, run2.id]),
+            )
+        )
     ).scalars().all()
     # FINDING: two rows exist for run1 and run2 respectively — a duplicate audit entry for
     # functionally the same recommendation, because the dedup key never spans a TURN_FAILED resume's

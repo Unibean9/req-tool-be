@@ -187,13 +187,6 @@ def reject_critique_redraft() -> Scenario:
                 message="You mentioned both lecturers and students as primary users - which one is it for the MVP?",
             ),
             _confirm_turn(),
-            tool_select(
-                "create_decision_node",
-                node_id="D1",
-                kind="objective",
-                statement="Reduce schedule conflicts for study groups",
-            ),
-            tool_select("update_decision_node", node_id="D1", status="confirmed"),
             tool_select("write_draft", title="Intent: study scheduling draft", body=_INTENT_BODY),
             tool_select("run_critique", target="draft", mode="consistency"),
             tool_select(

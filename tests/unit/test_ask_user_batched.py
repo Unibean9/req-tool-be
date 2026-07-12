@@ -12,7 +12,6 @@ from app.graphs.agent_tools import (
 )
 from app.graphs.interrupts import _resume_answer_text
 
-
 # --- normalization -----------------------------------------------------------
 
 

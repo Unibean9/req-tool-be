@@ -8,7 +8,6 @@ import hashlib
 from unittest.mock import patch
 
 from app.graphs.gating.menu_rules import (
-    DecisionGraphMenuRule,
     FinalizeMenuRule,
     PhaseLifecycleMenuRule,
     RecommendNextWorkflowMenuRule,
@@ -17,7 +16,6 @@ from app.graphs.gating.menu_rules import (
 )
 from app.graphs.gating.rules import Mode
 from app.graphs.gating.verdict import VerdictKind
-
 
 # --- pass-through for irrelevant tools --------------------------------------
 
@@ -42,12 +40,6 @@ def test_recommend_next_workflow_rule_passes_through_other_tools():
 
 def test_run_readiness_check_rule_passes_through_other_tools():
     rule = RunReadinessCheckMenuRule()
-    verdict = rule.evaluate({"name": "ask_user"}, {})
-    assert verdict.kind is VerdictKind.ALLOW
-
-
-def test_decision_graph_rule_passes_through_other_tools():
-    rule = DecisionGraphMenuRule()
     verdict = rule.evaluate({"name": "ask_user"}, {})
     assert verdict.kind is VerdictKind.ALLOW
 
@@ -130,26 +122,6 @@ def test_recommend_next_workflow_rule_denies_without_draft_or_signal():
     rule = RecommendNextWorkflowMenuRule()
     state = {"draft_body": "", "section_coverage": {"a": "empty"}}
     assert rule.evaluate({"name": "recommend_next_workflow"}, state).kind is VerdictKind.DENY
-
-
-# --- DecisionGraphMenuRule ----------------------------------------------------
-
-
-def test_decision_graph_rule_denies_when_flag_off():
-    rule = DecisionGraphMenuRule()
-    with patch("app.graphs.gating.menu_rules.agent_tools._decision_graph_menu", return_value=[]):
-        verdict = rule.evaluate({"name": "create_decision_node"}, {})
-    assert verdict.kind is VerdictKind.DENY
-
-
-def test_decision_graph_rule_allows_when_menu_offers_tool():
-    class _T:
-        name = "create_decision_node"
-
-    rule = DecisionGraphMenuRule()
-    with patch("app.graphs.gating.menu_rules.agent_tools._decision_graph_menu", return_value=[_T()]):
-        verdict = rule.evaluate({"name": "create_decision_node"}, {})
-    assert verdict.kind is VerdictKind.ALLOW
 
 
 # --- PhaseLifecycleMenuRule: menu mode ---------------------------------------

@@ -5,7 +5,6 @@ any AgentToolCall row is written; warnings ride the synthesis metadata. The `enf
 config flag restores legacy behavior exactly.
 """
 
-import uuid
 from unittest.mock import patch
 
 import pytest

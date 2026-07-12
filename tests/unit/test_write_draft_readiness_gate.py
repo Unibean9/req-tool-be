@@ -7,7 +7,6 @@ consecutive blocked attempts for the same focused artifact within one turn, the 
 error instructs the model to call ask_user instead of retrying write_draft again.
 """
 
-import uuid
 from unittest.mock import patch
 
 import pytest

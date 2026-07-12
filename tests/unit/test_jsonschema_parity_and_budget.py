@@ -16,7 +16,6 @@ import pytest
 
 from app.services.llm_clients import _validate_json_schema  # new, jsonschema-backed
 
-
 # --- embedded copy of the DELETED hand-rolled walker (the parity baseline) ---
 
 
