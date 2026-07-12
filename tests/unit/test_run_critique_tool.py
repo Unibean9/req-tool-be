@@ -61,7 +61,7 @@ async def test_run_critique_bypass_without_draft_returns_tool_error():
     state = _state(artifact_type="goal")
     config = {"configurable": {"llm_client": None}}
 
-    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+    command = await _run_critique_impl("completeness", state, config, "call_1")
 
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"
     assert command.update["messages"][0].status == "error"
@@ -75,7 +75,7 @@ async def test_run_critique_bypass_after_max_rounds_returns_tool_error():
     state["last_critiqued_draft_hash"] = hashlib.md5(_draft_body(state).encode()).hexdigest()[:8]
     config = {"configurable": {"llm_client": None}}
 
-    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+    command = await _run_critique_impl("completeness", state, config, "call_1")
 
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"
     assert "critique round limit" in command.update["messages"][0].content
@@ -102,7 +102,7 @@ async def test_run_critique_increments_critique_rounds():
     state["critique_rounds"] = 1
     config = {"configurable": {"llm_client": None}}
 
-    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+    command = await _run_critique_impl("completeness", state, config, "call_1")
 
     assert command.update["critique_rounds"] == 2
 
@@ -112,7 +112,7 @@ async def test_run_critique_updates_quality_report():
     state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
-    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+    command = await _run_critique_impl("completeness", state, config, "call_1")
 
     report = command.update["quality_report"]
     assert report is not None
@@ -128,7 +128,7 @@ async def test_run_critique_pass_gate_classification():
     state = _draft_state()
     config = {"configurable": {"llm_client": _scripted_client(0.9, ["nit nho"], ["mo rong"])}}
 
-    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+    report = (await _run_critique_impl("completeness", state, config, "c1")).update["quality_report"]
 
     assert report["quality_gate_result"] == "pass"
     assert report["blocking_issues"] == []
@@ -141,7 +141,7 @@ async def test_run_critique_fail_gate_classification():
     state = _draft_state()
     config = {"configurable": {"llm_client": _scripted_client(0.5, ["missing metric"], ["them KPI"])}}
 
-    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+    report = (await _run_critique_impl("completeness", state, config, "c1")).update["quality_report"]
 
     assert report["quality_gate_result"] == "fail"
     assert report["blocking_issues"] == ["missing metric"]
@@ -155,7 +155,7 @@ async def test_run_critique_escalates_at_rounds_cap_when_failing():
     state["critique_rounds"] = CRITIQUE_ROUNDS_MAX - 1  # this critique reaches the cap
     config = {"configurable": {"llm_client": _scripted_client(0.5, ["missing metric"], ["them KPI"])}}
 
-    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+    report = (await _run_critique_impl("completeness", state, config, "c1")).update["quality_report"]
 
     assert report["quality_gate_result"] == "fail"
     assert report["recommended_next_action"] == "escalate"
@@ -166,7 +166,7 @@ async def test_run_critique_degraded_path_fails_gate():
     state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
-    report = (await _run_critique_impl("draft", "completeness", state, config, "c1")).update["quality_report"]
+    report = (await _run_critique_impl("completeness", state, config, "c1")).update["quality_report"]
 
     # No-LLM: score 0.0 → gate fails by design, but findings empty so no blocking_issues listed.
     assert report["quality_gate_result"] == "fail"
@@ -180,7 +180,7 @@ async def test_run_critique_writes_draft_hash():
     state = _draft_state()
     config = {"configurable": {"llm_client": None}}
 
-    command = await _run_critique_impl("draft", "completeness", state, config, "c1")
+    command = await _run_critique_impl("completeness", state, config, "c1")
 
     body = _draft_body(state)
     assert command.update["last_critiqued_draft_hash"] == hashlib.md5(body.encode()).hexdigest()[:8]

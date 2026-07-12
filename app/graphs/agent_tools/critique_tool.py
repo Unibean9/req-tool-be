@@ -28,7 +28,6 @@ CRITIQUE_ROUNDS_MAX = settings.max_critique_rounds
 
 
 async def _run_critique_impl(
-    target: str,  # noqa: ARG001 — kept for schema parity; the judge scores the loaded draft body
     mode: str,
     state: WorkflowState,
     config: RunnableConfig,
@@ -37,12 +36,13 @@ async def _run_critique_impl(
     from app.graphs.critique import _invoke_judge
 
     if not str(mode or "").strip():
-        return _missing_required_arg_update("run_critique", "mode", tool_call_id)
+        return _missing_required_arg_update("run_critique", "mode", tool_call_id, state.get("locale"))
     if (state.get("critique_rounds") or 0) >= CRITIQUE_ROUNDS_MAX and not agent_tools._draft_hash_stale(state):
         return _tool_not_available_update(
             "run_critique",
             "critique round limit reached; revise, respond/escalate, or finalize if the gate has passed.",
             tool_call_id,
+            state.get("locale"),
         )
 
     cfg = config["configurable"]
@@ -55,6 +55,7 @@ async def _run_critique_impl(
             "run_critique",
             "no current draft to critique; write_draft or load an artifact first.",
             tool_call_id,
+            state.get("locale"),
         )
     judged = await _invoke_judge(body, mode, llm_client)
 
@@ -114,7 +115,6 @@ async def _run_critique_impl(
 
 @tool
 async def run_critique(
-    target: Annotated[str, "Cosmetic label for the target; the judge always scores the current draft body."],
     mode: Annotated[str, "Critique dimension, e.g. 'completeness', 'clarity', 'feasibility'."],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,
@@ -125,4 +125,4 @@ async def run_critique(
     Use after a draft exists to score it before finalizing. Does not interrupt — surface the result
     to the user with respond on a later turn. Gated off after the critique-rounds cap is reached.
     """
-    return await _run_critique_impl(target, mode, state, config, tool_call_id)
+    return await _run_critique_impl(mode, state, config, tool_call_id)

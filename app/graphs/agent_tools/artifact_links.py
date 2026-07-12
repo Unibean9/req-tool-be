@@ -141,7 +141,9 @@ async def _create_artifact_link_impl(
 ) -> Command:
     project_id, session_id, session_factory = _config_ids(config)
     if project_id is None or session_id is None or session_factory is None:
-        return _tool_not_available_update("create_artifact_link", "missing project/session context", tool_call_id)
+        return _tool_not_available_update(
+            "create_artifact_link", "missing project/session context", tool_call_id, state.get("locale")
+        )
     try:
         body = ArtifactLinkCreateRequest(
             source_artifact_id=uuid.UUID(str(source_artifact_id)),
@@ -149,7 +151,9 @@ async def _create_artifact_link_impl(
             relation_type=RelationType(str(relation_type)),
         )
     except (ValueError, TypeError) as exc:
-        return _tool_not_available_update("create_artifact_link", f"invalid input: {exc}", tool_call_id)
+        return _tool_not_available_update(
+            "create_artifact_link", f"invalid input: {exc}", tool_call_id, state.get("locale")
+        )
     run_id = _proposal_run_id(state, tool_call_id, "create_artifact_link")
     proposal_tool_name = (
         f"create_artifact_link:{body.source_artifact_id}:{body.target_artifact_id}:{body.relation_type.value}"
@@ -216,16 +220,20 @@ async def _propose_retirement_impl(
 ) -> Command:
     project_id, session_id, session_factory = _config_ids(config)
     if project_id is None or session_id is None or session_factory is None:
-        return _tool_not_available_update("propose_retirement", "missing project/session context", tool_call_id)
+        return _tool_not_available_update(
+            "propose_retirement", "missing project/session context", tool_call_id, state.get("locale")
+        )
     if not str(reason or "").strip():
-        return _missing_required_arg_update("propose_retirement", "reason", tool_call_id)
+        return _missing_required_arg_update("propose_retirement", "reason", tool_call_id, state.get("locale"))
     try:
         retired_id = uuid.UUID(str(artifact_id))
         superseded_by_id = (
             uuid.UUID(str(superseded_by_artifact_id)) if str(superseded_by_artifact_id or "").strip() else None
         )
     except (TypeError, ValueError) as exc:
-        return _tool_not_available_update("propose_retirement", f"invalid input: {exc}", tool_call_id)
+        return _tool_not_available_update(
+            "propose_retirement", f"invalid input: {exc}", tool_call_id, state.get("locale")
+        )
     run_id = _proposal_run_id(state, tool_call_id, "propose_retirement")
     proposal_tool_name = f"propose_retirement:{retired_id}"
     await _save_approval_proposal(
@@ -287,7 +295,9 @@ async def _run_impact_analysis_impl(
     changed_artifact_id: str | None = None,
 ) -> Command:
     if not str(change_description or "").strip():
-        return _missing_required_arg_update("run_impact_analysis", "change_description", tool_call_id)
+        return _missing_required_arg_update(
+            "run_impact_analysis", "change_description", tool_call_id, state.get("locale")
+        )
     nodes_state = state.get("decision_nodes") or {}
     links = await _load_artifact_links(config)
     result = impact(change_description, nodes_state, links, changed_artifact_id=changed_artifact_id)

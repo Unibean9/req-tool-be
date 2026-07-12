@@ -125,7 +125,7 @@ async def _ask_user_impl(
 ):
     batch = _normalize_batch_questions(questions)
     if not str(message or "").strip() and not batch:
-        return _missing_required_arg_update("ask_user", "message", tool_call_id)
+        return _missing_required_arg_update("ask_user", "message", tool_call_id, state.get("locale"))
     content = _render_batched_question_text(message, batch) if batch else message
 
     # ToolCall.id is the correct idempotency key here: inside the ToolNode body
@@ -180,12 +180,13 @@ async def _confirm_intent_impl(
     tool_call_id: str,
 ) -> Command:
     if not str(summary or "").strip():
-        return _missing_required_arg_update("confirm_intent", "summary", tool_call_id)
+        return _missing_required_arg_update("confirm_intent", "summary", tool_call_id, state.get("locale"))
     if state.get("user_confirmed") is not None:
         return _tool_not_available_update(
             "confirm_intent",
             "intent is already confirmed; use ask_user/respond/write_draft for the current phase.",
             tool_call_id,
+            state.get("locale"),
         )
 
     # interrupt_kind="stream_response" keeps the session ACTIVE (D4): the user can reply, and the
@@ -229,7 +230,7 @@ async def confirm_intent(
 
 async def _respond_impl(message: str, mode: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(message or "").strip():
-        return _missing_required_arg_update("respond", "message", tool_call_id)
+        return _missing_required_arg_update("respond", "message", tool_call_id, state.get("locale"))
 
     # Reuses the ask_user persist+interrupt path (idempotency keyed on ToolCall.id). respond is a
     # conversational pause like ask_user/confirm_intent, so it keeps the session ACTIVE with a

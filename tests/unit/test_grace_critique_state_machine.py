@@ -38,7 +38,7 @@ async def test_grace_round_pass_opens_finalize():
     assert RunCritiqueMenuRule().evaluate({"name": "run_critique"}, state).kind is VerdictKind.ALLOW
 
     config = {"configurable": {"llm_client": _scripted_client(0.9, ["nit nho"], [])}}
-    command = await _run_critique_impl("draft", "completeness", state, config, "c1")
+    command = await _run_critique_impl("completeness", state, config, "c1")
 
     state["quality_report"] = command.update["quality_report"]
     state["last_critiqued_draft_hash"] = command.update["last_critiqued_draft_hash"]
@@ -56,7 +56,7 @@ async def test_grace_round_fail_escalates_then_edit_reopens_grace_round():
     which opens a fresh grace round — not a dead end."""
     state = _at_cap_stale_state()
     config = {"configurable": {"llm_client": _scripted_client(0.4, ["missing metric"], ["them KPI"])}}
-    command = await _run_critique_impl("draft", "completeness", state, config, "c1")
+    command = await _run_critique_impl("completeness", state, config, "c1")
 
     state["quality_report"] = command.update["quality_report"]
     state["last_critiqued_draft_hash"] = command.update["last_critiqued_draft_hash"]
@@ -84,5 +84,5 @@ async def test_no_grace_round_without_a_new_edit():
     assert RunCritiqueMenuRule().evaluate({"name": "run_critique"}, state).kind is VerdictKind.DENY
 
     config = {"configurable": {"llm_client": None}}
-    command = await _run_critique_impl("draft", "completeness", state, config, "call_1")
+    command = await _run_critique_impl("completeness", state, config, "call_1")
     assert command.update["tool_errors"][0]["code"] == "tool_not_available"

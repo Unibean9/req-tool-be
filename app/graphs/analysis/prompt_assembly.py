@@ -331,21 +331,34 @@ def _build_draft_delta_block(
     )
 
 
+# key_facts is an append-only list with no priority field — cap to the N MOST RECENT entries
+# (preserving append order) so the payload doesn't grow with the session's turn count.
+_MAX_KEY_FACTS_RENDERED = 20
+# situation report / artifact history cap to the last N entries of the state list passed in (no
+# re-sort) — _load_artifact_history already caps 3 versions/artifact at the DB layer; this only
+# caps how many entries get rendered into the payload.
+_MAX_LIFECYCLE_ITEMS_RENDERED = 8
+
+
 def _build_key_facts_block(state: WorkflowState) -> str:
     """Accumulated key facts: confirmed data points the analyst must not re-ask or contradict."""
     facts = state.get("key_facts") or []
     if not facts:
         return ""
+    if len(facts) > _MAX_KEY_FACTS_RENDERED:
+        facts = facts[-_MAX_KEY_FACTS_RENDERED:]
     lines = "\n".join(f"- {f['statement']}" + (f" (source: {f['source']})" if f.get("source") else "") for f in facts)
     return f"\n\nConfirmed key facts (do not ask again):\n{lines}"
 
 
 def _build_situation_report_block(state: WorkflowState) -> str:
-    return render_situation_report(state.get("lifecycle_reports") or [])
+    reports = state.get("lifecycle_reports") or []
+    return render_situation_report(reports[-_MAX_LIFECYCLE_ITEMS_RENDERED:])
 
 
 def _build_artifact_history_block(state: WorkflowState) -> str:
-    return render_artifact_history(state.get("artifact_history") or [])
+    history = state.get("artifact_history") or []
+    return render_artifact_history(history[-_MAX_LIFECYCLE_ITEMS_RENDERED:])
 
 
 def _build_artifact_reference_policy_block(artifacts: list[dict], current_artifact_type: str) -> str:
@@ -418,11 +431,11 @@ def _build_tool_selection_prompt(
         f"{situation_report_block}"
         f"{artifact_history_block}"
         f"{artifact_reference_policy}"
-        f"{summary_block}"
         f"Tools available this turn: {tool_menu}.\n"
         "Choose 1-3 suitable tools and fill each tool's fields according to the system prompt policy."
         f"{section_coverage_hint}"
         f"{key_facts_block}"
+        f"{summary_block}"
         f"{feedback_block}"
         f"{draft_block}"
         f"{_build_mode_hint_directive(state)}"
@@ -769,8 +782,9 @@ def _build_section_coverage_hint(state: WorkflowState) -> str:
 
 
 def build_system_prompt(state: WorkflowState, agent_role: str | None, *, has_draft: bool) -> str:
-    """The full analyst system prompt: instruction layers + per-turn suffix blocks, in the exact
-    pre-decomposition order (contract, thinking mode, stuck escalation)."""
+    """The full analyst system prompt: instruction layers + per-turn suffix blocks, with the
+    semi-static blocks (contract, batching, type profile) first, then the dynamic ones (thinking
+    mode, section repair, stuck escalation), to keep a stable prefix for prompt caching."""
     system_prompt = get_instruction(
         artifact_type=state["artifact_type"],
         workflow_area=state["workflow_area"],
@@ -778,21 +792,23 @@ def build_system_prompt(state: WorkflowState, agent_role: str | None, *, has_dra
         context={"has_draft": has_draft},
     )
     # Artifact-type shape (taxonomy chain + section-coverage contract) belongs with the static policy
-    # in L1, not the per-turn payload — appended last so the static prefix stays cache-friendly.
-    # The two artifact/technique suffixes are gated by session phase: the full contract is a
-    # drafting concern; the technique shortlist is an elicitation concern. Stuck-escalation is
-    # cross-cutting and always appended.
+    # in L1, not the per-turn payload — grouped with the other semi-static blocks so the static
+    # prefix stays cache-friendly. The two artifact/technique suffixes are gated by session phase: the full
+    # contract is a drafting concern; the technique shortlist is an elicitation concern.
+    # Stuck-escalation is cross-cutting and always appended last.
     system_prompt = system_prompt or ""
+    # Semi-static blocks (unchanged across turns in the same phase) come before dynamic blocks
+    # (change every turn) to keep a stable prefix for prompt caching.
     if _phase_includes(state, "artifact_contract"):
         system_prompt = system_prompt + _build_artifact_contract_block(state)
-    if _phase_includes(state, "thinking_mode"):
-        system_prompt = system_prompt + _build_thinking_mode_block(state)
     if _phase_includes(state, "batching"):
         system_prompt = system_prompt + _build_batching_instruction_block(state)
-    if _phase_includes(state, "section_repair"):
-        system_prompt = system_prompt + _build_section_repair_block(state)
     if _phase_includes(state, "type_profile"):
         system_prompt = system_prompt + _build_type_profile_block(state)
+    if _phase_includes(state, "thinking_mode"):
+        system_prompt = system_prompt + _build_thinking_mode_block(state)
+    if _phase_includes(state, "section_repair"):
+        system_prompt = system_prompt + _build_section_repair_block(state)
     return system_prompt + _build_stuck_escalation_block(state)
 
 

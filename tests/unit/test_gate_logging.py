@@ -71,7 +71,7 @@ def test_helper_levels_and_format(caplog):
 @pytest.mark.asyncio
 async def test_critique_pass_logs_one_line(caplog):
     config = {"configurable": {"llm_client": _scripted_client(0.9, [], []), "thread_id": "t1"}}
-    await _run_critique_impl("draft", "completeness", _draft_state(), config, "c1")
+    await _run_critique_impl("completeness", _draft_state(), config, "c1")
     lines = [r for r in _gate_lines(caplog) if "gate=critique" in r.getMessage()]
     assert len(lines) == 1
     assert "verdict=pass" in lines[0].getMessage()
@@ -80,7 +80,7 @@ async def test_critique_pass_logs_one_line(caplog):
 @pytest.mark.asyncio
 async def test_critique_fail_logs_one_line(caplog):
     config = {"configurable": {"llm_client": _scripted_client(0.4, ["x"], ["y"]), "thread_id": "t1"}}
-    await _run_critique_impl("draft", "completeness", _draft_state(), config, "c1")
+    await _run_critique_impl("completeness", _draft_state(), config, "c1")
     lines = [r for r in _gate_lines(caplog) if "gate=critique" in r.getMessage()]
     assert len(lines) == 1
     assert lines[0].levelno == logging.INFO

@@ -1,8 +1,11 @@
-"""critique_note / explore_note — scratchpad notes (no interrupt, no DB, no approval).
+"""note — scratchpad note (no interrupt, no DB, no approval).
 
-Splitting the former single write_note into two named angles makes the analytical move a
-first-class menu choice, so the analyst can record a critique and an exploration angle in the
-same turn rather than committing to one operating mode.
+`critique_note`/`explore_note` used to be two separate tools for two lenses (critique /
+exploration), but both were thin wrappers over the same `_write_note_impl` with no distinct
+branching and no classification persisted to state — so they were merged into one shared `note`
+tool. The two old functions are kept as deprecated aliases so `ToolNode` can still re-execute an
+old tool_call when resuming a checkpoint created before the merge; they no longer appear in the
+tool menu given to the model.
 
 `_tool_is_available` (the note step-limit guard) is registry-backed and lives in the coordinator;
 reach it through the module reference at call time to avoid an import cycle.
@@ -28,12 +31,17 @@ from app.graphs.state import WorkflowState
 
 async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str, tool_name: str):
     if not str(content or "").strip():
-        return _missing_required_arg_update(tool_name, "content", tool_call_id)
-    if not agent_tools._tool_is_available(state, tool_name):
+        return _missing_required_arg_update(tool_name, "content", tool_call_id, state.get("locale"))
+    # Availability always looks up the canonical name "note" — "critique_note"/"explore_note" were
+    # removed from get_available_tools's candidates (kept in the registry only for resume), so
+    # looking up the old tool_name would always return False even when state allows writing a
+    # note, wrongly rejecting a resumed old note call (no crash, but the note content is lost).
+    if not agent_tools._tool_is_available(state, "note"):
         return _tool_not_available_update(
             tool_name,
             "note step limit reached; ask the user, respond, or switch tools instead of adding more notes.",
             tool_call_id,
+            state.get("locale"),
         )
 
     # The note text lives in the message history (decision 3): no `notes` state field, no DB row.
@@ -64,6 +72,25 @@ async def _write_note_impl(content: str, state: WorkflowState, tool_call_id: str
 
 
 @tool
+async def note(
+    content: Annotated[
+        str,
+        "The note content. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION: / KEY_FACT:) "
+        "to record structured items.",
+    ],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+) -> Command:
+    """Silent scratchpad note — no interrupt, no user approval needed.
+
+    Use it to critique (point out weaknesses, risky assumptions, contradictions) or broaden the
+    perspective (surface directions/options not yet considered) before asking or drafting. Not
+    shown to the user — use respond to surface note content to the user.
+    """
+    return await _write_note_impl(content, state, tool_call_id, "note")
+
+
+@tool
 async def critique_note(
     content: Annotated[
         str, "The critique. Prefix tagged lines (ASSUMPTION: / RISK: / OPEN_QUESTION:) to record structured items."
@@ -71,11 +98,7 @@ async def critique_note(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Critique note — silent scratchpad, no user interrupt and no approval.
-
-    Use to think critically (probe weaknesses, risky assumptions, contradictions) before asking or
-    drafting. Not shown to the user — use respond to surface a critique to them.
-    """
+    """Deprecated alias of `note`; kept so ToolNode resuming an old checkpoint doesn't error."""
     return await _write_note_impl(content, state, tool_call_id, "critique_note")
 
 
@@ -87,8 +110,5 @@ async def explore_note(
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
 ) -> Command:
-    """Exploration note — silent scratchpad, no user interrupt and no approval.
-
-    Use to broaden the perspective: raise angles or options not yet considered. Not shown to the user.
-    """
+    """Deprecated alias of `note`; kept so ToolNode resuming an old checkpoint doesn't error."""
     return await _write_note_impl(content, state, tool_call_id, "explore_note")

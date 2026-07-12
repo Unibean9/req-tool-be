@@ -26,8 +26,8 @@ def test_available_tools_not_filtered_by_mode():
     state = {"messages": [], "user_confirmed": True}
     names = _names(state)
     assert names  # non-empty menu derived purely from state
-    # Multiple roles coexist in the same menu: explore, critique, and read all offered together.
-    assert {"explore_note", "critique_note", "read_artifact"} <= names
+    # Multiple roles coexist in the same menu: note and read all offered together.
+    assert {"note", "read_artifact"} <= names
 
 
 def test_finalize_safety_gate_still_active():

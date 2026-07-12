@@ -58,6 +58,9 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     "respond": ToolMetadata("respond", readonly=False, interrupts=True, writes_db=True),
     "write_draft": ToolMetadata("write_draft", readonly=False, interrupts=True, writes_db=True),
     "confirm_intent": ToolMetadata("confirm_intent", readonly=False, interrupts=True, writes_db=True),
+    "note": ToolMetadata("note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True),
+    # Deprecated alias of "note" — kept so ToolNode resuming an old checkpoint (whose tool_call
+    # still carries the critique_note/explore_note name) is still gated as a side-effect-free note tool.
     "critique_note": ToolMetadata(
         "critique_note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True
     ),

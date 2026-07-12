@@ -31,4 +31,4 @@ def test_interrupt_and_note_sets_match_pre_refactor_values():
             "confirm_intent",
         }
     )
-    assert side_effect_free_note_tools() == frozenset({"critique_note", "explore_note"})
+    assert side_effect_free_note_tools() == frozenset({"note", "critique_note", "explore_note"})

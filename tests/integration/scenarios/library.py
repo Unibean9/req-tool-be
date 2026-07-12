@@ -188,7 +188,7 @@ def reject_critique_redraft() -> Scenario:
             ),
             _confirm_turn(),
             tool_select("write_draft", title="Intent: study scheduling draft", body=_INTENT_BODY),
-            tool_select("run_critique", target="draft", mode="consistency"),
+            tool_select("run_critique", mode="consistency"),
             tool_select(
                 "ask_user",
                 message="The draft still mixes primary users. Confirm: students only for the MVP?",

@@ -17,7 +17,7 @@ def _names(state):
 def _note_turn(call_id: str):
     return AIMessage(
         content="",
-        tool_calls=[{"id": call_id, "name": "critique_note", "args": {"content": "x"}}],
+        tool_calls=[{"id": call_id, "name": "note", "args": {"content": "x"}}],
     )
 
 
@@ -49,7 +49,7 @@ def test_draft_phase_offers_drafting_and_critique_but_not_finalize(decision_grap
 
     names = _names(state)
 
-    assert {"write_draft", "critique_note", "explore_note", "run_critique"} <= names
+    assert {"write_draft", "note", "run_critique"} <= names
     assert "finalize" not in names
 
 

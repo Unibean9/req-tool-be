@@ -1,7 +1,7 @@
 """Extract structured analytical objects from note-tool content (spec §7.1).
 
-Pure Python, no LLM. Note tools (critique_note / explore_note) emit free text that may carry one
-or more tagged lines:
+Pure Python, no LLM. The `note` tool (and its deprecated aliases critique_note / explore_note)
+emits free text that may carry one or more tagged lines:
 
     ASSUMPTION: <statement> | source: x | confidence: y | impact: z | owner: w | status: s
     RISK: <statement> | likelihood: x | impact: y | mitigation: z | owner: w | status: s

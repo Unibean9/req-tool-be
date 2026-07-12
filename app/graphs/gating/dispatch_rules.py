@@ -33,20 +33,53 @@ from app.graphs.gate_logging import log_gate_decision
 from app.graphs.gating.verdict import Verdict
 from app.graphs.lifecycle_context import lifecycle_tool_block_reason
 
+# Priority order when the model proposes multiple interrupt-bearing tools in the same batch —
+# the tool that comes first in this tuple is kept, the remaining interrupt-bearing tools are
+# dropped even if the model listed them first in tool_calls. Tools not in the tuple (note/
+# read-only/...) keep their relative position.
+_SOLO_INVARIANT_PRIORITY: tuple[str, ...] = (
+    "ask_user",
+    "confirm_intent",
+    "write_draft",
+    "finalize",
+    "create_artifact_link",
+    "propose_retirement",
+    "respond",
+)
+
+
+def _sort_by_solo_invariant_priority(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def priority(indexed_item: tuple[int, dict[str, Any]]) -> tuple[int, int]:
+        index, item = indexed_item
+        name = item["name"]
+        if name in _SOLO_INVARIANT_PRIORITY:
+            rank = _SOLO_INVARIANT_PRIORITY.index(name)
+        else:
+            rank = len(_SOLO_INVARIANT_PRIORITY)
+        return (rank, index)
+
+    return [item for _, item in sorted(enumerate(tool_calls), key=priority)]
+
 
 class SoloInvariantBatchRule:
     """At most one interrupt-bearing tool per turn; side-effect-free notes may ride
     along under it. Reproduces the pre-Phase-4 solo-invariant block from
     `analysis.tool_gating._gate_selected_tools` verbatim, including both
-    `_log_tool_error` call sites (code/message strings unchanged)."""
+    `_log_tool_error` call sites (code/message strings unchanged). When multiple
+    interrupt-bearing tools appear in the same batch, the one kept follows the
+    explicit priority table (`_SOLO_INVARIANT_PRIORITY`) instead of "whichever
+    tool the model listed first"."""
 
     name = "solo_invariant"
 
     def evaluate(self, tool_calls: list[dict[str, Any]], _state: Any) -> list[dict[str, Any]]:
         interrupt_bearing = tool_gating._INTERRUPT_BEARING_TOOLS
         side_effect_free = tool_gating._SIDE_EFFECT_FREE_NOTE_TOOLS
-        if not any(item["name"] in interrupt_bearing for item in tool_calls):
+        interrupt_count = sum(1 for item in tool_calls if item["name"] in interrupt_bearing)
+        if not interrupt_count:
             return tool_calls
+        if interrupt_count > 1:
+            tool_calls = _sort_by_solo_invariant_priority(tool_calls)
         kept: list[dict[str, Any]] = []
         seen_interrupt = False
         for item in tool_calls:

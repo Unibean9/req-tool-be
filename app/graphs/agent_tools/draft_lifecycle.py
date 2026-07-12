@@ -27,6 +27,7 @@ from app.graphs.agent_tools._shared import (
     _missing_required_arg_update,
     _recoverable_tool_update,
 )
+from app.graphs.analysis.section_validation import VIOLATION, validate_section
 from app.graphs.decision_graph import (
     render_node_map,
     render_view,
@@ -54,11 +55,40 @@ def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
         contract = output_contract(artifact_type)
     except ValueError:
         return []
-    return [heading for heading in contract.required_headings if heading not in str(body or "")]
+    present_headings = {heading for heading, _content in _iter_draft_sections(body)}
+    return [heading for heading in contract.required_headings if heading not in present_headings]
 
 
 def _has_complete_required_headings(artifact_type: str, body: str) -> bool:
     return bool(str(body or "").strip()) and not _missing_required_headings(artifact_type, body)
+
+
+def _iter_draft_sections(body: str) -> list[tuple[str, str]]:
+    """Split a body rendered by render_view into sections by "## " heading."""
+    sections: list[tuple[str, str]] = []
+    heading: str | None = None
+    lines: list[str] = []
+    for line in str(body or "").splitlines():
+        if line.startswith("## "):
+            if heading is not None:
+                sections.append((heading, "\n".join(lines)))
+            heading = line
+            lines = []
+        elif heading is not None:
+            lines.append(line)
+    if heading is not None:
+        sections.append((heading, "\n".join(lines)))
+    return sections
+
+
+def _draft_structural_violations(artifact_type: str, body: str) -> list[str]:
+    """Combines missing headings and per-section VIOLATION findings — used to block finalize on an invalid draft."""
+    violations = [f"{heading}: missing required heading" for heading in _missing_required_headings(artifact_type, body)]
+    for heading, content in _iter_draft_sections(body):
+        for finding in validate_section(artifact_type, heading, content):
+            if finding.get("severity") == VIOLATION:
+                violations.append(f"{finding['section']}: {finding['message']}")
+    return violations
 
 
 def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
@@ -241,7 +271,7 @@ async def _write_draft_impl(
 ):
     body = _resolve_proposed_body(state, body)
     if not str(body or "").strip():
-        return _missing_required_arg_update("write_draft", "body", tool_call_id)
+        return _missing_required_arg_update("write_draft", "body", tool_call_id, state.get("locale"))
     lifecycle_verdict = dispatch_rules.LifecycleWriteDraftBlockRule().evaluate(
         {
             "name": "write_draft",
@@ -580,13 +610,16 @@ async def _apply_executive_summary_resume(project_id, resume, session_factory) -
 
 async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableConfig, tool_call_id: str):
     if not str(summary or "").strip():
-        return _missing_required_arg_update("finalize", "summary", tool_call_id)
+        return _missing_required_arg_update("finalize", "summary", tool_call_id, state.get("locale"))
+
+    artifact_type = state.get("artifact_type") or ""
+    current_body = await agent_tools.current_draft_body(state, config)
 
     # Hard-block: even if the menu gate is bypassed, never finalize over a failing quality gate.
     # A missing report counts as "fail" — finalize requires a passing critique to exist.
     report = state.get("quality_report")
     if (
-        not (await agent_tools.current_draft_body(state, config)).strip()
+        not current_body.strip()
         or not report
         or report.get("quality_gate_result") != "pass"
         or not agent_tools._finalize_gate_open(state)
@@ -601,10 +634,21 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
             tool_call_id,
         )
 
+    # Blocks committing an artifact that has a VIOLATION section or is missing a required heading,
+    # even when the menu gate is open.
+    violations = _draft_structural_violations(artifact_type, current_body)
+    if violations:
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="finalize_structural_violation",
+                message=f"Cannot finalize: draft has structural violations ({'; '.join(violations)}).",
+            ),
+            tool_call_id,
+        )
+
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
     session_id = uuid.UUID(cfg["thread_id"])
-    artifact_type = state.get("artifact_type") or ""
     project_id_raw = cfg.get("project_id")
     finalize_project_id = uuid.UUID(str(project_id_raw)) if project_id_raw else None
     exec_summary_draft: str | None = None

@@ -1,7 +1,7 @@
 """Explore Tools + Dynamic Gating.
 
-Covers the note scratchpad tools (`critique_note`/`explore_note`) and `get_available_tools(state)`,
-the state-driven menu that decides which tools the loop may pick each turn.
+Covers the note scratchpad tool (`note`) and `get_available_tools(state)`, the state-driven menu
+that decides which tools the loop may pick each turn.
 """
 
 import hashlib
@@ -49,7 +49,7 @@ def _draft_body(state: dict) -> str:
 
 def _note_turn(call_id: str):
     """An AIMessage choosing a note tool — one note turn in the loop's history."""
-    return AIMessage(content="", tool_calls=[{"id": call_id, "name": "critique_note", "args": {"content": "x"}}])
+    return AIMessage(content="", tool_calls=[{"id": call_id, "name": "note", "args": {"content": "x"}}])
 
 
 # ---------------------------------------------------------------------------
@@ -107,20 +107,20 @@ def test_readiness_check_gated_on_critique_rounds():
 
 
 # ---------------------------------------------------------------------------
-# T3 — note tools are no longer capped by a step-limit gate
+# T3 — note tool is no longer capped by a step-limit gate
 # ---------------------------------------------------------------------------
 
-def test_note_tools_remain_available_after_many_notes():
+def test_note_tool_remains_available_after_many_notes():
     messages = [_note_turn(f"c{i}") for i in range(5)]
     names = _names(get_available_tools({"messages": messages}))
 
-    assert "critique_note" in names and "explore_note" in names
+    assert "note" in names
 
 
 def test_write_note_available_with_no_note_history():
     messages = []
     names = _names(get_available_tools({"messages": messages}))
-    assert "critique_note" in names and "explore_note" in names
+    assert "note" in names
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ def test_read_artifact_available_in_intent_and_artifact_phase():
 def test_respond_resets_note_step_limit():
     messages = [_note_turn(f"c{i}") for i in range(5)] + [_respond_turn("r1")]
     names = _names(get_available_tools({"messages": messages}))
-    assert "critique_note" in names and "explore_note" in names
+    assert "note" in names
 
 
 def test_note_step_limit_does_not_block_run_critique():

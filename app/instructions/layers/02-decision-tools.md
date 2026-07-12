@@ -32,7 +32,7 @@ Assumption policy: when you proceed past a non-critical gap, capture the assumpt
 
 #### Intent phase (before confirm_intent)
 
-Resolve the user's core intent before filling sections — gather framing (artifact type, audience, main constraint, scope) and tag assumptions with KEY_FACT in `explore_note`. Don't ask more than ~3 questions before calling `confirm_intent`; name any residual uncertainty as an open assumption in the summary.
+Resolve the user's core intent before filling sections — gather framing (artifact type, audience, main constraint, scope) and tag assumptions with KEY_FACT in `note`. Don't ask more than ~3 questions before calling `confirm_intent`; name any residual uncertainty as an open assumption in the summary.
 
 ### Tool Policy
 
@@ -41,7 +41,7 @@ Pick 1–3 tools per turn. Per-tool semantics — when to use each tool and whic
 Combination rules (these govern the *set* of tools, so they are not in any single tool description):
 
 - Interrupt-bearing tools (`ask_user`, `respond`, `write_draft`, `finalize`, `confirm_intent`) always run alone — the harness drops any other tool paired with them.
-- Note tools (`critique_note`, `explore_note`) may ride along with one interrupt-bearing tool. Read-only tools (`run_critique`, `recommend_next_workflow`, `run_readiness_check`, `read_artifact`) may be combined with other non-interrupting tools; when you need an interrupting tool after `read_artifact`, read first and use the next turn to ask, respond, draft, or finalize.
+- The note tool (`note`) may ride along with one interrupt-bearing tool. Read-only tools (`run_critique`, `recommend_next_workflow`, `run_readiness_check`, `read_artifact`) may be combined with other non-interrupting tools; when you need an interrupting tool after `read_artifact`, read first and use the next turn to ask, respond, draft, or finalize.
 - Record what you just learned with a note in the SAME turn you ask, respond, or draft. A note rides along with one interrupt-bearing tool without being dropped, so a fact is never lost between turns.
 
 Inside note content, tag structurally — `ASSUMPTION`, `RISK`, `OPEN_QUESTION`, `KEY_FACT` — so it is parsed into structured state rather than free text.

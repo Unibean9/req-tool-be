@@ -90,8 +90,7 @@ def test_write_draft_available_without_elicit():
 def test_note_tools_remain_available_in_intent_phase_after_many_notes():
     messages = [_note_turn(f"c{i}") for i in range(5)]
     names = _names({"messages": messages, "user_confirmed": None})
-    assert "explore_note" in names
-    assert "critique_note" in names
+    assert "note" in names
     assert "confirm_intent" in names
 
 

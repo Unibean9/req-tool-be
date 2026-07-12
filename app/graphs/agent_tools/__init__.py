@@ -174,6 +174,7 @@ from app.graphs.agent_tools.notes import (  # noqa: E402
     _write_note_impl,
     critique_note,
     explore_note,
+    note,
 )
 
 # workflow/readiness moved to agent_tools.workflow; re-exported for stable imports.
@@ -211,12 +212,18 @@ from app.graphs.agent_tools.elicitation import (  # noqa: E402
 
 
 def get_all_analyzer_tools() -> list:
-    """Full tool registry for the ToolNode and the analyze schema; availability lives in the prompt + tool guards."""
+    """Full tool registry for the ToolNode and the analyze schema; availability lives in the prompt + tool guards.
+
+    `critique_note`/`explore_note` stay in this registry (no longer on the menu, see
+    `get_available_tools`) only so `ToolNode` can re-execute an old tool_call when resuming a
+    checkpoint created before the two tools were merged into `note`.
+    """
     return [
         ask_user,
         respond,
         write_draft,
         finalize,
+        note,
         critique_note,
         explore_note,
         read_artifact,
@@ -303,8 +310,7 @@ def get_available_tools(state: WorkflowState) -> list:
         ask_user,
         respond,
         write_draft,
-        critique_note,
-        explore_note,
+        note,
         confirm_intent,
         read_artifact,
         read_source_documents_tool,
@@ -410,6 +416,7 @@ __all__ = [
     'interrupt',
     'log_gate_decision',
     'logger',
+    'note',
     'propose_retirement_tool',
     'read_artifact',
     'read_artifact_graph_tool',

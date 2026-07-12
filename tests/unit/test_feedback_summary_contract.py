@@ -100,8 +100,9 @@ async def test_sweep_feedback_persists_until_an_explicit_channel_reset(decision_
     first = await orchestrator_node(state, {})
     assert {"depth_signal", "sweep_gaps", "created_parked_questions"} <= first["feedback_summary"].keys()
 
-    # Runtime không pop các key này ở cuối chu kỳ. Cờ done chặn sweep tự động kế tiếp,
-    # còn clone-then-write giữ kết quả chu kỳ đầu tới khi focus/recovery reset channel.
+    # Runtime does not pop these keys at the end of the cycle. The done flag blocks the next
+    # automatic sweep, and clone-then-write keeps the first cycle's result until focus/recovery
+    # resets the channel.
     next_state = {**state, **first, "completeness_sweep_requested": False}
     second = await orchestrator_node(next_state, {})
     for key in ("depth_signal", "sweep_gaps", "created_parked_questions"):

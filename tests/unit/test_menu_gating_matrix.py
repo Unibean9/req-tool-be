@@ -16,8 +16,7 @@ _UNCONDITIONAL = {
     "ask_user",
     "respond",
     "write_draft",
-    "critique_note",
-    "explore_note",
+    "note",
     "confirm_intent",
     "read_artifact",
     "read_source_documents",
@@ -145,7 +144,7 @@ def test_analyzer_tool_registry_no_longer_carries_the_4_removed_tools():
     from app.graphs.agent_tools import get_all_analyzer_tools
 
     names = {t.name for t in get_all_analyzer_tools()}
-    assert len(names) == 18
+    assert len(names) == 19
     assert not ({"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"} & names)
 
 
