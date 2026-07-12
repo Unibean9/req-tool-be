@@ -19,28 +19,28 @@ env:
   DOCKER_IMAGE_NAME: req-tool-be
 
 jobs:
-  # ci:
-  #   name: Lint & Test
-  #   runs-on: ubuntu-latest
-  #   timeout-minutes: 15
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v4
+  ci:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  #     - name: Setup Python ${{ env.PYTHON_VERSION }}
-  #       uses: actions/setup-python@v5
-  #       with:
-  #         python-version: ${{ env.PYTHON_VERSION }}
-  #         cache: pip
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
 
-  #     - name: Install dependencies
-  #       run: pip install -r requirements.txt pytest pytest-asyncio aiosqlite
+      - name: Sync dependencies
+        run: uv sync
 
-  #     - name: Ruff lint
-  #       run: ruff check app tests alembic
+      - name: Ruff lint
+        run: uv run ruff check app tests alembic
 
-  #     - name: Run tests
-  #       run: pytest -q
+      - name: Run tests
+        run: uv run pytest -q
 
   docker-validate:
     name: Docker / Validate Image
