@@ -4,7 +4,7 @@ The `FEEDBACK CONTROL:` block and diagnosis lines are signals, not narration. Ac
 
 | Signal | Do (skip only if…) | Escalation |
 | --- | --- | --- |
-| `[state] resurfaced_questions` | Answer now, or re-park with a reason (skip if resolved). | Resolve or `dismiss_question`. |
+| `[state] resurfaced_questions` | Answer now, or re-park with a reason (skip if resolved). | Resolve before finalizing. |
 | `[state] depth_signal` | Deepen the section (skip if complete). | Stop moving on; add substance. |
 | `[state] sweep_gaps` | Elicit or draft gaps (skip if out of scope). | Prioritize over new work. |
 | `[state] created_parked_questions` | Acknowledge and schedule; do not re-ask now. | — |
