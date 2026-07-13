@@ -106,100 +106,78 @@ async def test_create_session_goal_without_predecessors_returns_missing_context(
 
 
 @pytest.mark.asyncio
-async def test_resolve_llm_client_passes_bedrock_secret_key(db_session, monkeypatch):
-    original_key = settings.encryption_key
-    original_previous = settings.encryption_key_previous
-    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
-    monkeypatch.setattr(settings, "encryption_key_previous", "")
-    crypto._get_fernet.cache_clear()
-
-    try:
-        captured = {}
-        sentinel = object()
-
-        def fake_create(**kwargs):
-            captured.update(kwargs)
-            return sentinel
-
-        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
-        config = LLMProviderConfig(
-            user_id=uuid.uuid4(),
-            provider_type=ProviderType.BEDROCK,
-            name="Bedrock",
-            encrypted_api_key=encrypt_token("AKIATEST"),
-            encrypted_secret_key=encrypt_token("aws-secret"),
-            region="us-east-1",
-            model_name="amazon.nova-lite-v1:0",
-            status=LLMProviderStatus.ACTIVE,
-        )
-        db_session.add(config)
-        await db_session.flush()
-
-        client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
-
-        assert client is sentinel
-        assert strong_client is None
-        assert captured["provider_type"] == ProviderType.BEDROCK
-        assert captured["api_key"] == "AKIATEST"
-        assert captured["secret_key"] == "aws-secret"
-        assert captured["region"] == "us-east-1"
-        assert captured["model"] == "amazon.nova-lite-v1:0"
-    finally:
-        monkeypatch.setattr(settings, "encryption_key", original_key)
-        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
-        crypto._get_fernet.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_resolve_llm_client_returns_strong_when_configured(db_session, monkeypatch):
-    original_key = settings.encryption_key
-    original_previous = settings.encryption_key_previous
-    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
-    monkeypatch.setattr(settings, "encryption_key_previous", "")
-    crypto._get_fernet.cache_clear()
-
-    try:
-        created = []
-
-        def fake_create(**kwargs):
-            client = object()
-            created.append((kwargs, client))
-            return client
-
-        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
-        config = LLMProviderConfig(
-            user_id=uuid.uuid4(),
-            provider_type=ProviderType.BEDROCK,
-            name="Bedrock",
-            encrypted_api_key=encrypt_token("AKIATEST"),
-            encrypted_secret_key=encrypt_token("aws-secret"),
-            region="us-east-1",
-            model_name="amazon.nova-lite-v1:0",
-            strong_model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
-            status=LLMProviderStatus.ACTIVE,
-        )
-        db_session.add(config)
-        await db_session.flush()
-
-        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
-
-        assert default_client is created[0][1]
-        assert strong_client is created[1][1]
-        assert [item[0]["model"] for item in created] == [
-            "amazon.nova-lite-v1:0",
-            "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        ]
-        assert all(item[0]["api_key"] == "AKIATEST" for item in created)
-        assert all(item[0]["secret_key"] == "aws-secret" for item in created)
-        assert all(item[0]["region"] == "us-east-1" for item in created)
-    finally:
-        monkeypatch.setattr(settings, "encryption_key", original_key)
-        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
-        crypto._get_fernet.cache_clear()
-
-
-@pytest.mark.asyncio
-async def test_resolve_llm_client_passes_custom_base_url_to_default_and_strong(db_session, monkeypatch):
+@pytest.mark.parametrize(
+    "config_kwargs,expected_models,expect_strong,extra_assertions",
+    [
+        pytest.param(
+            dict(
+                provider_type=ProviderType.BEDROCK,
+                name="Bedrock",
+                api_key="AKIATEST",
+                secret_key="aws-secret",
+                region="us-east-1",
+                model_name="amazon.nova-lite-v1:0",
+            ),
+            ["amazon.nova-lite-v1:0"],
+            False,
+            {
+                "provider_type": ProviderType.BEDROCK,
+                "api_key": "AKIATEST",
+                "secret_key": "aws-secret",
+                "region": "us-east-1",
+            },
+            id="bedrock-no-strong",
+        ),
+        pytest.param(
+            dict(
+                provider_type=ProviderType.BEDROCK,
+                name="Bedrock",
+                api_key="AKIATEST",
+                secret_key="aws-secret",
+                region="us-east-1",
+                model_name="amazon.nova-lite-v1:0",
+                strong_model_name="anthropic.claude-3-5-sonnet-20241022-v2:0",
+            ),
+            ["amazon.nova-lite-v1:0", "anthropic.claude-3-5-sonnet-20241022-v2:0"],
+            True,
+            {"api_key": "AKIATEST", "secret_key": "aws-secret", "region": "us-east-1"},
+            id="bedrock-with-strong",
+        ),
+        pytest.param(
+            dict(
+                provider_type=ProviderType.CUSTOM,
+                name="custom",
+                base_url="https://custom.example/v1",
+                api_key="sk-test",
+                model_name="custom-default",
+                strong_model_name="custom-strong",
+            ),
+            ["custom-default", "custom-strong"],
+            True,
+            {"provider_type": ProviderType.CUSTOM, "api_key": "sk-test", "base_url": "https://custom.example/v1"},
+            id="custom-with-strong-and-base-url",
+        ),
+        pytest.param(
+            dict(
+                provider_type=ProviderType.OPENAI,
+                name="OpenAI",
+                api_key="sk-test",
+                model_name="gpt-4o-mini",
+            ),
+            ["gpt-4o-mini"],
+            False,
+            {"provider_type": ProviderType.OPENAI, "api_key": "sk-test"},
+            id="openai-no-strong",
+        ),
+    ],
+)
+async def test_resolve_llm_client_creates_default_and_optional_strong_client(
+    db_session, monkeypatch, config_kwargs, expected_models, expect_strong, extra_assertions
+):
+    """Covers every provider/strong-model branch of _resolve_llm_client: secret_key/region
+    plumbing for BEDROCK, base_url plumbing for CUSTOM, and strong-client creation gated on
+    strong_model_name being set (present for BEDROCK-with-strong and CUSTOM, absent for
+    BEDROCK-no-strong and OPENAI)."""
     original_key = settings.encryption_key
     original_previous = settings.encryption_key_previous
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
@@ -215,15 +193,17 @@ async def test_resolve_llm_client_passes_custom_base_url_to_default_and_strong(d
             return client
 
         monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
+        # api_key/secret_key must be encrypted AFTER the encryption key is monkeypatched above.
+        # Copy to avoid mutating the shared parametrize dict across test runs.
+        config_kwargs = dict(config_kwargs)
+        plain_api_key = config_kwargs.pop("api_key")
+        plain_secret_key = config_kwargs.pop("secret_key", None)
         config = LLMProviderConfig(
             user_id=uuid.uuid4(),
-            provider_type=ProviderType.CUSTOM,
-            name="custom",
-            base_url="https://custom.example/v1",
-            encrypted_api_key=encrypt_token("sk-test"),
-            model_name="custom-default",
-            strong_model_name="custom-strong",
             status=LLMProviderStatus.ACTIVE,
+            encrypted_api_key=encrypt_token(plain_api_key),
+            encrypted_secret_key=encrypt_token(plain_secret_key) if plain_secret_key else None,
+            **config_kwargs,
         )
         db_session.add(config)
         await db_session.flush()
@@ -231,50 +211,15 @@ async def test_resolve_llm_client_passes_custom_base_url_to_default_and_strong(d
         default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
 
         assert default_client is created[0][1]
-        assert strong_client is created[1][1]
-        assert [item[0]["model"] for item in created] == ["custom-default", "custom-strong"]
-        assert all(item[0]["provider_type"] == ProviderType.CUSTOM for item in created)
-        assert all(item[0]["api_key"] == "sk-test" for item in created)
-        assert all(item[0]["base_url"] == "https://custom.example/v1" for item in created)
-    finally:
-        monkeypatch.setattr(settings, "encryption_key", original_key)
-        monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
-        crypto._get_fernet.cache_clear()
+        assert [item[0]["model"] for item in created] == expected_models
+        for key, value in extra_assertions.items():
+            assert all(item[0][key] == value for item in created)
 
-
-@pytest.mark.asyncio
-async def test_resolve_llm_client_strong_none_when_unset(db_session, monkeypatch):
-    original_key = settings.encryption_key
-    original_previous = settings.encryption_key_previous
-    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
-    monkeypatch.setattr(settings, "encryption_key_previous", "")
-    crypto._get_fernet.cache_clear()
-
-    try:
-        created = []
-
-        def fake_create(**kwargs):
-            client = object()
-            created.append((kwargs, client))
-            return client
-
-        monkeypatch.setattr("app.services.llm_clients.LLMClientFactory.create", fake_create)
-        config = LLMProviderConfig(
-            user_id=uuid.uuid4(),
-            provider_type=ProviderType.OPENAI,
-            name="OpenAI",
-            encrypted_api_key=encrypt_token("sk-test"),
-            model_name="gpt-4o-mini",
-            status=LLMProviderStatus.ACTIVE,
-        )
-        db_session.add(config)
-        await db_session.flush()
-
-        default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
-
-        assert default_client is created[0][1]
-        assert strong_client is None
-        assert len(created) == 1
+        if expect_strong:
+            assert strong_client is created[1][1]
+        else:
+            assert strong_client is None
+            assert len(created) == 1
     finally:
         monkeypatch.setattr(settings, "encryption_key", original_key)
         monkeypatch.setattr(settings, "encryption_key_previous", original_previous)
@@ -384,15 +329,6 @@ def test_make_config_exposes_strong_llm_client(db_session):
 
     assert config["configurable"]["llm_client"] is default_client
     assert config["configurable"]["strong_llm_client"] is strong_client
-
-
-@pytest.mark.asyncio
-async def test_create_session_goal_with_intent_missing_problem(client, db_session):
-    project_id = await _setup(client)
-    svc = _make_service(db_session)
-    result = await svc.create_session(project_id=project_id, artifact_type="goal")
-
-    assert result["missing_context"] == []
 
 
 @pytest.mark.asyncio
@@ -562,13 +498,44 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
 
 
 @pytest.mark.asyncio
-async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
+@pytest.mark.parametrize(
+    "interrupt_specs,state_update,extra_update",
+    [
+        pytest.param(
+            [("task-1", "a1b2c3d4e5f6789012345678901234ab", "Tiep tuc?")],
+            None,
+            {},
+            id="single-interrupt-keyed",
+        ),
+        pytest.param(
+            [],
+            {"mode_hint": "critique"},
+            {"mode_hint": "critique"},
+            id="no-pending-interrupt-merges-state-update",
+        ),
+        pytest.param(
+            [
+                ("task-1", "a1b2c3d4e5f6789012345678901234ab", "Lan 1?"),
+                ("task-2", "b2c3d4e5f6789012345678901234abcd", "Lan 2?"),
+            ],
+            None,
+            {},
+            id="multiple-interrupts-all-keyed",
+        ),
+    ],
+)
+async def test_resume_command_keys_interrupts_and_merges_state_update(
+    db_session, interrupt_specs, state_update, extra_update
+):
+    """_resume_command must (a) key Command(resume=...) by interrupt id whenever one or more
+    interrupts are pending — required because LangGraph rejects an unkeyed resume once more than
+    one interrupt is pending, and keying only the latest would leave the others stuck — falling
+    back to the raw value when no interrupt is pending; and (b) always reset the per-request
+    silent-loop counter and per-turn diagnosis judge budget in command.update, merging in any
+    extra state_update (e.g. a one-shot mode_hint)."""
     from langgraph.types import Interrupt
 
     from app.graphs.checkpointer import AgentSessionCheckpointer
-
-    # 32-char hex to match the xxh3_128_hexdigest format LangGraph's interrupt() produces
-    INTERRUPT_ID = "a1b2c3d4e5f6789012345678901234ab"
 
     svc = _make_service(db_session)
     session = AgentSession(
@@ -580,93 +547,34 @@ async def test_resume_command_uses_keyed_form_for_single_interrupt(db_session):
         status=AgentSessionStatus.WAITING_FOR_HUMAN,
         interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
     )
-    checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=svc.session_factory)
-    session.graph_checkpoint = {
-        "pending_writes": [
-            checker._dump_pending_write(
-                "task-1",
-                "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Tiep tuc?"}, id=INTERRUPT_ID)],
-            )
-        ]
-    }
 
-    command = svc._resume_command(session, {"content": "Co"})
+    if interrupt_specs:
+        # 32-char hex IDs matching the xxh3_128_hexdigest format LangGraph's interrupt() produces.
+        checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=svc.session_factory)
+        session.graph_checkpoint = {
+            "pending_writes": [
+                checker._dump_pending_write(
+                    task_id,
+                    "__interrupt__",
+                    [Interrupt(value={"type": "ask_human", "message": message}, id=interrupt_id)],
+                )
+                for task_id, interrupt_id, message in interrupt_specs
+            ]
+        }
 
-    assert command.resume == {INTERRUPT_ID: {"content": "Co"}}
-    # Every human resume resets the per-request silent-loop counter so conversations are unbounded,
-    # and the per-turn diagnosis judge budget so a later turn can escalate again.
+    command = svc._resume_command(session, {"content": "Co"}, state_update=state_update)
+
+    if interrupt_specs:
+        assert command.resume == {
+            interrupt_id: {"content": "Co"} for _, interrupt_id, _ in interrupt_specs
+        }
+    else:
+        assert command.resume == {"content": "Co"}
     assert command.update == {
         "turn_count": 0,
         "diagnosis_judge_calls_used": 0,
         "readiness_reject_streak": 0,
-    }
-
-
-@pytest.mark.asyncio
-async def test_resume_command_merges_turn_count_reset_with_state_update(db_session):
-    svc = _make_service(db_session)
-    session = AgentSession(
-        id=uuid.uuid4(), project_id=uuid.uuid4(), artifact_type="goal",
-        workflow_area="analysis", graph_checkpoint={},
-        status=AgentSessionStatus.WAITING_FOR_HUMAN, interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
-    )
-
-    command = svc._resume_command(session, {"content": "Co"}, state_update={"mode_hint": "critique"})
-
-    assert command.update == {
-        "turn_count": 0,
-        "diagnosis_judge_calls_used": 0,
-        "readiness_reject_streak": 0,
-        "mode_hint": "critique",
-    }
-
-
-@pytest.mark.asyncio
-async def test_resume_command_keys_all_interrupt_ids_when_multiple_pending(db_session):
-    # When more than one interrupt is pending, LangGraph rejects an unkeyed
-    # Command(resume=...) ("you must specify the interrupt id when resuming").
-    # Keying only the latest would leave the other pending and trigger that error
-    # on the next resume — so the reply must address EVERY pending interrupt.
-    from langgraph.types import Interrupt
-
-    from app.graphs.checkpointer import AgentSessionCheckpointer
-
-    # 32-char hex IDs matching the xxh3_128_hexdigest format LangGraph's interrupt() produces
-    INTERRUPT_ID_1 = "a1b2c3d4e5f6789012345678901234ab"
-    INTERRUPT_ID_2 = "b2c3d4e5f6789012345678901234abcd"
-
-    svc = _make_service(db_session)
-    session = AgentSession(
-        id=uuid.uuid4(),
-        project_id=uuid.uuid4(),
-        artifact_type="goal",
-        workflow_area="analysis",
-        graph_checkpoint={},
-        status=AgentSessionStatus.WAITING_FOR_HUMAN,
-        interrupt_type=AgentSessionInterruptType.ASK_HUMAN,
-    )
-    checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=svc.session_factory)
-    session.graph_checkpoint = {
-        "pending_writes": [
-            checker._dump_pending_write(
-                "task-1",
-                "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lan 1?"}, id=INTERRUPT_ID_1)],
-            ),
-            checker._dump_pending_write(
-                "task-2",
-                "__interrupt__",
-                [Interrupt(value={"type": "ask_human", "message": "Lan 2?"}, id=INTERRUPT_ID_2)],
-            ),
-        ]
-    }
-
-    command = svc._resume_command(session, {"content": "Co"})
-
-    assert command.resume == {
-        INTERRUPT_ID_1: {"content": "Co"},
-        INTERRUPT_ID_2: {"content": "Co"},
+        **extra_update,
     }
 
 
@@ -2924,91 +2832,42 @@ async def test_first_user_message_starts_graph_fresh(client, db_session, _no_bac
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_document_type_for_session_resolves_event_storming_via_artifact_type(client, db_session):
+@pytest.mark.parametrize("via", ["artifact_type", "focused_container"])
+@pytest.mark.parametrize("container_type", ["brd", "prd", "add", "event_storming"])
+async def test_document_type_for_session_resolves_via_artifact_type_or_focused_container(
+    client, db_session, container_type, via
+):
+    """Container detection is registry-driven, not a hardcoded {"brd", "prd", "add"} set:
+    event_storming must resolve the same way brd/prd/add already do, whether the session's
+    artifact_type IS the container type directly, or the container is reached indirectly via
+    focused_artifact_id (e.g. a "goal" session focused on an existing container artifact)."""
     project_id = await _setup(client)
     svc = _make_service(db_session)
-    session = AgentSession(
-        project_id=project_id,
-        artifact_type="event_storming",
-        workflow_area="analysis",
-        graph_checkpoint={},
-    )
-    db_session.add(session)
-    await db_session.flush()
 
-    document_type = await svc._document_type_for_session(session)
-
-    assert document_type == "event_storming"
-
-
-@pytest.mark.asyncio
-async def test_document_type_for_session_resolves_event_storming_via_focused_container(client, db_session):
-    project_id = await _setup(client)
-    svc = _make_service(db_session)
-    container = Artifact(
-        project_id=project_id,
-        type=ArtifactType.EVENT_STORMING,
-        status=ArtifactStatus.DRAFT,
-        title="Event Storming",
-        extra_metadata={},
-    )
-    db_session.add(container)
-    await db_session.flush()
-    session = AgentSession(
-        project_id=project_id,
-        artifact_type="goal",
-        workflow_area="analysis",
-        graph_checkpoint={},
-        focused_artifact_id=container.id,
-    )
-    db_session.add(session)
-    await db_session.flush()
-
-    document_type = await svc._document_type_for_session(session)
-
-    assert document_type == "event_storming"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
-async def test_document_type_for_session_regression_via_artifact_type(client, db_session, container_type):
-    project_id = await _setup(client)
-    svc = _make_service(db_session)
-    session = AgentSession(
-        project_id=project_id,
-        artifact_type=container_type,
-        workflow_area="analysis",
-        graph_checkpoint={},
-    )
-    db_session.add(session)
-    await db_session.flush()
-
-    document_type = await svc._document_type_for_session(session)
-
-    assert document_type == container_type
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("container_type", ["brd", "prd", "add"])
-async def test_document_type_for_session_regression_via_focused_container(client, db_session, container_type):
-    project_id = await _setup(client)
-    svc = _make_service(db_session)
-    container = Artifact(
-        project_id=project_id,
-        type=ArtifactType(container_type),
-        status=ArtifactStatus.DRAFT,
-        title=container_type.upper(),
-        extra_metadata={},
-    )
-    db_session.add(container)
-    await db_session.flush()
-    session = AgentSession(
-        project_id=project_id,
-        artifact_type="goal",
-        workflow_area="analysis",
-        graph_checkpoint={},
-        focused_artifact_id=container.id,
-    )
+    if via == "artifact_type":
+        session = AgentSession(
+            project_id=project_id,
+            artifact_type=container_type,
+            workflow_area="analysis",
+            graph_checkpoint={},
+        )
+    else:
+        container = Artifact(
+            project_id=project_id,
+            type=ArtifactType(container_type),
+            status=ArtifactStatus.DRAFT,
+            title=container_type.upper(),
+            extra_metadata={},
+        )
+        db_session.add(container)
+        await db_session.flush()
+        session = AgentSession(
+            project_id=project_id,
+            artifact_type="goal",
+            workflow_area="analysis",
+            graph_checkpoint={},
+            focused_artifact_id=container.id,
+        )
     db_session.add(session)
     await db_session.flush()
 
@@ -3045,60 +2904,41 @@ async def test_expire_abandoned_session_marks_stale_active_or_waiting_session_ex
 
 
 @pytest.mark.asyncio
-async def test_expire_abandoned_session_leaves_recent_session_alone(client, db_session):
+@pytest.mark.parametrize(
+    "status,updated_at_offset_hours",
+    [
+        pytest.param(AgentSessionStatus.ACTIVE, 1, id="active-recent"),
+        # TURN_FAILED is a resumable resting state, not an abandonment candidate — must be left
+        # alone regardless of how far past TTL updated_at is.
+        pytest.param(
+            AgentSessionStatus.TURN_FAILED,
+            "ttl_x10",
+            id="turn-failed-far-past-ttl",
+        ),
+        pytest.param(AgentSessionStatus.COMPLETED, "ttl_x10", id="completed-far-past-ttl"),
+        pytest.param(AgentSessionStatus.FAILED, "ttl_x10", id="failed-far-past-ttl"),
+    ],
+)
+async def test_expire_abandoned_session_never_expires_recent_active_or_terminal_or_turn_failed(
+    client, db_session, status, updated_at_offset_hours
+):
     from app.services.agent_service import expire_abandoned_session
 
     project_id = await _setup(client)
     session = AgentSession(
         project_id=project_id, artifact_type="goal", workflow_area="analysis",
-        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+        graph_checkpoint={}, status=status,
     )
     db_session.add(session)
     await db_session.flush()
-    session.updated_at = datetime.now(UTC) - timedelta(hours=1)
+    hours = (
+        settings.session_abandoned_ttl * 10
+        if updated_at_offset_hours == "ttl_x10"
+        else updated_at_offset_hours
+    )
+    session.updated_at = datetime.now(UTC) - timedelta(hours=hours)
 
     expired = expire_abandoned_session(session)
 
     assert expired is False
-    assert session.status == AgentSessionStatus.ACTIVE
-
-
-@pytest.mark.asyncio
-async def test_expire_abandoned_session_never_touches_turn_failed(client, db_session):
-    """TURN_FAILED is a resumable resting state, not an abandonment candidate — the expiry helper
-    must leave it alone regardless of how far past TTL updated_at is."""
-    from app.services.agent_service import expire_abandoned_session
-
-    project_id = await _setup(client)
-    session = AgentSession(
-        project_id=project_id, artifact_type="goal", workflow_area="analysis",
-        graph_checkpoint={}, status=AgentSessionStatus.TURN_FAILED,
-    )
-    db_session.add(session)
-    await db_session.flush()
-    session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl * 10)
-
-    expired = expire_abandoned_session(session)
-
-    assert expired is False
-    assert session.status == AgentSessionStatus.TURN_FAILED
-
-
-@pytest.mark.asyncio
-async def test_expire_abandoned_session_never_touches_completed_or_failed(client, db_session):
-    from app.services.agent_service import expire_abandoned_session
-
-    project_id = await _setup(client)
-    for status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
-        session = AgentSession(
-            project_id=project_id, artifact_type="goal", workflow_area="analysis",
-            graph_checkpoint={}, status=status,
-        )
-        db_session.add(session)
-        await db_session.flush()
-        session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl * 10)
-
-        expired = expire_abandoned_session(session)
-
-        assert expired is False
-        assert session.status == status
+    assert session.status == status

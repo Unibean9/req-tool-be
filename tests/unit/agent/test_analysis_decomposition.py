@@ -6,9 +6,12 @@ analysis modules must never import nodes (they are its dependencies, not its pee
 """
 
 import ast
+import importlib.util
 from pathlib import Path
 
-APP_GRAPHS = Path(__file__).parents[2] / "app" / "graphs"
+# Anchor on the package location (not this file's relative depth) so relocating the test file
+# does not break the source-tree lookup.
+APP_GRAPHS = Path(importlib.util.find_spec("app.graphs").submodule_search_locations[0])
 _CYCLE_MODULES = {"app.graphs.nodes", "app.graphs.agent_tools", "app.graphs.interrupts"}
 
 

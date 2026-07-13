@@ -16,50 +16,50 @@ def test_workflow_state_accepts_document_focus_fields():
     assert "open_questions" not in state
 
 
-def test_state_has_key_facts_field():
-    assert "key_facts" in WorkflowState.__annotations__
+def test_workflow_state_annotations_reflect_current_schema():
+    # Merges the separate has_key_facts_field / has_section_coverage_field /
+    # no_longer_has_slot_coverage_field checks: all are static TypedDict annotation membership
+    # assertions on the same WorkflowState schema.
+    present_fields = [
+        "key_facts",
+        "section_coverage",
+        "section_coverage_stall_count",
+        "focused_artifact_id",
+        "turn_context_artifacts",
+        "lifecycle_reports",
+        "artifact_history",
+        "candidate_readiness",
+        "tool_errors",
+        "feedback_summary",
+        "verification_status",
+        "latest_checked_revision",
+    ]
+    for field in present_fields:
+        assert field in WorkflowState.__annotations__
+
+    removed_fields = [
+        "analysis_frame",
+        "working_draft",
+        "section_assessment",
+        "coverage_ratio",
+        "sections_body",
+        "focus_section",
+        "slot_coverage",
+        "last_asked_slot",
+        "coverage_stall_count",
+    ]
+    for field in removed_fields:
+        assert field not in WorkflowState.__annotations__
 
 
-def test_initial_state_seeds_key_facts_as_empty_list():
-    state = build_initial_workflow_state(
-        artifact_type="brd", workflow_area="analysis", step_key=None
-    )
-    assert state["key_facts"] == []
-
-
-def test_state_has_section_coverage_field():
-    assert "section_coverage" in WorkflowState.__annotations__
-    assert "section_coverage_stall_count" in WorkflowState.__annotations__
-    assert "focused_artifact_id" in WorkflowState.__annotations__
-    assert "turn_context_artifacts" in WorkflowState.__annotations__
-    assert "lifecycle_reports" in WorkflowState.__annotations__
-    assert "artifact_history" in WorkflowState.__annotations__
-    assert "candidate_readiness" in WorkflowState.__annotations__
-    assert "tool_errors" in WorkflowState.__annotations__
-    assert "feedback_summary" in WorkflowState.__annotations__
-    assert "verification_status" in WorkflowState.__annotations__
-    assert "latest_checked_revision" in WorkflowState.__annotations__
-    assert "analysis_frame" not in WorkflowState.__annotations__
-    assert "working_draft" not in WorkflowState.__annotations__
-    assert "section_assessment" not in WorkflowState.__annotations__
-    assert "coverage_ratio" not in WorkflowState.__annotations__
-    assert "sections_body" not in WorkflowState.__annotations__
-    assert "focus_section" not in WorkflowState.__annotations__
-
-
-def test_state_no_longer_has_slot_coverage_field():
-    assert "slot_coverage" not in WorkflowState.__annotations__
-    assert "last_asked_slot" not in WorkflowState.__annotations__
-    assert "coverage_stall_count" not in WorkflowState.__annotations__
-
-
-def test_initial_state_seeds_turn_context_artifacts_empty():
+def test_initial_workflow_state_seeds_default_list_fields():
     state = build_initial_workflow_state(
         artifact_type="brd",
         workflow_area="analysis",
         step_key=None,
     )
 
+    assert state["key_facts"] == []
     assert state["turn_context_artifacts"] == []
     assert state["lifecycle_reports"] == []
     assert state["artifact_history"] == []

@@ -7,36 +7,19 @@ _CORE_29148 = {"unambiguous", "verifiable", "complete", "consistent", "traceable
 _OPTIONAL = {"invest", "smart"}
 
 
-def test_rubric_has_all_29148_criteria():
-    for key in _CORE_29148:
-        assert key in rubric.RUBRIC_CRITERIA
-
-
-def test_rubric_has_invest_and_smart_criteria():
-    for key in _OPTIONAL:
-        assert key in rubric.RUBRIC_CRITERIA
+def test_rubric_criteria_keys_are_exactly_the_expected_11():
+    # Together, this replaces separate presence checks for each of the 6 ISO/IEC/IEEE 29148
+    # criteria, the 2 story/goal criteria (invest/smart), business_alignment, risk_awareness and
+    # scope_control, plus the count==11 check: set equality proves every expected key is present
+    # AND that there are no unexpected extras.
+    expected = _CORE_29148 | _OPTIONAL | {"business_alignment", "risk_awareness", "scope_control"}
+    assert set(rubric.RUBRIC_CRITERIA.keys()) == expected
 
 
 def test_every_criterion_has_name_and_description():
     for key, spec in rubric.RUBRIC_CRITERIA.items():
         assert spec["name"], f"{key} missing name"
         assert spec["description"], f"{key} missing description"
-
-
-def test_rubric_has_business_alignment():
-    assert "business_alignment" in rubric.RUBRIC_CRITERIA
-
-
-def test_rubric_has_risk_awareness():
-    assert "risk_awareness" in rubric.RUBRIC_CRITERIA
-
-
-def test_rubric_has_scope_control():
-    assert "scope_control" in rubric.RUBRIC_CRITERIA
-
-
-def test_rubric_criteria_count_is_11():
-    assert len(rubric.RUBRIC_CRITERIA) == 11
 
 
 def test_business_alignment_has_guidance():

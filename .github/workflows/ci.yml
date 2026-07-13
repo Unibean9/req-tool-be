@@ -39,6 +39,8 @@ jobs:
       - name: Ruff lint
         run: uv run ruff check app tests alembic
 
+      # Default lane only: pyproject addopts deselects eval/benchmark/live/golden/evidence tiers
+      # (they are costly or need credentials — run explicitly). See tests/TESTING.md.
       - name: Run tests
         run: uv run pytest -q
 

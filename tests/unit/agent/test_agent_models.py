@@ -145,16 +145,40 @@ async def test_agent_session_status_rejects_unknown_value(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_one_active_agent_session_per_project_artifact_type_and_user(client, db_session):
+@pytest.mark.parametrize(
+    "first_status,second_status,same_owner,expect_conflict",
+    [
+        pytest.param(
+            AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN, True, True,
+            id="same-owner-both-live-statuses-conflict",
+        ),
+        pytest.param(
+            AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN, False, False,
+            id="different-owners-allowed",
+        ),
+        pytest.param(
+            AgentSessionStatus.COMPLETED, AgentSessionStatus.ACTIVE, True, False,
+            id="completed-does-not-block-new-session",
+        ),
+    ],
+)
+async def test_active_agent_session_uniqueness_per_project_artifact_type_and_user(
+    client, db_session, first_status, second_status, same_owner, expect_conflict
+):
+    """The partial-unique constraint on (project, artifact_type, created_by_id) only guards live
+    sessions: a same-owner ACTIVE+WAITING_FOR_HUMAN pair conflicts, different owners never
+    conflict, and a COMPLETED session never blocks a new one for the same owner."""
     project_id = await _project(client)
-    owner_id = uuid.uuid4()
+    first_owner = uuid.uuid4()
+    second_owner = first_owner if same_owner else uuid.uuid4()
+
     db_session.add(
         AgentSession(
             project_id=project_id,
             artifact_type="problem",
             workflow_area="analysis",
-            status=AgentSessionStatus.ACTIVE,
-            created_by_id=owner_id,
+            status=first_status,
+            created_by_id=first_owner,
         )
     )
     await db_session.flush()
@@ -164,74 +188,20 @@ async def test_one_active_agent_session_per_project_artifact_type_and_user(clien
             project_id=project_id,
             artifact_type="problem",
             workflow_area="analysis",
-            status=AgentSessionStatus.WAITING_FOR_HUMAN,
-            created_by_id=owner_id,
+            status=second_status,
+            created_by_id=second_owner,
         )
     )
 
-    with pytest.raises(IntegrityError):
+    if expect_conflict:
+        with pytest.raises(IntegrityError):
+            await db_session.flush()
+    else:
         await db_session.flush()
-
-
-@pytest.mark.asyncio
-async def test_active_agent_sessions_with_same_artifact_type_are_allowed_for_different_users(client, db_session):
-    project_id = await _project(client)
-    db_session.add(
-        AgentSession(
-            project_id=project_id,
-            artifact_type="problem",
-            workflow_area="analysis",
-            status=AgentSessionStatus.ACTIVE,
-            created_by_id=uuid.uuid4(),
+        result = await db_session.execute(
+            select(AgentSession).where(
+                AgentSession.project_id == project_id,
+                AgentSession.artifact_type == "problem",
+            )
         )
-    )
-    db_session.add(
-        AgentSession(
-            project_id=project_id,
-            artifact_type="problem",
-            workflow_area="analysis",
-            status=AgentSessionStatus.WAITING_FOR_HUMAN,
-            created_by_id=uuid.uuid4(),
-        )
-    )
-
-    await db_session.flush()
-
-    result = await db_session.execute(
-        select(AgentSession).where(
-            AgentSession.project_id == project_id,
-            AgentSession.artifact_type == "problem",
-        )
-    )
-    assert len(result.scalars().all()) == 2
-
-
-@pytest.mark.asyncio
-async def test_completed_agent_session_does_not_block_new_session(client, db_session):
-    project_id = await _project(client)
-    db_session.add(
-        AgentSession(
-            project_id=project_id,
-            artifact_type="capability",
-            workflow_area="planning",
-            status=AgentSessionStatus.COMPLETED,
-        )
-    )
-    db_session.add(
-        AgentSession(
-            project_id=project_id,
-            artifact_type="capability",
-            workflow_area="planning",
-            status=AgentSessionStatus.ACTIVE,
-        )
-    )
-    await db_session.flush()
-
-    result = await db_session.execute(
-        select(AgentSession).where(
-            AgentSession.project_id == project_id,
-            AgentSession.artifact_type == "capability",
-        )
-    )
-
-    assert len(result.scalars().all()) == 2
+        assert len(result.scalars().all()) == 2

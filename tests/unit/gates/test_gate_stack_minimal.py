@@ -6,7 +6,6 @@ from langchain_core.messages import AIMessage
 from app.graphs.agent_tools import _cached_draft_body, current_draft_body, get_available_tools
 from app.graphs.decision_graph import render_view
 from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
-from app.graphs.state import WorkflowState, build_initial_workflow_state
 from app.schemas.artifact_synthesis import ArtifactReadinessState
 
 
@@ -96,13 +95,6 @@ def test_solo_interrupt_enforcement_still_active():
     assert [tool["name"] for tool in gated] == ["ask_user"]
 
 
-def test_working_draft_field_removed_from_state():
-    state = build_initial_workflow_state(artifact_type="brd", workflow_area="analysis", step_key=None)
-
-    assert "working_draft" not in WorkflowState.__annotations__
-    assert "working_draft" not in state
-
-
 @pytest.mark.asyncio
 async def test_render_view_is_sole_source_for_draft_body(decision_graph_factory):
     nodes = decision_graph_factory(
@@ -117,11 +109,3 @@ async def test_render_view_is_sole_source_for_draft_body(decision_graph_factory)
 
     assert await current_draft_body(state) == render_view(nodes, "brd")
     assert _cached_draft_body(state) == render_view(nodes, "brd")
-
-
-@pytest.mark.asyncio
-async def test_legacy_checkpoint_working_draft_is_ignored():
-    state = {"decision_nodes": {}, "artifact_type": "brd", "working_draft": "checkpoint cu"}
-
-    assert await current_draft_body(state) == ""
-    assert _cached_draft_body(state) == ""

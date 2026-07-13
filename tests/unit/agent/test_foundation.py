@@ -1,22 +1,16 @@
 """Foundation: verify rubric move + state/config extension."""
 
 
-def test_rubric_importable_from_app():
+def test_rubric_state_and_settings_foundation():
+    from app.config import settings
     from app.graphs.rubric import RUBRIC_CRITERIA, render_criteria_block
+    from app.graphs.state import WorkflowState
+    from tests.eval.rubric import RUBRIC_CRITERIA as reexported_rubric_criteria
 
     # 8 base (29148 + INVEST/SMART) + 3 business dimensions.
     assert len(RUBRIC_CRITERIA) == 11
     assert isinstance(render_criteria_block(), str)
-
-
-def test_rubric_reexport_from_tests():
-    from tests.eval.rubric import RUBRIC_CRITERIA
-
-    assert RUBRIC_CRITERIA is not None
-
-
-def test_state_has_critique_fields():
-    from app.graphs.state import WorkflowState
+    assert reexported_rubric_criteria is not None
 
     state: WorkflowState = {
         "artifact_type": "story",
@@ -34,10 +28,6 @@ def test_state_has_critique_fields():
     }
     assert state["critique_rounds"] == 0
     assert state["quality_report"] is None
-
-
-def test_settings_defaults():
-    from app.config import settings
 
     assert settings.max_critique_rounds == 2
     assert settings.critique_score_threshold == 0.7

@@ -1,6 +1,9 @@
-"""Phase 4 Test E — isolated tests for `app/graphs/gating/dispatch_rules.py`'s
-three rules, independent of the real dispatch call sites (mirrors Phase 3's
-`test_menu_gating_rules.py` isolated-rule pattern)."""
+"""Isolated tests for `app/graphs/gating/dispatch_rules.py`'s write-draft block rules
+(Lifecycle + ColdStart), independent of the real dispatch call sites.
+
+SoloInvariantBatchRule is covered end-to-end (with the same log-call assertions) through
+`_gate_selected_tools` in test_composite_dispatch.py, so it is not re-tested at rule level here.
+"""
 
 import logging
 from unittest.mock import patch
@@ -8,7 +11,6 @@ from unittest.mock import patch
 from app.graphs.gating.dispatch_rules import (
     ColdStartDraftBlockRule,
     LifecycleWriteDraftBlockRule,
-    SoloInvariantBatchRule,
 )
 from app.graphs.gating.verdict import VerdictKind
 from app.graphs.session_phase import DRAFT
@@ -35,47 +37,6 @@ def _lifecycle_state(lifecycle_state: str):
         }
     )
     return state
-
-
-# --- SoloInvariantBatchRule -------------------------------------------------
-
-
-def test_solo_invariant_passthrough_when_no_interrupt_bearing_tool():
-    rule = SoloInvariantBatchRule()
-    calls = [{"name": "critique_note", "args": {}}, {"name": "explore_note", "args": {}}]
-    assert rule.evaluate(calls, {}) == calls
-
-
-def test_solo_invariant_keeps_first_interrupt_and_note_drops_rest():
-    rule = SoloInvariantBatchRule()
-    calls = [
-        {"name": "ask_user", "args": {}},
-        {"name": "respond", "args": {}},
-        {"name": "explore_note", "args": {}},
-    ]
-    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
-        result = rule.evaluate(calls, {})
-
-    assert [c["name"] for c in result] == ["ask_user", "explore_note"]
-    mock_log.assert_called_once_with(
-        "dropped_interrupt_tool",
-        "respond",
-        "dropped: an interrupt-bearing tool was already selected this turn",
-    )
-
-
-def test_solo_invariant_drops_non_note_paired_with_interrupt():
-    rule = SoloInvariantBatchRule()
-    calls = [{"name": "write_draft", "args": {}}, {"name": "read_artifact", "args": {}}]
-    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
-        result = rule.evaluate(calls, {})
-
-    assert [c["name"] for c in result] == ["write_draft"]
-    mock_log.assert_called_once_with(
-        "dropped_with_interrupt_tool",
-        "read_artifact",
-        "dropped: paired with an interrupt-bearing tool",
-    )
 
 
 # --- LifecycleWriteDraftBlockRule -------------------------------------------

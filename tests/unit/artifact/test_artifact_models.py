@@ -27,13 +27,30 @@ from app.models.artifact import (
 
 
 @pytest.mark.asyncio
-async def test_artifact_tables_and_promoted_columns_exist(db_session):
+async def test_artifact_schema_matches_repository_contract(db_session):
+    """Single schema-contract check combining table/column existence, required-column presence,
+    column nullability, enum value sets, and model-to-table mapping — all pure structural
+    assertions against the same artifact/workflow schema, with no LLM or runtime behavior."""
     async with db_session.bind.connect() as conn:
         table_names = await conn.run_sync(lambda sync_conn: set(inspect(sync_conn).get_table_names()))
-        columns = await conn.run_sync(
+        artifact_columns = await conn.run_sync(
+            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("artifacts")}
+        )
+        version_columns = await conn.run_sync(
             lambda sync_conn: {
-                column["name"] for column in inspect(sync_conn).get_columns("artifacts")
+                column["name"]: column for column in inspect(sync_conn).get_columns("artifact_versions")
             }
+        )
+        source_columns = await conn.run_sync(
+            lambda sync_conn: {
+                column["name"]: column for column in inspect(sync_conn).get_columns("source_documents")
+            }
+        )
+        workflow_run_columns = await conn.run_sync(
+            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("workflow_runs")}
+        )
+        workflow_step_columns = await conn.run_sync(
+            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("workflow_steps")}
         )
 
     assert {
@@ -46,28 +63,8 @@ async def test_artifact_tables_and_promoted_columns_exist(db_session):
         "workflow_runs",
         "workflow_steps",
     }.issubset(table_names)
-    assert "nfr_category" not in columns
-    assert "stakeholder_role" not in columns
-
-
-@pytest.mark.asyncio
-async def test_artifact_repository_required_columns_match_contract(db_session):
-    async with db_session.bind.connect() as conn:
-        artifact_columns = await conn.run_sync(
-            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("artifacts")}
-        )
-        version_columns = await conn.run_sync(
-            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("artifact_versions")}
-        )
-        source_columns = await conn.run_sync(
-            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("source_documents")}
-        )
-        workflow_run_columns = await conn.run_sync(
-            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("workflow_runs")}
-        )
-        workflow_step_columns = await conn.run_sync(
-            lambda sync_conn: {column["name"]: column for column in inspect(sync_conn).get_columns("workflow_steps")}
-        )
+    assert "nfr_category" not in artifact_columns
+    assert "stakeholder_role" not in artifact_columns
 
     assert {
         "parent_id",
@@ -97,8 +94,6 @@ async def test_artifact_repository_required_columns_match_contract(db_session):
         "approved_by_id",
     }.issubset(workflow_step_columns)
 
-
-def test_artifact_enum_values_are_constrained():
     enum_expectations = {
         ArtifactStatus: {"draft", "needs_clarification", "accepted", "rejected", "archived"},
         ArtifactPriority: {"must", "should", "could", "wont"},
@@ -174,8 +169,6 @@ def test_artifact_enum_values_are_constrained():
         with pytest.raises(ValueError):
             enum_class("invalid")
 
-
-def test_artifact_model_imports_all_repository_tables():
     assert SourceDocument.__tablename__ == "source_documents"
     assert Artifact.__tablename__ == "artifacts"
     assert ArtifactVersion.__tablename__ == "artifact_versions"

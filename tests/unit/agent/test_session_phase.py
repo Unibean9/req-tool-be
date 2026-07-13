@@ -1,5 +1,6 @@
 """Session phase state machine: transitions, legacy derivation, and per-phase tool gating."""
 
+import importlib.util
 from pathlib import Path
 
 import pytest
@@ -110,7 +111,9 @@ def test_self_loop_is_always_legal():
 
 def test_session_phase_single_writer_is_orchestrator():
     """No module outside nodes.py assigns state['session_phase'] (grep-test per the plan)."""
-    app_dir = Path(__file__).parents[2] / "app"
+    # Anchor on the installed package location, not this file's relative depth, so relocating the
+    # test file cannot silently point the grep-guard at a non-existent directory (empty rglob).
+    app_dir = Path(importlib.util.find_spec("app").submodule_search_locations[0])
     offenders = []
     for path in app_dir.rglob("*.py"):
         if "__pycache__" in str(path):
