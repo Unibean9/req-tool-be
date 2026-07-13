@@ -18,7 +18,7 @@ uv run pytest -q      # hoặc: python -m pytest -q
 
 Nghĩa là lane mặc định **loại trừ** 5 tier `eval / benchmark / live / golden / evidence` — chúng tốn kém hoặc cần credential, cố ý chỉ chạy khi gọi tường minh. `integration` **có** chạy trong lane mặc định.
 
-Mốc tham chiếu (2026-07-13): ~1135 passed / 2 skipped / 18 deselected, ~3m20s.
+Mốc tham chiếu (2026-07-13): ~1119 passed / 2 skipped / 17 deselected, ~3m15s.
 
 ## Bảng marker
 
@@ -56,7 +56,7 @@ python -m pytest -m live           # cần credential LLM/judge thật
 
 | Cụm | Nội dung |
 | --- | --- |
-| `agent/` | agent_service, agent_models/events/router/checkpointer, graph_*, orchestrator, session_phase, lifecycle_*, core_loop, structured_state, state_fields, analysis_decomposition, context_loader, runtime/scenario_harness, workflow_mode, foundation, grace_critique, smarter_brain_checkpoint |
+| `agent/` | agent_service, agent_models/events/router/checkpointer, graph_*, orchestrator, session_phase, lifecycle_*, core_loop, structured_state, state_fields, analysis_decomposition, context_loader, scenario_harness, workflow_mode, foundation, grace_critique |
 | `gates/` | menu_gating_*, gating_engine, gate_logging, gate_stack_minimal, dispatch_* , finalize_*_gate, write_draft_*_gate, deterministic_gate_wiring, illegal_phase_metric, triage_heuristic_skip, dropped_tool_feedback |
 | `tools/` | run_critique/confirm_intent/elicit/ask_user_batched/web_search tool, note_tool_merge, explore_tools_gating (note-tool), tool_error_recovery/i18n, payload_caps |
 | `llm/` | llm_clients/providers/usage, phase_prompt_profiles, instruction_contract, prompt_prefix_stability, thinking_mode_block, turn_audit_token_calibration, judge_smoke/config, jsonschema_parity_and_budget, key_facts, feedback_summary_contract, rubric |
