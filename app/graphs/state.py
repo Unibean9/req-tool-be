@@ -270,8 +270,7 @@ class WorkflowState(TypedDict):
     coverage_complete: bool | None
     section_coverage_stall_count: int | None
     # Structured analytical objects extracted from note tools (spec §7.1). Accumulate across turns;
-    # populated by the note parser. assumptions and open_questions are derived from the decision graph;
-    # see decision_graph.derive_assumptions / derive_open_questions.
+    # populated by the note parser.
     # Additive reducers keep same-turn parallel note writes from colliding.
     risks: Annotated[list[RiskObject], operator.add]
     # Confirmed facts that must survive conversation compression. Never included in summarize_node

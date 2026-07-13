@@ -151,28 +151,6 @@ def resolve_lifecycle(
     return _verdict(artifact_type, LifecycleState.CURRENT, reason, artifact_id=artifact_id)
 
 
-def render_lifecycle_log_line(verdict: LifecycleVerdict, *, session_id: str | None = None) -> str:
-    """Render a verdict in the same key=value shape as gate decision logs."""
-
-    parts = [
-        "gate=lifecycle_resolver",
-        f"verdict={verdict.state.value}",
-        f"state={verdict.state.value}",
-        f"artifact_type={verdict.artifact_type!r}",
-    ]
-    if verdict.artifact_id:
-        parts.append(f"artifact_id={verdict.artifact_id!r}")
-    if session_id:
-        parts.append(f"session_id={session_id}")
-    if verdict.reason:
-        parts.append(f"reason={verdict.reason!r}")
-    actions = ",".join(action.value for action in sorted(verdict.allowed_actions, key=lambda item: item.value))
-    parts.append(f"allowed_actions={actions!r}")
-    if verdict.blockers:
-        parts.append(f"blockers={','.join(verdict.blockers)!r}")
-    return " ".join(parts)
-
-
 def _verdict(
     artifact_type: str,
     state: LifecycleState,

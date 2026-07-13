@@ -1,13 +1,9 @@
 """Decision graph — pure functions over dict[str, DecisionNode].
 
-Two core invariants:
-- Non-destructive: changing a decision creates a new node that supersedes the old one; the old node
-  transitions to superseded and is never deleted (full history preserved).
-- Mandatory ripple: superseding a node marks all transitive dependents stale (reconfirm) or parked (abandon).
+Core invariant: history is never rewritten — update_node refuses to touch a superseded node's status.
 
 All mutating functions return a new dict because LangGraph Command.update replaces decision_nodes
-entirely — it does not merge nested dicts. get_dependents uses a visited-set guard so cyclic graphs
-always terminate.
+entirely — it does not merge nested dicts.
 """
 
 from __future__ import annotations
@@ -19,13 +15,11 @@ from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, 
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
-ABANDON_THRESHOLD = 2
 MAX_SWEEP_QUESTIONS = 5
 
 VALID_KINDS = {"objective", "scope", "assumption", "decision", "risk", "open_question", "fact"}
 VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded", "dismissed"}
 
-_VALID_CASCADE_MODES = {"reconfirm", "abandon"}
 _RESOLVED_BLOCKER_STATUSES = {"confirmed", "inferred"}
 _BRD_STABLE_STATUSES = {"confirmed", "inferred"}
 _INACTIVE_STATUSES = {"parked", "superseded", "dismissed"}
@@ -84,132 +78,6 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
     result = _clone(nodes)
     result[node_id].update(updates)
     return result
-
-
-def dismiss_node(
-    nodes: dict[str, DecisionNode], node_id: str, reason: str, audit: dict[str, Any]
-) -> dict[str, DecisionNode]:
-    """Mark an open_question node dismissed with an audit trail; never mutates the input dict.
-
-    Only open_question nodes are dismissible. The reason is stored as data on the node's `dismissal`
-    field for operator review — callers must never feed it back into a prompt as an instruction.
-    """
-    if node_id not in nodes:
-        raise KeyError(f"node {node_id!r} not found")
-    node = nodes[node_id]
-    if node.get("kind") != "open_question":
-        raise ValueError(f"node {node_id!r} is not an open_question; only open_questions can be dismissed")
-    result = update_node(nodes, node_id, status="dismissed")
-    result[node_id]["dismissal"] = {"reason": reason, "turn": audit.get("turn"), "dismissed_by": "agent"}
-    return result
-
-
-def get_dependents(nodes: dict[str, DecisionNode], node_id: str, visited: set[str] | None = None) -> list[str]:
-    """Return all nodes that transitively depend on node_id by following depends_on edges.
-
-    visited-set prevents infinite loops: each node is visited at most once even in cyclic graphs.
-    """
-    if visited is None:
-        visited = set()
-    visited.add(node_id)
-    dependents: list[str] = []
-    for candidate_id, node in nodes.items():
-        if candidate_id in visited:
-            continue
-        if node_id in node.get("depends_on", []):
-            visited.add(candidate_id)
-            dependents.append(candidate_id)
-            dependents.extend(get_dependents(nodes, candidate_id, visited))
-    return dependents
-
-
-def infer_cascade_mode(nodes: dict[str, DecisionNode], node_id: str) -> str:
-    """Infer cascade mode when the agent does not supply it explicitly.
-
-    abandon when the node is a direction-setting decision (kind=decision, root or >= ABANDON_THRESHOLD
-    dependents); reconfirm otherwise (local edit — the branch is still valid but must be re-confirmed).
-    """
-    node = nodes[node_id]
-    dependent_count = len(get_dependents(nodes, node_id))
-    is_direction = node.get("kind") == "decision" and (
-        not node.get("depends_on") or dependent_count >= ABANDON_THRESHOLD
-    )
-    return "abandon" if is_direction else "reconfirm"
-
-
-def supersede_node(
-    nodes: dict[str, DecisionNode],
-    old_id: str,
-    new_statement: str,
-    origin: dict[str, Any],
-    cascade_mode: str | None = None,
-) -> dict[str, DecisionNode]:
-    """Reverse a decision non-destructively and ripple the change to dependents.
-
-    Creates a new node that supersedes old_id; old_id transitions to superseded. cascade_mode defaults
-    to the result of infer_cascade_mode (agent can override by passing explicitly): reconfirm marks
-    dependents needs_confirmation (stale but recoverable); abandon marks them parked (branch suspended).
-    """
-    if old_id not in nodes:
-        raise KeyError(f"node {old_id!r} not found")
-    if cascade_mode is None:
-        cascade_mode = infer_cascade_mode(nodes, old_id)
-    if cascade_mode not in _VALID_CASCADE_MODES:
-        raise ValueError(f"invalid cascade_mode: {cascade_mode!r}")
-
-    dependents = get_dependents(nodes, old_id, visited=set())
-    result = _clone(nodes)
-    new_node = create_node(
-        kind=result[old_id]["kind"],
-        statement=new_statement,
-        origin=origin,
-        depends_on=list(result[old_id].get("depends_on", [])),
-        supersedes=old_id,
-        section=result[old_id].get("section"),
-        fields=result[old_id].get("fields"),
-    )
-    result[new_node["id"]] = new_node
-    result[old_id]["status"] = "superseded"
-    result[old_id]["superseded_by"] = new_node["id"]
-
-    dependent_status = "parked" if cascade_mode == "abandon" else "needs_confirmation"
-    for dependent_id in dependents:
-        # A superseded dependent is frozen history; rippling it would resurrect a dead node and
-        # rewrite history (Invariant 1). update_node guards the same case; impact() skips it too.
-        if result[dependent_id]["status"] == "superseded":
-            continue
-        result[dependent_id]["status"] = dependent_status
-    return result
-
-
-# Statuses that keep a node "in play" for the derived assumption/open-question views. superseded is
-# frozen history; parked is deferred on purpose (folds into its own view via the graph, not here);
-# dismissed is a terminal non-answer (audited, not resurfaced).
-_DERIVED_VIEW_STATUSES = VALID_STATUSES - {"superseded", "parked", "dismissed"}
-
-
-def derive_assumptions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
-    """Assumptions as a derived view over the graph — replaces the parallel state["assumptions"].
-
-    Active assumption-kind nodes projected to the shape consumers read (`statement` + `status`).
-    """
-    return [
-        {"statement": node.get("statement") or "", "status": node.get("status")}
-        for node in (decision_nodes or {}).values()
-        if node.get("kind") == "assumption" and node.get("status") in _DERIVED_VIEW_STATUSES
-    ]
-
-
-def derive_open_questions(decision_nodes: dict[str, DecisionNode]) -> list[dict[str, Any]]:
-    """Open questions as a derived view over the graph — replaces state["open_questions"].
-
-    Active (non-parked) open_question-kind nodes projected to `question` + `status`.
-    """
-    return [
-        {"question": node.get("statement") or "", "status": node.get("status")}
-        for node in (decision_nodes or {}).values()
-        if node.get("kind") == "open_question" and node.get("status") in _DERIVED_VIEW_STATUSES
-    ]
 
 
 def synthesis_assumption_signals(decision_nodes: dict[str, DecisionNode]) -> tuple[list[str], list[str]]:
@@ -501,24 +369,6 @@ def impact(
         "stale_artifact_ids": stale_artifact_ids,
         "visited_artifact_ids": visited_artifact_ids,
     }
-
-
-def park_sync_debt(
-    decision_nodes: dict[str, DecisionNode],
-    question: str,
-    affected_node_ids: list[str],
-    origin: dict[str, Any],
-) -> tuple[dict[str, DecisionNode], DecisionNode]:
-    """Record a sync debt as a parked open_question whose blocks point to the stale nodes."""
-    node = create_node(
-        kind="open_question",
-        statement=question,
-        origin=origin,
-        status="parked",
-        blocks=[node_id for node_id in affected_node_ids if node_id in decision_nodes],
-    )
-    updated = {**_clone(decision_nodes), node["id"]: node}
-    return updated, node
 
 
 # Status sets driving the projection: superseded never renders; parked folds into its own section;

@@ -48,21 +48,6 @@ class DocumentService:
             items=[self._type_view(item) for item in all_item_types()],
         )
 
-    async def get_current_item_body(
-        self,
-        *,
-        artifact_id: uuid.UUID,
-        project_id: uuid.UUID | None = None,
-    ) -> str:
-        artifact = await self.get_document_item_artifact(
-            artifact_id=artifact_id,
-            project_id=project_id,
-        )
-        if artifact.current_version_id is None:
-            return ""
-        version = await self.db.get(ArtifactVersion, artifact.current_version_id)
-        return version.body if version is not None else ""
-
     async def get_document_item_artifact(
         self,
         *,

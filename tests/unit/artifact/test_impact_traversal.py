@@ -1,4 +1,4 @@
-from app.graphs.decision_graph import impact, park_sync_debt
+from app.graphs.decision_graph import impact
 
 
 def _selector(_change, _nodes, _stale_artifacts):
@@ -66,21 +66,3 @@ def test_impact_traversal_with_visited_set_guard(decision_graph_factory):
     result = impact("change", nodes, links, lambda *_: [], "A")
 
     assert set(result["visited_artifact_ids"]) == {"A", "B"}
-
-
-def test_sync_debt_parked_with_blocks(decision_graph_factory):
-    nodes = decision_graph_factory(
-        {"id": "R1", "kind": "fact", "status": "needs_confirmation"},
-        {"id": "S1", "kind": "scope", "status": "needs_confirmation"},
-    )
-
-    updated, debt = park_sync_debt(
-        nodes,
-        "Define multi-channel points accrual",
-        ["R1", "S1"],
-        {"turn": 1, "by": "agent"},
-    )
-
-    assert debt["status"] == "parked"
-    assert debt["blocks"] == ["R1", "S1"]
-    assert updated[debt["id"]] == debt

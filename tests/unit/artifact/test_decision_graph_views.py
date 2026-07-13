@@ -1,12 +1,7 @@
-"""Assumptions/open-questions as derived views over the decision graph.
-
-One test per divergence class, plus the migration helper.
-"""
+"""Decision graph views: synthesis signal split, legacy-note migration, render_view."""
 
 from app.graphs.decision_graph import (
     create_node,
-    derive_assumptions,
-    derive_open_questions,
     migrate_legacy_notes,
     render_view,
     synthesis_assumption_signals,
@@ -15,47 +10,6 @@ from app.graphs.decision_graph import (
 
 def _node(kind, status, statement):
     return {"kind": kind, "status": status, "statement": statement}
-
-
-# --- derive_assumptions -----------------------------------------------------
-
-
-def test_derive_assumptions_returns_active_assumption_nodes_with_status():
-    nodes = {
-        "A1": _node("assumption", "confirmed", "Loss baseline ~10%"),
-        "A2": _node("assumption", "needs_confirmation", "MVP targets small garages"),
-        "O1": _node("open_question", "proposed", "One store or many?"),  # not an assumption
-    }
-    derived = derive_assumptions(nodes)
-    assert {a["statement"] for a in derived} == {"Loss baseline ~10%", "MVP targets small garages"}
-    assert {a["status"] for a in derived} == {"confirmed", "needs_confirmation"}
-
-
-def test_derive_assumptions_excludes_superseded_and_parked():
-    nodes = {
-        "A1": _node("assumption", "superseded", "old"),
-        "A2": _node("assumption", "parked", "deferred"),
-        "A3": _node("assumption", "confirmed", "kept"),
-    }
-    assert [a["statement"] for a in derive_assumptions(nodes)] == ["kept"]
-
-
-# --- derive_open_questions --------------------------------------------------
-
-
-def test_derive_open_questions_uses_question_key_and_skips_parked():
-    nodes = {
-        "Q1": _node("open_question", "proposed", "Which gateway?"),
-        "Q2": _node("open_question", "parked", "Is POS included?"),
-        "A1": _node("assumption", "confirmed", "not a question"),
-    }
-    derived = derive_open_questions(nodes)
-    assert derived == [{"question": "Which gateway?", "status": "proposed"}]
-
-
-def test_derive_views_on_empty_graph():
-    assert derive_assumptions({}) == []
-    assert derive_open_questions({}) == []
 
 
 # --- synthesis split (D5: any needs_confirmation kind counts pending) --------
@@ -80,10 +34,12 @@ def test_migrate_creates_needs_confirmation_assumption_and_proposed_open_questio
         {"by": "migration"},
     )
     assert migrated == 2
-    assumptions = derive_assumptions(nodes)
-    open_questions = derive_open_questions(nodes)
-    assert assumptions == [{"statement": "users have smartphones", "status": "needs_confirmation"}]
-    assert open_questions == [{"question": "which region first?", "status": "proposed"}]
+    assumption = next(n for n in nodes.values() if n["kind"] == "assumption")
+    open_question = next(n for n in nodes.values() if n["kind"] == "open_question")
+    assert assumption["statement"] == "users have smartphones"
+    assert assumption["status"] == "needs_confirmation"
+    assert open_question["statement"] == "which region first?"
+    assert open_question["status"] == "proposed"
 
 
 def test_migrate_is_idempotent_against_existing_matching_nodes():

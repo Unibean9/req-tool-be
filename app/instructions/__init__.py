@@ -104,11 +104,6 @@ def load_instructions(base_path: Path | None = None) -> None:
             _overlay_cache[role] = path.read_text(encoding="utf-8").strip()
 
 
-def role_overlay(role: str) -> str | None:
-    """The Layer 2 overlay text for a role (used by callers and tests)."""
-    return _overlay_cache.get(role)
-
-
 _DRAFT_SKIP_LAYERS: frozenset[str] = frozenset(
     {
         "03-output.md",

@@ -18,7 +18,7 @@ uv run pytest -q      # hoặc: python -m pytest -q
 
 Nghĩa là lane mặc định **loại trừ** 5 tier `eval / benchmark / live / golden / evidence` — chúng tốn kém hoặc cần credential, cố ý chỉ chạy khi gọi tường minh. `integration` **có** chạy trong lane mặc định.
 
-Mốc tham chiếu (2026-07-13): ~1119 passed / 2 skipped / 17 deselected, ~3m15s.
+Mốc tham chiếu (2026-07-13): ~1104 passed / 2 skipped / 17 deselected, ~3m18s.
 
 ## Bảng marker
 

@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from app.graphs.gate_logging import log_gate_decision
-
 STALE_CURATION_ACTIONS = frozenset({"ADD", "UPDATE", "SUPERSEDE", "RETIRE", "NOOP"})
 _LIFECYCLE_WRITE_TOOL = "write_draft"
 
@@ -53,29 +51,6 @@ def lifecycle_tool_block_reason(
     return None
 
 
-def filter_lifecycle_menu_tools(tools: Sequence[Any], state: dict[str, Any]) -> list[Any]:
-    filtered: list[Any] = []
-    for tool in tools:
-        reason = lifecycle_tool_block_reason(state, getattr(tool, "name", ""), {})
-        if reason == "stale_artifact_requires_curation_action":
-            filtered.append(tool)
-            continue
-        if reason and focused_lifecycle_report(state):
-            report = focused_lifecycle_report(state) or {}
-            log_gate_decision(
-                "lifecycle_tool_menu",
-                "blocked",
-                reason=reason,
-                extra={
-                    "tool": getattr(tool, "name", ""),
-                    "artifact_type": report.get("artifact_type"),
-                    "artifact_id": report.get("artifact_id"),
-                    "lifecycle_state": report.get("state"),
-                },
-            )
-            continue
-        filtered.append(tool)
-    return filtered
 
 
 def lifecycle_blocked_tool_names(state: dict[str, Any], requested: Iterable[dict[str, Any]]) -> list[dict[str, str]]:

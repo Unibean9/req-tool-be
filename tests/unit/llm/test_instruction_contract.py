@@ -5,7 +5,7 @@ Also covers D5 contextual layers: has_draft filtering and cache isolation.
 
 import pytest
 
-from app.instructions import _assembled_cache, get_instruction, load_instructions, role_overlay
+from app.instructions import _assembled_cache, _overlay_cache, get_instruction, load_instructions
 
 _SHARED_MARKERS = (
     "Requirements Taxonomy",
@@ -43,8 +43,8 @@ def test_role_overlay_distinguishes_ba_from_pm():
 
 
 def test_no_shared_layer_duplicated_across_roles():
-    ba_shared = _ba().replace(role_overlay("business_analyst"), "")
-    pm_shared = _pm().replace(role_overlay("product_manager"), "")
+    ba_shared = _ba().replace(_overlay_cache["business_analyst"], "")
+    pm_shared = _pm().replace(_overlay_cache["product_manager"], "")
     assert ba_shared == pm_shared
 
 

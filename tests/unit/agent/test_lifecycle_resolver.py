@@ -7,7 +7,6 @@ from app.graphs.lifecycle_resolver import (
     LifecycleAction,
     LifecycleState,
     StructuralPredecessorSnapshot,
-    render_lifecycle_log_line,
     resolve_lifecycle,
 )
 from app.models.artifact import ArtifactStatus
@@ -170,17 +169,6 @@ def test_restore_to_based_on_version_is_current_not_stale():
     )
 
     assert verdict.state == LifecycleState.CURRENT
-
-
-def test_log_line_renderer_uses_gate_decision_shape():
-    verdict = resolve_lifecycle("vision_objectives", _artifact())
-
-    line = render_lifecycle_log_line(verdict, session_id="session-1")
-
-    assert line.startswith("gate=lifecycle_resolver verdict=current state=current")
-    assert "session_id=session-1" in line
-    assert "artifact_type='vision_objectives'" in line
-    assert "allowed_actions=''" in line
 
 
 def test_resolver_module_does_not_import_database_or_io_primitives():
