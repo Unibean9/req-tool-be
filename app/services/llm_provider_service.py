@@ -123,13 +123,12 @@ class LLMProviderService:
     ) -> LLMProviderConfig:
         schema = self._update_schema(body)
         config = await self.get(user_id=user_id, config_id=config_id)
-        values = {
-            "status": LLMProviderStatus.DRAFT,
-            "last_checked_at": None,
-            "last_check_error": None,
-            "is_default": True,
-        }
+        values: dict[str, Any] = {"is_default": True}
         values.update(self._values_from_update_request(schema, config))
+        if self._requires_revalidation(values, config):
+            values["status"] = LLMProviderStatus.DRAFT
+            values["last_checked_at"] = None
+            values["last_check_error"] = None
         await self._unset_user_default(user_id, exclude_id=config_id)
         if values:
             await self.db.execute(
@@ -243,6 +242,16 @@ class LLMProviderService:
             "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
         }
         return values
+
+    # Fields the health check ping actually depends on (_ping_provider only ever reads
+    # config.model_name/region/base_url, never strong_model_name). Changing strong_model_name alone
+    # doesn't invalidate a previously-verified connection, so it shouldn't force re-verification.
+    _REVALIDATION_FIELDS = ("region", "base_url", "model_name")
+
+    def _requires_revalidation(self, values: dict[str, Any], config: LLMProviderConfig) -> bool:
+        return any(
+            field in values and values[field] != getattr(config, field) for field in self._REVALIDATION_FIELDS
+        )
 
     def _values_from_update_request(
         self, body: LLMProviderUpdateRequest, config: LLMProviderConfig

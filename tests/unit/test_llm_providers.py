@@ -666,6 +666,28 @@ async def test_update_config_stores_user_selected_model_name(client, db_session,
 
 
 @pytest.mark.asyncio
+async def test_update_strong_model_name_only_preserves_active_status(client, db_session, monkeypatch):
+    """strong_model_name is never used by the health-check ping (_ping_provider only reads
+    model_name/region/base_url), so updating it alone must not force the config back to draft —
+    otherwise a verified config silently stops working the next time a prompt is sent."""
+    monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
+    crypto._get_fernet.cache_clear()
+    headers = await make_auth_headers(client)
+    user_id = await _user_id_from_headers(headers)
+    service = LLMProviderService(db_session)
+    row = await service.create(user_id=user_id, body=_create_body(api_key="sk-old"))
+    row.status = LLMProviderStatus.ACTIVE
+    row.last_checked_at = datetime.now(UTC)
+    await db_session.flush()
+
+    updated = await service.update(user_id=user_id, config_id=row.id, body={"strong_model_name": "gpt-4.1"})
+
+    assert updated.status == LLMProviderStatus.ACTIVE
+    assert updated.last_checked_at is not None
+    assert updated.strong_model_name == "gpt-4.1"
+
+
+@pytest.mark.asyncio
 async def test_update_config_stores_region(client, db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     crypto._get_fernet.cache_clear()

@@ -1452,7 +1452,19 @@ def _extract_anthropic_text(data: dict[str, Any]) -> str | None:
     return None
 
 
-def _google_parts(content: Any) -> list[dict[str, Any]]:
+#  tool_gating._plain_response_tool fabricates one of these two tool calls locally, wrapping a
+# plain-text model reply, when the model didn't itself call a tool. Such a call never came from
+# Gemini and can never carry a real thoughtSignature, so replaying it as a functionCall on a later
+# turn triggers Gemini's "missing a thought signature in functionCall parts" 400.
+_GOOGLE_SYNTHETIC_FALLBACK_TOOL_NAMES = frozenset({"respond", "ask_user"})
+
+
+def _google_parts(content: Any, unsigned_call_ids: set[str] | None = None) -> list[dict[str, Any]]:
+    # unsigned_call_ids is shared across every message in a conversation (see _google_contents) so a
+    # synthetic tool_use's call_id, recorded here, is still recognized when its tool_result is rendered
+    # from a later, separate message.
+    if unsigned_call_ids is None:
+        unsigned_call_ids = set()
     result: list[dict[str, Any]] = []
     for block in _message_blocks(content):
         block_type = block.get("type")
@@ -1461,24 +1473,39 @@ def _google_parts(content: Any) -> list[dict[str, Any]]:
             if text:
                 result.append({"text": text})
         elif block_type == "tool_use":
-            function_call = {"name": block.get("name") or "", "args": _tool_input(block)}
             google_metadata = _google_provider_metadata(block)
             call_id = _google_function_call_id(block)
+            thought_signature = google_metadata.get("thoughtSignature") or google_metadata.get("thought_signature")
+            is_synthetic_fallback = (
+                not thought_signature and block.get("name") in _GOOGLE_SYNTHETIC_FALLBACK_TOOL_NAMES
+            )
+            if is_synthetic_fallback:
+                if call_id:
+                    unsigned_call_ids.add(call_id)
+                text = str(_tool_input(block).get("message") or "").strip()
+                if text:
+                    result.append({"text": text})
+                continue
+            function_call = {"name": block.get("name") or "", "args": _tool_input(block)}
             if call_id:
                 function_call["id"] = call_id
             part = {"functionCall": function_call}
-            thought_signature = google_metadata.get("thoughtSignature") or google_metadata.get("thought_signature")
             if thought_signature:
                 part["thoughtSignature"] = _unpack_google_thought_signature(thought_signature)
             if google_metadata.get("thought") is not None:
                 part["thought"] = google_metadata["thought"]
             result.append(part)
         elif block_type == "tool_result":
+            call_id = _google_function_call_id(block)
+            if call_id and call_id in unsigned_call_ids:
+                text = _block_text(block)
+                if text:
+                    result.append({"text": text})
+                continue
             function_response = {
                 "name": _tool_result_name(block),
                 "response": {"content": _block_text(block)},
             }
-            call_id = _google_function_call_id(block)
             if call_id:
                 function_response["id"] = call_id
             result.append({"functionResponse": function_response})
@@ -1486,8 +1513,12 @@ def _google_parts(content: Any) -> list[dict[str, Any]]:
 
 
 def _google_contents(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unsigned_call_ids: set[str] = set()
     return [
-        {"role": _assistant_to_model_role(item["role"], "model"), "parts": _google_parts(item.get("content"))}
+        {
+            "role": _assistant_to_model_role(item["role"], "model"),
+            "parts": _google_parts(item.get("content"), unsigned_call_ids),
+        }
         for item in messages
     ]
 

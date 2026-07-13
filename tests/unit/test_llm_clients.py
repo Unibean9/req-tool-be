@@ -733,6 +733,41 @@ def test_google_function_call_replay_preserves_thought_signature_and_original_id
     assert contents[1]["parts"][0]["functionResponse"]["id"] == "google-call-1"
 
 
+def test_google_synthetic_tool_call_without_signature_renders_as_text():
+    """tool_gating._plain_response_tool fabricates a "respond"/"ask_user" call locally when the
+    model answers in plain text; it carries no provider thoughtSignature since it never came from
+    Gemini. Replaying it as a functionCall/functionResponse pair on the next turn triggers Gemini's
+    'missing a thought signature in functionCall parts' 400. It must render as plain text instead.
+    """
+    from app.graphs.analysis.prompt_assembly import _client_message_from_state
+    from app.graphs.nodes import _dispatch_ai_message
+
+    dispatch_message = _dispatch_ai_message(
+        [{"id": "synthetic-call-1", "name": "respond", "args": {"message": "Here is my analysis."}}]
+    )
+
+    tool_names_by_id: dict[str, str] = {}
+    tool_provider_metadata_by_id: dict[str, dict] = {}
+    assistant_message = _client_message_from_state(
+        dispatch_message,
+        tool_names_by_id,
+        tool_provider_metadata_by_id,
+    )
+    tool_result_message = _client_message_from_state(
+        ToolMessage(content="Delivered.", tool_call_id="synthetic-call-1"),
+        tool_names_by_id,
+        tool_provider_metadata_by_id,
+    )
+
+    contents = _google_contents([assistant_message, tool_result_message])
+
+    assistant_parts = contents[0]["parts"]
+    result_parts = contents[1]["parts"]
+    assert all("functionCall" not in part for part in assistant_parts)
+    assert all("functionResponse" not in part for part in result_parts)
+    assert {"text": "Here is my analysis."} in assistant_parts
+
+
 # ---------------------------------------------------------------------------
 # Health-check tool probe — verifies provider calls the expected probe tool with valid args.
 # ---------------------------------------------------------------------------
