@@ -1,6 +1,7 @@
 import asyncio
+import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -10,8 +11,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.documents.registry import container_for
+from app.documents.registry import all_container_types, container_for
 from app.graphs.checkpointer import AgentSessionCheckpointer
+from app.graphs.gate_logging import log_gate_decision
+from app.graphs.lifecycle_context import has_stale_curation
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import build_initial_workflow_state
 from app.models.agent import (
@@ -26,19 +29,24 @@ from app.models.agent import (
 )
 from app.models.artifact import (
     Artifact,
+    ArtifactLink,
     ArtifactStatus,
     ArtifactVersion,
     ChangeSource,
+    RelationType,
 )
 from app.schemas.agent import AgentSessionResponse
+from app.schemas.artifact import ArtifactLinkCreateRequest
 from app.schemas.artifact_synthesis import (
-    canonical_artifact_body,
     evaluate_candidate_readiness,
     synthesis_metadata_dict,
     synthesis_metadata_from_snapshot,
 )
 from app.services.agent_tool_visibility import public_tool_call_filter
+from app.services.artifact_service import ArtifactInUseError, ArtifactLinkService, ArtifactService
 from app.services.document_service import DocumentService
+
+logger = logging.getLogger(__name__)
 
 
 def _snapshot_base_version_id(snapshot: dict[str, Any]) -> uuid.UUID | None:
@@ -67,6 +75,45 @@ def _stale_base_version_detail(
     }
 
 
+_CANDIDATE_READINESS_REJECTION_DETAIL = "Candidate is not ready enough to persist as an official version"
+
+
+def _candidate_readiness_rejection_feedback(
+    snapshot: dict[str, Any], exc: HTTPException
+) -> dict[str, Any] | None:
+    if exc.status_code != 422 or not isinstance(exc.detail, dict):
+        return None
+    if exc.detail.get("detail") != _CANDIDATE_READINESS_REJECTION_DETAIL:
+        return None
+    return {
+        "candidate_readiness_rejection": {
+            **exc.detail,
+            "focused_artifact_id": snapshot.get("focused_artifact_id"),
+        }
+    }
+
+
+def _feedback_summary_recovery_reason(feedback_summary: dict[str, Any] | None, user_message: str | None) -> str:
+    if not feedback_summary:
+        return "user_requested_edit" if user_message is not None else "proposal_superseded"
+    for key in ("stale_base_version", "candidate_readiness_rejection", "lifecycle_persist_rejection"):
+        if key in feedback_summary:
+            return key
+    return next(iter(feedback_summary), "feedback_summary")
+
+
+def _is_artifact_body_proposal(tool_name: str) -> bool:
+    return tool_name == "create_artifact" or tool_name.startswith("write_draft:")
+
+
+def _approval_tool_kind(tool_name: str) -> str:
+    if tool_name.startswith("create_artifact_link:"):
+        return "create_artifact_link"
+    if tool_name.startswith("propose_retirement:"):
+        return "propose_retirement"
+    return tool_name
+
+
 class AgentService:
     def __init__(self, db: AsyncSession, graph: Any, session_factory: Any):
         self.db = db
@@ -85,15 +132,9 @@ class AgentService:
         created_by_id: uuid.UUID | None = None,
         focused_artifact_id: uuid.UUID | None = None,
     ) -> dict[str, Any]:
+        # Soft gate: missing predecessors no longer block session creation — every artifact stays
+        # navigable, and `missing_context` (already returned in the response) carries the warning.
         missing = await self._check_predecessors(project_id, artifact_type)
-        if missing:
-            raise HTTPException(
-                409,
-                detail={
-                    "detail": "Predecessor artifact is not accepted",
-                    "missing_context": missing,
-                },
-            )
         if focused_artifact_id is not None:
             focused = await self.db.get(Artifact, focused_artifact_id)
             if focused is None or focused.project_id != project_id:
@@ -106,8 +147,8 @@ class AgentService:
                     detail="artifact_type must match the focused document item",
                 )
 
-        try:
-            session = AgentSession(
+        def _new_session() -> AgentSession:
+            return AgentSession(
                 project_id=project_id,
                 artifact_type=artifact_type,
                 step_key=step_key,
@@ -120,6 +161,9 @@ class AgentService:
                 provider_config_id=provider_config_id,
                 created_by_id=created_by_id,
             )
+
+        try:
+            session = _new_session()
             self.db.add(session)
             await self.db.flush()
             await self.db.commit()
@@ -133,6 +177,26 @@ class AgentService:
             if created_by_id is not None:
                 existing_query = existing_query.where(AgentSession.created_by_id == created_by_id)
             existing = (await self.db.execute(existing_query)).scalar_one_or_none()
+
+            if existing is not None:
+                locked_existing = (
+                    await self.db.execute(existing_query.with_for_update())
+                ).scalar_one_or_none()
+                if locked_existing is not None and expire_abandoned_session(locked_existing):
+                    await self.db.commit()
+                    try:
+                        session = _new_session()
+                        self.db.add(session)
+                        await self.db.flush()
+                        await self.db.commit()
+                    except IntegrityError:
+                        await self.db.rollback()
+                        raise HTTPException(
+                            409,
+                            detail={"detail": "Active session already exists", "session_id": None},
+                        ) from None
+                    return await self.create_session_response(session, missing)
+
             raise HTTPException(
                 409,
                 detail={
@@ -186,9 +250,9 @@ class AgentService:
                     parent = await self.db.get(Artifact, focused.parent_id)
                     if parent is not None:
                         return parent.type.value
-                if focused.type.value in {"brd", "prd", "sad"}:
+                if focused.type.value in all_container_types():
                     return focused.type.value
-        if session.artifact_type in {"brd", "prd", "sad"}:
+        if session.artifact_type in all_container_types():
             return session.artifact_type
         return container_for(session.artifact_type)
 
@@ -244,21 +308,21 @@ class AgentService:
         session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
-        # A queued message carries only its content; a mode_hint on it is intentionally not
-        # replayed (the queue stores no steer) — acceptable for MVP, revisit post-MVP if needed.
+        # The queue row carries the message content AND its mode_hint so the drained turn replays the
+        # user's requested mode exactly as a fresh message would.
         #
         # Exception: ACTIVE + STREAM_RESPONSE means the graph halted via interrupt() while keeping
         # status=ACTIVE (conversational Q&A). This is not a "busy" session — it is waiting for a
         # reply. Fall through to the resume path below rather than queuing.
         if session.status == AgentSessionStatus.ACTIVE:
             if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
-                return await self._queue_message(session.id, content)
-        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+                return await self._queue_message(session.id, content, mode_hint)
+        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
             raise HTTPException(400, detail="Session has ended and cannot accept more messages")
-        # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
+        # status == WAITING_FOR_HUMAN, TURN_FAILED, or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
-            return await self._queue_message(session.id, content)
+            return await self._queue_message(session.id, content, mode_hint)
         if session.interrupt_type not in (
             AgentSessionInterruptType.ASK_HUMAN,
             AgentSessionInterruptType.STREAM_RESPONSE,
@@ -266,7 +330,15 @@ class AgentService:
         ):
             raise HTTPException(400, detail="Session is not waiting for a user message")
 
-        is_first_message = session.interrupt_type is None
+        # TURN_FAILED also has interrupt_type is None (cleared when the turn failed), so it must be
+        # checked before is_first_message or it would wrongly take the build_initial_workflow_state
+        # path and wipe plain-overwrite WorkflowState channels the crashed turn had already populated.
+        is_turn_failed = session.status == AgentSessionStatus.TURN_FAILED
+        is_first_message = not is_turn_failed and session.interrupt_type is None
+
+        strong_llm_client = None
+        if llm_client is None:
+            llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
 
         msg = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content)
         self.db.add(msg)
@@ -274,11 +346,20 @@ class AgentService:
         session.interrupt_type = None
         await self.db.commit()
 
-        strong_llm_client = None
-        if llm_client is None:
-            llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
-
-        if is_first_message:
+        if is_turn_failed:
+            # Minimal partial-state update against the existing checkpoint: only the new message and
+            # the per-turn counters (turn_count, readiness_reject_streak, diagnosis_judge_calls_used)
+            # reset, matching _resume_command's reset convention for the same channels, so prior
+            # WorkflowState channels (decision_nodes, draft_body, etc.) carry forward untouched
+            # instead of being reset by build_initial_workflow_state.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+            resume_command = None
+        elif is_first_message:
             initial_state = build_initial_workflow_state(
                 artifact_type=session.artifact_type,
                 workflow_area=session.workflow_area,
@@ -314,16 +395,22 @@ class AgentService:
 
         return msg
 
-    async def _queue_message(self, session_id: uuid.UUID, content: str) -> AgentMessage:
+    async def _queue_message(
+        self, session_id: uuid.UUID, content: str, mode_hint: str | None = None
+    ) -> AgentMessage:
         """Persist a user message as queued (payload.queued=True) without starting a graph turn.
 
-        Drained later by _drain_queue once the current turn ends COMPLETED/FAILED.
+        The mode_hint (if any) rides the payload so _drain_queue can replay it. Drained later by
+        _drain_queue once the current turn ends COMPLETED/FAILED.
         """
+        payload: dict[str, Any] = {"queued": True}
+        if mode_hint:
+            payload["mode_hint"] = mode_hint
         msg = AgentMessage(
             session_id=session_id,
             role=AgentMessageRole.USER,
             content=content,
-            payload={"queued": True},
+            payload=payload,
         )
         self.db.add(msg)
         await self.db.commit()
@@ -384,23 +471,83 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status == AgentToolCallStatus.EXECUTED:
             return tool_call
+        await self._guard_session_not_ended(session_id)
         if tool_call.status == AgentToolCallStatus.REJECTED:
             raise HTTPException(400, detail="Tool call has been rejected")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
 
-        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, None)
-        artifact, version = await self._execute_create_artifact(
-            project_id=project_id,
-            snapshot=tool_call.input_snapshot or {},
-            run_id=tool_call.run_id,
-            tool_call_id=tool_call.id,
-            created_by_id=created_by_id,
-        )
+        snapshot = tool_call.input_snapshot or {}
+        artifact: Artifact | None = None
+        version: ArtifactVersion | None = None
+        tool_kind = _approval_tool_kind(tool_call.tool_name)
+        if _is_artifact_body_proposal(tool_call.tool_name):
+            stale_detail = await self._guard_current_base_version(project_id, snapshot, None, raise_on_stale=False)
+            if stale_detail is not None:
+                await self._supersede_tool_call_for_in_loop_recovery(
+                    project_id=project_id,
+                    session_id=session_id,
+                    tool_call=tool_call,
+                    feedback_summary={
+                        "stale_base_version": {**stale_detail, "artifact_id": snapshot.get("focused_artifact_id")}
+                    },
+                    llm_client=_llm_client,
+                )
+                raise HTTPException(409, detail=stale_detail)
+            lifecycle_rejection = await self._guard_lifecycle_predecessors(project_id, snapshot)
+            if lifecycle_rejection is not None:
+                await self._supersede_tool_call_for_in_loop_recovery(
+                    project_id=project_id,
+                    session_id=session_id,
+                    tool_call=tool_call,
+                    feedback_summary={"lifecycle_persist_rejection": lifecycle_rejection},
+                    llm_client=_llm_client,
+                )
+                raise HTTPException(409, detail=lifecycle_rejection)
+            try:
+                artifact, version = await self._execute_create_artifact(
+                    project_id=project_id,
+                    snapshot=snapshot,
+                    run_id=tool_call.run_id,
+                    tool_call_id=tool_call.id,
+                    created_by_id=created_by_id,
+                )
+            except HTTPException as exc:
+                feedback_summary = _candidate_readiness_rejection_feedback(snapshot, exc)
+                if feedback_summary is None:
+                    raise
+                await self._supersede_tool_call_for_in_loop_recovery(
+                    project_id=project_id,
+                    session_id=session_id,
+                    tool_call=tool_call,
+                    feedback_summary=feedback_summary,
+                    llm_client=_llm_client,
+                )
+                raise
+        elif tool_kind == "create_artifact_link":
+            link = await self._execute_create_artifact_link(
+                project_id=project_id,
+                session_id=session_id,
+                snapshot=snapshot,
+                created_by_id=created_by_id,
+            )
+            snapshot = {**snapshot, "created_link_id": str(link.id)}
+            tool_call.input_snapshot = snapshot
+        elif tool_kind == "propose_retirement":
+            artifact = await self._execute_retirement(
+                project_id=project_id,
+                session_id=session_id,
+                snapshot=snapshot,
+                created_by_id=created_by_id,
+            )
+        else:
+            raise HTTPException(400, detail=f"Unsupported approval tool: {tool_call.tool_name}")
 
         tool_call.status = AgentToolCallStatus.EXECUTED
-        tool_call.created_artifact_id = artifact.id
-        tool_call.created_version_id = version.id
+        if artifact is not None:
+            tool_call.created_artifact_id = artifact.id
+        if version is not None:
+            tool_call.created_version_id = version.id
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
@@ -419,6 +566,7 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status == AgentToolCallStatus.REJECTED:
             return tool_call
+        await self._guard_session_not_ended(session_id)
         if tool_call.status == AgentToolCallStatus.EXECUTED:
             raise HTTPException(400, detail="Tool call has been approved")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
@@ -445,16 +593,35 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
-        await self._guard_current_base_version(project_id, tool_call.input_snapshot or {}, base_version_id)
+        # request_edit resumes the graph, so a stale base is recovered in-loop rather than 409'd: the
+        # condition is seeded into feedback_summary so the resumed turn re-reads and rebases.
+        snapshot = tool_call.input_snapshot or {}
+        feedback_summary: dict[str, Any] | None = None
+        if _is_artifact_body_proposal(tool_call.tool_name):
+            stale_detail = await self._guard_current_base_version(
+                project_id, snapshot, base_version_id, raise_on_stale=False
+            )
+        else:
+            stale_detail = None
+        if stale_detail is not None:
+            # Seeded as a single-key feedback_summary on the resume boundary. This replaces (not merges)
+            # the channel, but that is safe here: orchestrator_node rebuilds the transient signals
+            # (resurfaced_questions, sweep gaps, dropped/out-of-phase tools) every turn, and resetting
+            # the ignored-signal counter at a human edit boundary is intentional — the same rationale as
+            # the turn_count reset in _resume_command (a human just intervened, so "ignored for N turns"
+            # restarts). orchestrator_node preserves stale_base_version (it never pops the key).
+            feedback_summary = {
+                "stale_base_version": {**stale_detail, "artifact_id": snapshot.get("focused_artifact_id")}
+            }
 
-        tool_call.status = AgentToolCallStatus.SUPERSEDED
-        tool_call.resolved_at = datetime.now(UTC)
-
-        msg = AgentMessage(session_id=session_id, role=AgentMessageRole.USER, content=note)
-        self.db.add(msg)
-        await self.db.commit()
-
-        await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        await self._supersede_tool_call_for_in_loop_recovery(
+            project_id=project_id,
+            session_id=session_id,
+            tool_call=tool_call,
+            feedback_summary=feedback_summary,
+            user_message=note,
+            llm_client=llm_client,
+        )
         await self.db.refresh(tool_call)
         return tool_call
 
@@ -479,6 +646,16 @@ class AgentService:
                 missing.append(pred)
         return missing
 
+    async def _guard_session_not_ended(self, session_id: uuid.UUID) -> None:
+        # The approve/reject path has no built-in session-status check (unlike
+        # handle_user_message), so a session that ended after a tool call was proposed would
+        # otherwise still accept an approval/rejection decision on it.
+        session_status = (
+            await self.db.execute(select(AgentSession.status).where(AgentSession.id == session_id))
+        ).scalar_one()
+        if session_status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
+            raise HTTPException(400, detail="Session has ended and cannot process tool call decisions")
+
     async def _get_tool_call_with_idor(
         self,
         tool_call_id: uuid.UUID,
@@ -502,6 +679,49 @@ class AgentService:
         tool_call, session_id = row
         return tool_call, session_id
 
+    async def _supersede_tool_call_for_in_loop_recovery(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        tool_call: AgentToolCall,
+        feedback_summary: dict[str, Any] | None,
+        user_message: str | None = None,
+        llm_client: Any = None,
+    ) -> None:
+        tool_call.status = AgentToolCallStatus.SUPERSEDED
+        tool_call.resolved_at = datetime.now(UTC)
+        if user_message is not None:
+            self.db.add(AgentMessage(session_id=session_id, role=AgentMessageRole.USER, content=user_message))
+        await self.db.commit()
+
+        log_gate_decision(
+            "in_loop_feedback_recovery",
+            "seeded",
+            reason=_feedback_summary_recovery_reason(feedback_summary, user_message),
+            extra={
+                "session_id": str(session_id),
+                "tool_call_id": str(tool_call.id),
+                "tool_name": tool_call.tool_name,
+            },
+        )
+        state_update = {"feedback_summary": feedback_summary} if feedback_summary is not None else None
+        # The tool_call is already committed SUPERSEDED and the feedback is seeded; the resume is a
+        # best-effort continuation. Never let a resume failure propagate — callers on the approve
+        # path raise the client-facing 409/422 immediately after this and must not have it masked
+        # by a 500 from the resume.
+        try:
+            await self._check_and_resume(
+                project_id=project_id,
+                session_id=session_id,
+                llm_client=llm_client,
+                state_update=state_update,
+            )
+        except Exception:
+            logger.exception(
+                "in-loop recovery resume failed for session %s tool_call %s", session_id, tool_call.id
+            )
+
     async def _execute_create_artifact(
         self,
         *,
@@ -523,7 +743,13 @@ class AgentService:
             synthesis_metadata = synthesis_metadata_dict(snapshot)
         except ValueError as exc:
             raise HTTPException(422, detail="Tool call metadata synthesis is invalid") from exc
-        body = canonical_artifact_body(body=str(body or ""), synthesis_metadata=synthesis_metadata)
+        lifecycle_metadata = snapshot.get("lifecycle_metadata")
+        if not isinstance(lifecycle_metadata, dict):
+            lifecycle_metadata = {}
+        source_evidence = snapshot.get("source_evidence")
+        if not isinstance(source_evidence, list):
+            source_evidence = None
+        body = str(body or "").strip()
         snapshot["body"] = body
         self._validate_candidate_readiness_for_persist(snapshot, synthesis_metadata)
 
@@ -537,13 +763,101 @@ class AgentService:
                 change_source=ChangeSource.AI_GENERATION,
                 agent_run_id=run_id,
                 tool_call_id=tool_call_id,
-                metadata=synthesis_metadata,
+                metadata={**synthesis_metadata, **lifecycle_metadata},
+                auto_evidence=source_evidence,
                 mark_accepted=True,
             )
         except ValueError as exc:
             raise HTTPException(404, detail="Focused document item does not exist") from exc
 
         return artifact, version
+
+    async def _approval_actor_id(
+        self,
+        *,
+        session_id: uuid.UUID,
+        created_by_id: uuid.UUID | None,
+    ) -> uuid.UUID:
+        if created_by_id is not None:
+            return created_by_id
+        actor_id = await self.db.scalar(select(AgentSession.created_by_id).where(AgentSession.id == session_id))
+        if actor_id is None:
+            raise HTTPException(422, detail="Approval requires a project member user")
+        return actor_id
+
+    async def _execute_create_artifact_link(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        snapshot: dict[str, Any],
+        created_by_id: uuid.UUID | None,
+    ) -> ArtifactLink:
+        try:
+            body = ArtifactLinkCreateRequest(
+                source_artifact_id=uuid.UUID(str(snapshot.get("source_artifact_id"))),
+                target_artifact_id=uuid.UUID(str(snapshot.get("target_artifact_id"))),
+                relation_type=RelationType(str(snapshot.get("relation_type"))),
+                metadata=snapshot.get("metadata") if isinstance(snapshot.get("metadata"), dict) else {},
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, detail="Tool call link input is invalid") from exc
+        actor_id = await self._approval_actor_id(session_id=session_id, created_by_id=created_by_id)
+        try:
+            response = await ArtifactLinkService(self.db).create(
+                project_id=project_id,
+                body=body,
+                created_by_id=actor_id,
+            )
+        except PermissionError as exc:
+            raise HTTPException(403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, detail=str(exc)) from exc
+        link = await self.db.get(ArtifactLink, response.id)
+        if link is None:
+            raise HTTPException(500, detail="Artifact link was not created")
+        return link
+
+    async def _execute_retirement(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        snapshot: dict[str, Any],
+        created_by_id: uuid.UUID | None,
+    ) -> Artifact:
+        try:
+            artifact_id = uuid.UUID(str(snapshot.get("artifact_id")))
+            superseded_by_raw = snapshot.get("superseded_by_artifact_id")
+            superseded_by_id = uuid.UUID(str(superseded_by_raw)) if superseded_by_raw else None
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(422, detail="Tool call retirement input is invalid") from exc
+        reason = str(snapshot.get("reason") or "").strip()
+        if not reason:
+            raise HTTPException(422, detail="Tool call retirement input is missing reason")
+        actor_id = await self._approval_actor_id(session_id=session_id, created_by_id=created_by_id)
+        try:
+            return await ArtifactService(self.db).archive_artifact(
+                project_id=project_id,
+                artifact_id=artifact_id,
+                user_id=actor_id,
+                reason=reason,
+                superseded_by_id=superseded_by_id,
+                source="agent_retirement",
+            )
+        except ArtifactInUseError as exc:
+            raise HTTPException(
+                409,
+                detail={
+                    "message": "Artifact has live downstream dependents",
+                    "artifact_ids": [str(artifact_id) for artifact_id in exc.artifact_ids],
+                },
+            ) from exc
+        except PermissionError as exc:
+            raise HTTPException(403, detail=str(exc)) from exc
+        except ValueError as exc:
+            status_code = 404 if "not found" in str(exc).lower() else 400
+            raise HTTPException(status_code, detail=str(exc)) from exc
 
     def _validate_candidate_readiness_for_persist(
         self,
@@ -557,6 +871,12 @@ class AgentService:
         )
         if readiness.can_persist:
             return
+        log_gate_decision(
+            "candidate_readiness_persist",
+            "rejected_422",
+            reason=readiness.state.value,
+            extra={"focused_artifact_id": snapshot.get("focused_artifact_id")},
+        )
         raise HTTPException(
             422,
             detail={
@@ -565,12 +885,112 @@ class AgentService:
             },
         )
 
+    async def _guard_lifecycle_predecessors(
+        self,
+        project_id: uuid.UUID,
+        snapshot: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        lifecycle_metadata = snapshot.get("lifecycle_metadata")
+        if not isinstance(lifecycle_metadata, dict):
+            return None
+        based_on = lifecycle_metadata.get("based_on")
+        if not isinstance(based_on, dict) or not based_on:
+            return None
+
+        stale_predecessors: list[dict[str, Any]] = []
+        # Deadlock-avoidance invariant: predecessor rows are always locked FOR UPDATE in a canonical
+        # order (sorted by artifact_id) so two concurrent approves with overlapping predecessor sets
+        # can never acquire the same two rows in opposite order. The focused artifact is locked first
+        # by _guard_current_base_version; the artifact DAG is acyclic, so a focused artifact is never
+        # also a predecessor in a conflicting approve, keeping the global order consistent. Any future
+        # caller that locks predecessor rows MUST preserve this sort.
+        for predecessor_id, based_on_version_id in sorted((str(k), str(v)) for k, v in based_on.items()):
+            try:
+                artifact_id = uuid.UUID(predecessor_id)
+            except (TypeError, ValueError):
+                stale_predecessors.append(
+                    {
+                        "artifact_id": predecessor_id,
+                        "based_on_version_id": based_on_version_id,
+                        "current_version_id": None,
+                        "reason": "invalid_artifact_id",
+                    }
+                )
+                continue
+            predecessor = (
+                await self.db.execute(
+                    select(Artifact)
+                    .where(Artifact.project_id == project_id)
+                    .where(Artifact.id == artifact_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if predecessor is None:
+                stale_predecessors.append(
+                    {
+                        "artifact_id": predecessor_id,
+                        "based_on_version_id": based_on_version_id,
+                        "current_version_id": None,
+                        "reason": "missing_predecessor",
+                    }
+                )
+                continue
+            current_version_id = str(predecessor.current_version_id) if predecessor.current_version_id else None
+            if predecessor.status == ArtifactStatus.ARCHIVED:
+                reason = "retired_predecessor"
+            elif current_version_id != based_on_version_id:
+                reason = "predecessor_version_changed"
+            else:
+                continue
+            stale_predecessors.append(
+                {
+                    "artifact_id": predecessor_id,
+                    "based_on_version_id": based_on_version_id,
+                    "current_version_id": current_version_id,
+                    "reason": reason,
+                }
+            )
+
+        if not stale_predecessors:
+            return None
+
+        curation_decision = lifecycle_metadata.get("curation_decision")
+        curation_ok = isinstance(curation_decision, dict) and has_stale_curation(
+            {
+                "curation_action": curation_decision.get("action"),
+                "curation_justification": curation_decision.get("justification"),
+            }
+        )
+        log_gate_decision(
+            "lifecycle_persist_guard",
+            "rejected_409",
+            reason="predecessor_diverged",
+            extra={
+                "focused_artifact_id": snapshot.get("focused_artifact_id"),
+                "stale_predecessor_count": len(stale_predecessors),
+                "curation_declared": curation_ok,
+            },
+        )
+        return {
+            "detail": "Proposal is based on predecessor versions that are no longer current",
+            "focused_artifact_id": snapshot.get("focused_artifact_id"),
+            "stale_predecessors": stale_predecessors,
+            "curation_declared": curation_ok,
+        }
+
     async def _guard_current_base_version(
         self,
         project_id: uuid.UUID,
         snapshot: dict[str, Any],
         requested_base_version_id: uuid.UUID | None,
-    ) -> None:
+        *,
+        raise_on_stale: bool = True,
+    ) -> dict[str, Any] | None:
+        """Detect a stale base version.
+
+        With ``raise_on_stale=False`` it returns the stale detail so callers can seed in-loop feedback
+        before preserving their HTTP-level error contract.
+        """
         focused_artifact_id = snapshot.get("focused_artifact_id")
         if not focused_artifact_id:
             raise HTTPException(422, detail="Tool call missing focused_artifact_id")
@@ -588,10 +1008,18 @@ class AgentService:
             requested_base_version_id=requested_base_version_id,
             current_version_id=focused.current_version_id,
         )
-        if detail is not None:
+        if detail is not None and raise_on_stale:
             raise HTTPException(409, detail=detail)
+        return detail
 
-    async def _check_and_resume(self, *, project_id: uuid.UUID, session_id: uuid.UUID, llm_client: Any = None) -> None:
+    async def _check_and_resume(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        llm_client: Any = None,
+        state_update: dict[str, Any] | None = None,
+    ) -> None:
         session_row = (
             await self.db.execute(select(AgentSession).where(AgentSession.id == session_id).with_for_update())
         ).scalar_one()
@@ -617,7 +1045,7 @@ class AgentService:
         if llm_client is None:
             llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
 
-        resume_command = self._resume_command(session_row, {"all_resolved": True})
+        resume_command = self._resume_command(session_row, {"all_resolved": True}, state_update=state_update)
         session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
         await self.db.commit()
@@ -712,8 +1140,14 @@ class AgentService:
             # timeout branch) rather than mislabel it COMPLETED.
             turn_limit_hit = graph_ended and _result_has_pending_tool_calls(result)
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
+                    logger.error("turn failed: reason_code=turn_limit session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_limit", session_id=str(session_id))
                     row.status = AgentSessionStatus.FAILED
                     db.add(
                         AgentMessage(
@@ -727,9 +1161,18 @@ class AgentService:
                 await db.commit()
         except TimeoutError:
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=turn_timeout session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_timeout", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout
+                    # (see checkpointer read in phase-03 evidence), so the session is resumable.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -740,9 +1183,17 @@ class AgentService:
                 await db.commit()
         except Exception as exc:
             async with self.session_factory() as db:
-                row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+                row = (
+                    await db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if row is None:
+                    return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=graph_exception session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "graph_exception", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: same resumability reasoning as the timeout branch above.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -784,7 +1235,15 @@ class AgentService:
             session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
             # Only drain after a turn truly ended. WAITING_FOR_HUMAN means the graph paused on a
             # specific question/approval — feeding a queued message here would be the wrong input.
-            if session_row.status not in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+            # EXPIRED is terminal-and-inert, not terminal-and-drainable: reviving it to ACTIVE would
+            # re-acquire the unique active-session slot the expiry exists to free.
+            if session_row.status == AgentSessionStatus.EXPIRED:
+                return
+            if session_row.status not in (
+                AgentSessionStatus.COMPLETED,
+                AgentSessionStatus.FAILED,
+                AgentSessionStatus.TURN_FAILED,
+            ):
                 return
 
             queued = (
@@ -807,20 +1266,34 @@ class AgentService:
             new_payload["queued"] = False
             queued.payload = new_payload
             content = queued.content
+            queued_mode_hint = new_payload.get("mode_hint")
 
+            was_turn_failed = session_row.status == AgentSessionStatus.TURN_FAILED
             session_row.status = AgentSessionStatus.ACTIVE
             session_row.interrupt_type = None
             await db.commit()
 
-        initial_state = build_initial_workflow_state(
-            artifact_type=artifact_type,
-            workflow_area=workflow_area,
-            step_key=step_key,
-            messages=[{"role": "user", "content": content}],
-            missing_context=missing_context,
-            focused_artifact_id=session_row.focused_artifact_id,
-            mode_hint=None,
-        )
+        if was_turn_failed:
+            # Same minimal partial-state mechanism as handle_user_message's TURN_FAILED branch: the
+            # queued message drains without wiping the failing turn's prior WorkflowState progress.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+        else:
+            # COMPLETED (and legacy FAILED) sessions keep the full-reset behavior — that boundary is
+            # intentional for a genuinely finished session's next queued message.
+            initial_state = build_initial_workflow_state(
+                artifact_type=artifact_type,
+                workflow_area=workflow_area,
+                step_key=step_key,
+                messages=[{"role": "user", "content": content}],
+                missing_context=missing_context,
+                focused_artifact_id=session_row.focused_artifact_id,
+                mode_hint=queued_mode_hint,
+            )
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
             self._run_graph(
@@ -866,9 +1339,19 @@ class AgentService:
         resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
         # A resume is a human-in-the-loop boundary (reply or approval), so the silent-loop circuit
         # breaker resets here: turn_count counts internal steps per request, not across the session.
+        # The diagnosis judge budget is per-turn (not cumulative), so it resets on the same boundary —
+        # otherwise only the first high-risk section in a session could ever escalate.
         # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        return Command(resume=resume, update={"turn_count": 0, **(state_update or {})})
+        return Command(
+            resume=resume,
+            update={
+                "turn_count": 0,
+                "diagnosis_judge_calls_used": 0,
+                "readiness_reject_streak": 0,
+                **(state_update or {}),
+            },
+        )
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -905,7 +1388,7 @@ class AgentService:
         if not provider_config_id:
             return None, None
         from app.core.crypto import decrypt_token
-        from app.models.llm_provider import LLMProviderConfig
+        from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus
         from app.services.llm_clients import LLMClientFactory
 
         config_row = (
@@ -913,6 +1396,8 @@ class AgentService:
         ).scalar_one_or_none()
         if not config_row or not config_row.encrypted_api_key:
             return None, None
+        if config_row.status != LLMProviderStatus.ACTIVE:
+            raise HTTPException(422, detail="LLM provider config must pass health check before use")
         api_key = decrypt_token(config_row.encrypted_api_key)
         if not api_key:
             raise ValueError("API key cannot be decrypted - key rotation may be out of sync")
@@ -927,6 +1412,7 @@ class AgentService:
             secret_key=secret_key,
             model=config_row.model_name,
             region=config_row.region,
+            base_url=config_row.base_url,
         )
         strong_client = None
         if config_row.strong_model_name:
@@ -936,6 +1422,7 @@ class AgentService:
                 secret_key=secret_key,
                 model=config_row.strong_model_name,
                 region=config_row.region,
+                base_url=config_row.base_url,
             )
         return default_client, strong_client
 
@@ -973,6 +1460,32 @@ def _agent_failure_message(exc: Exception) -> str:
     return f"Agent could not complete the current analysis turn. Technical reason: {message[:500]}"
 
 
+def expire_abandoned_session(session: AgentSession) -> bool:
+    """Lazily mark an abandoned ACTIVE/WAITING_FOR_HUMAN session EXPIRED.
+
+    Takes a session row already loaded from the DB and mutates it in place if it has been
+    inactive past session_abandoned_ttl. Does not commit — the caller owns the transaction
+    boundary. TURN_FAILED is a resumable resting state, not an abandonment candidate, and is
+    never touched here regardless of how stale updated_at is.
+
+    Returns True if the session was marked EXPIRED, False otherwise.
+    """
+    if session.status not in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
+        return False
+    ttl = timedelta(hours=settings.session_abandoned_ttl)
+    updated_at = session.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) - updated_at < ttl:
+        return False
+    session.status = AgentSessionStatus.EXPIRED
+    session.interrupt_type = None
+    logger.info(
+        "session expired: reason_code=session_abandoned_ttl_exceeded session_id=%s", session.id
+    )
+    return True
+
+
 def _session_ui_status(status: Any, interrupt_type: Any) -> str:
     status_val = getattr(status, "value", status)
     interrupt_val = getattr(interrupt_type, "value", interrupt_type)
@@ -984,6 +1497,6 @@ def _session_ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
     return "idle"

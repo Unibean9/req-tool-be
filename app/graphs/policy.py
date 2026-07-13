@@ -2,6 +2,8 @@ from collections.abc import Awaitable, Callable
 from functools import wraps
 from typing import Any, TypeVar
 
+from app.graphs.tool_metadata import policy_table
+
 
 class ApprovalRequired(Exception):
     def __init__(self, tool_name: str, args_snapshot: dict[str, Any]):
@@ -16,46 +18,45 @@ class GovernanceDenied(Exception):
         super().__init__(f"Tool was rejected by policy: {tool_name}")
 
 
-POLICY = {
-    "read_artifacts": "allow",
-    "read_artifact_graph": "allow",
-    "read_workflow_steps": "allow",
-    "read_source_documents": "allow",
-    "read_project_context": "allow",
-    "init_workflow_run": "require_approval",
-    "create_artifact": "require_approval",
-    "update_artifact": "require_approval",
-    "create_artifact_link": "require_approval",
-    "delete_artifact_link": "require_approval",
-    "create_artifact_review": "require_approval",
-    # finalize requires at least one run_critique round before it is offered (spec §15.1). This is
-    # a documentation signal; the actual gate lives in agent_tools.get_available_tools.
-    "finalize": "require_critique",
-    # BMAD governance gates (addendum §18): phase completion and scope lock need human approval.
-    "finalize_prd": "require_human_approval",
-    "lock_scope": "require_human_approval",
-}
+# POLICY is enforced by the @governed decorator below for repository tools (read_artifacts,
+# read_current_body, read_source_documents, etc. in app/graphs/tools.py). It does not gate loop
+# tools: those are controlled by the session-phase menu (app/graphs/session_phase.py) applied
+# inside agent_tools.get_available_tools and the post-LLM gate (analysis/tool_gating.py). The
+# table is derived from tool metadata so approval policy and dispatch metadata cannot drift.
+POLICY = policy_table()
 
 
+# The intentional, acyclic artifact chain. Advisory only: shapes
+# ancestor_types() prompt-context loading and the finalize predecessor check —
+# never a hard gate. Event Storming sits between PRD and ADD: ADD depends on
+# event_storming instead of prd directly, and the ES item types form their own
+# flow chain (use_case -> actor_command -> domain_event -> policy/aggregate).
+# interface and tech_decision are intentional pipeline leaves (nothing consumes
+# them); stakeholder_register and tech_stack are interim leaves until domain
+# work rewires them; policy and aggregate are intentional ES leaves.
 ARTIFACT_PREDECESSORS = {
     "brd": [],
-    "vision_objectives": [],
-    "problem_statement": ["vision_objectives"],
+    "problem_statement": [],
+    "vision_objectives": ["problem_statement"],
     "stakeholder_register": ["problem_statement"],
-    "scope_capabilities": ["problem_statement"],
+    "scope_capabilities": ["vision_objectives"],
     "business_rules": ["scope_capabilities"],
     "constraints_assumptions": ["scope_capabilities"],
-    "risks_issues": ["constraints_assumptions"],
     "prd": ["brd"],
-    "domain_entity": ["brd"],
-    "functional_requirement": ["brd"],
-    "non_functional_requirement": ["brd"],
-    "use_case": ["functional_requirement"],
-    "acceptance_criteria": ["functional_requirement"],
-    "sad": ["prd"],
-    "component": ["domain_entity"],
+    "use_case": ["scope_capabilities"],
+    "functional_requirement": ["use_case", "business_rules"],
+    "non_functional_requirement": ["constraints_assumptions"],
+    "event_storming": ["prd"],
+    "add": ["event_storming"],
+    "tech_stack": ["constraints_assumptions", "non_functional_requirement"],
+    "domain_entity": ["functional_requirement"],
+    "component": ["domain_entity", "functional_requirement"],
     "interface": ["component"],
-    "tech_decision": ["component"],
+    "tech_decision": ["component", "non_functional_requirement"],
+    "actor_command": ["use_case"],
+    "domain_event": ["actor_command"],
+    "policy": ["domain_event"],
+    "aggregate": ["domain_event", "actor_command"],
 }
 
 
@@ -104,17 +105,3 @@ def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         return await fn(*args, **kwargs)
 
     return wrapper
-
-
-# BMAD governance gates (addendum §18). These are checkpoints, not loop tools: calling one runs the
-# @governed wrapper, which raises ApprovalRequired per the POLICY rule above.
-
-
-@governed
-async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001
-    return None
-
-
-@governed
-async def lock_scope(**kwargs: Any) -> None:  # noqa: ARG001
-    return None

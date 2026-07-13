@@ -39,13 +39,17 @@ class ExportService:
 
 async def render_product_brief(project_id: uuid.UUID, db: AsyncSession) -> str:
     sections = await _load_document_items(project_id, db, "brd")
-    keys = ("vision_objectives", "problem_statement", "stakeholder_register", "scope_capabilities")
+    keys = ("problem_statement", "vision_objectives", "stakeholder_register", "scope_capabilities")
     return _document("Product Brief", [(get_config(key).label, sections.get(key)) for key in keys])
 
 
 async def render_brd(project_id: uuid.UUID, db: AsyncSession) -> str:
     sections = await _load_document_items(project_id, db, "brd")
-    doc_sections = [(get_config(key).label, sections.get(key)) for key in children_of("brd")]
+    executive_summary = (
+        await db.execute(select(Project.executive_summary).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    doc_sections: list[tuple[str, Any]] = [("Executive Summary", executive_summary)]
+    doc_sections += [(get_config(key).label, sections.get(key)) for key in children_of("brd")]
     doc_sections.append(("Research Basis", await _load_research_basis(project_id, db)))
     return _document("Business Requirements Document", doc_sections)
 

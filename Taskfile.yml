@@ -1,15 +1,10 @@
 version: "3"
 
-vars:
-  PYTHON: '{{if eq OS "windows"}}.venv/Scripts/python.exe{{else}}.venv/bin/python{{end}}'
-
 tasks:
   setup:
-    desc: Create virtual environment and install dependencies
+    desc: Sync the uv environment
     cmds:
-      - python -m venv .venv
-      - python -m pip install --upgrade pip
-      - python -m pip install -r requirements.txt
+      - uv sync
 
   docker:up:
     desc: Start Docker services
@@ -25,14 +20,14 @@ tasks:
   dev:
     desc: Run FastAPI development server
     cmds:
-      - docker compose -f docker/docker-compose.dev.yml --env-file .env up -d && python -m uvicorn app.main:app --reload --port 8000
+      - docker compose -f docker/docker-compose.dev.yml --env-file .env up -d && uv run uvicorn app.main:app --reload --port 8000
 
   test:
     desc: Run test suite
     cmds:
-      - python -m pytest -q
+      - uv run pytest -q
 
   ruff:
     desc: Run quick Ruff lint
     cmds:
-      - "{{.PYTHON}} -m ruff check app tests alembic"
+      - uv run ruff check app tests alembic

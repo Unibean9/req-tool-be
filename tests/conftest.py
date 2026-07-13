@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import app.database as db_module
 from app.database import get_db
-from app.main import app
 from app.models.base import Base
 from tests.golden_decision_helpers import graph_from, make_node_factory
 
@@ -25,7 +24,11 @@ TestSessionFactory = async_sessionmaker(
 db_module.engine = test_engine
 db_module.async_session_factory = TestSessionFactory
 
+# app.main (and the routers it pulls in) must import after the patch above, since routers bind
+# `async_session_factory` by name at import time — importing earlier would capture the real,
+# unpatched production session factory.
 import app.main as main_module  # noqa: E402
+from app.main import app  # noqa: E402
 
 main_module.engine = test_engine
 

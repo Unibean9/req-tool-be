@@ -1,59 +1,44 @@
-# Agent behavior scenario tests (API-level)
+# Agent Behavior Scenario Tests
 
-This suite drives **multi-turn conversations through the real HTTP API** voi LangGraph that,
-records **all raw messages, payloads, and tool calls** vao transcript JSON, va scores
-generated artifact quality with a judge.
+This suite drives multi-turn conversations through the real HTTP API and
+LangGraph wiring with a deterministic scripted LLM. High-level scenarios are
+canaries, not an artifact-type matrix.
 
 ## Components
 
 | File | Role |
-|------|---------|
-| `scripted_llm.py` | Deterministic mock LLM. Routes moi `generate()` theo `response_format`/`system` ve scripted responses: intent / analyze (brain) / summarize / critic / regenerate. Helper: `ask()`, `propose()`, `artifact()`. |
-| `driver.py` | `ScenarioDriver` runs scenarios through HTTP (create session → send message → list messages/tool-calls → approve/reject), drain graph between steps, ghi snapshot. |
-| `recorder.py` | Record transcript JSON per scenario into `transcripts/`. |
-| `library.py` | Define behavior scenarios. |
-| `eval_support.py` | Judge (mock default) scores artifact theo rubric 8 criteria. |
-| `conftest.py` | Engine SQLite file rieng + checkpointer that + cac patch binding + fresh session/request. |
-| `test_scenarios.py` | Run each scenario, assert API contract + payload envelope, scores eval, ghi transcript. |
-| `test_documents.py` | Run full pipeline BA→PM theo thu tu predecessor, gom moi artifact thanh "tai lieu BRD/PRD" roi scores tokg hop. |
+| --- | --- |
+| `library.py` | Canonical journey registry plus legacy helper factories kept for focused evidence tests. |
+| `scripted_llm.py` | Deterministic mock LLM that routes by tool schemas and response formats. |
+| `driver.py` | Runs user actions through HTTP, drains graph work, and captures snapshots. |
+| `recorder.py` | Builds transcript objects and writes them to a caller-provided directory. |
+| `eval_support.py` | Scores produced artifacts with a mock or real judge. |
+| `conftest.py` | Provides the file-backed scenario DB, graph, checkpointer, and LLM patches. |
 
-## Pham vi artifact type
+## Canonical Journeys
 
-`ALL_SCENARIOS` has one scenario happy-path cho moi type trong pipeline BA→PM:
-`intent → problem → stakeholder → goal → functional_requirement →
-non_functional_requirement → epic → story` (plus behavior scenarios intent:
-multi-turn, reject...). `DOCUMENT_PIPELINE` runs this sequence in the same project
-so predecessor constraints are satisfied. `capability` intentionally skipped → `functional/
-non_functional_requirement` mang `missing_context=["capability"]` soft (non-blocking).
-Type `goal` is checked by the branch SMART, `story/epic` boi nhanh INVEST cua validator
-so scenario bodies intentionally include measurement/timeframe and acceptance criteria.
+`CANONICAL_SCENARIOS` is the shared high-level source of truth for integration,
+eval, benchmark, and live-smoke lanes:
+
+- `canonical-clarify-draft-approve`: clarify one missing context point, draft,
+  and approve.
+- `canonical-reject-critique-redraft`: reject the first draft, run critique,
+  clarify, and approve the revised draft.
+- `canonical-context-artifact-from-predecessors`: derive a downstream artifact
+  from accepted predecessor context.
+
+Add a new canonical journey only when it protects a distinct end-to-end risk
+that cannot be covered by a lower-level contract test.
+
+## Output Policy
+
+Tests should write transcripts to `tmp_path` by default. Explicit evidence or
+live runs may pass a stable output directory intentionally.
 
 ## Run
 
 ```bash
-# Full suite (mock LLM + mock judge, deterministic, no API key required)
-PYTHONIOENCODING=utf-8 python -m pytest tests/scenarios -q
-
-# One specific scenario
-python -m pytest "tests/scenarios/test_scenarios.py::test_behavior_scenario[multi-turn-qna]" -q
+pytest tests/integration/scenarios/test_scenarios.py -q
+pytest -m eval tests/eval/test_behavior_scenarios.py -q
+pytest -m benchmark tests/benchmark/test_baseline_benchmark.py -q
 ```
-
-After running, transcript lives at `tests/scenarios/transcripts/<scenario-name>.json`
-(gom tung buoc hanh dong + snapshot messages/tool_calls + diem eval). Cac file nay
-is gitignored because it is generated on each run.
-
-## Add a new scenario
-
-Trong `library.py`, viet ham tra ve `Scenario(name, artifact_type, llm, actions, expect)`:
-
-- `llm = ScriptedLLM(brain=[...])` — list of analyze turns (use `ask()` / `propose()`).
-- `actions` — chuoi hanh dong: `{"type": "send", "content": "..."}`, `{"type": "approve_all"}`, `{"type": "reject_all"}`.
-- `expect` — `{"final_status": ..., "min_artifacts": ...}`.
-
-Add function to `ALL_SCENARIOS` to be parametrized automatically.
-
-## Cham bang judge that
-
-`eval_support.mock_judge()` la default. De scores bang LLM that, thay bang client
-created from `tests/eval/config.py` (needs `LLM_API_KEY` in `.env.test`) — xem
-`tests/eval/test_eval_baseline.py` cho mau marker `integration`.

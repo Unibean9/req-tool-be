@@ -40,9 +40,10 @@ class TranscriptRecorder:
             "eval": self.eval,
         }
 
-    def write(self) -> Path:
-        TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-        path = TRANSCRIPTS_DIR / f"{self.scenario_name}.json"
+    def write(self, output_dir: Path | None = None) -> Path:
+        target_dir = output_dir or TRANSCRIPTS_DIR
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{self.scenario_name}.json"
         path.write_text(
             json.dumps(self.to_dict(), ensure_ascii=False, indent=2),
             encoding="utf-8",

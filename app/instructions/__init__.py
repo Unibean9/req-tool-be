@@ -9,7 +9,7 @@ let policy crowd out the conversation). Three are shared (role-agnostic); the Ro
 per-role overlay. ``get_instruction`` assembles a single string — the call site in ``analyze_node``
 is unchanged:
 
-    [## Contract] + [## Role = overlay] + [## Decision & tools] + [## Output]
+    [## Contract] + [## Role = overlay] + [## Decision & tools] + [## Output] + [## Feedback Response]
 
 Each former responsibility layer survives as a ``###`` subsection inside one of these so the content
 is unchanged, only regrouped. The ``## Output`` section (critique/governance/output) is dropped
@@ -29,6 +29,7 @@ _DEFAULT_ROLE = "business_analyst"
 ARTIFACT_ROLE_MAP: dict[str, str] = {
     # Business Analyst — discovery and problem framing
     "brd": "business_analyst",
+    "executive_summary": "business_analyst",
     "vision_objectives": "business_analyst",
     "problem_statement": "business_analyst",
     "stakeholder_register": "business_analyst",
@@ -43,13 +44,19 @@ ARTIFACT_ROLE_MAP: dict[str, str] = {
     "use_case": "product_manager",
     "acceptance_criteria": "product_manager",
     # Architecture items currently reuse the product-manager overlay until a dedicated role lands.
-    "sad": "product_manager",
+    "add": "product_manager",
+    "tech_stack": "product_manager",
     "domain_entity": "product_manager",
     "component": "product_manager",
     "interface": "product_manager",
     "tech_decision": "product_manager",
     "epic": "product_manager",
     "story": "product_manager",
+    "event_storming": "product_manager",
+    "domain_event": "product_manager",
+    "actor_command": "product_manager",
+    "policy": "product_manager",
+    "aggregate": "product_manager",
 }
 
 # workflow_area fallback
@@ -70,6 +77,7 @@ _LAYER_01 = "01-contract.md"
 _SHARED_LAYERS_AFTER_ROLE = (
     "02-decision-tools.md",
     "03-output.md",
+    "04-feedback-response.md",
 )
 
 _layer_cache: dict[str, str] = {}
@@ -94,11 +102,6 @@ def load_instructions(base_path: Path | None = None) -> None:
         path = base / "roles" / filename
         if path.exists():
             _overlay_cache[role] = path.read_text(encoding="utf-8").strip()
-
-
-def role_overlay(role: str) -> str | None:
-    """The Layer 2 overlay text for a role (used by callers and tests)."""
-    return _overlay_cache.get(role)
 
 
 _DRAFT_SKIP_LAYERS: frozenset[str] = frozenset(

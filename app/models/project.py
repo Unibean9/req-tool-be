@@ -16,5 +16,8 @@ class Project(AuditMixin, Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     slug: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Synthesized at BRD finalize from vision/problem/scope, confirmed by the user, and rendered
+    # first in the BRD export. Never elicited directly.
+    executive_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     organization: Mapped["Organization"] = relationship(back_populates="projects")  # noqa: F821

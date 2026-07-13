@@ -1,0 +1,217 @@
+"""D1 — Composite Dispatch tests.
+
+Covers: gate precedence, multi-tool_calls, backward-compat negative test.
+"""
+
+import pytest
+from langchain_core.messages import AIMessage
+
+from app.graphs.nodes import _INTERRUPT_BEARING_TOOLS, _gate_selected_tools
+from tests.factories import _config, _make_agent_session, _project, _session_factory, _state
+
+# ---------------------------------------------------------------------------
+# _gate_selected_tools unit tests
+# ---------------------------------------------------------------------------
+
+def test_gate_passes_non_interrupt_tools_through():
+    state = _state()
+    requested = [
+        {"name": "critique_note", "args": {"content": "note"}},
+        {"name": "explore_note", "args": {"content": "note2"}},
+    ]
+    result = _gate_selected_tools(state, requested)
+    assert [r["name"] for r in result] == ["critique_note", "explore_note"]
+
+
+def test_gate_drops_out_of_phase_tool():
+    # The gate supersedes the old "dispatch unavailable tool for a tool-level error" behavior for
+    # out-of-phase tools: _state() is INTENT phase (user_confirmed=None), which excludes finalize,
+    # so the gate drops it (the model is told the phase via the feedback block instead).
+    state = _state()
+    requested = [{"name": "finalize", "args": {"summary": "done"}}]
+    result = _gate_selected_tools(state, requested)
+    assert result == []
+
+
+def test_gate_keeps_note_alongside_interrupt_tool():
+    """ask_user paired with explore_note → keep BOTH. The note is side-effect-free, so its structured
+    facts (key_facts) must reach state in the same turn instead of being dropped by solo enforcement."""
+    state = _state()
+    requested = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    result = _gate_selected_tools(state, requested)
+    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
+
+
+def test_gate_drops_second_interrupt_bearing_tool():
+    """Two interrupt-bearing tools → keep only the first; two interrupts in one node is unsafe."""
+    state = _state()
+    requested = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+    ]
+    result = _gate_selected_tools(state, requested)
+    assert [r["name"] for r in result] == ["ask_user"]
+
+
+def test_gate_drops_second_interrupt_but_keeps_note():
+    """Solo enforcement drops the second interrupt tool while a side-effect-free note rides along."""
+    state = _state()  # intent phase: ask_user/respond/explore_note all available
+    raw = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    gated = _gate_selected_tools(state, raw)
+    assert [g["name"] for g in gated] == ["ask_user", "explore_note"]
+
+
+def test_gate_drops_read_artifact_when_bundled_with_interrupt_tool():
+    """read_artifact is safe, but not interrupt-safe: read first, then draft/ask on the next turn."""
+    state = _state()
+    state["user_confirmed"] = True
+    requested = [
+        {"name": "read_artifact", "args": {"id": "00000000-0000-0000-0000-000000000001"}},
+        {"name": "write_draft", "args": {"title": "Vision", "body": "## Vision\nDraft"}},
+    ]
+
+    result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["write_draft"]
+
+
+def test_gate_drops_out_of_phase_interrupt_tool_but_keeps_note():
+    """Out-of-phase finalize (INTENT phase) is dropped; the in-phase side-effect-free note
+    still passes through so its structured facts reach state this turn."""
+    state = _state()  # INTENT phase: finalize out of phase, explore_note in phase
+    requested = [
+        {"name": "finalize", "args": {"summary": "done"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    result = _gate_selected_tools(state, requested)
+    assert [r["name"] for r in result] == ["explore_note"]
+
+
+def test_gate_interrupt_tools_set_is_complete():
+    for tool in ("ask_user", "respond", "write_draft", "finalize"):
+        assert tool in _INTERRUPT_BEARING_TOOLS
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Test A: solo-invariant equivalence through the Policy-layer batch rule
+# ---------------------------------------------------------------------------
+
+def test_gate_solo_invariant_batch_rule_equivalence_and_log_calls():
+    """interrupt + interrupt + side-effect-free note -> keep [first interrupt, note], drop the
+    second interrupt with exactly the pre-Phase-4 `_log_tool_error` code/message, routed through
+    `SoloInvariantBatchRule` (a registered batch rule) instead of inline logic."""
+    from unittest.mock import patch
+
+    state = _state()  # intent phase: ask_user/respond/explore_note all available
+    requested = [
+        {"name": "ask_user", "args": {"message": "?"}},
+        {"name": "respond", "args": {"message": "x", "mode": "critique"}},
+        {"name": "explore_note", "args": {"content": "note"}},
+    ]
+    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
+        result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["ask_user", "explore_note"]
+    mock_log.assert_called_once_with(
+        "dropped_interrupt_tool",
+        "respond",
+        "dropped: an interrupt-bearing tool was already selected this turn",
+    )
+
+
+def test_gate_solo_invariant_drops_non_note_paired_with_interrupt_and_logs():
+    """A non-note, non-interrupt tool paired with an interrupt tool is dropped via
+    `dropped_with_interrupt_tool`, matching the pre-Phase-4 inline logic exactly."""
+    from unittest.mock import patch
+
+    state = _state()
+    state["user_confirmed"] = True
+    requested = [
+        {"name": "read_artifact", "args": {"id": "00000000-0000-0000-0000-000000000001"}},
+        {"name": "write_draft", "args": {"title": "Vision", "body": "## Vision\nDraft"}},
+    ]
+    with patch("app.graphs.analysis.tool_gating._log_tool_error") as mock_log:
+        result = _gate_selected_tools(state, requested)
+
+    assert [r["name"] for r in result] == ["write_draft"]
+    mock_log.assert_called_once_with(
+        "dropped_with_interrupt_tool",
+        "read_artifact",
+        "dropped: paired with an interrupt-bearing tool",
+    )
+
+
+# ---------------------------------------------------------------------------
+# analyze_node composite dispatch integration
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_composite_non_interrupt_tools_emit_two_tool_calls(client, db_session):
+    """Two non-interrupt tools → AIMessage with 2 tool_calls."""
+    from app.graphs.nodes import analyze_node
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    from unittest.mock import AsyncMock
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "critique_note", "args": {"content": "Note A"}},
+        {"id": "scripted:1", "name": "explore_note", "args": {"content": "Note B"}},
+    ]), None))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    out = await analyze_node(state, config)
+    tool_calls = out["messages"][-1].tool_calls
+    assert len(tool_calls) == 2
+    assert tool_calls[0]["name"] == "critique_note"
+    assert tool_calls[1]["name"] == "explore_note"
+    # IDs are unique per call.
+    assert tool_calls[0]["id"] != tool_calls[1]["id"]
+    run_id = out["last_agent_run_id"]
+    assert tool_calls[0]["id"] == f"{run_id}-0"
+    assert tool_calls[1]["id"] == f"{run_id}-1"
+    # Bedrock (Anthropic) validates tool_use.id against ^[a-zA-Z0-9_-]+$ on history replay — no ":".
+    import re
+    for tc in tool_calls:
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", tc["id"]), f"id violates Bedrock pattern: {tc['id']}"
+
+
+# (test_backward_compat_old_format_degrades_gracefully removed: the {"tool": ...} legacy
+# format path was deleted with the JSON-shim contract; native tool-calling has no such path.)
+
+
+@pytest.mark.asyncio
+async def test_composite_gate_keeps_note_alongside_interrupt(client, db_session):
+    """ask_user + explore_note → gate keeps BOTH (the note rides along) and records no drop."""
+    from unittest.mock import AsyncMock
+
+    from app.graphs.nodes import analyze_node
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content="", tool_calls=[
+        {"id": "scripted:0", "name": "ask_user", "args": {"message": "Cau hoi?"}},
+        {"id": "scripted:1", "name": "explore_note", "args": {"content": "note"}},
+    ]), None))
+
+    state = _state()
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    out = await analyze_node(state, config)
+    tool_calls = out["messages"][-1].tool_calls
+    assert [tc["name"] for tc in tool_calls] == ["ask_user", "explore_note"]
+    assert "gated_tool" not in out["analysis_result"]

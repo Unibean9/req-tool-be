@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
-from app.documents.registry import container_for
+from app.documents.registry import all_container_types, container_for
 from app.models.agent import (
     AgentMessage,
     AgentRun,
@@ -22,8 +22,42 @@ from app.models.agent import (
 )
 from app.models.artifact import Artifact
 from app.schemas.agent import public_tool_call_input_snapshot
+from app.services.agent_service import expire_abandoned_session
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
+
+# Idle keepalive: emit an SSE comment when no snapshot diff has fired for this long, so connections
+# survive idle proxy/load-balancer timeouts. Overridable per-call (tests use a short interval).
+HEARTBEAT_INTERVAL_SECONDS = 15.0
+
+# session_phase per checkpoint_id — decoding the graph checkpoint blob is the only way to read the
+# phase (it lives in graph state, not a session column), so cache it per checkpoint id; the id
+# changes whenever state changes, making invalidation automatic. Bounded FIFO.
+_PHASE_CACHE: dict[str, str | None] = {}
+_PHASE_CACHE_MAX_ENTRIES = 512
+
+
+def _session_phase_from_checkpoint(session: AgentSession) -> str | None:
+    """Best-effort read of the session-phase channel from the persisted graph checkpoint."""
+    payload = session.graph_checkpoint or {}
+    checkpoint_id = payload.get("checkpoint_id")
+    if not checkpoint_id or "data" not in payload:
+        return None
+    if checkpoint_id in _PHASE_CACHE:
+        return _PHASE_CACHE[checkpoint_id]
+    try:
+        import base64
+
+        from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+        checkpoint = JsonPlusSerializer().loads_typed((payload["serde_type"], base64.b64decode(payload["data"])))
+        phase = (checkpoint.get("channel_values") or {}).get("session_phase")
+    except Exception:  # noqa: BLE001 — a malformed checkpoint must never break the event stream
+        phase = None
+    if len(_PHASE_CACHE) >= _PHASE_CACHE_MAX_ENTRIES:
+        _PHASE_CACHE.pop(next(iter(_PHASE_CACHE)))
+    _PHASE_CACHE[checkpoint_id] = phase
+    return phase
 
 
 class AgentEventService:
@@ -39,15 +73,22 @@ class AgentEventService:
         user_id: uuid.UUID,
         request: Request,
         interval_seconds: float = 0.5,
+        heartbeat_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
     ) -> AsyncIterator[str]:
         snapshot = await self.build_snapshot(project_id=project_id, session_id=session_id, user_id=user_id)
         yield _sse(event="snapshot", data=snapshot, event_id=_event_id(session_id, 0))
 
         sequence = 1
         fingerprint = _snapshot_fingerprint(snapshot)
+        idle_seconds = 0.0
         while not await request.is_disconnected():
             status = snapshot["session"]["status"]
-            if status in {AgentSessionStatus.COMPLETED.value, AgentSessionStatus.FAILED.value}:
+            if status in {
+                AgentSessionStatus.COMPLETED.value,
+                AgentSessionStatus.FAILED.value,
+                AgentSessionStatus.TURN_FAILED.value,
+                AgentSessionStatus.EXPIRED.value,
+            }:
                 yield _sse(
                     event="stream_closed",
                     data={"type": "stream_closed", "status": status},
@@ -56,17 +97,34 @@ class AgentEventService:
                 return
 
             await asyncio.sleep(interval_seconds)
-            next_snapshot = await self.build_snapshot(
-                project_id=project_id,
-                session_id=session_id,
-                user_id=user_id,
-            )
+            try:
+                next_snapshot = await self.build_snapshot(
+                    project_id=project_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                )
+            except HTTPException:
+                # Session was deleted (or became inaccessible) while this stream was polling.
+                # The response already started, so raising here would crash the connection
+                # with "response already started" instead of a clean close.
+                yield _sse(
+                    event="stream_closed",
+                    data={"type": "stream_closed", "status": "deleted"},
+                    event_id=_event_id(session_id, sequence),
+                )
+                return
             next_fingerprint = _snapshot_fingerprint(next_snapshot)
             if next_fingerprint != fingerprint:
                 sequence += 1
                 yield _sse(event="snapshot", data=next_snapshot, event_id=_event_id(session_id, sequence))
                 snapshot = next_snapshot
                 fingerprint = next_fingerprint
+                idle_seconds = 0.0
+            else:
+                idle_seconds += interval_seconds
+                if idle_seconds >= heartbeat_seconds:
+                    yield ": keepalive\n\n"
+                    idle_seconds = 0.0
 
     async def build_snapshot(
         self,
@@ -88,6 +146,26 @@ class AgentEventService:
         ).scalar_one_or_none()
         if not session:
             raise HTTPException(404, detail="Agent session not found")
+
+        # Captured separately (not written back onto `session`) so this lazy expiry check never
+        # dirties `session` in self.db's identity map — self.db never commits in this method, and
+        # mutating an onupdate-tracked column here would expire it for the plain attribute read
+        # below once the next query on self.db autoflushes.
+        session_status = session.status
+        session_interrupt_type = session.interrupt_type
+
+        if self.session_factory is not None and session_status in (
+            AgentSessionStatus.ACTIVE,
+            AgentSessionStatus.WAITING_FOR_HUMAN,
+        ):
+            async with self.session_factory() as expire_db:
+                expire_row = (
+                    await expire_db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if expire_row is not None and expire_abandoned_session(expire_row):
+                    await expire_db.commit()
+                    session_status = expire_row.status
+                    session_interrupt_type = expire_row.interrupt_type
 
         messages = (
             (
@@ -126,9 +204,10 @@ class AgentEventService:
                 "artifact_type": session.artifact_type,
                 "workflow_area": session.workflow_area,
                 "focused_artifact_id": session.focused_artifact_id,
-                "status": session.status,
-                "ui_status": _ui_status(session.status, session.interrupt_type),
-                "interrupt_type": session.interrupt_type,
+                "status": session_status,
+                "ui_status": _ui_status(session_status, session_interrupt_type),
+                "session_phase": _session_phase_from_checkpoint(session),
+                "interrupt_type": session_interrupt_type,
                 "missing_context": session.missing_context,
                 "document": document,
                 "updated_at": session.updated_at,
@@ -174,9 +253,9 @@ class AgentEventService:
                 if focused.parent_id is not None:
                     parent = await self.db.get(Artifact, focused.parent_id)
                     document_type = parent.type.value if parent is not None else document_type
-                elif focused.type.value in {"brd", "prd", "sad"}:
+                elif focused.type.value in all_container_types():
                     document_type = focused.type.value
-        if document_type is None and session.artifact_type in {"brd", "prd", "sad"}:
+        if document_type is None and session.artifact_type in all_container_types():
             document_type = session.artifact_type
         if document_type is None:
             return None
@@ -202,8 +281,10 @@ def _ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
+    if status_val == AgentSessionStatus.EXPIRED.value:
+        return "idle"
     return "idle"
 
 

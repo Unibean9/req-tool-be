@@ -39,11 +39,7 @@ class Settings(BaseSettings):
 
     # External web search for elicitation (comparable_products). "" disables it (graceful fallback to
     # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
-    search_provider: str = "duckduckgo"
-
-    # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
-    # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.
-    decision_graph_enabled: bool = True
+    search_provider: str = ""
 
     app_env: str = "development"
     app_debug: bool = False
@@ -61,6 +57,31 @@ class Settings(BaseSettings):
     # Quality gate — reflection critic loop
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
+
+    # Lazy expiry: an ACTIVE/WAITING_FOR_HUMAN session with no activity for this many hours is
+    # eligible to be marked EXPIRED the next time it is read.
+    session_abandoned_ttl: int = 72
+
+    # Behavior thresholds kept as settings so eval grid sweeps can vary them via env without a
+    # code edit. Values below are the calibrated defaults.
+    # low_coverage_ratio: below this the diagnosis loop treats a section as weakly covered.
+    low_coverage_ratio: float = 0.34
+    # readiness rubric (readiness.py): dimension pass floor and overall ready threshold.
+    readiness_dimension_pass: float = 0.5
+    readiness_ready_threshold: float = 0.7
+
+    # Deterministic proposal gate (validators.validate_proposal) runs before candidate readiness
+    # in write_draft. Operator rollback path — flip to False to disable the deterministic gate on
+    # draft proposals without a code revert. Mirrors enable_adaptive_diagnosis.
+    enforce_deterministic_gate: bool = True
+
+    # Adaptive diagnosis loop (orchestrator_node -> analyze_node): heuristic-gated thinking-mode
+    # selection. Operator-facing rollback path: flip to False to disable diagnosis, prompt suffixes,
+    # and judge escalation without a code revert.
+    enable_adaptive_diagnosis: bool = True
+    # Cap on LLM judge calls the diagnosis step may spend per turn escalating a heuristic
+    # high-risk classification. Mirrors max_critique_rounds' role as a cost ceiling.
+    max_diagnosis_judge_calls: int = 1
 
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000

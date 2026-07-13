@@ -1,12 +1,12 @@
 """Golden cross-artifact sync contract.
 
-A cross-artifact change marks exactly the dependent nodes stale (needs_confirmation),
-never silently rewrites them, and parks sync-debt with blocks when the user defers.
+A cross-artifact change marks exactly the dependent nodes stale (needs_confirmation)
+and never silently rewrites them.
 """
 
 import pytest
 
-from app.graphs.decision_graph import impact, park_sync_debt
+from app.graphs.decision_graph import impact
 
 pytestmark = pytest.mark.integration
 
@@ -56,21 +56,3 @@ def test_stale_nodes_not_silently_fixed(decision_graph_factory):
     assert result["stale_artifact_ids"] == ["prd"]
     assert result["decision_nodes"]["R1"]["statement"] == nodes["R1"]["statement"]
     assert result["decision_nodes"]["S1"]["statement"] == nodes["S1"]["statement"]
-
-
-def test_sync_debt_parked_with_blocks(decision_graph_factory):
-    nodes = _p5_nodes(decision_graph_factory)
-    result = impact("add delivery channel", nodes, [{"source_id": "brd", "target_id": "prd"}], _selector, "brd")
-
-    updated, debt = park_sync_debt(
-        result["decision_nodes"],
-        "Define multi-channel points accrual",
-        result["affected_node_ids"],
-        {"turn": 13, "by": "agent"},
-    )
-
-    assert debt["kind"] == "open_question"
-    assert debt["status"] == "parked"
-    assert debt["blocks"] == ["R1", "S1"]
-    assert updated["R1"]["status"] == "needs_confirmation"
-    assert updated["S1"]["status"] == "needs_confirmation"

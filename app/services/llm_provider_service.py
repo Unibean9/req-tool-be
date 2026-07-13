@@ -24,8 +24,13 @@ class ProviderUnavailableError(Exception):
     pass
 
 
+class ProviderCapabilityError(Exception):
+    pass
+
+
 SECRET_PATTERN = re.compile(r"(?:sk|key|token)-[A-Za-z0-9_\-]+")
 DEFAULT_PROVIDER_TYPE = ProviderType.OPENAI
+TOOL_CALLING_REQUIRED_MESSAGE = "Model does not support tool calling. Please use a model that supports tool calling."
 
 
 def _sanitize_error(exc: Exception) -> str:
@@ -74,6 +79,7 @@ class LLMProviderService:
             existing.last_checked_at = None
             existing.last_check_error = None
             await self.db.flush()
+            await self.db.refresh(existing)
             return existing
         await self._unset_user_default(user_id)
         values = self._values_from_key_request(body)
@@ -117,13 +123,12 @@ class LLMProviderService:
     ) -> LLMProviderConfig:
         schema = self._update_schema(body)
         config = await self.get(user_id=user_id, config_id=config_id)
-        values = {
-            "status": LLMProviderStatus.DRAFT,
-            "last_checked_at": None,
-            "last_check_error": None,
-            "is_default": True,
-        }
+        values: dict[str, Any] = {"is_default": True}
         values.update(self._values_from_update_request(schema, config))
+        if self._requires_revalidation(values, config):
+            values["status"] = LLMProviderStatus.DRAFT
+            values["last_checked_at"] = None
+            values["last_check_error"] = None
         await self._unset_user_default(user_id, exclude_id=config_id)
         if values:
             await self.db.execute(
@@ -158,6 +163,12 @@ class LLMProviderService:
             config.last_check_error = _sanitize_error(exc)
             await self.db.flush()
             raise ProviderUnavailableError(config.last_check_error) from exc
+        if tool_calling_supported is not True:
+            config.status = LLMProviderStatus.ERROR
+            config.last_checked_at = now
+            config.last_check_error = TOOL_CALLING_REQUIRED_MESSAGE
+            await self.db.flush()
+            raise ProviderCapabilityError(TOOL_CALLING_REQUIRED_MESSAGE)
         config.status = LLMProviderStatus.ACTIVE
         config.last_checked_at = now
         config.last_check_error = None
@@ -209,19 +220,38 @@ class LLMProviderService:
         return LLMProviderUpdateRequest.model_validate(body)
 
     def _values_from_key_request(self, body: LLMProviderKeyRequest) -> dict[str, Any]:
-        provider_type = body.provider_type or DEFAULT_PROVIDER_TYPE
+        provider_type = ProviderType((body.provider_type or DEFAULT_PROVIDER_TYPE).value)
         provider_name = provider_type.value
+        if provider_type == ProviderType.CUSTOM:
+            if not body.base_url or not body.model_name:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="base_url and model_name are required",
+                )
+            model_name = body.model_name
+        else:
+            model_name = body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type]
         values: dict[str, Any] = {
             "provider_type": provider_type,
             "name": provider_name,
-            "base_url": None,
+            "base_url": body.base_url if provider_type == ProviderType.CUSTOM else None,
             "region": body.region,
-            "model_name": body.model_name or DEFAULT_MODEL_BY_PROVIDER[provider_type],
+            "model_name": model_name,
             "strong_model_name": body.strong_model_name,
             "encrypted_api_key": encrypt_token(body.api_key),
             "encrypted_secret_key": encrypt_token(body.secret_key) if body.secret_key else None,
         }
         return values
+
+    # Fields the health check ping actually depends on (_ping_provider only ever reads
+    # config.model_name/region/base_url, never strong_model_name). Changing strong_model_name alone
+    # doesn't invalidate a previously-verified connection, so it shouldn't force re-verification.
+    _REVALIDATION_FIELDS = ("region", "base_url", "model_name")
+
+    def _requires_revalidation(self, values: dict[str, Any], config: LLMProviderConfig) -> bool:
+        return any(
+            field in values and values[field] != getattr(config, field) for field in self._REVALIDATION_FIELDS
+        )
 
     def _values_from_update_request(
         self, body: LLMProviderUpdateRequest, config: LLMProviderConfig
@@ -230,8 +260,22 @@ class LLMProviderService:
         values: dict[str, Any] = {}
         if "region" in sent_fields:
             values["region"] = body.region
+        if "base_url" in sent_fields:
+            if config.provider_type != ProviderType.CUSTOM:
+                raise HTTPException(
+                    status.HTTP_422_UNPROCESSABLE_CONTENT,
+                    detail="base_url is only supported for custom provider",
+                )
+            if not body.base_url:
+                raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="base_url is required")
+            values["base_url"] = body.base_url
         if "model_name" in sent_fields:
-            values["model_name"] = body.model_name or DEFAULT_MODEL_BY_PROVIDER[config.provider_type]
+            if config.provider_type == ProviderType.CUSTOM:
+                if not body.model_name:
+                    raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail="model_name is required")
+                values["model_name"] = body.model_name
+            else:
+                values["model_name"] = body.model_name or DEFAULT_MODEL_BY_PROVIDER[config.provider_type]
         if "strong_model_name" in sent_fields:
             values["strong_model_name"] = body.strong_model_name
         return values
@@ -246,10 +290,7 @@ async def _ping_provider(config: LLMProviderConfig) -> tuple[str | None, bool | 
         secret_key=secret_key,
         region=config.region,
         model=config.model_name,
+        base_url=config.base_url,
     )
-    reply = await client.ping()
-    try:
-        tool_calling_supported = await client.ping_tool_calling()
-    except Exception:
-        tool_calling_supported = None
-    return reply, tool_calling_supported
+    tool_calling_supported = await client.ping_tool_calling(settings.tool_choice_mode)
+    return None, tool_calling_supported

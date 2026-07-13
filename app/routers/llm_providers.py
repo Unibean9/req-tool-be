@@ -14,7 +14,12 @@ from app.schemas.llm_provider import (
     LLMProviderUpdateRequest,
 )
 from app.schemas.response import ApiResponse
-from app.services.llm_provider_service import CooldownError, LLMProviderService, ProviderUnavailableError
+from app.services.llm_provider_service import (
+    CooldownError,
+    LLMProviderService,
+    ProviderCapabilityError,
+    ProviderUnavailableError,
+)
 
 router = APIRouter(prefix="/users/me/llm-provider-configs", tags=["llm-providers"])
 
@@ -75,6 +80,8 @@ async def health_check_llm_provider_config(
         result = await LLMProviderService(db).health_check(user_id=user.id, config_id=config_id)
     except CooldownError as exc:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, detail=str(exc)) from exc
+    except ProviderCapabilityError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)) from exc
     except ProviderUnavailableError as exc:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
     return ok(result)

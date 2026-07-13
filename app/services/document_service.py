@@ -18,10 +18,13 @@ from app.documents.registry import (
 )
 from app.models.artifact import (
     Artifact,
+    ArtifactEvidence,
     ArtifactStatus,
     ArtifactType,
     ArtifactVersion,
     ChangeSource,
+    EvidenceSourceType,
+    SourceDocument,
     VersionStatus,
 )
 from app.schemas.document import (
@@ -44,21 +47,6 @@ class DocumentService:
             containers=[self._type_view(item) for item in all_container_types()],
             items=[self._type_view(item) for item in all_item_types()],
         )
-
-    async def get_current_item_body(
-        self,
-        *,
-        artifact_id: uuid.UUID,
-        project_id: uuid.UUID | None = None,
-    ) -> str:
-        artifact = await self.get_document_item_artifact(
-            artifact_id=artifact_id,
-            project_id=project_id,
-        )
-        if artifact.current_version_id is None:
-            return ""
-        version = await self.db.get(ArtifactVersion, artifact.current_version_id)
-        return version.body if version is not None else ""
 
     async def get_document_item_artifact(
         self,
@@ -92,6 +80,7 @@ class DocumentService:
         agent_run_id: uuid.UUID | None = None,
         tool_call_id: uuid.UUID | None = None,
         metadata: dict[str, Any] | None = None,
+        auto_evidence: list[dict[str, Any]] | None = None,
         mark_accepted: bool = False,
     ) -> tuple[Artifact, ArtifactVersion]:
         if tool_call_id is not None:
@@ -109,6 +98,12 @@ class DocumentService:
                 if mark_accepted:
                     artifact.status = ArtifactStatus.ACCEPTED
                     await self._recompute_parent_acceptance(artifact)
+                await self._persist_auto_evidence(
+                    project_id=project_id,
+                    artifact=artifact,
+                    version=existing_version,
+                    evidence_items=auto_evidence,
+                )
                 await self.db.flush()
                 return artifact, existing_version
 
@@ -140,8 +135,118 @@ class DocumentService:
         if mark_accepted:
             artifact.status = ArtifactStatus.ACCEPTED
             await self._recompute_parent_acceptance(artifact)
+        await self._persist_auto_evidence(
+            project_id=project_id,
+            artifact=artifact,
+            version=version,
+            evidence_items=auto_evidence,
+        )
         await self.db.flush()
         return artifact, version
+
+    async def _persist_auto_evidence(
+        self,
+        *,
+        project_id: uuid.UUID,
+        artifact: Artifact,
+        version: ArtifactVersion,
+        evidence_items: list[dict[str, Any]] | None,
+    ) -> None:
+        if not evidence_items:
+            return
+        existing_rows = (
+            await self.db.execute(
+                select(ArtifactEvidence).where(
+                    ArtifactEvidence.artifact_id == artifact.id,
+                    ArtifactEvidence.artifact_version_id == version.id,
+                )
+            )
+        ).scalars()
+        existing_keys = {self._auto_evidence_key(row) for row in existing_rows}
+        for raw in evidence_items:
+            item = raw if isinstance(raw, dict) else {}
+            excerpt = str(item.get("excerpt") or "").strip()
+            if not excerpt:
+                continue
+            source_document_id = self._uuid_or_none(item.get("source_document_id"))
+            raw_metadata = item.get("metadata")
+            metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            predecessor_version_id = self._uuid_or_none(
+                metadata.get("predecessor_version_id") or item.get("predecessor_version_id")
+            )
+            if source_document_id is None and predecessor_version_id is None:
+                continue
+            if source_document_id is not None:
+                document = await self.db.get(SourceDocument, source_document_id)
+                if document is None or document.project_id != project_id:
+                    continue
+            if predecessor_version_id is not None:
+                predecessor_version = await self.db.get(ArtifactVersion, predecessor_version_id)
+                if predecessor_version is None:
+                    continue
+                predecessor = await self.db.get(Artifact, predecessor_version.artifact_id)
+                if predecessor is None or predecessor.project_id != project_id:
+                    continue
+                metadata["predecessor_artifact_id"] = str(predecessor.id)
+                metadata["predecessor_version_id"] = str(predecessor_version.id)
+            locator = str(item.get("locator") or "").strip()
+            if not locator:
+                locator = (
+                    f"source_document:{source_document_id}"
+                    if source_document_id is not None
+                    else f"artifact_version:{predecessor_version_id}"
+                )
+            locator = locator[:255]
+            try:
+                source_type = EvidenceSourceType(str(item.get("source_type") or ""))
+            except ValueError:
+                source_type = (
+                    EvidenceSourceType.DOCUMENT if source_document_id is not None else EvidenceSourceType.AI_OUTPUT
+                )
+            key = (str(source_document_id or ""), str(predecessor_version_id or ""), locator)
+            if key in existing_keys:
+                continue
+            confidence = self._float_or_none(item.get("confidence"))
+            self.db.add(
+                ArtifactEvidence(
+                    artifact_id=artifact.id,
+                    artifact_version_id=version.id,
+                    source_document_id=source_document_id,
+                    source_type=source_type,
+                    locator=locator,
+                    excerpt=excerpt,
+                    confidence=confidence,
+                    extra_metadata=metadata,
+                )
+            )
+            existing_keys.add(key)
+
+    @staticmethod
+    def _auto_evidence_key(evidence: ArtifactEvidence) -> tuple[str, str, str]:
+        metadata = evidence.extra_metadata if isinstance(evidence.extra_metadata, dict) else {}
+        return (
+            str(evidence.source_document_id or ""),
+            str(metadata.get("predecessor_version_id") or ""),
+            str(evidence.locator or ""),
+        )
+
+    @staticmethod
+    def _uuid_or_none(value: Any) -> uuid.UUID | None:
+        if value in (None, ""):
+            return None
+        try:
+            return uuid.UUID(str(value))
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _float_or_none(value: Any) -> float | None:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
     async def _recompute_parent_acceptance(self, artifact: Artifact) -> None:
         if artifact.parent_id is None:
@@ -341,6 +446,15 @@ class DocumentService:
             artifact.title = body.title or artifact.title
             artifact.confidence = body.confidence
             artifact.extra_metadata = body.metadata
+
+        if artifact.current_version_id is None and body.change_source == ChangeSource.SYSTEM:
+            # Slot-reservation call (e.g. bootstrapping a focused_artifact_id for an
+            # agent session): keep the artifact versionless so repeated reservation
+            # calls before the first real draft don't clutter Version History with
+            # placeholder entries.
+            await self._recompute_parent_acceptance(artifact)
+            await self.db.flush()
+            return await self._item_view(item_type, artifact)
 
         version = ArtifactVersion(
             artifact_id=artifact.id,

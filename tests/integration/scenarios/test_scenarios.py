@@ -7,37 +7,15 @@ real judge is enabled only through an explicit environment variable.
 
 """
 
-import os
 import uuid
 
 import pytest
 
 from tests.integration.scenarios.driver import ScenarioDriver
-from tests.integration.scenarios.eval_support import mock_judge, score_artifacts
+from tests.integration.scenarios.eval_support import judge_client, score_artifacts
 from tests.integration.scenarios.library import ALL_SCENARIOS
 
-_REAL_JUDGE_ENV = "SCENARIO_USE_REAL_JUDGE"
-
-
-def _judge_client():
-    if os.getenv(_REAL_JUDGE_ENV) != "1":
-        return mock_judge()
-
-    from tests.eval.config import JudgeSettings
-    judge_settings = JudgeSettings()
-    if not judge_settings.judge_api_key:
-        pytest.skip(f"{_REAL_JUDGE_ENV}=1 nhung missing LLM_API_KEY")
-    from app.models.llm_provider import ProviderType
-    from app.services.llm_clients import LLMClientFactory
-    return LLMClientFactory.create(
-        provider_type=ProviderType(judge_settings.judge_provider),
-        api_key=judge_settings.judge_api_key,
-        model=judge_settings.judge_model,
-        region=judge_settings.judge_region,
-        secret_key=judge_settings.judge_secret_key or None,
-    )
-
-pytestmark = pytest.mark.asyncio
+pytestmark = [pytest.mark.integration, pytest.mark.evidence, pytest.mark.asyncio]
 
 # Tool-loop surfaces proposals as proposed tool calls, not chat messages; the only agent chat
 # messages are ask_user questions and respond assessments (greetings are now plain ask_user turns).
@@ -45,7 +23,7 @@ _AGENT_PAYLOAD_KINDS = {"question", "assessment"}
 
 
 @pytest.mark.parametrize("factory", ALL_SCENARIOS, ids=lambda f: f().name)
-async def test_behavior_scenario(factory, client, scenario_env, scenario_project):
+async def test_behavior_scenario(factory, client, scenario_env, scenario_project, tmp_path):
     headers, project = scenario_project
     scenario = factory()
     project_id = uuid.UUID(project["id"])
@@ -53,7 +31,8 @@ async def test_behavior_scenario(factory, client, scenario_env, scenario_project
 
     recorder = await driver.run()
     # Persist the transcript up-front so it survives even when an assertion fails.
-    recorder.write()
+    output_dir = tmp_path / "scenario-transcripts"
+    recorder.write(output_dir)
 
     # --- API contract assertions ---
     assert recorder.summary["final_status"] == scenario.expect["final_status"], (
@@ -78,7 +57,7 @@ async def test_behavior_scenario(factory, client, scenario_env, scenario_project
         assert final_snapshot["tool_calls"], f"{scenario.name}: expected a proposed write_draft tool call"
 
     # --- Eval: score produced artifacts and record into the transcript ---
-    scored = await score_artifacts(artifacts, _judge_client())
+    scored = await score_artifacts(artifacts, judge_client())
     for s in scored:
         recorder.record_eval(
             artifact_type=s["artifact_type"], title=s["title"], body=s["body"], score=s["score"]
@@ -89,5 +68,5 @@ async def test_behavior_scenario(factory, client, scenario_env, scenario_project
         mean_overall=(sum(overalls) / len(overalls)) if overalls else None,
     )
 
-    path = recorder.write()
+    path = recorder.write(output_dir)
     assert path.exists() and path.stat().st_size > 0

@@ -1,13 +1,9 @@
 """Decision graph — pure functions over dict[str, DecisionNode].
 
-Two core invariants:
-- Non-destructive: changing a decision creates a new node that supersedes the old one; the old node
-  transitions to superseded and is never deleted (full history preserved).
-- Mandatory ripple: superseding a node marks all transitive dependents stale (reconfirm) or parked (abandon).
+Core invariant: history is never rewritten — update_node refuses to touch a superseded node's status.
 
 All mutating functions return a new dict because LangGraph Command.update replaces decision_nodes
-entirely — it does not merge nested dicts. get_dependents uses a visited-set guard so cyclic graphs
-always terminate.
+entirely — it does not merge nested dicts.
 """
 
 from __future__ import annotations
@@ -15,20 +11,18 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, output_contract
+from app.documents.registry import INCOMPLETE_CELL_PLACEHOLDER, all_item_types, children_of, get_config, output_contract
 from app.graphs.state import DecisionNode
 
 # Minimum dependents before a decision node is treated as direction-setting and cascade infers abandon.
-ABANDON_THRESHOLD = 2
 MAX_SWEEP_QUESTIONS = 5
 
 VALID_KINDS = {"objective", "scope", "assumption", "decision", "risk", "open_question", "fact"}
-VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded"}
+VALID_STATUSES = {"proposed", "confirmed", "inferred", "needs_confirmation", "parked", "superseded", "dismissed"}
 
-_VALID_CASCADE_MODES = {"reconfirm", "abandon"}
 _RESOLVED_BLOCKER_STATUSES = {"confirmed", "inferred"}
 _BRD_STABLE_STATUSES = {"confirmed", "inferred"}
-_INACTIVE_STATUSES = {"parked", "superseded"}
+_INACTIVE_STATUSES = {"parked", "superseded", "dismissed"}
 
 
 def create_node(
@@ -86,82 +80,66 @@ def update_node(nodes: dict[str, DecisionNode], node_id: str, **updates: Any) ->
     return result
 
 
-def get_dependents(nodes: dict[str, DecisionNode], node_id: str, visited: set[str] | None = None) -> list[str]:
-    """Return all nodes that transitively depend on node_id by following depends_on edges.
+def synthesis_assumption_signals(decision_nodes: dict[str, DecisionNode]) -> tuple[list[str], list[str]]:
+    """Derive (confirmed, pending) assumption-like statements for draft synthesis — the sole source.
 
-    visited-set prevents infinite loops: each node is visited at most once even in cyclic graphs.
+    Pending = anything still awaiting the user: needs_confirmation nodes (any kind, so a supersede
+    cascade's stale dependents still block readiness) plus open_questions that are neither parked
+    (deferred) nor resolved (confirmed/inferred). Confirmed = assumption nodes marked confirmed.
     """
-    if visited is None:
-        visited = set()
-    visited.add(node_id)
-    dependents: list[str] = []
-    for candidate_id, node in nodes.items():
-        if candidate_id in visited:
-            continue
-        if node_id in node.get("depends_on", []):
-            visited.add(candidate_id)
-            dependents.append(candidate_id)
-            dependents.extend(get_dependents(nodes, candidate_id, visited))
-    return dependents
+    confirmed: list[str] = []
+    pending: list[str] = []
+    for node in (decision_nodes or {}).values():
+        status = node.get("status")
+        kind = node.get("kind")
+        statement = node.get("statement") or ""
+        if status == "needs_confirmation":
+            pending.append(statement)
+        elif kind == "open_question" and status in {"proposed", None}:
+            pending.append(statement)
+        elif kind == "assumption" and status == "confirmed":
+            confirmed.append(statement)
+    return confirmed, pending
 
 
-def infer_cascade_mode(nodes: dict[str, DecisionNode], node_id: str) -> str:
-    """Infer cascade mode when the agent does not supply it explicitly.
-
-    abandon when the node is a direction-setting decision (kind=decision, root or >= ABANDON_THRESHOLD
-    dependents); reconfirm otherwise (local edit — the branch is still valid but must be re-confirmed).
-    """
-    node = nodes[node_id]
-    dependent_count = len(get_dependents(nodes, node_id))
-    is_direction = node.get("kind") == "decision" and (
-        not node.get("depends_on") or dependent_count >= ABANDON_THRESHOLD
+def _statement_present(decision_nodes: dict[str, DecisionNode], kind: str, statement: str) -> bool:
+    normalized = _normalize_statement(statement)
+    return any(
+        node.get("kind") == kind and _normalize_statement(node.get("statement", "")) == normalized
+        for node in decision_nodes.values()
     )
-    return "abandon" if is_direction else "reconfirm"
 
 
-def supersede_node(
-    nodes: dict[str, DecisionNode],
-    old_id: str,
-    new_statement: str,
+def migrate_legacy_notes(
+    decision_nodes: dict[str, DecisionNode],
+    assumptions: list[dict[str, Any]] | None,
+    open_questions: list[dict[str, Any]] | None,
     origin: dict[str, Any],
-    cascade_mode: str | None = None,
-) -> dict[str, DecisionNode]:
-    """Reverse a decision non-destructively and ripple the change to dependents.
+) -> tuple[dict[str, DecisionNode], int]:
+    """One-time migration of legacy state-field entries into decision nodes.
 
-    Creates a new node that supersedes old_id; old_id transitions to superseded. cascade_mode defaults
-    to the result of infer_cascade_mode (agent can override by passing explicitly): reconfirm marks
-    dependents needs_confirmation (stale but recoverable); abandon marks them parked (branch suspended).
+    A resumed legacy checkpoint may carry assumptions/open_questions in the dropped state fields with
+    no matching node. Each such entry becomes a node — assumptions needs_confirmation (agent-authored,
+    not user-confirmed: audit D3), open_questions proposed — so nothing is lost. Entries that already
+    have a statement-matching node of the same kind are skipped (idempotent across repeated loads).
     """
-    if old_id not in nodes:
-        raise KeyError(f"node {old_id!r} not found")
-    if cascade_mode is None:
-        cascade_mode = infer_cascade_mode(nodes, old_id)
-    if cascade_mode not in _VALID_CASCADE_MODES:
-        raise ValueError(f"invalid cascade_mode: {cascade_mode!r}")
-
-    dependents = get_dependents(nodes, old_id, visited=set())
-    result = _clone(nodes)
-    new_node = create_node(
-        kind=result[old_id]["kind"],
-        statement=new_statement,
-        origin=origin,
-        depends_on=list(result[old_id].get("depends_on", [])),
-        supersedes=old_id,
-        section=result[old_id].get("section"),
-        fields=result[old_id].get("fields"),
-    )
-    result[new_node["id"]] = new_node
-    result[old_id]["status"] = "superseded"
-    result[old_id]["superseded_by"] = new_node["id"]
-
-    dependent_status = "parked" if cascade_mode == "abandon" else "needs_confirmation"
-    for dependent_id in dependents:
-        # A superseded dependent is frozen history; rippling it would resurrect a dead node and
-        # rewrite history (Invariant 1). update_node guards the same case; impact() skips it too.
-        if result[dependent_id]["status"] == "superseded":
+    result = _clone(decision_nodes)
+    migrated = 0
+    for entry in assumptions or []:
+        statement = str(entry.get("statement") or "").strip()
+        if not statement or _statement_present(result, "assumption", statement):
             continue
-        result[dependent_id]["status"] = dependent_status
-    return result
+        node = create_node(kind="assumption", statement=statement, origin=origin, status="needs_confirmation")
+        result[node["id"]] = node
+        migrated += 1
+    for entry in open_questions or []:
+        statement = str(entry.get("question") or "").strip()
+        if not statement or _statement_present(result, "open_question", statement):
+            continue
+        node = create_node(kind="open_question", statement=statement, origin=origin, status="proposed")
+        result[node["id"]] = node
+        migrated += 1
+    return result, migrated
 
 
 def scan_parked_questions(decision_nodes: dict[str, DecisionNode]) -> list[DecisionNode]:
@@ -199,24 +177,45 @@ _BRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
     ("risk", "Need the main BRD risk."),
 )
 
-_PRD_SWEEP_GAPS: tuple[tuple[str, str], ...] = (
-    ("actor", "Actor: identify customers and staff acting in the flow."),
-    ("flow", "Main flow: describe each processing step from start to finish."),
-    ("rule", "Business rule: define point accrual rules and point conditions."),
-    # Each edge-case keys on its own distinctive phrase, not a shared "edge_case" marker, so coverage
-    # of one does not suppress the others (they map to separate PRD checklist items).
-    ("retroactive accrual", "Edge-case: customer forgot phone number at purchase -> can points be added later?"),
-    ("merge history", "Edge-case: customer changes phone number -> how is history merged?"),
-    ("expiration", "Edge-case: does the free voucher expire?"),
-)
-
-
 def _gap_present(decision_nodes: dict[str, DecisionNode], marker: str) -> bool:
     active_nodes = [node for node in decision_nodes.values() if node.get("status") not in {"parked", "superseded"}]
     if marker in VALID_KINDS:
         return any(node.get("kind") == marker for node in active_nodes)
+    if marker in _ITEM_TYPES:
+        marker_texts = {_normalize_statement(marker.replace("_", " "))}
+        try:
+            config = get_config(marker)
+        except ValueError:
+            config = None
+        if config is not None:
+            marker_texts.add(_normalize_statement(config.label))
+            marker_texts.add(_normalize_statement(config.description))
+        return any(
+            any(
+                text
+                and (
+                    text in _normalize_statement(node.get("section", ""))
+                    or text in _normalize_statement(node.get("statement", ""))
+                )
+                for text in marker_texts
+            )
+            for node in active_nodes
+        )
     marker_text = marker.replace("_", " ")
     return any(marker_text in _normalize_statement(node.get("statement", "")) for node in active_nodes)
+
+
+def _registry_sweep_gaps(container_type: str) -> tuple[tuple[str, str], ...]:
+    """Derive container sweep gaps from the document registry instead of scenario fixtures."""
+    try:
+        children = children_of(container_type)
+    except ValueError:
+        return ()
+    gaps: list[tuple[str, str]] = []
+    for child_type in children:
+        config = get_config(child_type)
+        gaps.append((child_type, f"Need {config.label} for the {container_type.upper()}: {config.description}"))
+    return tuple(gaps)
 
 
 def completeness_sweep(
@@ -229,7 +228,7 @@ def completeness_sweep(
     Only produces descriptions; the caller decides whether to create parked nodes or inject into the
     prompt. Dedup is exact (normalized statement match), not LLM similarity.
     """
-    template = _PRD_SWEEP_GAPS if artifact_type == "prd" else _BRD_SWEEP_GAPS
+    template = _BRD_SWEEP_GAPS if artifact_type == "brd" else _registry_sweep_gaps(artifact_type)
     existing_questions = {
         _normalize_statement(node.get("statement", ""))
         for node in decision_nodes.values()
@@ -322,11 +321,6 @@ def _default_impact_selector(change_description: str, decision_nodes: dict[str, 
         statement = _normalize_statement(node.get("statement", ""))
         if tokens and any(token in statement for token in tokens):
             affected.append(node_id)
-            continue
-        if any(
-            token in normalized_change for token in ("handoff", "channel", "kenh", "delivery", "multi-channel")
-        ) and any(token in statement for token in ("cashier", "tai quay", "at counter", "customers/day", "1 visit")):
-            affected.append(node_id)
     return affected
 
 
@@ -375,24 +369,6 @@ def impact(
         "stale_artifact_ids": stale_artifact_ids,
         "visited_artifact_ids": visited_artifact_ids,
     }
-
-
-def park_sync_debt(
-    decision_nodes: dict[str, DecisionNode],
-    question: str,
-    affected_node_ids: list[str],
-    origin: dict[str, Any],
-) -> tuple[dict[str, DecisionNode], DecisionNode]:
-    """Record a sync debt as a parked open_question whose blocks point to the stale nodes."""
-    node = create_node(
-        kind="open_question",
-        statement=question,
-        origin=origin,
-        status="parked",
-        blocks=[node_id for node_id in affected_node_ids if node_id in decision_nodes],
-    )
-    updated = {**_clone(decision_nodes), node["id"]: node}
-    return updated, node
 
 
 # Status sets driving the projection: superseded never renders; parked folds into its own section;
@@ -493,7 +469,11 @@ def _render_table(nodes: list[DecisionNode], columns: tuple[str, ...], id_prefix
     for index, node in enumerate(nodes, start=1):
         fields = node.get("fields") or {}
         cells = [
-            f"{id_prefix}-{index:02d}" if _is_auto_id(column, id_prefix) else _markdown_cell(_field_value(fields, column))
+            (
+                f"{id_prefix}-{index:02d}"
+                if _is_auto_id(column, id_prefix)
+                else _markdown_cell(_field_value(fields, column))
+            )
             for column in columns
         ]
         content_indexes = [i for i, column in enumerate(columns) if not _is_auto_id(column, id_prefix)]
@@ -555,6 +535,45 @@ def _render_contract_view(decision_nodes: dict[str, DecisionNode], artifact_type
         blocks.append("## Parked\n" + "\n".join(lines))
 
     return "\n\n".join(blocks)
+
+
+def _node_map_entry(section: str, rendered_tag: str | None) -> dict[str, str | None]:
+    return {"section": section, "rendered_tag": rendered_tag}
+
+
+def render_node_map(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> dict[str, dict[str, str | None]]:
+    """Map rendered decision nodes to their output section and trace tag, using render_view ordering."""
+    result: dict[str, dict[str, str | None]] = {}
+    active = [n for n in decision_nodes.values() if n.get("status") in _ACTIVE_STATUSES]
+    parked = [n for n in decision_nodes.values() if n.get("status") == "parked"]
+
+    if artifact_type in _ITEM_TYPES:
+        contract = output_contract(artifact_type)
+        by_heading = {heading: [] for heading in contract.required_headings}
+        for node in active:
+            by_heading[_resolve_contract_heading(node, contract.required_headings)].append(node)
+        for heading in contract.required_headings:
+            for index, node in enumerate(by_heading[heading], start=1):
+                node_id = str(node.get("id") or "").strip()
+                if not node_id:
+                    continue
+                rendered_tag = f"{contract.id_prefix}-{index:02d}" if contract.id_prefix else None
+                result[node_id] = _node_map_entry(heading, rendered_tag)
+    else:
+        sections = _SECTION_TEMPLATES.get(artifact_type, _BRD_SECTIONS)
+        for heading, kinds in sections:
+            for node in active:
+                if node.get("kind") not in kinds:
+                    continue
+                node_id = str(node.get("id") or "").strip()
+                if node_id:
+                    result[node_id] = _node_map_entry(f"## {heading}", None)
+
+    for node in parked:
+        node_id = str(node.get("id") or "").strip()
+        if node_id:
+            result[node_id] = _node_map_entry("## Parked", None)
+    return result
 
 
 def render_view(decision_nodes: dict[str, DecisionNode], artifact_type: str) -> str:

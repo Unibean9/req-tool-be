@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.graphs.policy import governed
-from app.models.artifact import Artifact, ArtifactLink, ArtifactType
+from app.models.artifact import Artifact, ArtifactLink, ArtifactType, SourceDocument
 
 
 def _is_known_artifact_type(artifact_type: str) -> bool:
@@ -17,10 +17,16 @@ async def read_artifacts(
     *,
     db: AsyncSession,
     project_id: uuid.UUID,
-    artifact_type: str | None = None,
+    artifact_type: str | list[str] | None = None,
 ) -> list[dict]:
     query = select(Artifact).where(Artifact.project_id == project_id)
-    if artifact_type:
+    if isinstance(artifact_type, list):
+        # Batch the whole ancestor-type chain into one round trip instead of one query per type.
+        known_types = [item for item in artifact_type if _is_known_artifact_type(item)]
+        if not known_types:
+            return []
+        query = query.where(Artifact.type.in_(known_types))
+    elif artifact_type:
         if not _is_known_artifact_type(artifact_type):
             return []
         query = query.where(Artifact.type == artifact_type)
@@ -28,9 +34,10 @@ async def read_artifacts(
     return [
         {
             "id": str(row.id),
-            "type": row.type,
+            "type": row.type.value if hasattr(row.type, "value") else str(row.type),
             "title": row.title,
-            "status": row.status,
+            "status": row.status.value if hasattr(row.status, "value") else str(row.status),
+            "current_version_id": str(row.current_version_id) if row.current_version_id else None,
         }
         for row in rows
     ]
@@ -91,38 +98,55 @@ async def read_current_body(
     row = (await db.execute(query)).scalars().first()
     if row is None or row.current_version is None:
         return None
-    return {"artifact_id": str(row.id), "title": row.title, "body": row.current_version.body}
-
-
-# The parameters below define each tool's schema (introspected by the agent);
-# the body is never executed because @governed intercepts the call. ARG001 is
-# therefore a false positive on these signature-only stubs.
-@governed
-async def create_artifact(
-    *,
-    artifact_type: str,  # noqa: ARG001
-    title: str,  # noqa: ARG001
-    body: str,  # noqa: ARG001
-    rationale: str = "",  # noqa: ARG001
-) -> dict:  # pragma: no cover — always intercepted by governed
-    return {}
+    return {
+        "artifact_id": str(row.id),
+        "artifact_type": row.type.value if hasattr(row.type, "value") else str(row.type),
+        "current_version_id": str(row.current_version.id),
+        "title": row.title,
+        "body": row.current_version.body,
+    }
 
 
 @governed
-async def update_artifact(
+async def read_source_documents(
     *,
-    artifact_id: str,  # noqa: ARG001
-    title: str | None = None,  # noqa: ARG001
-    body: str | None = None,  # noqa: ARG001
-) -> dict:  # pragma: no cover
-    return {}
+    db: AsyncSession,
+    project_id: uuid.UUID,
+    source_document_ids: list[uuid.UUID] | None = None,
+    limit: int = 3,
+    max_chars: int = 8000,
+) -> list[dict]:
+    """Return bounded source-document excerpts on demand.
 
-
-@governed
-async def create_artifact_link(
-    *,
-    source_id: str,  # noqa: ARG001
-    target_id: str,  # noqa: ARG001
-    relation_type: str,  # noqa: ARG001
-) -> dict:  # pragma: no cover
-    return {}
+    Source documents can be large, so analyzer context gets title/id discovery
+    from the tool surface and content only when this helper is called.
+    """
+    safe_limit = max(1, min(int(limit or 1), 10))
+    safe_max_chars = max(1, int(max_chars or 1))
+    ids = list(source_document_ids or [])[:safe_limit]
+    query = select(SourceDocument).where(SourceDocument.project_id == project_id)
+    if ids:
+        query = query.where(SourceDocument.id.in_(ids))
+    else:
+        query = query.order_by(SourceDocument.created_at.desc(), SourceDocument.id).limit(safe_limit)
+    rows = (await db.execute(query)).scalars().all()
+    if ids:
+        order = {item: index for index, item in enumerate(ids)}
+        rows = sorted(rows, key=lambda row: order.get(row.id, len(order)))
+    documents: list[dict] = []
+    for row in rows[:safe_limit]:
+        content = row.content_text or ""
+        excerpt = content[:safe_max_chars]
+        documents.append(
+            {
+                "id": str(row.id),
+                "title": row.title,
+                "source_type": row.source_type.value if hasattr(row.source_type, "value") else str(row.source_type),
+                "locator": row.locator,
+                "excerpt": excerpt,
+                "truncated": len(content) > safe_max_chars,
+                "content_hash": row.content_hash,
+                "size_bytes": row.size_bytes,
+            }
+        )
+    return documents
