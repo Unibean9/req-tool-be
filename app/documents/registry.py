@@ -647,14 +647,6 @@ def item_configs(container_type: str) -> tuple[DocumentTypeConfig, ...]:
     return tuple(get_config(item_type) for item_type in children_of(container_type))
 
 
-def item_description(item_type: str) -> str:
-    return get_config(item_type).description
-
-
-def item_label(item_type: str) -> str:
-    return get_config(item_type).label
-
-
 def status_score(status: Any) -> float:
     if status == "filled":
         return 1.0

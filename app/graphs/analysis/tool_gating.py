@@ -1,29 +1,36 @@
-"""Tool-menu schemas, the post-LLM solo-invariant gate, and dispatch-time arg coercion."""
+"""Tool-menu schemas, the post-LLM solo-invariant gate, and dispatch-time arg coercion.
+
+`agent_tools` is imported as a module reference (`from app.graphs import agent_tools`,
+attributes resolved lazily at call time as `agent_tools.<name>`) rather than importing
+specific names out of it, for the same reason `gating/menu_rules.py` does the same for
+`agent_tools`: `agent_tools.py` imports `app.graphs.gating.menu_rules`, which imports
+`app.graphs.gating.dispatch_rules`, which imports this module — a name import here
+(`from app.graphs.agent_tools import current_session_phase`) would fail whenever this
+module's import is triggered mid-way through `agent_tools.py`'s own load.
+"""
 
 from typing import Any
 
 from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 
-from app.graphs.agent_tools import current_session_phase
-from app.graphs.gate_logging import log_gate_decision
+from app.graphs import agent_tools
+from app.graphs.gating import Mode, check, check_batch, menu_rules
 from app.graphs.lifecycle_context import lifecycle_blocked_tool_names
 from app.graphs.session_phase import phase_allows
 from app.graphs.state import WorkflowState
 from app.graphs.tool_metadata import interrupt_bearing_tools, side_effect_free_note_tools
 
-# Tool impls now reject empty required args via a ToolMessage error, so this table no longer drives
-# dispatch; it survives only as the required-arg contract that the intent_gate eval and unit tests assert.
-_TOOL_REQUIRED_ARGS = {
-    "write_draft": ["body"],
-    "finalize": ["summary"],
-    "run_critique": ["mode"],
-    "confirm_intent": ["summary"],
-}
-
 # Injected tool params are runtime wiring (LangGraph fills them), never LLM-visible args — strip
 # them from the schema passed to the provider so the model only sees real arguments.
 _INJECTED_TOOL_PARAMS = frozenset({"state", "config", "tool_call_id"})
+
+
+def required_args(tool: BaseTool) -> list[str]:
+    """Required LLM-visible args derived from the tool's schema (injected params stripped)."""
+    raw = tool.args_schema.model_json_schema() if tool.args_schema else {}
+    return [r for r in (raw.get("required") or []) if r not in _INJECTED_TOOL_PARAMS]
+
 
 _COERCED_ASK_FALLBACK_BY_LOCALE = {
     "vi": (
@@ -75,7 +82,7 @@ def gate_model_selection(
     next_feedback, out_of_phase_tools)."""
     model_tool_calls = _model_tool_calls(ai_message)
     raw_tools = [_tool_call_for_gate(tc) for tc in model_tool_calls]
-    phase = current_session_phase(state)
+    phase = agent_tools.current_session_phase(state)
     out_of_phase_tools = [
         str(item.get("name") or "") for item in raw_tools if not phase_allows(phase, str(item.get("name") or ""))
     ]
@@ -224,72 +231,42 @@ def _dropped_tool_names(requested: list[dict], kept: list[dict]) -> list[str]:
 def _gate_selected_tools(_state: WorkflowState, requested: list[dict]) -> list[dict]:
     """Enforce the ToolNode safety invariants without picking a tool on the model's behalf.
 
-    Two rules: (1) the session-phase menu — a tool the current phase excludes is dropped with the
-    phase named (the model gets the reason via feedback next turn); (2) solo enforcement for
-    interrupt-bearing tools: keep the first interrupt plus side-effect-free notes, drop the rest.
-    Tools still decide unavailable/missing-arg via a tool_result error.
+    Two rules: (1) the session-phase + lifecycle menu — a tool the current phase excludes, or that
+    the focused artifact's lifecycle state blocks, is dropped (the model gets the reason via feedback
+    next turn); (2) solo enforcement for interrupt-bearing tools: keep the first interrupt plus
+    side-effect-free notes, drop the rest. Tools still decide unavailable/missing-arg via a
+    tool_result error.
+
+    Both rules are evaluated through the Policy layer (`app.graphs.gating`): phase+lifecycle via
+    `PhaseLifecycleMenuRule(mode=Mode.DISPATCH)` (registered for `Mode.DISPATCH`), solo enforcement
+    via `SoloInvariantBatchRule` (a batch rule). This function still owns the `dropped_out_of_phase_tool`
+    logging (the rule deliberately stays silent on phase exclusion — see that rule's docstring) and
+    stays silent when the rule denies for a lifecycle reason, since the rule itself already logged
+    `log_gate_decision("lifecycle_tool_gate", ...)` in that case.
     """
+    menu_rules.ensure_dispatch_rules_registered()
+
     # Normalize to a stable dispatch shape; the model's chosen tools are never substituted.
     validated = [_tool_call_for_gate(item) for item in requested]
 
-    # Per-phase menu enforcement (defense in depth — the provider only sees in-phase schemas, but
-    # replayed/edited selections can still arrive here out of phase).
-    phase = current_session_phase(_state)
-    in_phase: list[dict] = []
+    # Per-phase + per-lifecycle enforcement (defense in depth — the provider only sees in-phase
+    # schemas, but replayed/edited selections can still arrive here out of phase or lifecycle-blocked).
+    phase = agent_tools.current_session_phase(_state)
+    survivors: list[dict] = []
     for item in validated:
-        if phase_allows(phase, item["name"]):
-            in_phase.append(item)
-        else:
+        verdict = check({"name": item["name"], "args": item["args"], "phase": phase}, _state, Mode.DISPATCH)
+        if verdict.is_allow:
+            survivors.append(item)
+        elif verdict.reason == "phase_excludes_tool":
             _log_tool_error(
                 "dropped_out_of_phase_tool",
                 item["name"],
                 f"dropped: not available in session phase '{phase}'",
             )
-    validated = in_phase
-
-    lifecycle_blocked = lifecycle_blocked_tool_names(_state, validated)
-    if lifecycle_blocked:
-        blocked_by_name = {item["name"]: item for item in lifecycle_blocked}
-        kept_after_lifecycle: list[dict] = []
-        for item in validated:
-            blocked = blocked_by_name.get(item["name"])
-            if blocked is None:
-                kept_after_lifecycle.append(item)
-                continue
-            log_gate_decision(
-                "lifecycle_tool_gate",
-                "blocked",
-                reason=blocked["reason"],
-                extra={"tool": item["name"], "lifecycle_state": blocked["state"]},
-            )
-        validated = kept_after_lifecycle
+        # else: a lifecycle reason string — the rule already logged
+        # `log_gate_decision("lifecycle_tool_gate", ...)`; do not log again here.
 
     # Solo enforcement: at most one interrupt-bearing tool per turn (two interrupts in a node is
     # unsafe). When one is present, keep it plus any side-effect-free notes (so their structured facts
     # persist this turn) and drop everything else, preserving original order.
-    if any(item["name"] in _INTERRUPT_BEARING_TOOLS for item in validated):
-        kept: list[dict] = []
-        seen_interrupt = False
-        for item in validated:
-            name = item["name"]
-            if name in _INTERRUPT_BEARING_TOOLS:
-                if not seen_interrupt:
-                    kept.append(item)
-                    seen_interrupt = True
-                else:
-                    _log_tool_error(
-                        "dropped_interrupt_tool",
-                        name,
-                        "dropped: an interrupt-bearing tool was already selected this turn",
-                    )
-            elif name in _SIDE_EFFECT_FREE_NOTE_TOOLS:
-                kept.append(item)
-            else:
-                _log_tool_error(
-                    "dropped_with_interrupt_tool",
-                    name,
-                    "dropped: paired with an interrupt-bearing tool",
-                )
-        return kept
-
-    return validated
+    return check_batch(survivors, _state)

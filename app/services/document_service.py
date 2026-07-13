@@ -48,21 +48,6 @@ class DocumentService:
             items=[self._type_view(item) for item in all_item_types()],
         )
 
-    async def get_current_item_body(
-        self,
-        *,
-        artifact_id: uuid.UUID,
-        project_id: uuid.UUID | None = None,
-    ) -> str:
-        artifact = await self.get_document_item_artifact(
-            artifact_id=artifact_id,
-            project_id=project_id,
-        )
-        if artifact.current_version_id is None:
-            return ""
-        version = await self.db.get(ArtifactVersion, artifact.current_version_id)
-        return version.body if version is not None else ""
-
     async def get_document_item_artifact(
         self,
         *,
@@ -461,6 +446,15 @@ class DocumentService:
             artifact.title = body.title or artifact.title
             artifact.confidence = body.confidence
             artifact.extra_metadata = body.metadata
+
+        if artifact.current_version_id is None and body.change_source == ChangeSource.SYSTEM:
+            # Slot-reservation call (e.g. bootstrapping a focused_artifact_id for an
+            # agent session): keep the artifact versionless so repeated reservation
+            # calls before the first real draft don't clutter Version History with
+            # placeholder entries.
+            await self._recompute_parent_acceptance(artifact)
+            await self.db.flush()
+            return await self._item_view(item_type, artifact)
 
         version = ArtifactVersion(
             artifact_id=artifact.id,

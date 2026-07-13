@@ -93,6 +93,15 @@ async def _invoke_judge(body: str, mode: str, llm_client: Any = None) -> dict[st
 
         log_gate_decision("judge_unparseable", "degraded", reason=type(exc).__name__)
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": ["judge_unparseable"]}
+    except Exception as exc:
+        # Same contract for provider-side failures (network errors, timeouts, provider SDK
+        # exceptions): degrade to an empty report — score 0.0 fails the quality gate so the model
+        # must revise, which is the fail-safe path. Cancellation (BaseException) still propagates
+        # so the turn-timeout mechanism keeps working.
+        from app.graphs.gate_logging import log_gate_decision
+
+        log_gate_decision("judge_provider_error", "degraded", reason=type(exc).__name__)
+        return {"mode": mode, "score": 0.0, "findings": [], "suggestions": ["judge_provider_error"]}
     if not isinstance(result, dict):
         return {"mode": mode, "score": 0.0, "findings": [], "suggestions": []}
     return {

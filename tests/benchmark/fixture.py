@@ -9,7 +9,6 @@ conversation script.
 
 import json
 import os
-import re
 import time
 import uuid
 from pathlib import Path
@@ -113,20 +112,9 @@ async def record_runs(client, scenario_env, scenario_project, runs: int) -> list
     return all_runs
 
 
-_RAW_JSON_RE = re.compile(r"```json\n(.*?)\n```", re.DOTALL)
-
-
 def raw_runs_block(all_runs: list[list[dict[str, Any]]], heading: str) -> list[str]:
-    """Render the raw per-run JSON block that :func:`load_recorded_runs` reads back."""
+    """Render the raw per-run JSON block for the evidence report."""
     return [f"## {heading}", "", "```json", json.dumps(all_runs, indent=2), "```", ""]
-
-
-def load_recorded_runs(path: Path) -> list[list[dict[str, Any]]]:
-    """Re-read the raw per-run data embedded in a previously recorded report."""
-    match = _RAW_JSON_RE.search(path.read_text(encoding="utf-8"))
-    if not match:
-        raise AssertionError(f"could not find raw JSON block in {path}")
-    return json.loads(match.group(1))
 
 
 def aggregate_runs(all_runs: list[list[dict[str, Any]]]) -> dict[str, dict[str, float]]:

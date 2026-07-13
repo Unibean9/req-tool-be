@@ -6,7 +6,6 @@ from langchain_core.messages import AIMessage
 from sqlalchemy import select
 
 from app.graphs.decision_graph import create_node
-from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentMessage,
     AgentRun,
@@ -129,11 +128,9 @@ async def test_analyze_node_audit_omits_tool_body_from_agent_run(client, db_sess
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_binds_only_available_tool_schemas(client, db_session, monkeypatch):
+async def test_analyze_node_binds_only_available_tool_schemas(client, db_session):
     """Tool schema sent to the LLM must match the state menu, not bind the full registry."""
     from app.graphs.nodes import analyze_node
-
-    monkeypatch.setattr("app.graphs.agent_tools.settings.decision_graph_enabled", True)
 
     headers = await make_auth_headers(client)
     org = await create_org(client, headers)
@@ -151,9 +148,7 @@ async def test_analyze_node_binds_only_available_tool_schemas(client, db_session
     await analyze_node(state, config)
 
     tool_names = {tool["name"] for tool in mock_llm.generate.call_args.kwargs["tools"]}
-    assert "create_decision_node" in tool_names
-    assert "update_decision_node" not in tool_names
-    assert "supersede_decision_node" not in tool_names
+    assert "ask_user" in tool_names
     assert "run_critique" not in tool_names
     assert "run_readiness_check" not in tool_names
     assert "finalize" not in tool_names
@@ -268,18 +263,6 @@ async def test_analyze_node_feeds_predecessor_artifacts_into_prompt(client, db_s
 
     prompt = mock_llm.generate.call_args.kwargs["messages"][0]["content"]
     assert use_case_title in prompt, "Predecessor use_case title must appear in the analyst prompt context"
-
-
-def test_output_contract_block_lists_sections_for_graph_view():
-    from app.graphs.nodes import _build_output_contract_block
-
-    block = _build_output_contract_block(_state(artifact_type="vision_objectives"))
-
-    # Graph-first per-turn block carries only artifact-specific sections + framing; the
-    # recording/status/no-fabrication policy lives in the system prompt (layers 05/10), not here.
-    assert "decision graph" in block
-    assert "do not hand-write the Markdown body" in block
-    assert "## Vision" in block
 
 
 @pytest.mark.asyncio
@@ -1455,63 +1438,9 @@ async def test_analyze_node_sends_diff_then_omits_unchanged_draft_across_turns(c
 # Decision graph as live draft source
 # ---------------------------------------------------------------------------
 
-def test_build_prompt_includes_decision_view_block_when_nodes_present():
-    from app.graphs.nodes import _build_tool_selection_prompt
-
-    state = _state(artifact_type="problem")
-    state["locale"] = "vi"  # populate language_lock so the ordering assert is meaningful
-    state["decision_nodes"] = {
-        "N1": create_node(
-            kind="fact",
-            statement="Sinh vien trung study scheduling voi gio lam them.",
-            origin={"source": "test"},
-            status="confirmed",
-        )
-    }
-
-    prompt = _build_tool_selection_prompt(state, [])
-
-    assert "DRAFT IN PROGRESS" in prompt
-    assert "Sinh vien trung study scheduling voi gio lam them." in prompt
-    # The running draft must precede the language lock (kept last by contract).
-    assert prompt.index("DRAFT IN PROGRESS") < prompt.index("language 'vi'")
-
-
-def test_build_prompt_hides_persisted_draft_when_decision_view_covers_contract():
-    from app.graphs.nodes import _build_tool_selection_prompt
-
-    state = _state(artifact_type="vision_objectives")
-    state["decision_nodes"] = {
-        "N1": create_node(
-            kind="objective",
-            statement="Sinh vien can xem ton kho realtime.",
-            origin={"source": "test"},
-            status="confirmed",
-            section="## Vision",
-        ),
-        "N2": create_node(
-            kind="objective",
-            statement="Giam thoi gian kiem tra hang ton.",
-            origin={"source": "test"},
-            status="confirmed",
-            section="## Objectives",
-        ),
-        "N3": create_node(
-            kind="objective",
-            statement="Do thoi gian lay du lieu ton kho.",
-            origin={"source": "test"},
-            status="confirmed",
-            section="## Success Metrics",
-        ),
-    }
-
-    prompt = _build_tool_selection_prompt(state, [], "NOI DUNG DRAFT CU KHONG DUOC GUI")
-
-    assert "Sinh vien can xem ton kho realtime." in prompt
-    assert "NOI DUNG DRAFT CU KHONG DUOC GUI" not in prompt
-
-
-def test_build_prompt_keeps_persisted_draft_when_decision_view_is_partial():
+def test_build_prompt_keeps_persisted_draft_regardless_of_decision_nodes():
+    """decision_nodes content is never rendered into the per-turn prompt; the persisted draft
+    body is the only live-draft source now, regardless of what decision_nodes holds."""
     from app.graphs.nodes import _build_tool_selection_prompt
 
     state = _state(artifact_type="vision_objectives")
@@ -1534,8 +1463,9 @@ def test_build_prompt_keeps_persisted_draft_when_decision_view_is_partial():
 
     prompt = _build_tool_selection_prompt(state, [], draft_body)
 
-    assert "Sinh vien can xem ton kho realtime." in prompt
+    assert "Sinh vien can xem ton kho realtime." not in prompt
     assert "CURRENT DRAFT" in prompt
+    assert draft_body in prompt
     assert draft_body in prompt
 
 
@@ -1548,69 +1478,6 @@ def test_build_prompt_no_decision_view_block_when_nodes_absent():
 
     assert "DRAFT IN PROGRESS" not in _build_tool_selection_prompt(state, [])
     assert _build_tool_selection_prompt(state, []) == baseline
-
-
-# ---------------------------------------------------------------------------
-# P7: cross-turn cache for _build_decision_view_block
-# ---------------------------------------------------------------------------
-
-def _decision_state(statement: str) -> WorkflowState:
-    state = _state(artifact_type="problem")
-    state["decision_nodes"] = {
-        "N1": create_node(
-            kind="fact",
-            statement=statement,
-            origin={"source": "test"},
-            status="confirmed",
-        )
-    }
-    return state
-
-
-def test_decision_view_block_cache_hit_skips_render_view():
-    from app.graphs import decision_graph
-    from app.graphs.nodes import _build_decision_view_block
-
-    session_id = f"cache-test-{uuid.uuid4()}"
-    state = _decision_state("Sinh vien can lich hoc linh hoat.")
-
-    with patch.object(decision_graph, "render_view", wraps=decision_graph.render_view) as spy:
-        first = _build_decision_view_block(state, session_id)
-        assert spy.call_count == 1
-        second = _build_decision_view_block(state, session_id)
-        assert spy.call_count == 1  # cache hit: render_view not called again
-        assert first == second
-
-
-def test_decision_view_block_mutation_invalidates_cache():
-    from app.graphs import decision_graph
-    from app.graphs.nodes import _build_decision_view_block
-
-    session_id = f"cache-test-{uuid.uuid4()}"
-    state = _decision_state("Sinh vien can lich hoc linh hoat.")
-
-    with patch.object(decision_graph, "render_view", wraps=decision_graph.render_view) as spy:
-        first = _build_decision_view_block(state, session_id)
-        assert spy.call_count == 1
-
-        mutated_state = _decision_state("Sinh vien can bao cao tien do hang tuan.")
-        second = _build_decision_view_block(mutated_state, session_id)
-        assert spy.call_count == 2  # content changed -> recompute, not a stale hit
-        assert first != second
-
-
-def test_decision_view_block_cached_output_matches_uncached_output():
-    """Parity: cached path renders byte-identical output to the uncached path for the same input."""
-    from app.graphs.nodes import _build_decision_view_block
-
-    state = _decision_state("Sinh vien can lich hoc linh hoat.")
-
-    uncached = _build_decision_view_block(state, None)
-    session_id = f"cache-test-{uuid.uuid4()}"
-    cached_first_call = _build_decision_view_block(state, session_id)
-    cached_second_call = _build_decision_view_block(state, session_id)
-
-    assert uncached == cached_first_call == cached_second_call
 
 
 @pytest.mark.asyncio
@@ -1893,20 +1760,19 @@ def test_build_graph_returns_compiled_graph_without_error():
 
 
 def test_artifact_contract_block_carries_sections_and_taxonomy():
-    """Artifact shape (section-coverage contract + taxonomy chain) now lives in the SYSTEM prompt
+    """Artifact shape (output contract + taxonomy chain) now lives in the SYSTEM prompt
     via _build_artifact_contract_block, not the per-turn payload."""
     from app.graphs.nodes import _build_artifact_contract_block, _build_tool_selection_prompt
 
     block = _build_artifact_contract_block(_state(artifact_type="vision_objectives"))
-    assert "SECTION COVERAGE REQUIRED" in block
+    assert "REQUIRED OUTPUT CONTRACT" in block
     assert "## Vision" in block
     assert "## Objectives" in block
-    assert "view rendered from the decision graph" in block
     assert "ARTIFACT TYPE" in block  # taxonomy chain moved here too
 
     # And it is no longer duplicated in the per-turn payload.
     prompt = _build_tool_selection_prompt(_state(artifact_type="vision_objectives"), [])
-    assert "SECTION COVERAGE REQUIRED" not in prompt
+    assert "REQUIRED OUTPUT CONTRACT" not in prompt
 
 
 def _final_block_text(message: dict) -> str:

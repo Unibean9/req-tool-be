@@ -1,6 +1,5 @@
 """Per-turn context loading: focus reconciliation, artifact reads, coverage, decision view."""
 
-import hashlib
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -9,7 +8,6 @@ from langchain_core.runnables import RunnableConfig
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.config import settings
 from app.documents.registry import children_of, container_for, output_contract
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.lifecycle_resolver import (
@@ -418,61 +416,9 @@ async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> Tur
     )
 
 
-# P7: cross-turn cache for the rendered decision-view block, keyed by (session_id, content
-# fingerprint). The fingerprint is an md5 of the serialized decision_nodes, so ANY change to the
-# graph produces a different key — invalidation is automatic and foolproof, no separate "invalidate
-# on mutation" bookkeeping is needed. In-process, module-level dict only: it does NOT survive process
-# restarts and does NOT help across multiple worker processes; it only skips redundant re-renders for
-# a session that stays warm within one process's lifetime. Bounded via simple FIFO eviction so a
-# long-running process can't grow this unboundedly across many sessions.
-_DECISION_VIEW_CACHE: dict[tuple[str, str], str] = {}
-_DECISION_VIEW_CACHE_MAX_ENTRIES = 512
-
-
-def _decision_nodes_fingerprint(decision_nodes: dict[str, Any]) -> str:
-    import json
-
-    return hashlib.md5(json.dumps(decision_nodes, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def _build_decision_view_block(state: WorkflowState, session_id: str | None = None) -> str:
-    """Rendered decision-graph view shown as the live draft target.
-
-    Cross-turn cached per session_id when provided (P7) — render_view is skipped when this session's
-    decision_nodes are byte-identical to the last time this block was rendered for it. session_id is
-    optional so callers without a session context (e.g. unit tests) still get correct, uncached output.
-    """
-    decision_nodes = state.get("decision_nodes") or {}
-    if not decision_nodes:
-        return ""
-
-    cache_key = (session_id, _decision_nodes_fingerprint(decision_nodes)) if session_id else None
-    if cache_key is not None and cache_key in _DECISION_VIEW_CACHE:
-        return _DECISION_VIEW_CACHE[cache_key]
-
-    from app.graphs.decision_graph import render_view
-
-    view = render_view(decision_nodes, state.get("artifact_type") or "brd").strip()
-    block = f"\n\nDRAFT IN PROGRESS (incrementally updated - reflects clarified points):\n{view}" if view else ""
-
-    if cache_key is not None:
-        if len(_DECISION_VIEW_CACHE) >= _DECISION_VIEW_CACHE_MAX_ENTRIES:
-            _DECISION_VIEW_CACHE.pop(next(iter(_DECISION_VIEW_CACHE)))
-        _DECISION_VIEW_CACHE[cache_key] = block
-    return block
-
-
 def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
     try:
         contract = output_contract(artifact_type)
     except ValueError:
         return []
     return [heading for heading in contract.required_headings if heading not in body]
-
-
-def _decision_view_can_hide_draft(state: WorkflowState, decision_view_block: str, draft_body: str | None) -> bool:
-    if not decision_view_block or not settings.decision_graph_enabled:
-        return False
-    if not draft_body:
-        return True
-    return not _missing_required_headings(state.get("artifact_type") or "brd", decision_view_block)

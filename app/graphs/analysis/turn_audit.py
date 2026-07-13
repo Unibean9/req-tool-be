@@ -115,6 +115,28 @@ def _estimate_token_breakdown(
     }
 
 
+def _calibrate_breakdown(raw: dict[str, int], real_total: int) -> dict[str, int]:
+    """Scale the raw character-count estimate (`raw`) so its total matches `real_total` (the real
+    token count from the provider).
+
+    Keeps the relative ratio between components (system/history/tools/draft) of the character
+    estimate, only rescaling the total to match the real figure. When there is no trustworthy real
+    figure (`real_total <= 0`) or the raw estimate is empty (`sum(raw.values()) <= 0`), returns
+    `raw` unchanged — this is the plain character-estimate fallback.
+    """
+    raw_total = sum(raw.values())
+    if real_total <= 0 or raw_total <= 0:
+        return raw
+    calibrated = {key: round(value * real_total / raw_total) for key, value in raw.items()}
+    # Rounding remainder (can be negative or positive) is added to the largest component so the
+    # total matches real_total exactly, avoiding cumulative drift across many turns.
+    remainder = real_total - sum(calibrated.values())
+    if remainder:
+        largest_key = max(raw, key=lambda key: raw[key])
+        calibrated[largest_key] += remainder
+    return calibrated
+
+
 def build_analysis_result_base(
     *,
     gated_tools: list[dict[str, Any]],
@@ -148,16 +170,25 @@ def annotate_token_usage(
     tool_schemas: list[dict[str, Any]],
     draft_body: str | None,
 ) -> Any:
-    """P10: additive per-component estimate, alongside (never replacing) whatever keys the client's
+    """Additive per-component estimate, alongside (never replacing) whatever keys the client's
     usage dict already carries."""
     token_usage = dict(usage) if isinstance(usage, dict) else usage
     if isinstance(token_usage, dict):
-        token_usage["by_component"] = _estimate_token_breakdown(
+        raw_breakdown = _estimate_token_breakdown(
             system_prompt=system_prompt,
             messages=messages,
             tool_schemas=tool_schemas,
             draft_body=draft_body,
         )
+        real_input = token_usage.get("input")
+        # system/history/tools/draft are all prompt-side content, so calibrate against the
+        # provider's real input count, not "total" (which is input + output/completion tokens —
+        # calibrating to it would bleed completion tokens into every prompt component). With no
+        # real input figure (None/0/missing), keep the raw character estimate.
+        if isinstance(real_input, int | float) and real_input > 0:
+            token_usage["by_component"] = _calibrate_breakdown(raw_breakdown, int(real_input))
+        else:
+            token_usage["by_component"] = raw_breakdown
     return token_usage
 
 

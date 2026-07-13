@@ -53,17 +53,14 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     "finalize": ToolMetadata(
         "finalize", readonly=False, interrupts=True, writes_db=True, policy="require_critique"
     ),
-    "finalize_prd": ToolMetadata(
-        "finalize_prd", readonly=False, interrupts=False, writes_db=True, policy="require_human_approval"
-    ),
-    "lock_scope": ToolMetadata(
-        "lock_scope", readonly=False, interrupts=False, writes_db=True, policy="require_human_approval"
-    ),
     # Native analyzer loop tools.
     "ask_user": ToolMetadata("ask_user", readonly=False, interrupts=True, writes_db=True),
     "respond": ToolMetadata("respond", readonly=False, interrupts=True, writes_db=True),
     "write_draft": ToolMetadata("write_draft", readonly=False, interrupts=True, writes_db=True),
     "confirm_intent": ToolMetadata("confirm_intent", readonly=False, interrupts=True, writes_db=True),
+    "note": ToolMetadata("note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True),
+    # Deprecated alias of "note" — kept so ToolNode resuming an old checkpoint (whose tool_call
+    # still carries the critique_note/explore_note name) is still gated as a side-effect-free note tool.
     "critique_note": ToolMetadata(
         "critique_note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True
     ),
@@ -80,12 +77,6 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     ),
     "elicit": ToolMetadata("elicit", readonly=False, interrupts=False, writes_db=False),
     "web_search": ToolMetadata("web_search", readonly=True, interrupts=False, writes_db=False),
-    "create_decision_node": ToolMetadata("create_decision_node", readonly=False, interrupts=False, writes_db=False),
-    "update_decision_node": ToolMetadata("update_decision_node", readonly=False, interrupts=False, writes_db=False),
-    "supersede_decision_node": ToolMetadata(
-        "supersede_decision_node", readonly=False, interrupts=False, writes_db=False
-    ),
-    "dismiss_question": ToolMetadata("dismiss_question", readonly=False, interrupts=False, writes_db=False),
     "run_impact_analysis": ToolMetadata("run_impact_analysis", readonly=False, interrupts=False, writes_db=False),
 }
 

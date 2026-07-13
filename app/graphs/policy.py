@@ -18,10 +18,11 @@ class GovernanceDenied(Exception):
         super().__init__(f"Tool was rejected by policy: {tool_name}")
 
 
-# DOCUMENTATION-ONLY for tool-loop tools: the enforcement authority for what the loop may run is
-# the session-phase menu (app/graphs/session_phase.py) applied inside agent_tools.get_available_tools
-# and the post-LLM gate (analysis/tool_gating.py). The table is derived from tool metadata so approval
-# policy and dispatch metadata cannot drift.
+# POLICY is enforced by the @governed decorator below for repository tools (read_artifacts,
+# read_current_body, read_source_documents, etc. in app/graphs/tools.py). It does not gate loop
+# tools: those are controlled by the session-phase menu (app/graphs/session_phase.py) applied
+# inside agent_tools.get_available_tools and the post-LLM gate (analysis/tool_gating.py). The
+# table is derived from tool metadata so approval policy and dispatch metadata cannot drift.
 POLICY = policy_table()
 
 
@@ -104,17 +105,3 @@ def governed[T](fn: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
         return await fn(*args, **kwargs)
 
     return wrapper
-
-
-# BMAD governance gates (addendum §18). These are checkpoints, not loop tools: calling one runs the
-# @governed wrapper, which raises ApprovalRequired per the POLICY rule above.
-
-
-@governed
-async def finalize_prd(**kwargs: Any) -> None:  # noqa: ARG001
-    return None
-
-
-@governed
-async def lock_scope(**kwargs: Any) -> None:  # noqa: ARG001
-    return None

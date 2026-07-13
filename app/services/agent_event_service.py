@@ -22,6 +22,7 @@ from app.models.agent import (
 )
 from app.models.artifact import Artifact
 from app.schemas.agent import public_tool_call_input_snapshot
+from app.services.agent_service import expire_abandoned_session
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.document_service import DocumentService
 
@@ -82,7 +83,12 @@ class AgentEventService:
         idle_seconds = 0.0
         while not await request.is_disconnected():
             status = snapshot["session"]["status"]
-            if status in {AgentSessionStatus.COMPLETED.value, AgentSessionStatus.FAILED.value}:
+            if status in {
+                AgentSessionStatus.COMPLETED.value,
+                AgentSessionStatus.FAILED.value,
+                AgentSessionStatus.TURN_FAILED.value,
+                AgentSessionStatus.EXPIRED.value,
+            }:
                 yield _sse(
                     event="stream_closed",
                     data={"type": "stream_closed", "status": status},
@@ -141,6 +147,26 @@ class AgentEventService:
         if not session:
             raise HTTPException(404, detail="Agent session not found")
 
+        # Captured separately (not written back onto `session`) so this lazy expiry check never
+        # dirties `session` in self.db's identity map — self.db never commits in this method, and
+        # mutating an onupdate-tracked column here would expire it for the plain attribute read
+        # below once the next query on self.db autoflushes.
+        session_status = session.status
+        session_interrupt_type = session.interrupt_type
+
+        if self.session_factory is not None and session_status in (
+            AgentSessionStatus.ACTIVE,
+            AgentSessionStatus.WAITING_FOR_HUMAN,
+        ):
+            async with self.session_factory() as expire_db:
+                expire_row = (
+                    await expire_db.execute(select(AgentSession).where(AgentSession.id == session_id))
+                ).scalar_one_or_none()
+                if expire_row is not None and expire_abandoned_session(expire_row):
+                    await expire_db.commit()
+                    session_status = expire_row.status
+                    session_interrupt_type = expire_row.interrupt_type
+
         messages = (
             (
                 await self.db.execute(
@@ -178,10 +204,10 @@ class AgentEventService:
                 "artifact_type": session.artifact_type,
                 "workflow_area": session.workflow_area,
                 "focused_artifact_id": session.focused_artifact_id,
-                "status": session.status,
-                "ui_status": _ui_status(session.status, session.interrupt_type),
+                "status": session_status,
+                "ui_status": _ui_status(session_status, session_interrupt_type),
                 "session_phase": _session_phase_from_checkpoint(session),
-                "interrupt_type": session.interrupt_type,
+                "interrupt_type": session_interrupt_type,
                 "missing_context": session.missing_context,
                 "document": document,
                 "updated_at": session.updated_at,
@@ -255,8 +281,10 @@ def _ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
+    if status_val == AgentSessionStatus.EXPIRED.value:
+        return "idle"
     return "idle"
 
 

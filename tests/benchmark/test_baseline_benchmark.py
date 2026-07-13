@@ -1,8 +1,6 @@
 """Record baseline latency/token numbers for the canonical journeys.
 
 Run explicitly with `pytest -m benchmark tests/benchmark/test_baseline_benchmark.py -s -q`.
-The final benchmark re-runs the same journey fixture and writes the before/after
-delta.
 """
 
 import pytest
@@ -25,8 +23,7 @@ def _render_report(all_runs: list[list[dict]], agg: dict[str, dict[str, float]])
     lines = [
         "# Baseline Benchmark",
         "",
-        "Recorded before any latency/token fix lands. Same canonical journey fixture and methodology as "
-        "`evidence/benchmark-final.md` - see `tests/benchmark/fixture.py`.",
+        "Sole ongoing benchmark lane for the canonical journeys - see `tests/benchmark/fixture.py`.",
         "",
         "## Mode",
         "",

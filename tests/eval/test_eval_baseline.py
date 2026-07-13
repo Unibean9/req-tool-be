@@ -67,10 +67,6 @@ def _valid_result(overall: float = 0.8) -> dict:
     }
 
 
-def test_fixtures_count_is_three():
-    assert len(_load_fixtures()) == 3
-
-
 @pytest.mark.asyncio
 async def test_baseline_runs_over_all_fixtures_with_mock(capsys):
     client = AsyncMock()

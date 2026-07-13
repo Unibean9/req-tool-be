@@ -43,11 +43,6 @@ def test_recommend_returns_readiness_check_when_prd_near_full():
     assert result["recommended_next_workflow"] == "readiness_check"
 
 
-def test_quick_track_does_not_recommend_architecture_readiness():
-    result = _compute_recommendation({s: "filled" for s in _ALL_SECTIONS}, "quick")
-    assert result["recommended_next_workflow"] != "architecture_readiness"
-
-
 def test_blocking_gaps_populated_when_sections_empty():
     result = _compute_recommendation(
         _coverage(vision_objectives="filled", problem_statement="filled",

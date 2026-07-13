@@ -1,3 +1,5 @@
+import logging
+import re
 import time
 import uuid
 from typing import Any
@@ -10,14 +12,12 @@ from sqlalchemy import exists, select
 
 from app.config import settings
 from app.documents.registry import children_of, status_score
-from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, get_available_tools
+from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, current_session_phase, get_available_tools
 
 # analyze_node's concerns live in app.graphs.analysis.* now. The private
 # names are re-exported here because existing tests/evals import them from nodes.
 from app.graphs.analysis.context_loader import (  # noqa: F401
     TurnContext,
-    _build_decision_view_block,
-    _decision_view_can_hide_draft,
     _document_coverage,
     _missing_required_headings,
     load_turn_context,
@@ -53,7 +53,6 @@ from app.graphs.analysis.tool_gating import (  # noqa: F401
     _INTERRUPT_BEARING_TOOLS,
     _RESPOND_FALLBACK_BY_LOCALE,
     _SIDE_EFFECT_FREE_NOTE_TOOLS,
-    _TOOL_REQUIRED_ARGS,
     _ai_text_content,
     _build_tool_schemas,
     _dropped_tool_names,
@@ -64,6 +63,7 @@ from app.graphs.analysis.tool_gating import (  # noqa: F401
     _plain_response_tool,
     _response_message_incomplete,
     gate_model_selection,
+    required_args,
 )
 from app.graphs.analysis.turn_audit import (  # noqa: F401
     _RECENT_TOOL_CALLS_MAXLEN,
@@ -91,7 +91,7 @@ from app.graphs.interrupts import (  # noqa: F401
     _agent_message_already_saved,
     _save_and_interrupt_ask,
 )
-from app.graphs.session_phase import IllegalPhaseTransition
+from app.graphs.session_phase import DRAFT, FINALIZE, REVIEW, IllegalPhaseTransition
 from app.graphs.session_phase import derive_phase as _derive_phase
 from app.graphs.session_phase import transition as phase_transition
 from app.graphs.state import DEFAULT_METHOD_PROFILE, WorkflowState
@@ -102,6 +102,8 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
 )
+
+logger = logging.getLogger(__name__)
 
 # Native tool calling replaces the old JSON tool-selection schema: analyze_node binds the available
 # tool schemas to the provider API (see _build_tool_schemas) and the model returns native tool_calls.
@@ -208,6 +210,27 @@ _FALLBACK_GREETING = {
     "en": "Hello! I'm your requirements analysis assistant. Where would you like to start?",
 }
 
+# Mid-session triage-skip heuristic: only fires in draft/review/finalize (unreachable on turn one),
+# and only for a message long enough and not matching a bare greeting/smalltalk/ack pattern —
+# anything shorter or ambiguous still falls through to the real LLM triage call below.
+_TRIAGE_SKIP_MIN_LENGTH = 12
+_GREETING_ONLY_PATTERN = re.compile(
+    r"^\s*(hi+|hello+|hey+|xin\s+ch[aà]o|ch[aà]o(\s+b[aạ]n)?|c[aả]m\s*[ơo]n|thank\s*you|thanks?"
+    r"|ok(ay)?|oke|đ[ưu][ợo]c|v[aâ]ng|d[aạ]|[ừu]m?)\s*[!.?]*\s*$",
+    re.IGNORECASE,
+)
+
+
+def _triage_heuristic_certain_work(phase: str | None, message: str) -> bool:
+    """True when phase + message content make the LLM triage call for this turn unnecessary."""
+    if phase not in (DRAFT, REVIEW, FINALIZE):
+        return False
+    stripped = message.strip()
+    if len(stripped) < _TRIAGE_SKIP_MIN_LENGTH:
+        return False
+    return not _GREETING_ONLY_PATTERN.match(stripped)
+
+
 async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     """Entry node: classify a fresh turn so a greeting/smalltalk skips the full analyst pass.
 
@@ -215,18 +238,26 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
     detects the locale, and — for a conversational turn — drafts the reply in the same call.
     ``work`` falls straight through to analyze_node. The classifier runs once per fresh invocation;
     on resume LangGraph re-enters the interrupted node (converse/tools), so it never re-runs.
-    """
-    cfg = config["configurable"]
-    llm_client = cfg["llm_client"]
-    if llm_client is None:
-        raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
+    Mid-session (draft/review/finalize) with an unambiguous work message skips this call entirely
+    (`_triage_heuristic_certain_work`) — the phase and locale are already established from earlier
+    turns, so there is nothing left for the classifier to resolve.
+    """
     last_user = ""
     for m in reversed(state.get("messages") or []):
         role, content = _msg_role_content(m)
         if role == "user":
             last_user = content
             break
+
+    phase = current_session_phase(state)
+    if _triage_heuristic_certain_work(phase, last_user):
+        return {"turn_type": "work", "locale": state.get("locale"), "triage_reply": None}
+
+    cfg = config["configurable"]
+    llm_client = cfg["llm_client"]
+    if llm_client is None:
+        raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     prompt = (
         "Classify the user's message.\n\n"
@@ -237,6 +268,7 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
         "If turn_type='converse', set 'reply' to a short, friendly sentence in the user's exact language "
         "- greet back, briefly say what you can help with, and invite them to share what they want to build."
     )
+    started_at = time.monotonic()
     try:
         result, _usage = await llm_client.generate(
             messages=[{"role": "user", "content": prompt}],
@@ -248,6 +280,7 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
         # A non-conforming classifier response must not crash the turn — default to a work turn so
         # it falls through to the full analyst pass (the safe, non-conversational branch).
         result = {}
+    logger.debug("node=triage latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     reported = result if isinstance(result, dict) else {}
     turn_type = reported.get("turn_type") or "work"
     locale = state.get("locale") or reported.get("locale")
@@ -404,7 +437,9 @@ async def _apply_judge_escalation(
     from app.graphs.critique import _invoke_judge
 
     llm_client = _diagnosis_llm_client(config)
+    started_at = time.monotonic()
     judge_result = await _invoke_judge(state.get("draft_body") or "", "risk_review", llm_client)
+    logger.debug("node=judge latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     return {"escalation": "escalated", "judge_calls_used": calls_used + 1, "judge_result": judge_result}
 
 
@@ -436,6 +471,12 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
         # (always a safe target) and record the illegal edge for calibration rather than crashing.
         session_phase = _derive_phase(signals)
         reason = f"illegal:{previous_phase}->{session_phase}(adopted)"
+        _log_phase(
+            "session_phase_illegal_transition",
+            "adopted",
+            reason=reason,
+            extra={"previous_phase": previous_phase, "adopted_phase": session_phase},
+        )
     if session_phase != previous_phase:
         _log_phase("session_phase", session_phase, reason=reason)
 
@@ -541,9 +582,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     ctx = await load_turn_context(state, config)
     effective_state, coverage = ctx.effective_state, ctx.coverage
 
-    prompt = _build_tool_selection_prompt(
-        effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body, str(session_id)
-    )
+    prompt = _build_tool_selection_prompt(effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body)
     system_prompt = build_system_prompt(effective_state, cfg.get("agent_role"), has_draft=ctx.draft_body is not None)
     available_tools = get_available_tools(effective_state)
     tool_schemas = _build_tool_schemas(available_tools)
@@ -705,6 +744,7 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
     prompt = _build_summary_prompt(state)
+    started_at = time.monotonic()
     try:
         result, _usage = await llm_client.generate(
             messages=[{"role": "user", "content": prompt}],
@@ -716,6 +756,7 @@ async def summarize_node(state: WorkflowState, config: RunnableConfig) -> dict[s
         # The summary is an optional running aid (prompt context only), so a non-conforming LLM
         # response must not crash the turn — keep the prior summary and continue to analyze.
         return {"conversation_summary": state.get("conversation_summary", "")}
+    logger.debug("node=summarize latency_ms=%d", int((time.monotonic() - started_at) * 1000))
     if isinstance(result, dict):
         summary = str(result.get("summary", "")).strip()
     else:

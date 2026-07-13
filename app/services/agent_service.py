@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import HTTPException
@@ -147,8 +147,8 @@ class AgentService:
                     detail="artifact_type must match the focused document item",
                 )
 
-        try:
-            session = AgentSession(
+        def _new_session() -> AgentSession:
+            return AgentSession(
                 project_id=project_id,
                 artifact_type=artifact_type,
                 step_key=step_key,
@@ -161,6 +161,9 @@ class AgentService:
                 provider_config_id=provider_config_id,
                 created_by_id=created_by_id,
             )
+
+        try:
+            session = _new_session()
             self.db.add(session)
             await self.db.flush()
             await self.db.commit()
@@ -174,6 +177,26 @@ class AgentService:
             if created_by_id is not None:
                 existing_query = existing_query.where(AgentSession.created_by_id == created_by_id)
             existing = (await self.db.execute(existing_query)).scalar_one_or_none()
+
+            if existing is not None:
+                locked_existing = (
+                    await self.db.execute(existing_query.with_for_update())
+                ).scalar_one_or_none()
+                if locked_existing is not None and expire_abandoned_session(locked_existing):
+                    await self.db.commit()
+                    try:
+                        session = _new_session()
+                        self.db.add(session)
+                        await self.db.flush()
+                        await self.db.commit()
+                    except IntegrityError:
+                        await self.db.rollback()
+                        raise HTTPException(
+                            409,
+                            detail={"detail": "Active session already exists", "session_id": None},
+                        ) from None
+                    return await self.create_session_response(session, missing)
+
             raise HTTPException(
                 409,
                 detail={
@@ -294,9 +317,9 @@ class AgentService:
         if session.status == AgentSessionStatus.ACTIVE:
             if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
                 return await self._queue_message(session.id, content, mode_hint)
-        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
             raise HTTPException(400, detail="Session has ended and cannot accept more messages")
-        # status == WAITING_FOR_HUMAN or ACTIVE+STREAM_RESPONSE below.
+        # status == WAITING_FOR_HUMAN, TURN_FAILED, or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
         if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
             return await self._queue_message(session.id, content, mode_hint)
@@ -307,7 +330,11 @@ class AgentService:
         ):
             raise HTTPException(400, detail="Session is not waiting for a user message")
 
-        is_first_message = session.interrupt_type is None
+        # TURN_FAILED also has interrupt_type is None (cleared when the turn failed), so it must be
+        # checked before is_first_message or it would wrongly take the build_initial_workflow_state
+        # path and wipe plain-overwrite WorkflowState channels the crashed turn had already populated.
+        is_turn_failed = session.status == AgentSessionStatus.TURN_FAILED
+        is_first_message = not is_turn_failed and session.interrupt_type is None
 
         strong_llm_client = None
         if llm_client is None:
@@ -319,7 +346,20 @@ class AgentService:
         session.interrupt_type = None
         await self.db.commit()
 
-        if is_first_message:
+        if is_turn_failed:
+            # Minimal partial-state update against the existing checkpoint: only the new message and
+            # the per-turn counters (turn_count, readiness_reject_streak, diagnosis_judge_calls_used)
+            # reset, matching _resume_command's reset convention for the same channels, so prior
+            # WorkflowState channels (decision_nodes, draft_body, etc.) carry forward untouched
+            # instead of being reset by build_initial_workflow_state.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+            resume_command = None
+        elif is_first_message:
             initial_state = build_initial_workflow_state(
                 artifact_type=session.artifact_type,
                 workflow_area=session.workflow_area,
@@ -431,6 +471,7 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status == AgentToolCallStatus.EXECUTED:
             return tool_call
+        await self._guard_session_not_ended(session_id)
         if tool_call.status == AgentToolCallStatus.REJECTED:
             raise HTTPException(400, detail="Tool call has been rejected")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
@@ -525,6 +566,7 @@ class AgentService:
         tool_call, session_id = await self._get_tool_call_with_idor(tool_call_id, project_id, user_id=user_id)
         if tool_call.status == AgentToolCallStatus.REJECTED:
             return tool_call
+        await self._guard_session_not_ended(session_id)
         if tool_call.status == AgentToolCallStatus.EXECUTED:
             raise HTTPException(400, detail="Tool call has been approved")
         if tool_call.status != AgentToolCallStatus.PROPOSED:
@@ -603,6 +645,16 @@ class AgentService:
             if count == 0:
                 missing.append(pred)
         return missing
+
+    async def _guard_session_not_ended(self, session_id: uuid.UUID) -> None:
+        # The approve/reject path has no built-in session-status check (unlike
+        # handle_user_message), so a session that ended after a tool call was proposed would
+        # otherwise still accept an approval/rejection decision on it.
+        session_status = (
+            await self.db.execute(select(AgentSession.status).where(AgentSession.id == session_id))
+        ).scalar_one()
+        if session_status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
+            raise HTTPException(400, detail="Session has ended and cannot process tool call decisions")
 
     async def _get_tool_call_with_idor(
         self,
@@ -1094,6 +1146,8 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
+                    logger.error("turn failed: reason_code=turn_limit session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_limit", session_id=str(session_id))
                     row.status = AgentSessionStatus.FAILED
                     db.add(
                         AgentMessage(
@@ -1113,7 +1167,12 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=turn_timeout session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "turn_timeout", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout
+                    # (see checkpointer read in phase-03 evidence), so the session is resumable.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -1130,7 +1189,11 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
-                    row.status = AgentSessionStatus.FAILED
+                    logger.exception("turn failed: reason_code=graph_exception session_id=%s", session_id)
+                    log_gate_decision("turn_failure", "graph_exception", session_id=str(session_id))
+                    # TURN_FAILED, not FAILED: same resumability reasoning as the timeout branch above.
+                    row.status = AgentSessionStatus.TURN_FAILED
+                    row.interrupt_type = None
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -1172,7 +1235,15 @@ class AgentService:
             session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
             # Only drain after a turn truly ended. WAITING_FOR_HUMAN means the graph paused on a
             # specific question/approval — feeding a queued message here would be the wrong input.
-            if session_row.status not in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED):
+            # EXPIRED is terminal-and-inert, not terminal-and-drainable: reviving it to ACTIVE would
+            # re-acquire the unique active-session slot the expiry exists to free.
+            if session_row.status == AgentSessionStatus.EXPIRED:
+                return
+            if session_row.status not in (
+                AgentSessionStatus.COMPLETED,
+                AgentSessionStatus.FAILED,
+                AgentSessionStatus.TURN_FAILED,
+            ):
                 return
 
             queued = (
@@ -1197,19 +1268,32 @@ class AgentService:
             content = queued.content
             queued_mode_hint = new_payload.get("mode_hint")
 
+            was_turn_failed = session_row.status == AgentSessionStatus.TURN_FAILED
             session_row.status = AgentSessionStatus.ACTIVE
             session_row.interrupt_type = None
             await db.commit()
 
-        initial_state = build_initial_workflow_state(
-            artifact_type=artifact_type,
-            workflow_area=workflow_area,
-            step_key=step_key,
-            messages=[{"role": "user", "content": content}],
-            missing_context=missing_context,
-            focused_artifact_id=session_row.focused_artifact_id,
-            mode_hint=queued_mode_hint,
-        )
+        if was_turn_failed:
+            # Same minimal partial-state mechanism as handle_user_message's TURN_FAILED branch: the
+            # queued message drains without wiping the failing turn's prior WorkflowState progress.
+            initial_state = {
+                "messages": [{"role": "user", "content": content}],
+                "turn_count": 0,
+                "readiness_reject_streak": 0,
+                "diagnosis_judge_calls_used": 0,
+            }
+        else:
+            # COMPLETED (and legacy FAILED) sessions keep the full-reset behavior — that boundary is
+            # intentional for a genuinely finished session's next queued message.
+            initial_state = build_initial_workflow_state(
+                artifact_type=artifact_type,
+                workflow_area=workflow_area,
+                step_key=step_key,
+                messages=[{"role": "user", "content": content}],
+                missing_context=missing_context,
+                focused_artifact_id=session_row.focused_artifact_id,
+                mode_hint=queued_mode_hint,
+            )
         # Max 1 graph task per session: this runs only after the prior turn finished.
         asyncio.create_task(
             self._run_graph(
@@ -1259,7 +1343,15 @@ class AgentService:
         # otherwise only the first high-risk section in a session could ever escalate.
         # state_update lets a resuming turn also seed state (e.g. a one-shot mode_hint) before the
         # interrupted node re-runs — applied by LangGraph as a normal channel update.
-        return Command(resume=resume, update={"turn_count": 0, "diagnosis_judge_calls_used": 0, **(state_update or {})})
+        return Command(
+            resume=resume,
+            update={
+                "turn_count": 0,
+                "diagnosis_judge_calls_used": 0,
+                "readiness_reject_streak": 0,
+                **(state_update or {}),
+            },
+        )
 
     def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
         payload = session.graph_checkpoint or {}
@@ -1368,6 +1460,32 @@ def _agent_failure_message(exc: Exception) -> str:
     return f"Agent could not complete the current analysis turn. Technical reason: {message[:500]}"
 
 
+def expire_abandoned_session(session: AgentSession) -> bool:
+    """Lazily mark an abandoned ACTIVE/WAITING_FOR_HUMAN session EXPIRED.
+
+    Takes a session row already loaded from the DB and mutates it in place if it has been
+    inactive past session_abandoned_ttl. Does not commit — the caller owns the transaction
+    boundary. TURN_FAILED is a resumable resting state, not an abandonment candidate, and is
+    never touched here regardless of how stale updated_at is.
+
+    Returns True if the session was marked EXPIRED, False otherwise.
+    """
+    if session.status not in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
+        return False
+    ttl = timedelta(hours=settings.session_abandoned_ttl)
+    updated_at = session.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    if datetime.now(UTC) - updated_at < ttl:
+        return False
+    session.status = AgentSessionStatus.EXPIRED
+    session.interrupt_type = None
+    logger.info(
+        "session expired: reason_code=session_abandoned_ttl_exceeded session_id=%s", session.id
+    )
+    return True
+
+
 def _session_ui_status(status: Any, interrupt_type: Any) -> str:
     status_val = getattr(status, "value", status)
     interrupt_val = getattr(interrupt_type, "value", interrupt_type)
@@ -1379,6 +1497,6 @@ def _session_ui_status(status: Any, interrupt_type: Any) -> str:
         if interrupt_val == AgentSessionInterruptType.PROPOSE_ARTIFACTS.value:
             return "waiting_approval"
         return "waiting_input"
-    if status_val == AgentSessionStatus.FAILED.value:
+    if status_val in (AgentSessionStatus.FAILED.value, AgentSessionStatus.TURN_FAILED.value):
         return "error"
     return "idle"

@@ -41,10 +41,6 @@ class Settings(BaseSettings):
     # model knowledge); "duckduckgo" uses the keyless DuckDuckGo HTML endpoint. CI leaves this empty.
     search_provider: str = ""
 
-    # Gates the decision-graph writes (create/update/supersede decision nodes). Off in production so
-    # an in-progress graph model can never land half-built in a persisted checkpoint; tests opt in.
-    decision_graph_enabled: bool = False
-
     app_env: str = "development"
     app_debug: bool = False
     cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
@@ -61,6 +57,10 @@ class Settings(BaseSettings):
     # Quality gate — reflection critic loop
     max_critique_rounds: int = 2
     critique_score_threshold: float = 0.7
+
+    # Lazy expiry: an ACTIVE/WAITING_FOR_HUMAN session with no activity for this many hours is
+    # eligible to be marked EXPIRED the next time it is read.
+    session_abandoned_ttl: int = 72
 
     # Behavior thresholds kept as settings so eval grid sweeps can vary them via env without a
     # code edit. Values below are the calibrated defaults.

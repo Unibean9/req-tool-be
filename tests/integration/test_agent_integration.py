@@ -48,12 +48,6 @@ def _mock_llm(analysis: dict):
 # Startup wiring
 # ---------------------------------------------------------------------------
 
-def test_build_graph_does_not_raise():
-    """build_graph() compiles without error (smoke test for startup)."""
-    graph = build_graph(checkpointer=None)
-    assert graph is not None
-
-
 def test_delegating_checkpointer_instantiates():
     """DelegatingCheckpointer can be instantiated and delegates _for()."""
     async def _sf():

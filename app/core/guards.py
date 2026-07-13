@@ -46,13 +46,3 @@ async def require_project_member_404(project_id: uuid.UUID, user, db: AsyncSessi
     if not member.scalar_one_or_none():
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Project not found")
     return project
-
-
-async def require_project_owner(project_id: uuid.UUID, user, db: AsyncSession) -> Project:
-    project = await require_project_access(project_id, user, db)
-    member = await db.execute(select(OrgMember).where(OrgMember.org_id == project.org_id, OrgMember.user_id == user.id))
-    org_member = member.scalar_one()
-    # OrgMember currently has only owner/member; adding an admin role would require widening this guard.
-    if org_member.role != "owner":
-        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="Owner role is required")
-    return project

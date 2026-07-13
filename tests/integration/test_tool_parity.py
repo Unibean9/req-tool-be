@@ -206,8 +206,15 @@ async def test_write_draft_tool_idempotency_key_run_id_tool_name(mock_interrupt,
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    await _write_draft_impl("Title", "Than bai", state, config, "call_1")
-    await _write_draft_impl("Title", "Than bai", state, config, "call_1")
+    body = "\n\n".join(
+        [
+            "## Vision\nThan bai.",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    await _write_draft_impl("Title", body, state, config, "call_1")
+    await _write_draft_impl("Title", body, state, config, "call_1")
 
     async with TestSessionFactory() as db:
         rows = (
@@ -243,12 +250,27 @@ async def test_write_draft_scopes_body_and_idempotency_to_focused_artifact(mock_
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    command = await _write_draft_impl("Title", "Than bai section", state, config, "call_1")
-    await _write_draft_impl("Title", "Than bai section", state, config, "call_1")
+    body_a = "\n\n".join(
+        [
+            "## Vision\nThan bai section.",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    body_b = "\n\n".join(
+        [
+            "## Problem Statement\nThan bai section 2.",
+            "## Affected Users\nStudents.",
+            "## Impact\nHigh.",
+            "## Root Cause / Contributing Factors\nUnclear onboarding.",
+        ]
+    )
+    command = await _write_draft_impl("Title", body_a, state, config, "call_1")
+    await _write_draft_impl("Title", body_a, state, config, "call_1")
     state["focused_artifact_id"] = str(focused_b.id)
-    await _write_draft_impl("Title 2", "Than bai section 2", state, config, "call_2")
+    await _write_draft_impl("Title 2", body_b, state, config, "call_2")
 
-    assert command.update["draft_body"] == "Than bai section"
+    assert command.update["draft_body"] == body_a
     async with TestSessionFactory() as db:
         rows = (
             await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
@@ -400,7 +422,14 @@ async def test_write_draft_snapshot_records_base_version_and_assumptions(mock_in
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
-    await _write_draft_impl("Vision", "## Vision\n...", state, config, "call_1")
+    body = "\n\n".join(
+        [
+            "## Vision\n... (needs confirmation)",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    await _write_draft_impl("Vision", body, state, config, "call_1")
 
     async with TestSessionFactory() as db:
         row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
@@ -575,7 +604,14 @@ async def test_write_draft_snapshot_records_loaded_source_evidence(mock_interrup
     ]
     config = _config(str(agent_session.id), str(project_id))
 
-    await _write_draft_impl("Vision", "## Vision\nContent", state, config, "call_1")
+    body = "\n\n".join(
+        [
+            "## Vision\nContent",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    await _write_draft_impl("Vision", body, state, config, "call_1")
 
     async with TestSessionFactory() as db:
         row = (await db.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalar_one()
@@ -872,7 +908,14 @@ async def test_write_draft_tool_call_scenario(client, db_session):
     state["user_confirmed"] = True  # artifact phase mo: write_draft new dispatch thay vi self-reject
     state["last_agent_run_id"] = str(run.id)
     state["focused_artifact_id"] = str(focused.id)
-    state["messages"] = [_ai_tool_call("write_draft", {"title": "Goal", "body": "Content"})]
+    body = "\n\n".join(
+        [
+            "## Vision\nContent",
+            "## Objectives\n| Objective | Rationale |\n| --- | --- |\n| Improve onboarding | Reduce drop-off |",
+            "## Success Metrics\n| Metric | Target |\n| --- | --- |\n| Activation | 25% |",
+        ]
+    )
+    state["messages"] = [_ai_tool_call("write_draft", {"title": "Goal", "body": body})]
     config = _config(str(agent_session.id), str(project_id))
     config["configurable"]["session_factory"] = _session_factory()
 
