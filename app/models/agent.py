@@ -54,6 +54,12 @@ class TurnExecutionStatus(enum.StrEnum):
     TERMINAL = "terminal"
 
 
+class DraftCommandEffectState(enum.StrEnum):
+    PENDING = "pending"
+    COMMITTED = "committed"
+    FAILED = "failed"
+
+
 def enum_column(enum_class: type[enum.Enum], **kwargs):
     return mapped_column(
         SAEnum(
@@ -204,6 +210,38 @@ class TurnExecutionState(AuditMixin, Base):
     transition_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     turn: Mapped["AgentTurnEnvelope"] = relationship(back_populates="execution_state")
+
+
+class DraftCommandLedger(AuditMixin, Base):
+    """Idempotency/effect ledger for write_draft's command boundary (Phase 4).
+
+    `logical_command_id` is the business identity (turn + action type + canonical intent + expected
+    base version) — not the provider tool-call ID, which only rides `tool_call_id` for correlation.
+    The unique constraint on `logical_command_id` is the sole idempotency invariant, mirroring
+    `AgentTurnTrigger.idempotency_key_hash`'s unique-constraint-is-the-source-of-truth pattern.
+    Only reachable when the admitting turn's cohort has `command_handlers_enabled`; legacy cohorts
+    never write here.
+    """
+
+    __tablename__ = "agent_draft_commands"
+    __table_args__ = (
+        UniqueConstraint("logical_command_id", name="uq_agent_draft_commands_logical_command_id"),
+        Index("ix_agent_draft_commands_turn_id", "turn_id"),
+    )
+
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=False
+    )
+    logical_command_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_tool_calls.id"), nullable=True
+    )
+    artifact_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("artifacts.id"), nullable=True)
+    effect_state: Mapped[DraftCommandEffectState] = enum_column(
+        DraftCommandEffectState, nullable=False, default=DraftCommandEffectState.COMMITTED
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class AgentMessage(AuditMixin, Base):

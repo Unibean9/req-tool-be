@@ -17,6 +17,7 @@ from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -43,11 +44,17 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
+    AgentTurnEnvelope,
 )
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactVersion
 from app.models.project import Project
 from app.schemas.artifact_synthesis import ArtifactSynthesisMetadata, evaluate_candidate_readiness
 from app.services.document_service import DocumentService
+from app.services.draft_command_service import (
+    DraftCommandService,
+    canonical_write_draft_intent,
+    write_draft_logical_command_id,
+)
 
 
 def _missing_required_headings(artifact_type: str, body: str) -> list[str]:
@@ -323,8 +330,30 @@ async def _write_draft_impl(
         )
     tool_key = f"write_draft:{focused_artifact_id}"
     project_id = uuid.UUID(str(cfg["project_id"])) if cfg.get("project_id") else None
+    # Turn context (Phase 4 command boundary) — present only when the admitting turn's cohort
+    # enabled it at admission time. Threaded through RunnableConfig/state only, never the public
+    # tool JSON schema (see phase-04 brief risk on plumbing location).
+    turn_id_raw = cfg.get("turn_id")
+    turn_owner_id = cfg.get("turn_owner_id")
+    turn_ownership_generation = cfg.get("turn_ownership_generation")
 
     async with session_factory() as db:
+        turn_id: uuid.UUID | None = None
+        command_service: DraftCommandService | None = None
+        use_command_handler = False
+        if turn_id_raw:
+            turn_id = uuid.UUID(str(turn_id_raw))
+            envelope = await db.get(AgentTurnEnvelope, turn_id)
+            # Cohort read from the persisted envelope (snapshotted once at admission), never from
+            # settings.agent_command_handlers_enabled live — a flag flip mid-flight must not change
+            # behavior for an already-admitted turn.
+            cohort_enabled = bool((envelope.cohort or {}).get("command_handlers_enabled")) if envelope else False
+            use_command_handler = (
+                cohort_enabled and turn_owner_id is not None and turn_ownership_generation is not None
+            )
+            if use_command_handler:
+                command_service = DraftCommandService(db)
+
         try:
             focused = await DocumentService(db).get_document_item_artifact(
                 artifact_id=uuid.UUID(str(focused_artifact_id)),
@@ -332,17 +361,51 @@ async def _write_draft_impl(
             )
         except ValueError as exc:
             raise RuntimeError("write_draft focused artifact must be an existing document item") from exc
-        # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
-        # proposed write already exists for this run. tool_name discriminates it from the enum
-        # path's "create_artifact" rows — no new column, no migration (R3).
-        existing_tool_call = (
-            await db.execute(
-                select(AgentToolCall).where(
-                    AgentToolCall.run_id == run_id,
-                    AgentToolCall.tool_name == tool_key,
-                )
+
+        logical_command_id: str | None = None
+        turn_state = None
+        if use_command_handler:
+            canonical_intent = canonical_write_draft_intent(title, body)
+            logical_command_id = write_draft_logical_command_id(
+                turn_id, canonical_intent, focused.current_version_id
             )
-        ).scalar_one_or_none()
+            existing_tool_call = await command_service.check_duplicate(logical_command_id)
+            if existing_tool_call is None:
+                turn_state = await command_service.fence_or_none(
+                    turn_id=turn_id,
+                    owner_id=turn_owner_id,
+                    expected_generation=turn_ownership_generation,
+                )
+                if turn_state is None:
+                    agent_tools.log_gate_decision(
+                        "turn_fence",
+                        "stale",
+                        reason="owner_or_generation_or_lease_mismatch",
+                        session_id=str(session_id),
+                    )
+                    return _recoverable_tool_update(
+                        RecoverableToolError(
+                            code="turn_fence_stale",
+                            message=(
+                                "Cannot write_draft: this turn's execution ownership is no longer "
+                                "valid (owner/generation/lease mismatch)."
+                            ),
+                            recovery="Do not retry this call; the current owner of this turn will resume it.",
+                        ),
+                        tool_call_id,
+                    )
+        else:
+            # Idempotency on (run_id, tool_name): a resume re-executes this body, so skip if the
+            # proposed write already exists for this run. tool_name discriminates it from the enum
+            # path's "create_artifact" rows — no new column, no migration (R3).
+            existing_tool_call = (
+                await db.execute(
+                    select(AgentToolCall).where(
+                        AgentToolCall.run_id == run_id,
+                        AgentToolCall.tool_name == tool_key,
+                    )
+                )
+            ).scalar_one_or_none()
         if existing_tool_call:
             readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
             # Resume-of-same-run: reuse the warnings already baked into the persisted snapshot on the
@@ -463,14 +526,56 @@ async def _write_draft_impl(
             }
             if source_evidence:
                 input_snapshot["source_evidence"] = source_evidence
-            db.add(
-                AgentToolCall(
-                    run_id=run_id,
-                    tool_name=tool_key,
-                    input_snapshot=input_snapshot,
-                    status=AgentToolCallStatus.PROPOSED,
-                )
+            new_tool_call = AgentToolCall(
+                run_id=run_id,
+                tool_name=tool_key,
+                input_snapshot=input_snapshot,
+                status=AgentToolCallStatus.PROPOSED,
             )
+            db.add(new_tool_call)
+            if use_command_handler:
+                # Same transaction as the AgentToolCall insert above — flush to get its id, then
+                # commit the ledger row alongside it; both land in the single commit below (or
+                # neither does), so a crash between them cannot leave a half-written effect.
+                await db.flush()
+                command_service.record_effect(
+                    turn_id=turn_id,
+                    logical_command_id=logical_command_id,
+                    tool_call=new_tool_call,
+                    artifact_id=focused.id,
+                    attempt=turn_state.attempt if turn_state is not None else 0,
+                )
+                try:
+                    # Flush now (not just at the final commit) so a concurrent writer's already-
+                    # committed row for this logical_command_id surfaces here deterministically,
+                    # before any further query on this session can trigger the same IntegrityError
+                    # via autoflush at an unexpected point.
+                    await db.flush()
+                except IntegrityError:
+                    # A concurrent writer with the same logical_command_id won the race between
+                    # this transaction's duplicate check and its own insert. The unique constraint
+                    # is the actual exactly-once guarantee; this just turns the loser's failure
+                    # into the same idempotent reuse a pre-insert duplicate hit would have
+                    # produced, instead of an unhandled exception failing the turn.
+                    await db.rollback()
+                    winner_tool_call = await command_service.check_duplicate(logical_command_id)
+                    if winner_tool_call is None:
+                        raise
+                    existing_tool_call = winner_tool_call
+                    readiness = dict((existing_tool_call.input_snapshot or {}).get("candidate_readiness") or {})
+                    existing_metadata = (existing_tool_call.input_snapshot or {}).get("synthesis_metadata") or {}
+                    deterministic_warnings = list(existing_metadata.get("deterministic_warnings") or [])
+                else:
+                    agent_tools.log_gate_decision(
+                        "turn_fence",
+                        "committed",
+                        reason=(
+                            f"turn={turn_id} logical_command={logical_command_id} "
+                            f"generation={turn_ownership_generation} "
+                            f"attempt={turn_state.attempt if turn_state is not None else 0}"
+                        ),
+                        session_id=str(session_id),
+                    )
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
         session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
         session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS

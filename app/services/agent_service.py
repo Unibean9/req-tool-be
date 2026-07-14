@@ -440,7 +440,13 @@ class AgentService:
                 session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
             )
 
-        runner = self._run_graph(
+        def _runner_factory(
+            *,
+            turn_id: uuid.UUID | None = None,
+            owner_id: str | None = None,
+            ownership_generation: int | None = None,
+        ):
+            return self._run_graph(
                 session_id=session.id,
                 project_id=project_id,
                 artifact_type=session.artifact_type,
@@ -453,22 +459,34 @@ class AgentService:
                 strong_llm_client=strong_llm_client,
                 initial_state=initial_state,
                 resume_command=resume_command,
+                turn_id=turn_id,
+                owner_id=owner_id,
+                ownership_generation=ownership_generation,
             )
+
         if admitted_turn_id is not None:
-            asyncio.create_task(self._run_admitted_graph(turn_id=admitted_turn_id, runner=runner))
+            asyncio.create_task(
+                self._run_admitted_graph(turn_id=admitted_turn_id, runner_factory=_runner_factory)
+            )
         else:
-            asyncio.create_task(runner)
+            asyncio.create_task(_runner_factory())
 
         return msg
 
-    async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner: Any) -> None:
-        """Adapter inline dùng cùng ownership contract với durable worker Phase 6."""
+    async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner_factory: Any) -> None:
+        """Adapter inline dùng cùng ownership contract với durable worker Phase 6.
+
+        `runner_factory` builds the graph-invocation coroutine lazily, called only after the claim
+        below succeeds — this is how owner_id/ownership_generation (unknown until claimed) reach the
+        tool handler's config (Phase 4 command boundary) without executing any graph code early.
+        """
         owner_id = f"inline:{uuid.uuid4()}"
         async with self.session_factory() as db:
             generation = await AgentTurnService(db).claim_inline(turn_id=turn_id, owner_id=owner_id)
         if generation is None:
             logger.warning("agent_turn_claim_conflict turn_id=%s", turn_id)
             return
+        runner = runner_factory(turn_id=turn_id, owner_id=owner_id, ownership_generation=generation)
         try:
             await runner
         finally:
@@ -1216,8 +1234,20 @@ class AgentService:
         initial_state: dict[str, Any] | None,
         resume_command: Any,
         allow_empty_completion: bool = False,
+        turn_id: uuid.UUID | None = None,
+        owner_id: str | None = None,
+        ownership_generation: int | None = None,
     ) -> None:
-        config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
+        config = self._make_config(
+            session_id,
+            project_id,
+            llm_client,
+            agent_role,
+            strong_llm_client=strong_llm_client,
+            turn_id=turn_id,
+            turn_owner_id=owner_id,
+            turn_ownership_generation=ownership_generation,
+        )
         timeout = settings.agent_turn_timeout_seconds
         if focused_artifact_id is None:
             async with self.session_factory() as db:
@@ -1443,7 +1473,13 @@ class AgentService:
                 mode_hint=queued_mode_hint,
             )
         # Max 1 graph task per session: this runs only after the prior turn finished.
-        runner = self._run_graph(
+        def _runner_factory(
+            *,
+            turn_id: uuid.UUID | None = None,
+            owner_id: str | None = None,
+            ownership_generation: int | None = None,
+        ):
+            return self._run_graph(
                 session_id=session_id,
                 project_id=project_id,
                 artifact_type=artifact_type,
@@ -1456,11 +1492,17 @@ class AgentService:
                 strong_llm_client=strong_llm_client,
                 initial_state=initial_state,
                 resume_command=None,
+                turn_id=turn_id,
+                owner_id=owner_id,
+                ownership_generation=ownership_generation,
             )
+
         if queued_turn_id is not None:
-            asyncio.create_task(self._run_admitted_graph(turn_id=queued_turn_id, runner=runner))
+            asyncio.create_task(
+                self._run_admitted_graph(turn_id=queued_turn_id, runner_factory=_runner_factory)
+            )
         else:
-            asyncio.create_task(runner)
+            asyncio.create_task(_runner_factory())
 
     def _make_config(
         self,
@@ -1470,6 +1512,9 @@ class AgentService:
         agent_role: str | None = None,
         *,
         strong_llm_client: Any = None,
+        turn_id: uuid.UUID | None = None,
+        turn_owner_id: str | None = None,
+        turn_ownership_generation: int | None = None,
     ) -> dict[str, Any]:
         return {
             "configurable": {
@@ -1479,6 +1524,12 @@ class AgentService:
                 "llm_client": llm_client,
                 "strong_llm_client": strong_llm_client,
                 "agent_role": agent_role,
+                # Turn context for the Phase 4 command boundary (write_draft). None for any turn
+                # not admitted through AgentTurnService — the tool handler falls back to its fully
+                # legacy path when this is absent, regardless of the global flag.
+                "turn_id": str(turn_id) if turn_id else None,
+                "turn_owner_id": turn_owner_id,
+                "turn_ownership_generation": turn_ownership_generation,
             }
         }
 

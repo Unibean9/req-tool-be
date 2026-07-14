@@ -143,6 +143,10 @@ class AgentTurnService:
                 "turn_admission": "v1",
                 "policy_resolver_mode": settings.agent_policy_resolver_mode,
                 "execution_mode": settings.agent_execution_mode,
+                # Snapshotted once at admission (Phase 4): write_draft's command handler reads this
+                # per-turn value, never settings.agent_command_handlers_enabled live, so a flag flip
+                # mid-flight cannot change behavior for an already-admitted turn.
+                "command_handlers_enabled": settings.agent_command_handlers_enabled,
             }
             envelope = AgentTurnEnvelope(
                 session_id=session.id,
