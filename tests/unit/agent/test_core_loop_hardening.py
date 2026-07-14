@@ -137,6 +137,37 @@ def test_settings_tool_choice_mode_defaults_to_auto():
     assert settings.tool_choice_mode == "auto"
 
 
+def test_auto_plain_text_is_retried_with_required_tool_calling():
+    from langchain_core.messages import AIMessage
+
+    from app.graphs.nodes import _requires_native_tool_retry
+
+    tool_names = ["write_draft", "respond"]
+    assert _requires_native_tool_retry(
+        AIMessage(content="Your plan: call write_draft next."), "auto", tool_names
+    ) is True
+    assert _requires_native_tool_retry(AIMessage(content="This is the final conclusion."), "auto", tool_names) is False
+    assert _requires_native_tool_retry(AIMessage(content="Please note the final result."), "auto", tool_names) is False
+    assert _requires_native_tool_retry(
+        AIMessage(content="I will respond with the concise result now."), "auto", tool_names
+    ) is False
+    assert _requires_native_tool_retry(
+        AIMessage(content="I will call write_draft next."), "auto", tool_names
+    ) is True
+    assert _requires_native_tool_retry(
+        AIMessage(content="Your plan:\n- Review the current risks.\n- Decide tomorrow."),
+        "auto",
+        tool_names,
+    ) is False
+    assert _requires_native_tool_retry(AIMessage(content="", tool_calls=[]), "auto", tool_names) is False
+    assert _requires_native_tool_retry(
+        AIMessage(content="", tool_calls=[{"id": "call-1", "name": "respond", "args": {}}]),
+        "auto",
+        tool_names,
+    ) is False
+    assert _requires_native_tool_retry(AIMessage(content="Done."), "required", tool_names) is False
+
+
 def test_route_node_ends_on_terminal_text_turn():
     """tool_choice=auto terminal path: AIMessage with no tool_calls → route_node returns END."""
     from langchain_core.messages import AIMessage

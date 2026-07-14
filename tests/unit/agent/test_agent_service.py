@@ -839,6 +839,78 @@ async def test_run_graph_timeout_does_not_affect_normal_flow(client, db_session,
 
 
 @pytest.mark.asyncio
+async def test_direct_response_keeps_session_open_and_follow_up_uses_checkpoint(
+    client, db_session, _no_background_tasks
+):
+    """A direct response ends one turn, while the next must continue from the existing checkpoint."""
+    from langchain_core.messages import AIMessage
+
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(
+        return_value={
+            "analysis_result": {"response_mode": "direct"},
+            "messages": [AIMessage(content="This is a direct response.")],
+        }
+    )
+    svc = _make_service(db_session, graph)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+    db_session.add(
+        AgentMessage(
+            session_id=session.id,
+            role=AgentMessageRole.AGENT,
+            content="This is a direct response.",
+            payload={"kind": "response"},
+        )
+    )
+    await db_session.commit()
+
+    await svc._run_graph(
+        session_id=session.id,
+        project_id=project_id,
+        artifact_type="goal",
+        step_key=None,
+        workflow_area="analysis",
+        agent_role=None,
+        missing_context=[],
+        llm_client=AsyncMock(),
+        initial_state=None,
+        resume_command=None,
+    )
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+    assert session.interrupt_type is None
+
+    with (
+        patch("app.services.agent_service.build_initial_workflow_state") as build_mock,
+        patch.object(svc, "_run_graph", new=AsyncMock()) as run_graph_mock,
+    ):
+        await svc.handle_user_message(
+            project_id=project_id,
+            session_id=session.id,
+            content="Explain that in more detail.",
+        )
+
+    build_mock.assert_not_called()
+    passed = run_graph_mock.call_args.kwargs
+    assert passed["initial_state"] == {
+        "messages": [{"role": "user", "content": "Explain that in more detail."}],
+        "turn_count": 0,
+        "readiness_reject_streak": 0,
+        "diagnosis_judge_calls_used": 0,
+    }
+    assert passed["resume_command"] is None
+
+
+@pytest.mark.asyncio
 async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session, caplog):
     """A graph that ENDs with an undispatched tool_call (route_node hit the turn cap before the
     pending ask_user ran) must be marked FAILED, not COMPLETED — it did not finish, it ran out of turns."""

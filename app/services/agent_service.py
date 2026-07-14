@@ -120,6 +120,23 @@ class AgentService:
         self.graph = graph
         self.session_factory = session_factory
 
+    async def _latest_message_is_direct_response(self, session_id: uuid.UUID) -> bool:
+        """Distinguish a direct-response resting state from a new session with no chat turn."""
+        latest = (
+            await self.db.execute(
+                select(AgentMessage)
+                .where(AgentMessage.session_id == session_id)
+                .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return bool(
+            latest
+            and latest.role == AgentMessageRole.AGENT
+            and isinstance(latest.payload, dict)
+            and latest.payload.get("kind") == "response"
+        )
+
     async def create_session(
         self,
         *,
@@ -330,11 +347,16 @@ class AgentService:
         ):
             raise HTTPException(400, detail="Session is not waiting for a user message")
 
-        # TURN_FAILED also has interrupt_type is None (cleared when the turn failed), so it must be
-        # checked before is_first_message or it would wrongly take the build_initial_workflow_state
-        # path and wipe plain-overwrite WorkflowState channels the crashed turn had already populated.
+        # TURN_FAILED and direct responses both have no interrupt. They must continue from the
+        # checkpoint with partial state; treating them as a first message would erase prior context.
         is_turn_failed = session.status == AgentSessionStatus.TURN_FAILED
-        is_first_message = not is_turn_failed and session.interrupt_type is None
+        is_direct_response_wait = (
+            session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+            and session.interrupt_type is None
+            and await self._latest_message_is_direct_response(session.id)
+        )
+        is_checkpoint_continuation = is_turn_failed or is_direct_response_wait
+        is_first_message = not is_checkpoint_continuation and session.interrupt_type is None
 
         strong_llm_client = None
         if llm_client is None:
@@ -346,7 +368,7 @@ class AgentService:
         session.interrupt_type = None
         await self.db.commit()
 
-        if is_turn_failed:
+        if is_checkpoint_continuation:
             # Minimal partial-state update against the existing checkpoint: only the new message and
             # the per-turn counters (turn_count, readiness_reject_streak, diagnosis_judge_calls_used)
             # reset, matching _resume_command's reset convention for the same channels, so prior
@@ -1157,7 +1179,12 @@ class AgentService:
                         )
                     )
                 elif graph_ended and row.status in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
-                    row.status = AgentSessionStatus.COMPLETED
+                    if _result_is_direct_response(result):
+                        # A direct response ends the current turn, not the conversation.
+                        row.status = AgentSessionStatus.WAITING_FOR_HUMAN
+                        row.interrupt_type = None
+                    else:
+                        row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
         except TimeoutError:
             async with self.session_factory() as db:
@@ -1437,6 +1464,14 @@ def _result_has_pending_tool_calls(result: Any) -> bool:
         return False
     messages = result.get("messages") or []
     return bool(messages) and bool(getattr(messages[-1], "tool_calls", None))
+
+
+def _result_is_direct_response(result: Any) -> bool:
+    """Return whether graph END came from an agent direct response, not workflow completion."""
+    if not isinstance(result, dict):
+        return False
+    analysis_result = result.get("analysis_result")
+    return isinstance(analysis_result, dict) and analysis_result.get("response_mode") == "direct"
 
 
 def _agent_turn_limit_message() -> str:

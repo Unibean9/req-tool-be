@@ -8,6 +8,7 @@ from sqlalchemy import select
 from app.graphs.decision_graph import create_node
 from app.models.agent import (
     AgentMessage,
+    AgentMessageRole,
     AgentRun,
     AgentSession,
 )
@@ -1565,8 +1566,8 @@ async def test_analyze_node_passes_real_tool_thread_to_llm(client, db_session):
 
 
 @pytest.mark.asyncio
-async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, db_session):
-    """Terminal text must not be written to legacy state; graph/write_draft is the draft source."""
+async def test_analyze_node_retries_internal_plan_before_dispatching_a_tool(client, db_session):
+    """Internal tool control text must retry rather than render as an assessment."""
     from app.graphs.nodes import analyze_node, route_node
 
     headers = await make_auth_headers(client)
@@ -1577,7 +1578,22 @@ async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, d
 
     mock_llm = AsyncMock()
     mock_llm.generate = AsyncMock(
-        return_value=(AIMessage(content="Ban can bo sung thong tin ton kho nao?", tool_calls=[]), None)
+        side_effect=[
+            (AIMessage(content="Your plan: call write_draft next.", tool_calls=[]), None),
+            (
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": "native-ask-1",
+                            "name": "ask_user",
+                            "args": {"message": "Ban can bo sung thong tin ton kho nao?"},
+                        }
+                    ],
+                ),
+                None,
+            ),
+        ]
     )
 
     state = _state(artifact_type="goal")
@@ -1590,6 +1606,89 @@ async def test_analyze_node_does_not_create_legacy_draft_when_no_tools(client, d
     assert "draft_update" not in result["analysis_result"]
     assert result["messages"][0].tool_calls[0]["name"] == "ask_user"
     assert route_node({**state, **result}) == "tools"
+    assert mock_llm.generate.await_count == 2
+    assert mock_llm.generate.await_args_list[1].kwargs["tool_choice"] == "required"
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_persists_direct_response_without_tool(client, db_session):
+    """A valid direct response must persist and end without a synthetic tool."""
+    from app.graphs.nodes import analyze_node, route_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+
+    direct_text = "The current analysis is sufficient; no additional tool is needed."
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content=direct_text, tool_calls=[]), None))
+
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    result = await analyze_node(state, config)
+
+    assert result["messages"] == [AIMessage(content=direct_text)]
+    assert result["analysis_result"]["tools"] == []
+    assert result["analysis_result"]["response_mode"] == "direct"
+    assert route_node({**state, **result}) == "__end__"
+    mock_llm.generate.assert_awaited_once()
+
+    async with TestSessionFactory() as db:
+        saved = (
+            await db.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == agent_session.id,
+                    AgentMessage.content == direct_text,
+                )
+            )
+        ).scalar_one()
+        assert saved.payload["kind"] == "response"
+
+
+@pytest.mark.asyncio
+async def test_analyze_node_does_not_duplicate_direct_response_on_replay(client, db_session):
+    """Replay after DB commit but before checkpointing must not duplicate the transcript."""
+    from app.graphs.nodes import analyze_node
+
+    headers = await make_auth_headers(client)
+    org = await create_org(client, headers)
+    project = await create_project(client, headers, org["id"])
+    project_id = uuid.UUID(project["id"])
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    direct_text = "This is a direct response and no tool is needed."
+    mock_llm = AsyncMock()
+    mock_llm.generate = AsyncMock(return_value=(AIMessage(content=direct_text, tool_calls=[]), None))
+    state = _state(artifact_type="goal")
+    config = _config(str(agent_session.id), str(project_id), mock_llm)
+    config["configurable"]["session_factory"] = _session_factory()
+
+    await analyze_node(state, config)
+    async with TestSessionFactory() as db:
+        db.add(
+            AgentMessage(
+                session_id=agent_session.id,
+                role=AgentMessageRole.USER,
+                content="Message received before the graph checkpointed.",
+                payload={"queued": True},
+            )
+        )
+        await db.commit()
+    await analyze_node(state, config)
+
+    async with TestSessionFactory() as db:
+        saved = (
+            await db.execute(
+                select(AgentMessage).where(
+                    AgentMessage.session_id == agent_session.id,
+                    AgentMessage.content == direct_text,
+                )
+            )
+        ).scalars().all()
+        assert len(saved) == 1
 
 
 # ---------------------------------------------------------------------------

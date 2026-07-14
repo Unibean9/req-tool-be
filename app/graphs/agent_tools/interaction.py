@@ -13,13 +13,14 @@ patching app.graphs.interrupts._save_and_interrupt_ask keeps working unchanged).
 
 import logging
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.prebuilt import InjectedState
 from langgraph.types import Command
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import exists, select
 
 from app.graphs import agent_tools, interrupts
@@ -71,6 +72,18 @@ async def _audit_interaction_tool_call(
 # Batched question form: up to 3 related, typed facets in one interrupt.
 _MAX_BATCH_QUESTIONS = 3
 _BATCH_QUESTION_TYPES = frozenset({"choice", "text", "confirm"})
+
+
+class BatchQuestion(BaseModel):
+    """Strict question payload schema supplied to the model."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt: str
+    type: Literal["choice", "text", "confirm"]
+    # Strict schemas require every property to be present. ``null`` represents legacy missing
+    # options and is normalized to an empty list by _normalize_batch_questions.
+    options: list[str] | None = Field(default=None)
 
 
 def _normalize_batch_questions(questions: Any) -> list[dict[str, Any]]:
@@ -156,7 +169,7 @@ async def ask_user(
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
     questions: Annotated[
-        list[dict] | None,
+        list[BatchQuestion] | None,
         "Optional batch of up to 3 RELATED questions asked in one turn. Each item: "
         "{prompt: str, type: 'choice'|'text'|'confirm', options?: [str] for choice}. Batch related "
         "facets of one topic; ask serially (single question, empty list) only when one answer "

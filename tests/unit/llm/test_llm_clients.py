@@ -1,6 +1,7 @@
 import json
 
 import httpx
+import jsonschema
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -417,6 +418,27 @@ def test_strict_tool_schema_for_providers_that_support_it():
     assert anthropic_tool["strict"] is True
     assert anthropic_tool["input_schema"]["additionalProperties"] is False
     assert "strict" not in chat_tool["function"]
+
+
+def test_openai_tool_schema_normalizes_nested_batch_questions():
+    from app.graphs.agent_tools import ask_user
+    from app.graphs.analysis.tool_gating import _build_tool_schemas
+
+    parameters = _to_openai_tool(_build_tool_schemas([ask_user])[0])["parameters"]
+    question_item = parameters["properties"]["questions"]["anyOf"][0]["items"]
+
+    assert question_item == {"$ref": "#/$defs/BatchQuestion"}
+    batch_question = parameters["$defs"]["BatchQuestion"]
+    assert batch_question["additionalProperties"] is False
+    assert batch_question["required"] == ["prompt", "type", "options"]
+    assert batch_question["properties"]["options"]["anyOf"][1] == {"type": "null"}
+    jsonschema.validate(
+        {
+            "message": "Choose an option.",
+            "questions": [{"prompt": "Continue?", "type": "confirm", "options": []}],
+        },
+        parameters,
+    )
 
 
 _TOOL_RESPONSE_BY_PROVIDER = {

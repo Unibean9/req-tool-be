@@ -1146,6 +1146,32 @@ def _parse_validation_schema(response_format: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_json_schema(schema: dict[str, Any], *, require_all_properties: bool) -> dict[str, Any]:
     normalized = copy.deepcopy(schema)
+
+    # Pydantic represents optional and nested values through composition keywords (for example,
+    # ``list[Model] | None`` becomes ``anyOf``). The provider's strict schema constraints apply
+    # inside those branches, so traversing only direct properties/items misses invalid objects.
+    for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
+        if isinstance(normalized.get(key), list):
+            normalized[key] = [
+                _normalize_json_schema(value, require_all_properties=require_all_properties)
+                if isinstance(value, dict)
+                else value
+                for value in normalized[key]
+            ]
+    for key in ("$defs", "definitions", "patternProperties"):
+        if isinstance(normalized.get(key), dict):
+            normalized[key] = {
+                name: _normalize_json_schema(value, require_all_properties=require_all_properties)
+                if isinstance(value, dict)
+                else value
+                for name, value in normalized[key].items()
+            }
+    for key in ("items", "additionalProperties", "not", "if", "then", "else"):
+        if isinstance(normalized.get(key), dict):
+            normalized[key] = _normalize_json_schema(
+                normalized[key], require_all_properties=require_all_properties
+            )
+
     if normalized.get("type") == "object" or "properties" in normalized:
         properties = normalized.get("properties") or {}
         original_required = set(normalized.get("required") or [])
@@ -1168,16 +1194,13 @@ def _normalize_json_schema(schema: dict[str, Any], *, require_all_properties: bo
             for key, value in normalized["properties"].items():
                 normalized["properties"][key] = _nullable_schema(value)
         normalized["additionalProperties"] = False
-    if normalized.get("type") == "array" and isinstance(normalized.get("items"), dict):
-        normalized["items"] = _normalize_json_schema(
-            normalized["items"],
-            require_all_properties=require_all_properties,
-        )
     return normalized
 
 
 def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
     nullable = copy.deepcopy(schema)
+    if _schema_accepts_null(nullable):
+        return nullable
     schema_type = nullable.get("type")
     if isinstance(schema_type, list):
         if "null" not in schema_type:
@@ -1189,6 +1212,17 @@ def _nullable_schema(schema: dict[str, Any]) -> dict[str, Any]:
     if isinstance(nullable.get("enum"), list) and None not in nullable["enum"]:
         nullable["enum"] = [*nullable["enum"], None]
     return nullable
+
+
+def _schema_accepts_null(schema: dict[str, Any]) -> bool:
+    schema_type = schema.get("type")
+    if schema_type == "null" or (isinstance(schema_type, list) and "null" in schema_type):
+        return True
+    return any(
+        isinstance(branch, dict) and _schema_accepts_null(branch)
+        for key in ("anyOf", "oneOf")
+        for branch in (schema.get(key) or [])
+    )
 
 
 def _validate_json_schema(value: Any, schema: dict[str, Any]) -> None:

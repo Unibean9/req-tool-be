@@ -116,6 +116,60 @@ _PLANNING_TRACKS = {"quick", "standard", "enterprise"}
 # re-exported below for existing import paths.
 
 
+_INTERNAL_PLAN_MARKERS = ("your plan:", "my plan:", "kế hoạch của tôi:", "kế hoạch thực hiện:")
+
+
+def _looks_like_internal_action_plan(text: str, tool_names: list[str]) -> bool:
+    """Detect control text that must not be treated as a completed direct response."""
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    marker_pattern = "|".join(re.escape(marker) for marker in _INTERNAL_PLAN_MARKERS)
+    # Only explicit control syntax is an internal plan. A tool name in natural language
+    # (especially names such as `respond`) must not take away the agent's autonomy.
+    # Also retain snake_case names found in output: the model may claim it will call an internal
+    # tool that is currently out of the menu. That remains invalid control text and must be retried.
+    mentioned_snake_case_names = re.findall(r"(?<!\w)[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?!\w)", lowered)
+    internal_tool_names = sorted({name.lower() for name in tool_names if "_" in name} | set(mentioned_snake_case_names))
+    if not internal_tool_names:
+        return False
+    tool_pattern = "|".join(re.escape(name) for name in internal_tool_names)
+    has_plan_marker = bool(re.search(rf"(?im)^\s*(?:[-*•.]\s*)?(?:{marker_pattern})", lowered))
+    has_internal_tool_reference = bool(re.search(rf"(?i)(?<!\w)(?:{tool_pattern})(?!\w)", lowered))
+    action_pattern = r"call|invoke|run|use|gọi|thực thi|sử dụng|dùng"
+    has_explicit_tool_action = bool(
+        re.search(
+            rf"(?i)(?<!\w)(?:{action_pattern})\s+(?:the\s+)?(?:tool\s+)?[`'\"]?(?:{tool_pattern})(?!\w)",
+            lowered,
+        )
+    )
+    return has_explicit_tool_action or (has_plan_marker and has_internal_tool_reference)
+
+
+def _requires_native_tool_retry(ai_message: AIMessage, tool_choice: str, tool_names: list[str]) -> bool:
+    """Retry only when the model emits an internal plan instead of a valid outcome.
+
+    A direct response is a valid agentic decision. Only control text that names an internal plan or
+    tool violates the contract and needs one required-tool retry.
+    """
+    if not isinstance(ai_message, AIMessage) or tool_choice != "auto" or _model_tool_calls(ai_message):
+        return False
+    return _looks_like_internal_action_plan(_ai_text_content(ai_message), tool_names)
+
+
+def _merge_token_usage(
+    first: dict[str, int] | None, second: dict[str, int] | None
+) -> dict[str, int] | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return {
+        key: int(first.get(key, 0) or 0) + int(second.get(key, 0) or 0)
+        for key in set(first) | set(second)
+    }
+
+
 def _normalize_planning_track(track: Any) -> str:
     raw = str(track or "").strip().lower()
     return raw if raw in _PLANNING_TRACKS else "quick"
@@ -588,13 +642,25 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     tool_schemas = _build_tool_schemas(available_tools)
     analyzer_messages = _build_analyzer_messages(effective_state, prompt)
     started_at = time.monotonic()
+    tool_choice = settings.tool_choice_mode
     ai_message, usage = await llm_client.generate(
         messages=analyzer_messages,
         system=system_prompt,
         max_tokens=settings.analyze_max_tokens,
         tools=tool_schemas,
-        tool_choice=settings.tool_choice_mode,
+        tool_choice=tool_choice,
     )
+    tool_names = [tool.name for tool in available_tools]
+    if _requires_native_tool_retry(ai_message, tool_choice, tool_names):
+        retry_message, retry_usage = await llm_client.generate(
+            messages=analyzer_messages,
+            system=system_prompt,
+            max_tokens=settings.analyze_max_tokens,
+            tools=tool_schemas,
+            tool_choice="required",
+        )
+        ai_message = retry_message
+        usage = _merge_token_usage(usage, retry_usage)
     latency_ms = int((time.monotonic() - started_at) * 1000)
     token_usage = annotate_token_usage(
         usage,
@@ -607,6 +673,11 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     model_tool_calls, gated_tools, dropped_tools, next_feedback, out_of_phase_tools = gate_model_selection(
         effective_state, ai_message
     )
+    direct_response = ""
+    if not model_tool_calls:
+        candidate_response = _ai_text_content(ai_message)
+        if not _looks_like_internal_action_plan(candidate_response, tool_names):
+            direct_response = candidate_response
     # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
     # (default vi). Drafts of record flow through decision_nodes and write_draft.
     locale = effective_state.get("locale") or "vi"
@@ -626,7 +697,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         token_usage=token_usage,
         latency_ms=latency_ms,
         gated_tools=gated_tools,
-        ai_message=ai_message,
+        direct_response=direct_response,
         locale=locale,
     )
 
@@ -638,6 +709,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         next_feedback=next_feedback,
         dispatched_tools=dispatched_tools,
         dispatched_tool_calls=dispatched_tool_calls,
+        direct_response=direct_response,
         out_of_phase_count=len(out_of_phase_tools),
     )
 
@@ -651,6 +723,7 @@ def _analysis_turn_result(
     next_feedback: dict[str, Any],
     dispatched_tools: list[dict[str, Any]],
     dispatched_tool_calls: list[dict[str, Any]],
+    direct_response: str = "",
     out_of_phase_count: int = 0,
 ) -> dict[str, Any]:
     """Assemble analyze_node's WorkflowState update — moved verbatim from the inline block."""
@@ -686,13 +759,15 @@ def _analysis_turn_result(
         **ctx.focus_reset_update,
         **coverage,
     }
-    # User-facing text must pass through tools so service persistence/interrupt handling owns delivery.
-    # Bedrock Anthropic rejects ":" in replayed tool_use ids; keep ids within ^[a-zA-Z0-9_-]+$.
+    # Tool calls still use dispatch. A direct response is an independent outcome and needs no fake tool.
+    # Bedrock Anthropic rejects ":" in replayed tool_use IDs; IDs must match ^[a-zA-Z0-9_-]+$.
     if dispatched_tool_calls:
         dispatch_stop_reason = _pending_dispatch_stop_reason(next_turn_count, recent_tool_calls)
         result["messages"] = [_dispatch_ai_message(dispatched_tool_calls)]
         if dispatch_stop_reason:
             result["messages"].extend(_synthetic_tool_results(dispatched_tool_calls, dispatch_stop_reason))
+    elif direct_response:
+        result["messages"] = [AIMessage(content=direct_response)]
     return result
 
 

@@ -4,16 +4,40 @@ import hashlib
 import uuid
 from typing import Any
 
-from langchain_core.messages import AIMessage
+from sqlalchemy import select
 
 from app.graphs.analysis.tool_gating import (
     _COERCED_ASK_FALLBACK_BY_LOCALE,
     _RESPOND_FALLBACK_BY_LOCALE,
-    _ai_text_content,
-    _plain_response_tool,
     _response_message_incomplete,
 )
-from app.models.agent import AgentRun
+from app.models.agent import AgentMessage, AgentMessageRole, AgentRun
+
+
+async def _direct_response_already_saved(db, session_id: uuid.UUID, content: str) -> bool:
+    """Prevent duplicate writes when a node replays after DB commit but before checkpointing.
+
+    Compare only the latest non-queued message. A message queued before the graph checkpoints must
+    not bypass the guard; a new user turn may legitimately save the same content again.
+    """
+    latest = (
+        await db.execute(
+            select(AgentMessage)
+            .where(
+                AgentMessage.session_id == session_id,
+                AgentMessage.payload["queued"].as_boolean().is_not(True),
+            )
+            .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return bool(
+        latest
+        and latest.role == AgentMessageRole.AGENT
+        and latest.content == content
+        and isinstance(latest.payload, dict)
+        and latest.payload.get("kind") == "response"
+    )
 
 # Number of consecutive identical (name + args) tool-call fingerprints that trigger route_node's
 # early exit. 3 (not 1 or 2) is conservative enough to tolerate a legitimate one-off repeat (e.g. the
@@ -217,7 +241,7 @@ async def record_run_and_dispatch(
     token_usage: Any,
     latency_ms: int,
     gated_tools: list[dict[str, Any]],
-    ai_message: AIMessage,
+    direct_response: str,
     locale: str,
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Persist the AgentRun and coerce the gated tools into dispatchable calls.
@@ -258,15 +282,21 @@ async def record_run_and_dispatch(
                 if isinstance(provider_metadata, dict):
                     dispatched_tool_call["provider_metadata"] = provider_metadata
                 dispatched_tool_calls.append(dispatched_tool_call)
-        if not dispatched_tool_calls and _ai_text_content(ai_message):
-            fallback_tool = _plain_response_tool(ai_message, locale)
-            dispatched_tools.append(fallback_tool)
-            dispatched_tool_calls.append({"id": f"{run_id}-fallback", **fallback_tool})
         analysis_result = {
             **analysis_result_base,
             "tools": [_audit_tool_call(item) for item in dispatched_tools],
             "dispatched_tool_calls": [_audit_tool_call(item) for item in dispatched_tool_calls],
+            "response_mode": "direct" if direct_response else ("tool" if dispatched_tools else "none"),
         }
         run.analysis_result = analysis_result
+        if direct_response and not await _direct_response_already_saved(db, session_id, direct_response):
+            db.add(
+                AgentMessage(
+                    session_id=session_id,
+                    role=AgentMessageRole.AGENT,
+                    content=direct_response,
+                    payload={"kind": "response", "locale": locale, "run_id": run_id},
+                )
+            )
         await db.commit()
     return run_id, analysis_result, dispatched_tools, dispatched_tool_calls
