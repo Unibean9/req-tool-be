@@ -28,7 +28,7 @@ from app.graphs.agent_tools._shared import (
 )
 from app.graphs.decision_graph import render_view
 from app.graphs.gate_logging import log_gate_decision
-from app.graphs.gating import Mode, menu_rules
+from app.graphs.gating import Mode, menu_rules, pilot_runtime
 from app.graphs.session_phase import PhaseSignals, derive_phase
 from app.graphs.state import WorkflowState
 from app.schemas.artifact_synthesis import ArtifactReadinessState
@@ -329,11 +329,16 @@ def get_available_tools(state: WorkflowState) -> list:
     # Computed once (not per candidate tool): current_session_phase can invoke _finalize_gate_open
     # (via _phase_signals), which logs — a call per candidate would multiply that logging.
     phase = current_session_phase(state)
-    return [
-        tool
-        for tool in candidates
-        if gating.check({"name": tool.name, "phase": phase}, state, Mode.MENU).is_allow
-    ]
+    verdicts = {
+        tool.name: gating.check({"name": tool.name, "phase": phase}, state, Mode.MENU) for tool in candidates
+    }
+    # Shadow/enforce pilot (Phase 3): a no-op when agent_policy_resolver_mode == "legacy" (the
+    # default). Turn admission is not yet threaded through WorkflowState, so this call site always
+    # passes turn_cohort=None/actor_context=None — enforce mode therefore always fails closed to the
+    # untouched legacy verdicts above; shadow mode only compares + projects telemetry. See
+    # app/graphs/gating/pilot_runtime.py.
+    pilot_runtime.evaluate_pilot_capabilities(state, verdicts, evaluation_context="menu")
+    return [tool for tool in candidates if verdicts[tool.name].is_allow]
 
 
 __all__ = [
