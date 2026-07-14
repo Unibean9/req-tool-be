@@ -1,7 +1,7 @@
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import StreamingResponse
 
@@ -112,6 +112,7 @@ async def send_message(
     project_id: uuid.UUID,
     session_id: uuid.UUID,
     body: AgentMessageCreate,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
@@ -119,7 +120,12 @@ async def send_message(
     msg = await AgentService(
         db=db, graph=_require_graph(request), session_factory=async_session_factory
     ).handle_user_message(
-        project_id=project_id, session_id=session_id, content=body.content, user_id=user.id, mode_hint=body.mode_hint
+        project_id=project_id,
+        session_id=session_id,
+        content=body.content,
+        user_id=user.id,
+        mode_hint=body.mode_hint,
+        idempotency_key=idempotency_key,
     )
     return ok(AgentMessageResponse.model_validate(msg))
 

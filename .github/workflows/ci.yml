@@ -44,6 +44,72 @@ jobs:
       - name: Run tests
         run: uv run pytest -q
 
+  agent-contract:
+    name: Agent Contract (Deterministic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Run offline golden contract
+        run: >
+          uv run pytest -q -o addopts=""
+          tests/unit/agent/test_agent_runtime_config.py
+          tests/unit/agent/test_agent_service.py
+          tests/integration/test_graph_nodes.py
+          tests/unit/gates/test_finalize_gate.py
+          -m "golden and not live and not evidence"
+
+  agent-turn-postgres:
+    name: Agent Turn PostgreSQL Contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: reqtool_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d reqtool_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reqtool_test
+      AGENT_TURN_POSTGRES_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/reqtool_test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync
+
+      - name: Apply agent turn migrations
+        run: uv run alembic upgrade head
+
+      - name: Prove PostgreSQL admission and fence
+        run: uv run pytest -q tests/integration/test_agent_turn_postgres.py
+
   docker-validate:
     name: Docker / Validate Image
     runs-on: ubuntu-latest
@@ -67,7 +133,7 @@ jobs:
 
   deploy:
     name: Deploy
-    needs: [docker-validate]
+    needs: [ci, agent-contract, agent-turn-postgres, docker-validate]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'

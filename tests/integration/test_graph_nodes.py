@@ -1650,6 +1650,7 @@ async def test_analyze_node_persists_direct_response_without_tool(client, db_ses
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_analyze_node_does_not_duplicate_direct_response_on_replay(client, db_session):
     """Replay after DB commit but before checkpointing must not duplicate the transcript."""
     from app.graphs.nodes import analyze_node

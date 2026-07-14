@@ -22,6 +22,7 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
+    AgentTurnEnvelope,
 )
 from app.models.artifact import (
     Artifact,
@@ -66,16 +67,28 @@ async def _setup_with_user(client):
 def _no_background_tasks():
     real_create_task = asyncio.create_task
 
+    def _suppress_agent_service_task(coro, *args, **kwargs):
+        coro.close()
+        return MagicMock()
+
+    # Giữ `side_effect` callable để các test cần bắt coroutine có thể chain
+    # vào đúng boundary AgentService.
+    agent_service_tasks = MagicMock(side_effect=_suppress_agent_service_task)
+
     def _side_effect(coro, *args, **kwargs):
         qualname = getattr(coro, "__qualname__", "")
-        if "AgentService" in qualname or "AsyncMockMixin" in qualname:
+        if "AgentService" in qualname:
+            # Chỉ theo dõi task do AgentService lên lịch; patch này cũng chặn
+            # task nội bộ của Starlette vì hai module dùng chung asyncio.
+            return agent_service_tasks(coro, *args, **kwargs)
+        if "AsyncMockMixin" in qualname:
             coro.close()
             return MagicMock()
         return real_create_task(coro, *args, **kwargs)
 
     with patch("app.services.agent_service.asyncio.create_task") as mock_ct:
         mock_ct.side_effect = _side_effect
-        yield mock_ct
+        yield agent_service_tasks
 
 
 def _make_service(db_session, graph=None, session_factory=None):
@@ -608,6 +621,7 @@ async def test_handle_user_message_rejects_non_owner(client, db_session):
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_handle_user_message_when_active_returns_200_and_queues(client, db_session, _no_background_tasks):
     """S2: sending a message while the session is ACTIVE queues it instead of returning 400."""
     project_id = await _setup(client)
@@ -721,7 +735,82 @@ async def test_drain_queue_does_not_fire_after_waiting_for_human(client, db_sess
 
     await db_session.refresh(queued)
     assert queued.payload["queued"] is True
+
+
+@pytest.mark.asyncio
+async def test_handle_user_message_admits_queued_turn_when_flag_enabled(
+    client, db_session, monkeypatch, _no_background_tasks
+):
+    project_id, user_id = await _setup_with_user(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+        created_by_id=user_id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "agent_turn_admission_enabled", True)
+
+    message = await _make_service(db_session).handle_user_message(
+        project_id=project_id,
+        session_id=session.id,
+        content="Đợi lượt hiện tại",
+        user_id=user_id,
+        idempotency_key="queued-client-key",
+    )
+
+    envelope = (
+        await db_session.execute(select(AgentTurnEnvelope).where(AgentTurnEnvelope.message_id == message.id))
+    ).scalar_one()
+    assert message.payload == {"queued": True}
+    assert envelope.message_id == message.id
+    assert _no_background_tasks.call_count == 0
     _no_background_tasks.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_drain_queue_recovers_turn_id_from_trigger_when_flag_enabled(
+    client, db_session, monkeypatch, _no_background_tasks
+):
+    project_id, user_id = await _setup_with_user(client)
+    session = AgentSession(
+        project_id=project_id,
+        artifact_type="goal",
+        workflow_area="analysis",
+        graph_checkpoint={},
+        status=AgentSessionStatus.ACTIVE,
+        created_by_id=user_id,
+    )
+    db_session.add(session)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "agent_turn_admission_enabled", True)
+
+    message = await _make_service(db_session).handle_user_message(
+        project_id=project_id,
+        session_id=session.id,
+        content="Đợi lượt hiện tại",
+        user_id=user_id,
+        idempotency_key="queued-client-key-drain",
+    )
+    envelope = (
+        await db_session.execute(select(AgentTurnEnvelope).where(AgentTurnEnvelope.message_id == message.id))
+    ).scalar_one()
+
+    session.status = AgentSessionStatus.COMPLETED
+    await db_session.commit()
+
+    svc = _make_service(db_session)
+    await svc._drain_queue(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+    )
+
+    await db_session.refresh(session)
+    assert session.active_turn_id == envelope.id
+    assert session.status == AgentSessionStatus.ACTIVE
 
 
 @pytest.mark.asyncio
@@ -839,6 +928,7 @@ async def test_run_graph_timeout_does_not_affect_normal_flow(client, db_session,
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_direct_response_keeps_session_open_and_follow_up_uses_checkpoint(
     client, db_session, _no_background_tasks
 ):
@@ -911,6 +1001,7 @@ async def test_direct_response_keeps_session_open_and_follow_up_uses_checkpoint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session, caplog):
     """A graph that ENDs with an undispatched tool_call (route_node hit the turn cap before the
     pending ask_user ran) must be marked FAILED, not COMPLETED — it did not finish, it ran out of turns."""
@@ -952,6 +1043,7 @@ async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session,
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_run_graph_synthetic_circuit_breaker_marks_failed_not_completed(client, db_session, caplog):
     """Synthetic tool result đã đóng vẫn phải giữ tín hiệu lỗi từ circuit-breaker."""
     from langchain_core.messages import AIMessage, ToolMessage
@@ -991,6 +1083,7 @@ async def test_run_graph_synthetic_circuit_breaker_marks_failed_not_completed(cl
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_run_graph_ignores_stale_stop_marker_before_direct_response(client, db_session):
     """Marker circuit-breaker cũ trong history không được làm hỏng direct response mới."""
     from langchain_core.messages import AIMessage, ToolMessage
@@ -1028,6 +1121,7 @@ async def test_run_graph_ignores_stale_stop_marker_before_direct_response(client
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_run_graph_no_outcome_keeps_session_resumable(client, db_session, caplog):
     """All-dropped hoặc empty outcome không được báo artifact chưa đổi là hoàn tất."""
     project_id = await _setup(client)
@@ -1430,6 +1524,7 @@ async def test_turn_limit_case_stays_failed_unchanged():
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
+@pytest.mark.golden
 async def test_write_draft_no_duplicate_row_across_turn_failed_resume(mock_interrupt, client, db_session):
     """(d) DUPLICATE-ROW CHECK for write_draft/create_artifact-style proposal tools: these couple the
     AgentToolCall insert with the session's WAITING_FOR_HUMAN/PROPOSE_ARTIFACTS transition in the
@@ -1466,6 +1561,42 @@ async def test_write_draft_no_duplicate_row_across_turn_failed_resume(mock_inter
     rows = (
         await db_session.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))
     ).scalars().all()
+    assert len(rows) == 1
+    await db_session.refresh(agent_session)
+    assert agent_session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+    assert agent_session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS
+
+
+@pytest.mark.asyncio
+@pytest.mark.golden
+@patch("app.graphs.agent_tools.interrupt", side_effect=RuntimeError("interrupt checkpoint lost"))
+async def test_write_draft_commit_survives_interrupt_crash(mock_interrupt, client, db_session):
+    """Đặc tả split-brain: proposal DB được commit trước checkpoint của interrupt."""
+    from app.graphs.agent_tools import _write_draft_impl
+    from app.models.artifact import ArtifactType
+    from tests.factories import _config, _focused_items, _make_agent_run, _make_agent_session, _project, _state
+
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    [focused] = await _focused_items(db_session, project_id, ArtifactType.VISION_OBJECTIVES)
+    agent_session.focused_artifact_id = focused.id
+    await db_session.commit()
+    run = await _make_agent_run(db_session, agent_session)
+    state = _state(artifact_type="vision_objectives")
+    state["user_confirmed"] = True
+    state["last_agent_run_id"] = str(run.id)
+    state["focused_artifact_id"] = str(focused.id)
+    config = _config(str(agent_session.id), str(project_id))
+    body = (
+        "## Vision\nA concrete vision statement.\n\n## Objectives\n- Ship the thing.\n\n"
+        "## Success Metrics\n- Adoption reaches 80%."
+    )
+
+    with pytest.raises(RuntimeError, match="interrupt checkpoint lost"):
+        await _write_draft_impl("Vision", body, state, config, "call_crash")
+
+    mock_interrupt.assert_called_once()
+    rows = (await db_session.execute(select(AgentToolCall).where(AgentToolCall.run_id == run.id))).scalars().all()
     assert len(rows) == 1
     await db_session.refresh(agent_session)
     assert agent_session.status == AgentSessionStatus.WAITING_FOR_HUMAN
@@ -2300,6 +2431,7 @@ async def test_approve_tool_call_recomputes_readiness_even_when_snapshot_claims_
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_approve_tool_call_retry_does_not_create_duplicate_version(
     client, db_session, _no_background_tasks
 ):

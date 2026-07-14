@@ -2,7 +2,7 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
@@ -38,6 +38,20 @@ class AgentToolCallStatus(enum.StrEnum):
     REJECTED = "rejected"
     EXECUTED = "executed"
     SUPERSEDED = "superseded"
+
+
+class AgentTurnTriggerType(enum.StrEnum):
+    USER_MESSAGE = "user_message"
+    APPROVAL = "approval"
+    CANCEL = "cancel"
+    RETRY = "retry"
+
+
+class TurnExecutionStatus(enum.StrEnum):
+    PENDING = "pending"
+    RUNNING = "running"
+    WAITING = "waiting"
+    TERMINAL = "terminal"
 
 
 def enum_column(enum_class: type[enum.Enum], **kwargs):
@@ -98,6 +112,10 @@ class AgentSession(AuditMixin, Base):
         nullable=True,
     )
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    # Cursor additive cho control plane. Chỉ admission service được tăng giá trị này dưới row lock.
+    turn_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    # Chỉ turn này được phép chiếm checkpoint của session. Admission/drain thay đổi nó dưới row lock.
+    active_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     messages: Mapped[list["AgentMessage"]] = relationship(
         back_populates="session",
@@ -107,6 +125,85 @@ class AgentSession(AuditMixin, Base):
         back_populates="session",
         cascade="all, delete-orphan",
     )
+    turns: Mapped[list["AgentTurnEnvelope"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        foreign_keys="AgentTurnEnvelope.session_id",
+    )
+
+
+class AgentTurnEnvelope(AuditMixin, Base):
+    """Biên logical turn bất biến; state thực thi nằm ở bảng tách riêng."""
+
+    __tablename__ = "agent_turn_envelopes"
+    __table_args__ = (
+        UniqueConstraint("session_id", "session_sequence", name="uq_agent_turn_envelopes_session_sequence"),
+        Index("ix_agent_turn_envelopes_session_id", "session_id"),
+        Index("ix_agent_turn_envelopes_correlation_id", "correlation_id"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    session_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_trigger_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, unique=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_messages.id"), nullable=True
+    )
+    cohort: Mapped[Any] = jsonb_column(nullable=False, default=dict)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    session: Mapped["AgentSession"] = relationship(
+        back_populates="turns", foreign_keys=[session_id]
+    )
+    triggers: Mapped[list["AgentTurnTrigger"]] = relationship(
+        back_populates="turn", cascade="all, delete-orphan", foreign_keys="AgentTurnTrigger.turn_id"
+    )
+    execution_state: Mapped["TurnExecutionState"] = relationship(
+        back_populates="turn", cascade="all, delete-orphan", uselist=False
+    )
+
+
+class AgentTurnTrigger(AuditMixin, Base):
+    __tablename__ = "agent_turn_triggers"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id", "trigger_type", "idempotency_key_hash", name="uq_agent_turn_trigger_idempotency"
+        ),
+        Index("ix_agent_turn_triggers_session_id", "session_id"),
+        Index("ix_agent_turn_triggers_turn_id", "turn_id"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=True
+    )
+    trigger_type: Mapped[AgentTurnTriggerType] = enum_column(AgentTurnTriggerType, nullable=False)
+    idempotency_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    message_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_messages.id"), nullable=True
+    )
+
+    turn: Mapped["AgentTurnEnvelope | None"] = relationship(back_populates="triggers", foreign_keys=[turn_id])
+
+
+class TurnExecutionState(AuditMixin, Base):
+    __tablename__ = "turn_execution_states"
+    __table_args__ = (Index("ix_turn_execution_states_status", "status"),)
+
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=False, unique=True
+    )
+    status: Mapped[TurnExecutionStatus] = enum_column(
+        TurnExecutionStatus, nullable=False, default=TurnExecutionStatus.PENDING
+    )
+    owner_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    ownership_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lease_expires_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    transition_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+    turn: Mapped["AgentTurnEnvelope"] = relationship(back_populates="execution_state")
 
 
 class AgentMessage(AuditMixin, Base):

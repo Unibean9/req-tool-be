@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -89,6 +91,15 @@ class Settings(BaseSettings):
     # "auto" → model decides whether to call a tool (enables clean terminal-text turns).
     # "required" → model must pick at least one tool (pre-M1 behaviour, for rollback).
     tool_choice_mode: str = "auto"
+
+    # Control-plane logical turn. Các cờ này chỉ là hợp đồng migration ở Phase 1;
+    # mặc định giữ nguyên execution route legacy cho đến từng phase cutover tương ứng.
+    agent_turn_admission_enabled: bool = False
+    agent_policy_resolver_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
+    agent_command_handlers_enabled: bool = False
+    agent_execution_mode: Literal["inline", "durable"] = "inline"
+    agent_checkpoint_history_enabled: bool = False
+    agent_trace_enabled: bool = False
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

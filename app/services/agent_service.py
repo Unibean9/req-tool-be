@@ -26,6 +26,7 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
+    AgentTurnTrigger,
 )
 from app.models.artifact import (
     Artifact,
@@ -43,6 +44,7 @@ from app.schemas.artifact_synthesis import (
     synthesis_metadata_from_snapshot,
 )
 from app.services.agent_tool_visibility import public_tool_call_filter
+from app.services.agent_turn_service import AgentTurnService
 from app.services.artifact_service import ArtifactInUseError, ArtifactLinkService, ArtifactService
 from app.services.document_service import DocumentService
 
@@ -321,8 +323,25 @@ class AgentService:
         user_id: uuid.UUID | None = None,
         llm_client: Any = None,
         mode_hint: str | None = None,
+        idempotency_key: str | None = None,
     ) -> AgentMessage:
-        session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
+        admitted = None
+        if settings.agent_turn_admission_enabled:
+            # Không đọc status rồi quyết định ở đây: admission giữ session row lock để một
+            # checkpoint chỉ có một turn inline; turn đến sau được persist dạng queue.
+            admitted = await AgentTurnService(self.db).admit_user_message(
+                project_id=project_id,
+                session_id=session_id,
+                user_id=user_id,
+                content=content,
+                idempotency_key=idempotency_key,
+                mode_hint=mode_hint,
+            )
+            if admitted.duplicate or admitted.queued:
+                return admitted.message
+            session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
+        else:
+            session = await self.get_session(project_id=project_id, session_id=session_id, user_id=user_id)
 
         # S2 — never silently drop a valid message while the agent is busy. Queue it and return 200.
         # The queue row carries the message content AND its mode_hint so the drained turn replays the
@@ -331,16 +350,32 @@ class AgentService:
         # Exception: ACTIVE + STREAM_RESPONSE means the graph halted via interrupt() while keeping
         # status=ACTIVE (conversational Q&A). This is not a "busy" session — it is waiting for a
         # reply. Fall through to the resume path below rather than queuing.
-        if session.status == AgentSessionStatus.ACTIVE:
+        if not settings.agent_turn_admission_enabled and session.status == AgentSessionStatus.ACTIVE:
             if session.interrupt_type != AgentSessionInterruptType.STREAM_RESPONSE:
-                return await self._queue_message(session.id, content, mode_hint)
-        if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
+                return await self._queue_message(
+                    session.id,
+                    content,
+                    mode_hint,
+                    project_id=project_id,
+                    user_id=user_id,
+                    idempotency_key=idempotency_key,
+                )
+        if not settings.agent_turn_admission_enabled and session.status in (
+            AgentSessionStatus.COMPLETED,
+            AgentSessionStatus.FAILED,
+            AgentSessionStatus.EXPIRED,
+        ):
             raise HTTPException(400, detail="Session has ended and cannot accept more messages")
         # status == WAITING_FOR_HUMAN, TURN_FAILED, or ACTIVE+STREAM_RESPONSE below.
         # PROPOSE_ARTIFACTS waits for an approval decision, not free-text — queue the text (no carve-out).
-        if session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS:
-            return await self._queue_message(session.id, content, mode_hint)
-        if session.interrupt_type not in (
+        if (
+            not settings.agent_turn_admission_enabled
+            and session.interrupt_type == AgentSessionInterruptType.PROPOSE_ARTIFACTS
+        ):
+            return await self._queue_message(
+                session.id, content, mode_hint, project_id=project_id, user_id=user_id, idempotency_key=idempotency_key
+            )
+        if not settings.agent_turn_admission_enabled and session.interrupt_type not in (
             AgentSessionInterruptType.ASK_HUMAN,
             AgentSessionInterruptType.STREAM_RESPONSE,
             None,
@@ -349,10 +384,12 @@ class AgentService:
 
         # TURN_FAILED and direct responses both have no interrupt. They must continue from the
         # checkpoint with partial state; treating them as a first message would erase prior context.
-        is_turn_failed = session.status == AgentSessionStatus.TURN_FAILED
+        decision_status = admitted.prior_status if admitted is not None else session.status
+        decision_interrupt_type = admitted.prior_interrupt_type if admitted is not None else session.interrupt_type
+        is_turn_failed = decision_status == AgentSessionStatus.TURN_FAILED
         is_direct_response_wait = (
-            session.status == AgentSessionStatus.WAITING_FOR_HUMAN
-            and session.interrupt_type is None
+            decision_status == AgentSessionStatus.WAITING_FOR_HUMAN
+            and decision_interrupt_type is None
             and await self._latest_message_is_direct_response(session.id)
         )
         is_checkpoint_continuation = is_turn_failed or is_direct_response_wait
@@ -362,11 +399,16 @@ class AgentService:
         if llm_client is None:
             llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
 
-        msg = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content)
-        self.db.add(msg)
-        session.status = AgentSessionStatus.ACTIVE
-        session.interrupt_type = None
-        await self.db.commit()
+        admitted_turn_id: uuid.UUID | None = None
+        if admitted is not None:
+            msg = admitted.message
+            admitted_turn_id = admitted.turn_id
+        else:
+            msg = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content)
+            self.db.add(msg)
+            session.status = AgentSessionStatus.ACTIVE
+            session.interrupt_type = None
+            await self.db.commit()
 
         if is_checkpoint_continuation:
             # Minimal partial-state update against the existing checkpoint: only the new message and
@@ -398,8 +440,7 @@ class AgentService:
                 session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
             )
 
-        asyncio.create_task(
-            self._run_graph(
+        runner = self._run_graph(
                 session_id=session.id,
                 project_id=project_id,
                 artifact_type=session.artifact_type,
@@ -413,18 +454,58 @@ class AgentService:
                 initial_state=initial_state,
                 resume_command=resume_command,
             )
-        )
+        if admitted_turn_id is not None:
+            asyncio.create_task(self._run_admitted_graph(turn_id=admitted_turn_id, runner=runner))
+        else:
+            asyncio.create_task(runner)
 
         return msg
 
+    async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner: Any) -> None:
+        """Adapter inline dùng cùng ownership contract với durable worker Phase 6."""
+        owner_id = f"inline:{uuid.uuid4()}"
+        async with self.session_factory() as db:
+            generation = await AgentTurnService(db).claim_inline(turn_id=turn_id, owner_id=owner_id)
+        if generation is None:
+            logger.warning("agent_turn_claim_conflict turn_id=%s", turn_id)
+            return
+        try:
+            await runner
+        finally:
+            async with self.session_factory() as db:
+                released = await AgentTurnService(db).release_inline(
+                    turn_id=turn_id, owner_id=owner_id, generation=generation
+                )
+            if not released:
+                logger.warning("agent_turn_release_stale turn_id=%s generation=%s", turn_id, generation)
+
     async def _queue_message(
-        self, session_id: uuid.UUID, content: str, mode_hint: str | None = None
+        self,
+        session_id: uuid.UUID,
+        content: str,
+        mode_hint: str | None = None,
+        *,
+        project_id: uuid.UUID | None = None,
+        user_id: uuid.UUID | None = None,
+        idempotency_key: str | None = None,
     ) -> AgentMessage:
         """Persist a user message as queued (payload.queued=True) without starting a graph turn.
 
         The mode_hint (if any) rides the payload so _drain_queue can replay it. Drained later by
         _drain_queue once the current turn ends COMPLETED/FAILED.
         """
+        if settings.agent_turn_admission_enabled:
+            if project_id is None:
+                raise RuntimeError("project_id is required for admitted queued messages")
+            admitted = await AgentTurnService(self.db).admit_user_message(
+                project_id=project_id,
+                session_id=session_id,
+                user_id=user_id,
+                content=content,
+                idempotency_key=idempotency_key,
+                mode_hint=mode_hint,
+            )
+            return admitted.message
         payload: dict[str, Any] = {"queued": True}
         if mode_hint:
             payload["mode_hint"] = mode_hint
@@ -1285,7 +1366,9 @@ class AgentService:
         strong_llm_client: Any = None,
     ) -> None:
         async with self.session_factory() as db:
-            session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
+            session_row = (
+                await db.execute(select(AgentSession).where(AgentSession.id == session_id).with_for_update())
+            ).scalar_one()
             # Only drain after a turn truly ended. WAITING_FOR_HUMAN means the graph paused on a
             # specific question/approval — feeding a queued message here would be the wrong input.
             # EXPIRED is terminal-and-inert, not terminal-and-drainable: reviving it to ACTIVE would
@@ -1320,6 +1403,18 @@ class AgentService:
             queued.payload = new_payload
             content = queued.content
             queued_mode_hint = new_payload.get("mode_hint")
+            queued_turn_id: uuid.UUID | None = None
+
+            if settings.agent_turn_admission_enabled:
+                queued_turn_id = (
+                    await db.execute(
+                        select(AgentTurnTrigger.turn_id).where(AgentTurnTrigger.message_id == queued.id)
+                    )
+                ).scalar_one_or_none()
+                if queued_turn_id is None:
+                    logger.error("agent_turn_queue_missing_turn_id session_id=%s message_id=%s", session_id, queued.id)
+                    return
+                session_row.active_turn_id = queued_turn_id
 
             was_turn_failed = session_row.status == AgentSessionStatus.TURN_FAILED
             session_row.status = AgentSessionStatus.ACTIVE
@@ -1348,8 +1443,7 @@ class AgentService:
                 mode_hint=queued_mode_hint,
             )
         # Max 1 graph task per session: this runs only after the prior turn finished.
-        asyncio.create_task(
-            self._run_graph(
+        runner = self._run_graph(
                 session_id=session_id,
                 project_id=project_id,
                 artifact_type=artifact_type,
@@ -1363,7 +1457,10 @@ class AgentService:
                 initial_state=initial_state,
                 resume_command=None,
             )
-        )
+        if queued_turn_id is not None:
+            asyncio.create_task(self._run_admitted_graph(turn_id=queued_turn_id, runner=runner))
+        else:
+            asyncio.create_task(runner)
 
     def _make_config(
         self,

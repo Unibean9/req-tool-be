@@ -63,6 +63,9 @@ site/
 # Other
 plans/*
 docs/*
+!docs/
+!docs/adr/
+!docs/adr/*.md
 .claude/session-data/*
 
 # my-skills generated files

@@ -162,6 +162,7 @@ def _working_session_factory():
 
 
 @pytest.mark.asyncio
+@pytest.mark.golden
 async def test_finalize_interrupt_triggers_when_available():
     """_finalize_impl interrupts for human confirmation (the approval step) rather than erroring."""
     factory, session_row = _working_session_factory()
