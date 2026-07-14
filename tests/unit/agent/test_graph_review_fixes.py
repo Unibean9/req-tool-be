@@ -96,6 +96,7 @@ def test_analysis_result_closes_tool_calls_when_turn_cap_would_end():
     assert isinstance(result["messages"][1], ToolMessage)
     assert result["messages"][1].tool_call_id == "call-1"
     assert result["messages"][1].status == "error"
+    assert result["messages"][1].additional_kwargs["agent_stop_reason"] == "max_agent_turns"
     assert route_node({**state, **result}) == END
 
 
@@ -118,6 +119,7 @@ def test_analysis_result_closes_repeated_tool_calls_before_route_end():
     assert isinstance(result["messages"][0], AIMessage)
     assert isinstance(result["messages"][1], ToolMessage)
     assert "repeated_tool_calls" in result["messages"][1].content
+    assert result["messages"][1].additional_kwargs["agent_stop_reason"] == "repeated_tool_calls"
     assert route_node({**state, **result}) == END
 
 

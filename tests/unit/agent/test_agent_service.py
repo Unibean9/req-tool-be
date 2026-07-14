@@ -952,6 +952,137 @@ async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session,
 
 
 @pytest.mark.asyncio
+async def test_run_graph_synthetic_circuit_breaker_marks_failed_not_completed(client, db_session, caplog):
+    """Synthetic tool result đã đóng vẫn phải giữ tín hiệu lỗi từ circuit-breaker."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(return_value={
+        "analysis_result": {"response_mode": "tool"},
+        "messages": [
+            AIMessage(content="", tool_calls=[{"id": "call-1", "name": "write_draft", "args": {}}]),
+            ToolMessage(
+                content="Tool call was not executed because the analysis loop stopped: repeated_tool_calls.",
+                tool_call_id="call-1",
+                status="error",
+                additional_kwargs={"agent_stop_reason": "repeated_tool_calls"},
+            ),
+        ],
+    })
+    svc = _make_service(db_session, graph)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with caplog.at_level(logging.ERROR):
+        await svc._run_graph(
+            session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+            workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+            initial_state=None, resume_command=None,
+        )
+
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.FAILED
+    assert any("repeated_tool_calls" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_graph_ignores_stale_stop_marker_before_direct_response(client, db_session):
+    """Marker circuit-breaker cũ trong history không được làm hỏng direct response mới."""
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(return_value={
+        "analysis_result": {"response_mode": "direct"},
+        "messages": [
+            ToolMessage(
+                content="Tool call was not executed because the analysis loop stopped: repeated_tool_calls.",
+                tool_call_id="old-call",
+                status="error",
+                additional_kwargs={"agent_stop_reason": "repeated_tool_calls"},
+            ),
+            AIMessage(content="Phan hoi moi hop le."),
+        ],
+    })
+    svc = _make_service(db_session, graph)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.WAITING_FOR_HUMAN
+
+
+@pytest.mark.asyncio
+async def test_run_graph_no_outcome_keeps_session_resumable(client, db_session, caplog):
+    """All-dropped hoặc empty outcome không được báo artifact chưa đổi là hoàn tất."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(return_value={"analysis_result": {"response_mode": "none"}, "messages": []})
+    svc = _make_service(db_session, graph)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    with caplog.at_level(logging.ERROR):
+        await svc._run_graph(
+            session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+            workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+            initial_state=None, resume_command=None,
+        )
+
+    await db_session.refresh(session)
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert session.status == AgentSessionStatus.TURN_FAILED
+    assert session.interrupt_type is None
+    assert any("artifact chưa được cập nhật" in message.content for message in messages)
+    assert any("no_terminal_outcome" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_run_graph_allows_empty_completion_after_rejection(client, db_session):
+    """Rejection do người dùng quyết định vẫn là terminal outcome hợp lệ không cần artifact."""
+    project_id = await _setup(client)
+    graph = _mock_graph()
+    graph.ainvoke = AsyncMock(return_value={"analysis_result": {"response_mode": "none"}, "messages": []})
+    svc = _make_service(db_session, graph)
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None, allow_empty_completion=True,
+    )
+
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
 async def test_run_graph_with_initial_state_none_has_locale_and_intent(client, db_session):
     """Fallback state with initial_state=None includes locale and intent for graph reads."""
     project_id = await _setup(client)

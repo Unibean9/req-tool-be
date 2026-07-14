@@ -598,7 +598,14 @@ class AgentService:
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
-        await self._check_and_resume(project_id=project_id, session_id=session_id, llm_client=llm_client)
+        # Người dùng đã quyết định không persist proposal; đây là một terminal outcome hợp lệ dù graph
+        # resume không tạo thêm tool call hoặc direct response.
+        await self._check_and_resume(
+            project_id=project_id,
+            session_id=session_id,
+            llm_client=llm_client,
+            allow_empty_completion=True,
+        )
         await self.db.refresh(tool_call)
         return tool_call
 
@@ -1041,6 +1048,7 @@ class AgentService:
         session_id: uuid.UUID,
         llm_client: Any = None,
         state_update: dict[str, Any] | None = None,
+        allow_empty_completion: bool = False,
     ) -> None:
         session_row = (
             await self.db.execute(select(AgentSession).where(AgentSession.id == session_id).with_for_update())
@@ -1086,6 +1094,7 @@ class AgentService:
                 strong_llm_client=strong_llm_client,
                 initial_state=None,
                 resume_command=resume_command,
+                allow_empty_completion=allow_empty_completion,
             )
         )
 
@@ -1125,6 +1134,7 @@ class AgentService:
         focused_artifact_id: uuid.UUID | None = None,
         initial_state: dict[str, Any] | None,
         resume_command: Any,
+        allow_empty_completion: bool = False,
     ) -> None:
         config = self._make_config(session_id, project_id, llm_client, agent_role, strong_llm_client=strong_llm_client)
         timeout = settings.agent_turn_timeout_seconds
@@ -1154,13 +1164,13 @@ class AgentService:
             # paused tool is stale and must not be promoted: WAITING_FOR_HUMAN re-set by a tool
             # re-running on resume, or ACTIVE+STREAM_RESPONSE while halted on a conversational ask (D4).
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
-            # A graph that ENDs while its last message still carries tool_calls did not finish: it hit
-            # the per-request turn cap in route_node before the pending interrupt-bearing tool (e.g.
-            # ask_user) could run, so no __interrupt__ surfaced. Since turn_count resets each human turn,
-            # tripping the cap means the model looped silently within one request without ever
-            # interacting — a genuine runaway, not a long conversation. Fail it loudly (mirroring the
-            # timeout branch) rather than mislabel it COMPLETED.
-            turn_limit_hit = graph_ended and _result_has_pending_tool_calls(result)
+            # Graph END cùng tool call chưa dispatch hoặc cờ circuit-breaker nghĩa là chưa hoàn tất.
+            # Synthetic ToolMessage đóng tool-use block của provider, nên chỉ kiểm tra pending call
+            # không thể nhận ra forced stop sau ToolMessage cuối cùng.
+            forced_stop_reason = _result_forced_stop_reason(result)
+            turn_limit_hit = graph_ended and (
+                _result_has_pending_tool_calls(result) or forced_stop_reason is not None
+            )
             async with self.session_factory() as db:
                 row = (
                     await db.execute(select(AgentSession).where(AgentSession.id == session_id))
@@ -1168,14 +1178,15 @@ class AgentService:
                 if row is None:
                     return  # session was deleted while this turn was running
                 if turn_limit_hit and row.status != AgentSessionStatus.COMPLETED:
-                    logger.error("turn failed: reason_code=turn_limit session_id=%s", session_id)
-                    log_gate_decision("turn_failure", "turn_limit", session_id=str(session_id))
+                    reason_code = forced_stop_reason or "turn_limit"
+                    logger.error("turn failed: reason_code=%s session_id=%s", reason_code, session_id)
+                    log_gate_decision("turn_failure", reason_code, session_id=str(session_id))
                     row.status = AgentSessionStatus.FAILED
                     db.add(
                         AgentMessage(
                             session_id=session_id,
                             role=AgentMessageRole.AGENT,
-                            content=_agent_turn_limit_message(),
+                            content=_agent_loop_stop_message(reason_code),
                         )
                     )
                 elif graph_ended and row.status in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
@@ -1183,6 +1194,21 @@ class AgentService:
                         # A direct response ends the current turn, not the conversation.
                         row.status = AgentSessionStatus.WAITING_FOR_HUMAN
                         row.interrupt_type = None
+                    elif _result_has_no_outcome(result) and not allow_empty_completion:
+                        # Empty response hoặc toàn bộ tool bị gate loại không tạo proposal đã persist
+                        # hay phản hồi cho người dùng. Giữ checkpoint có thể resume thay vì báo artifact
+                        # chưa tồn tại là hoàn tất.
+                        logger.error("turn failed: reason_code=no_terminal_outcome session_id=%s", session_id)
+                        log_gate_decision("turn_failure", "no_terminal_outcome", session_id=str(session_id))
+                        row.status = AgentSessionStatus.TURN_FAILED
+                        row.interrupt_type = None
+                        db.add(
+                            AgentMessage(
+                                session_id=session_id,
+                                role=AgentMessageRole.AGENT,
+                                content=_agent_no_outcome_message(),
+                            )
+                        )
                     else:
                         row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
@@ -1474,10 +1500,50 @@ def _result_is_direct_response(result: Any) -> bool:
     return isinstance(analysis_result, dict) and analysis_result.get("response_mode") == "direct"
 
 
+def _result_has_no_outcome(result: Any) -> bool:
+    """Kiểm tra analyze kết thúc mà không dispatch action hoặc tạo direct response."""
+    if not isinstance(result, dict):
+        return False
+    analysis_result = result.get("analysis_result")
+    return isinstance(analysis_result, dict) and analysis_result.get("response_mode") == "none"
+
+
+def _result_forced_stop_reason(result: Any) -> str | None:
+    """Đọc lý do circuit-breaker có cấu trúc từ synthetic tool result."""
+    if not isinstance(result, dict):
+        return None
+    messages = result.get("messages") or []
+    if not messages:
+        return None
+    # WorkflowState.messages là lịch sử cộng dồn. Chỉ ToolMessage cuối của lượt hiện tại mới là
+    # synthetic result có quyền quyết định terminal state; marker cũ không được làm hỏng lượt mới.
+    metadata = getattr(messages[-1], "additional_kwargs", None)
+    reason = metadata.get("agent_stop_reason") if isinstance(metadata, dict) else None
+    if reason in {"max_agent_turns", "repeated_tool_calls"}:
+        return reason
+    return None
+
+
 def _agent_turn_limit_message() -> str:
     return (
         "The session reached the analysis turn limit and was stopped before completion. "
         "Please create a new session to continue."
+    )
+
+
+def _agent_loop_stop_message(reason_code: str) -> str:
+    if reason_code == "repeated_tool_calls":
+        return (
+            "Phiên đã dừng vì agent lặp lại cùng một hành động mà không có tiến triển. "
+            "Hãy tạo phiên mới để tiếp tục."
+        )
+    return _agent_turn_limit_message()
+
+
+def _agent_no_outcome_message() -> str:
+    return (
+        "Agent không tạo được hành động hoặc phản hồi hợp lệ cho lượt này, nên artifact chưa được cập nhật. "
+        "Hãy gửi tin nhắn tiếp theo để tiếp tục từ phiên đã lưu."
     )
 
 

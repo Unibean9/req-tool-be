@@ -804,6 +804,7 @@ def _synthetic_tool_results(tool_calls: list[dict[str, Any]], reason: str) -> li
             content=f"Tool call was not executed because the analysis loop stopped: {reason}.",
             tool_call_id=str(tool_call.get("id") or ""),
             status="error",
+            additional_kwargs={"agent_stop_reason": reason},
         )
         for tool_call in tool_calls
     ]
