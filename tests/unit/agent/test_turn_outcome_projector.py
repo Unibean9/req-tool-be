@@ -11,12 +11,18 @@ import uuid
 import pytest
 from sqlalchemy import select
 
-from app.graphs.analysis.turn_outcome_projector import project_non_terminal_outcome, project_terminal_outcome
+from app.graphs.analysis.turn_outcome_projector import (
+    StaleTurnOwnershipError,
+    project_non_terminal_outcome,
+    project_terminal_outcome,
+)
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
     AgentSessionStatus,
     AgentTurnEnvelope,
+    TurnExecutionState,
+    TurnExecutionStatus,
     TurnOutcome,
     TurnOutcomeType,
 )
@@ -39,6 +45,20 @@ async def _seed_envelope(db_session, agent_session, *, turn_outcomes_enabled: bo
     db_session.add(envelope)
     await db_session.commit()
     return envelope
+
+
+async def _seed_execution_state(
+    db_session, envelope, *, owner_id: str = "owner-a", generation: int = 1
+) -> TurnExecutionState:
+    state = TurnExecutionState(
+        turn_id=envelope.id,
+        status=TurnExecutionStatus.RUNNING,
+        owner_id=owner_id,
+        ownership_generation=generation,
+    )
+    db_session.add(state)
+    await db_session.commit()
+    return state
 
 
 @pytest.mark.asyncio
@@ -230,3 +250,105 @@ async def test_non_terminal_duplicate_projection_writes_exactly_one_outcome(clie
     assert agent_session.status == AgentSessionStatus.ACTIVE
     assert agent_session.interrupt_type == AgentSessionInterruptType.STREAM_RESPONSE
     assert len(outcomes) == 1
+
+
+# Ownership fence: owner_id/expected_ownership_generation are optional keyword-only parameters.
+# Both None (the default) must remain byte-identical to every test above; the tests below cover the
+# two other combinations — matching generation writes normally, mismatching generation rejects.
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_with_no_owner_context_is_unaffected_by_fence(client, db_session):
+    """Regression guard: passing neither fence parameter must behave exactly like the pre-fence
+    call sites above, even when a TurnExecutionState row exists for the turn."""
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session, turn_outcomes_enabled=False)
+    await _seed_execution_state(db_session, envelope, owner_id="owner-a", generation=5)
+
+    await project_terminal_outcome(
+        db_session, agent_session, TurnOutcomeType.COMPLETED, "graph_ended", turn_id=envelope.id
+    )
+    await db_session.commit()
+
+    assert agent_session.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_writes_when_ownership_generation_matches(client, db_session):
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session, turn_outcomes_enabled=False)
+    await _seed_execution_state(db_session, envelope, owner_id="owner-a", generation=3)
+
+    await project_terminal_outcome(
+        db_session,
+        agent_session,
+        TurnOutcomeType.COMPLETED,
+        "graph_ended",
+        turn_id=envelope.id,
+        owner_id="owner-a",
+        expected_ownership_generation=3,
+    )
+    await db_session.commit()
+
+    assert agent_session.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_terminal_outcome_rejects_stale_ownership_generation(client, db_session):
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session, turn_outcomes_enabled=False)
+    await _seed_execution_state(db_session, envelope, owner_id="owner-a", generation=3)
+
+    with pytest.raises(StaleTurnOwnershipError):
+        await project_terminal_outcome(
+            db_session,
+            agent_session,
+            TurnOutcomeType.COMPLETED,
+            "graph_ended",
+            turn_id=envelope.id,
+            owner_id="owner-a",
+            expected_ownership_generation=2,
+        )
+
+    # The stale write must never have happened: session status stays at its pre-call value.
+    assert agent_session.status == AgentSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_outcome_with_no_owner_context_is_unaffected_by_fence(client, db_session):
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session, turn_outcomes_enabled=False)
+    await _seed_execution_state(db_session, envelope, owner_id="owner-a", generation=7)
+
+    await project_non_terminal_outcome(
+        db_session, agent_session, TurnOutcomeType.CONTINUE, turn_id=envelope.id
+    )
+    await db_session.commit()
+
+    assert agent_session.status == AgentSessionStatus.ACTIVE
+
+
+@pytest.mark.asyncio
+async def test_non_terminal_outcome_rejects_stale_ownership_generation(client, db_session):
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session, turn_outcomes_enabled=False)
+    await _seed_execution_state(db_session, envelope, owner_id="owner-a", generation=1)
+
+    with pytest.raises(StaleTurnOwnershipError):
+        await project_non_terminal_outcome(
+            db_session,
+            agent_session,
+            TurnOutcomeType.WAIT_INPUT,
+            "ask_human",
+            turn_id=envelope.id,
+            owner_id="owner-a",
+            expected_ownership_generation=99,
+        )
+
+    assert agent_session.status == AgentSessionStatus.ACTIVE
+    assert agent_session.interrupt_type is None

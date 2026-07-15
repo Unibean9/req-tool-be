@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.documents.registry import all_container_types, container_for
-from app.graphs.analysis.turn_outcome_projector import project_terminal_outcome
+from app.graphs.analysis.turn_outcome_projector import check_ownership_fence, project_terminal_outcome
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.lifecycle_context import has_stale_curation
@@ -27,7 +27,9 @@ from app.models.agent import (
     AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
+    AgentTurnEnvelope,
     AgentTurnTrigger,
+    AgentTurnTriggerType,
     TurnOutcomeType,
 )
 from app.models.artifact import (
@@ -46,6 +48,7 @@ from app.schemas.artifact_synthesis import (
     synthesis_metadata_from_snapshot,
 )
 from app.services.agent_tool_visibility import public_tool_call_filter
+from app.services.agent_turn_job_service import AgentTurnJobService
 from app.services.agent_turn_service import AgentTurnService
 from app.services.artifact_service import ArtifactInUseError, ArtifactLinkService, ArtifactService
 from app.services.document_service import DocumentService
@@ -395,14 +398,13 @@ class AgentService:
         # checkpoint with partial state; treating them as a first message would erase prior context.
         decision_status = admitted.prior_status if admitted is not None else session.status
         decision_interrupt_type = admitted.prior_interrupt_type if admitted is not None else session.interrupt_type
-        is_turn_failed = decision_status == AgentSessionStatus.TURN_FAILED
-        is_direct_response_wait = (
-            decision_status == AgentSessionStatus.WAITING_FOR_HUMAN
-            and decision_interrupt_type is None
-            and await self._latest_message_is_direct_response(session.id)
+        # Must be read here, before this turn's own message is inserted below (admission already
+        # inserted its message earlier, under the same row lock, before computing this snapshot).
+        decision_latest_message_is_direct_response = (
+            admitted.prior_latest_message_is_direct_response
+            if admitted is not None
+            else await self._latest_message_is_direct_response(session.id)
         )
-        is_checkpoint_continuation = is_turn_failed or is_direct_response_wait
-        is_first_message = not is_checkpoint_continuation and session.interrupt_type is None
 
         strong_llm_client = None
         if llm_client is None:
@@ -418,6 +420,118 @@ class AgentService:
             session.status = AgentSessionStatus.ACTIVE
             session.interrupt_type = None
             await self.db.commit()
+
+        initial_state, resume_command = await self._build_user_message_turn_state(
+            session=session,
+            content=content,
+            mode_hint=mode_hint,
+            decision_status=decision_status,
+            decision_interrupt_type=decision_interrupt_type,
+            decision_latest_message_is_direct_response=decision_latest_message_is_direct_response,
+        )
+
+        def _runner_factory(
+            *,
+            turn_id: uuid.UUID | None = None,
+            owner_id: str | None = None,
+            ownership_generation: int | None = None,
+        ):
+            return self._run_graph(
+                session_id=session.id,
+                project_id=project_id,
+                artifact_type=session.artifact_type,
+                step_key=session.step_key,
+                workflow_area=session.workflow_area,
+                agent_role=session.agent_role,
+                focused_artifact_id=session.focused_artifact_id,
+                missing_context=session.missing_context or [],
+                llm_client=llm_client,
+                strong_llm_client=strong_llm_client,
+                initial_state=initial_state,
+                resume_command=resume_command,
+                turn_id=turn_id,
+                owner_id=owner_id,
+                ownership_generation=ownership_generation,
+            )
+
+        if admitted_turn_id is not None:
+            # execution_mode is read from the cohort snapshotted at admission time, never from
+            # live settings here — a process config change must never change an already-admitted
+            # turn's dispatch route (Compatibility contract). Durable dispatch is exercised only in
+            # test/CI at this point; no default/env config enables it.
+            admitted_cohort = admitted.cohort or {} if admitted is not None else {}
+            execution_mode = admitted_cohort.get("execution_mode", "inline")
+            if execution_mode == "durable":
+                async with self.session_factory() as db:
+                    await AgentTurnJobService(db).enqueue(
+                        turn_id=admitted_turn_id,
+                        expected_transition_version=0,
+                        cohort=admitted.cohort or {},
+                    )
+            else:
+                asyncio.create_task(
+                    self._run_admitted_graph(turn_id=admitted_turn_id, runner_factory=_runner_factory)
+                )
+        else:
+            asyncio.create_task(_runner_factory())
+
+        return msg
+
+    async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner_factory: Any) -> None:
+        """Adapter inline dùng cùng ownership contract với durable worker tương lai.
+
+        `runner_factory` builds the graph-invocation coroutine lazily, called only after the claim
+        below succeeds — this is how owner_id/ownership_generation (unknown until claimed) reach the
+        tool handler's config (command boundary) without executing any graph code early.
+        """
+        owner_id = f"inline:{uuid.uuid4()}"
+        async with self.session_factory() as db:
+            generation = await AgentTurnService(db).claim_inline(turn_id=turn_id, owner_id=owner_id)
+        if generation is None:
+            logger.warning("agent_turn_claim_conflict turn_id=%s", turn_id)
+            return
+        runner = runner_factory(turn_id=turn_id, owner_id=owner_id, ownership_generation=generation)
+        try:
+            await runner
+        finally:
+            async with self.session_factory() as db:
+                released = await AgentTurnService(db).release_inline(
+                    turn_id=turn_id, owner_id=owner_id, generation=generation
+                )
+            if not released:
+                logger.warning("agent_turn_release_stale turn_id=%s generation=%s", turn_id, generation)
+
+    async def _build_user_message_turn_state(
+        self,
+        *,
+        session: AgentSession,
+        content: str,
+        mode_hint: str | None,
+        decision_status: AgentSessionStatus,
+        decision_interrupt_type: AgentSessionInterruptType | None,
+        decision_latest_message_is_direct_response: bool,
+    ) -> tuple[dict[str, Any] | None, Command | None]:
+        """Build the (initial_state, resume_command) pair for one USER_MESSAGE turn.
+
+        Shared by the inline dispatch path in `handle_user_message` and the durable worker's
+        `build_run_graph_kwargs_for_turn`, so the checkpoint-continuation / first-message / resume
+        decision never forks into two copies that could drift apart. `decision_status` /
+        `decision_interrupt_type` / `decision_latest_message_is_direct_response` are all snapshots
+        of session/message state as observed at the point this turn was admitted, BEFORE this
+        turn's own user message was inserted (either the in-memory `AdmittedTurn` fields the inline
+        caller already had, or the same values read back from the turn's persisted cohort for a
+        durable worker running long after the live session row has moved on) — none of them may be
+        re-derived from the live session/message rows here, since by the time this method runs the
+        new user message is already the latest row for the session.
+        """
+        is_turn_failed = decision_status == AgentSessionStatus.TURN_FAILED
+        is_direct_response_wait = (
+            decision_status == AgentSessionStatus.WAITING_FOR_HUMAN
+            and decision_interrupt_type is None
+            and decision_latest_message_is_direct_response
+        )
+        is_checkpoint_continuation = is_turn_failed or is_direct_response_wait
+        is_first_message = not is_checkpoint_continuation and decision_interrupt_type is None
 
         if is_checkpoint_continuation:
             # Minimal partial-state update against the existing checkpoint: only the new message and
@@ -448,63 +562,78 @@ class AgentService:
             resume_command = self._resume_command(
                 session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
             )
+        return initial_state, resume_command
 
-        def _runner_factory(
-            *,
-            turn_id: uuid.UUID | None = None,
-            owner_id: str | None = None,
-            ownership_generation: int | None = None,
-        ):
-            return self._run_graph(
-                session_id=session.id,
-                project_id=project_id,
-                artifact_type=session.artifact_type,
-                step_key=session.step_key,
-                workflow_area=session.workflow_area,
-                agent_role=session.agent_role,
-                focused_artifact_id=session.focused_artifact_id,
-                missing_context=session.missing_context or [],
-                llm_client=llm_client,
-                strong_llm_client=strong_llm_client,
-                initial_state=initial_state,
-                resume_command=resume_command,
-                turn_id=turn_id,
-                owner_id=owner_id,
-                ownership_generation=ownership_generation,
-            )
+    async def build_run_graph_kwargs_for_turn(self, *, turn_id: uuid.UUID) -> dict[str, Any]:
+        """Reconstruct `_run_graph`'s keyword arguments for an already-admitted turn purely from
+        persisted state, with no HTTP request closure available. Used by the durable worker
+        entrypoint once it has claimed a job for `turn_id`.
 
-        if admitted_turn_id is not None:
-            asyncio.create_task(
-                self._run_admitted_graph(turn_id=admitted_turn_id, runner_factory=_runner_factory)
-            )
-        else:
-            asyncio.create_task(_runner_factory())
-
-        return msg
-
-    async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner_factory: Any) -> None:
-        """Adapter inline dùng cùng ownership contract với durable worker tương lai.
-
-        `runner_factory` builds the graph-invocation coroutine lazily, called only after the claim
-        below succeeds — this is how owner_id/ownership_generation (unknown until claimed) reach the
-        tool handler's config (command boundary) without executing any graph code early.
+        Only `AgentTurnTriggerType.USER_MESSAGE` is supported so far; other trigger types raise
+        `NotImplementedError` until a later increment builds their kwargs the same way.
         """
-        owner_id = f"inline:{uuid.uuid4()}"
-        async with self.session_factory() as db:
-            generation = await AgentTurnService(db).claim_inline(turn_id=turn_id, owner_id=owner_id)
-        if generation is None:
-            logger.warning("agent_turn_claim_conflict turn_id=%s", turn_id)
-            return
-        runner = runner_factory(turn_id=turn_id, owner_id=owner_id, ownership_generation=generation)
-        try:
-            await runner
-        finally:
-            async with self.session_factory() as db:
-                released = await AgentTurnService(db).release_inline(
-                    turn_id=turn_id, owner_id=owner_id, generation=generation
-                )
-            if not released:
-                logger.warning("agent_turn_release_stale turn_id=%s generation=%s", turn_id, generation)
+        envelope = await self.db.get(AgentTurnEnvelope, turn_id)
+        if envelope is None:
+            raise ValueError(f"agent turn envelope not found for turn_id={turn_id}")
+        trigger = await self.db.get(AgentTurnTrigger, envelope.original_trigger_id)
+        if trigger is None:
+            raise ValueError(f"agent turn trigger not found for turn_id={turn_id}")
+        if trigger.trigger_type != AgentTurnTriggerType.USER_MESSAGE:
+            raise NotImplementedError(
+                f"run_graph_kwargs construction for trigger_type={trigger.trigger_type.value} is not "
+                "implemented yet; only USER_MESSAGE is supported by the durable worker so far"
+            )
+        if trigger.message_id is None:
+            raise ValueError(f"user_message trigger for turn_id={turn_id} has no message_id")
+
+        session = await self.db.get(AgentSession, envelope.session_id)
+        if session is None:
+            raise ValueError(f"agent session not found for turn_id={turn_id}")
+        message = await self.db.get(AgentMessage, trigger.message_id)
+        if message is None:
+            raise ValueError(f"agent message not found for turn_id={turn_id}")
+
+        cohort = envelope.cohort or {}
+        prior_status_raw = cohort.get("prior_status")
+        if prior_status_raw is None:
+            raise ValueError(f"turn cohort for turn_id={turn_id} is missing the prior_status snapshot")
+        decision_status = AgentSessionStatus(prior_status_raw)
+        prior_interrupt_type_raw = cohort.get("prior_interrupt_type")
+        decision_interrupt_type = (
+            AgentSessionInterruptType(prior_interrupt_type_raw) if prior_interrupt_type_raw is not None else None
+        )
+        if "prior_latest_message_is_direct_response" not in cohort:
+            raise ValueError(
+                f"turn cohort for turn_id={turn_id} is missing the prior_latest_message_is_direct_response snapshot"
+            )
+        decision_latest_message_is_direct_response = bool(cohort["prior_latest_message_is_direct_response"])
+        mode_hint = message.payload.get("mode_hint") if isinstance(message.payload, dict) else None
+
+        llm_client, strong_llm_client = await self._resolve_llm_client(session.provider_config_id)
+        initial_state, resume_command = await self._build_user_message_turn_state(
+            session=session,
+            content=message.content,
+            mode_hint=mode_hint,
+            decision_status=decision_status,
+            decision_interrupt_type=decision_interrupt_type,
+            decision_latest_message_is_direct_response=decision_latest_message_is_direct_response,
+        )
+
+        return {
+            "session_id": session.id,
+            "project_id": session.project_id,
+            "artifact_type": session.artifact_type,
+            "step_key": session.step_key,
+            "workflow_area": session.workflow_area,
+            "agent_role": session.agent_role,
+            "focused_artifact_id": session.focused_artifact_id,
+            "missing_context": session.missing_context or [],
+            "llm_client": llm_client,
+            "strong_llm_client": strong_llm_client,
+            "initial_state": initial_state,
+            "resume_command": resume_command,
+            "turn_id": turn_id,
+        }
 
     async def _queue_message(
         self,
@@ -1484,7 +1613,13 @@ class AgentService:
                     logger.error("turn failed: reason_code=%s session_id=%s", reason_code, session_id)
                     log_gate_decision("turn_failure", reason_code, session_id=str(session_id))
                     await project_terminal_outcome(
-                        db, row, TurnOutcomeType.TERMINAL_FAILURE, reason_code, turn_id=turn_id
+                        db,
+                        row,
+                        TurnOutcomeType.TERMINAL_FAILURE,
+                        reason_code,
+                        turn_id=turn_id,
+                        owner_id=owner_id,
+                        expected_ownership_generation=ownership_generation,
                     )
                     db.add(
                         AgentMessage(
@@ -1495,7 +1630,12 @@ class AgentService:
                     )
                 elif graph_ended and row.status in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
                     if _result_is_direct_response(result):
-                        # A direct response ends the current turn, not the conversation.
+                        # A direct response ends the current turn, not the conversation. No
+                        # TurnOutcomeType maps to (WAITING_FOR_HUMAN, None), so this stays a direct
+                        # field write instead of routing through project_non_terminal_outcome — but
+                        # it still needs the same ownership fence as every other completion branch
+                        # here, so a stale/reclaimed durable worker can't silently commit it.
+                        await check_ownership_fence(db, turn_id, owner_id, ownership_generation)
                         row.status = AgentSessionStatus.WAITING_FOR_HUMAN
                         row.interrupt_type = None
                     elif _result_has_no_outcome(result) and not allow_empty_completion:
@@ -1505,7 +1645,13 @@ class AgentService:
                         logger.error("turn failed: reason_code=no_terminal_outcome session_id=%s", session_id)
                         log_gate_decision("turn_failure", "no_terminal_outcome", session_id=str(session_id))
                         await project_terminal_outcome(
-                            db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "no_terminal_outcome", turn_id=turn_id
+                            db,
+                            row,
+                            TurnOutcomeType.RECOVERABLE_FAILURE,
+                            "no_terminal_outcome",
+                            turn_id=turn_id,
+                            owner_id=owner_id,
+                            expected_ownership_generation=ownership_generation,
                         )
                         row.interrupt_type = None
                         db.add(
@@ -1517,7 +1663,13 @@ class AgentService:
                         )
                     else:
                         await project_terminal_outcome(
-                            db, row, TurnOutcomeType.COMPLETED, "graph_ended", turn_id=turn_id
+                            db,
+                            row,
+                            TurnOutcomeType.COMPLETED,
+                            "graph_ended",
+                            turn_id=turn_id,
+                            owner_id=owner_id,
+                            expected_ownership_generation=ownership_generation,
                         )
                 await db.commit()
         except TimeoutError:
@@ -1533,7 +1685,13 @@ class AgentService:
                     # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout,
                     # so the session is resumable.
                     await project_terminal_outcome(
-                        db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "turn_timeout", turn_id=turn_id
+                        db,
+                        row,
+                        TurnOutcomeType.RECOVERABLE_FAILURE,
+                        "turn_timeout",
+                        turn_id=turn_id,
+                        owner_id=owner_id,
+                        expected_ownership_generation=ownership_generation,
                     )
                     row.interrupt_type = None
                     db.add(
@@ -1556,7 +1714,13 @@ class AgentService:
                     log_gate_decision("turn_failure", "graph_exception", session_id=str(session_id))
                     # TURN_FAILED, not FAILED: same resumability reasoning as the timeout branch above.
                     await project_terminal_outcome(
-                        db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "graph_exception", turn_id=turn_id
+                        db,
+                        row,
+                        TurnOutcomeType.RECOVERABLE_FAILURE,
+                        "graph_exception",
+                        turn_id=turn_id,
+                        owner_id=owner_id,
+                        expected_ownership_generation=ownership_generation,
                     )
                     row.interrupt_type = None
                     db.add(

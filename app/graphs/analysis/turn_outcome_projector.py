@@ -31,11 +31,39 @@ from app.models.agent import (
     AgentSessionInterruptType,
     AgentSessionStatus,
     AgentTurnEnvelope,
+    TurnExecutionState,
     TurnOutcome,
     TurnOutcomeType,
 )
 
 logger = logging.getLogger(__name__)
+
+
+class StaleTurnOwnershipError(Exception):
+    """Raised when an outcome projection is attempted by an owner/generation pair that no longer
+    matches `TurnExecutionState.ownership_generation` for the turn.
+
+    This is a plain exception, not an `HTTPException`: callers of the outcome projector are not
+    always inside an HTTP request context (a durable worker loop is the reason this fence exists),
+    so the caller is responsible for catching this and deciding how to log/audit it.
+    """
+
+    def __init__(
+        self,
+        *,
+        turn_id: uuid.UUID | None,
+        owner_id: str,
+        expected_generation: int,
+        actual_generation: int | None,
+    ) -> None:
+        self.turn_id = turn_id
+        self.owner_id = owner_id
+        self.expected_generation = expected_generation
+        self.actual_generation = actual_generation
+        super().__init__(
+            f"stale turn ownership: turn_id={turn_id} owner_id={owner_id} "
+            f"expected_generation={expected_generation} actual_generation={actual_generation}"
+        )
 
 # Compatibility mapping for every outcome type this codebase currently commits terminal status
 # for. `cancelled` maps to `EXPIRED` because that is the one remaining
@@ -117,6 +145,54 @@ async def _record_outcome_if_enabled(
     )
 
 
+async def _check_ownership_fence(
+    db: AsyncSession,
+    turn_id: uuid.UUID | None,
+    owner_id: str | None,
+    expected_ownership_generation: int | None,
+) -> None:
+    """Raise `StaleTurnOwnershipError` if the caller's `owner_id`/`expected_ownership_generation`
+    no longer match `TurnExecutionState.ownership_generation` for `turn_id`.
+
+    A no-op whenever either optional parameter is `None`: the caller is not running under any
+    execution fence (e.g. the current inline execution path with no claimed job), so behavior stays
+    exactly as it was before this fence existed — this is the byte-identical-for-`None` guarantee
+    the fence must not break.
+    """
+    if owner_id is None or expected_ownership_generation is None:
+        return
+    state = (
+        await db.execute(
+            select(TurnExecutionState).where(TurnExecutionState.turn_id == turn_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    actual_generation = state.ownership_generation if state is not None else None
+    if state is None or state.ownership_generation != expected_ownership_generation:
+        raise StaleTurnOwnershipError(
+            turn_id=turn_id,
+            owner_id=owner_id,
+            expected_generation=expected_ownership_generation,
+            actual_generation=actual_generation,
+        )
+
+
+async def check_ownership_fence(
+    db: AsyncSession,
+    turn_id: uuid.UUID | None,
+    owner_id: str | None,
+    expected_ownership_generation: int | None,
+) -> None:
+    """Public fence check for call sites that mutate `session_row.status`/`interrupt_type` directly
+    without going through `project_terminal_outcome`/`project_non_terminal_outcome` — e.g. a
+    non-terminal pair with no matching `TurnOutcomeType` entry in `_STATUS_AND_INTERRUPT_BY_OUTCOME`.
+
+    Same `StaleTurnOwnershipError`/no-op-when-`None` contract as the fence embedded in those two
+    functions. A pure pass-through to `_check_ownership_fence`, with no `TurnOutcome` audit row —
+    unlike the other two, there is no outcome type here to record.
+    """
+    await _check_ownership_fence(db, turn_id, owner_id, expected_ownership_generation)
+
+
 async def project_terminal_outcome(
     db: AsyncSession,
     session_row: AgentSession,
@@ -124,16 +200,24 @@ async def project_terminal_outcome(
     reason: str | None,
     *,
     turn_id: uuid.UUID | None = None,
+    owner_id: str | None = None,
+    expected_ownership_generation: int | None = None,
 ) -> None:
     """Set `session_row.status` to the terminal value `outcome_type` maps to.
 
     Does not touch `session_row.interrupt_type` — callers keep deciding that themselves, exactly as
     before this refactor, since it is not uniform across the call sites this replaces.
+
+    `owner_id`/`expected_ownership_generation` are optional: when both are given, the ownership
+    fence is checked (in the same transaction as this status write, via the caller's `db`) before
+    anything is mutated — see `_check_ownership_fence`. Leaving either as `None` (the default)
+    skips the fence entirely.
     """
     status = _STATUS_BY_OUTCOME.get(outcome_type)
     if status is None:
         raise ValueError(f"{outcome_type!r} is not a terminal outcome type")
 
+    await _check_ownership_fence(db, turn_id, owner_id, expected_ownership_generation)
     await _record_outcome_if_enabled(db, session_row, turn_id, outcome_type, reason)
     session_row.status = status
 
@@ -145,17 +229,23 @@ async def project_non_terminal_outcome(
     reason: str | None = None,
     *,
     turn_id: uuid.UUID | None = None,
+    owner_id: str | None = None,
+    expected_ownership_generation: int | None = None,
 ) -> None:
     """Set `session_row.status`/`interrupt_type` to the non-terminal pair `outcome_type` maps to.
 
     Unlike `project_terminal_outcome`, this also sets `interrupt_type` because the two call sites
     it replaces always assign both fields together for a given outcome.
+
+    See `project_terminal_outcome` for the optional `owner_id`/`expected_ownership_generation`
+    fence contract — identical here.
     """
     mapped = _STATUS_AND_INTERRUPT_BY_OUTCOME.get(outcome_type)
     if mapped is None:
         raise ValueError(f"{outcome_type!r} is not a non-terminal outcome type")
     status, interrupt_type = mapped
 
+    await _check_ownership_fence(db, turn_id, owner_id, expected_ownership_generation)
     await _record_outcome_if_enabled(db, session_row, turn_id, outcome_type, reason)
     session_row.status = status
     session_row.interrupt_type = interrupt_type

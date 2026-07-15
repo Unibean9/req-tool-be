@@ -36,7 +36,7 @@ from app.services.draft_command_service import (
 )
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "c27dfb69a3e9"
+EXPECTED_ALEMBIC_REVISION = "d38efc70b4f0"
 pytestmark = pytest.mark.integration
 
 

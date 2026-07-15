@@ -40,6 +40,8 @@ from app.models.artifact import (
     VersionStatus,
 )
 from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus, ProviderType
+from app.models.user import User
+from app.services.agent_turn_service import AgentTurnService
 from tests.helpers import create_org, create_project, make_auth_headers
 
 
@@ -499,17 +501,21 @@ async def test_handle_user_message_ask_human_resumes_graph(client, db_session, _
     db_session.add(session)
     await db_session.flush()
 
-    await svc.handle_user_message(
-        project_id=project_id,
-        session_id=session.id,
-        content="Them thong tin",
-        user_id=owner_id,
-    )
+    with patch.object(svc, "_run_graph", new=AsyncMock()) as run_graph_mock:
+        await svc.handle_user_message(
+            project_id=project_id,
+            session_id=session.id,
+            content="Them thong tin",
+            user_id=owner_id,
+        )
 
-    # Background task was scheduled through _run_graph so resume failures update session status/messages.
-    _no_background_tasks.assert_called_once()
-    scheduled = _no_background_tasks.call_args.args[0]
-    assert scheduled.cr_code.co_name == "_run_graph"
+    # An ASK_HUMAN resume must resume the existing checkpoint, not restart as a first message: the
+    # decision has to be based on the interrupt_type observed at admission time, not the live
+    # session row (which the non-admission branch already reset to None by this point).
+    run_graph_mock.assert_called_once()
+    passed = run_graph_mock.call_args.kwargs
+    assert passed["resume_command"] is not None
+    assert passed["initial_state"] is None
 
 
 @pytest.mark.asyncio
@@ -1172,6 +1178,46 @@ async def test_run_graph_allows_empty_completion_after_rejection(client, db_sess
         session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
         workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
         initial_state=None, resume_command=None, allow_empty_completion=True,
+    )
+
+    await db_session.refresh(session)
+    assert session.status == AgentSessionStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_run_graph_admitted_turn_completes_under_matching_ownership_generation(client, db_session):
+    """The fence added in project_terminal_outcome is live on the admitted inline path: claim_inline
+    hands _run_admitted_graph a real owner_id/generation, which _run_graph now threads through to
+    terminal outcome projection. This proves the happy path (matching generation) still completes
+    normally instead of raising StaleTurnOwnershipError."""
+    project_id = await _setup(client)
+    user = User(email=f"run-graph-{uuid.uuid4()}@example.com", hashed_password="hash")
+    db_session.add(user)
+    await db_session.flush()
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.WAITING_FOR_HUMAN, created_by_id=user.id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    turn_service = AgentTurnService(db_session)
+    admitted = await turn_service.admit_user_message(
+        project_id=project_id, session_id=session.id, user_id=user.id,
+        content="tin nhắn", idempotency_key=str(uuid.uuid4()),
+    )
+    generation = await turn_service.claim_inline(turn_id=admitted.turn_id, owner_id="inline:test")
+    assert generation is not None
+
+    graph = _mock_graph()
+    svc = _make_service(db_session, graph)
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None, turn_id=admitted.turn_id,
+        owner_id="inline:test", ownership_generation=generation,
     )
 
     await db_session.refresh(session)

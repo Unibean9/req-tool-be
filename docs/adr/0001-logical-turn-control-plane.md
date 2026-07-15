@@ -84,6 +84,26 @@ Các cờ Phase 1 là `AGENT_TURN_ADMISSION_ENABLED=false`,
 `AGENT_TRACE_ENABLED=false`. Giá trị hợp lệ của policy resolver là `legacy`,
 `shadow`, `enforce`; execution mode là `inline`, `durable`.
 
+## Addendum 2026-07-15 — Quyết định vận hành Phase 6
+
+Owner vận hành chốt các câu hỏi mở tại Phase 1 trước khi Phase 6 bắt đầu implement:
+
+- **Worker topology**: worker chạy bằng một entrypoint/CLI riêng, không phải một web
+  replica chạy thêm vòng lặp claim. Chỉ một nơi duy nhất (web hoặc job CI riêng, không
+  phải mọi replica) chạy `alembic upgrade` khi deploy; worker entrypoint không tự chạy
+  migration.
+- **Lease/retry SLO**: lease mặc định 60s, heartbeat renew mỗi ~20s (thấp hơn 1/3 lease
+  để chịu được một lần renew bị trễ/mất trước khi lease hết hạn); retry dùng exponential
+  backoff base 2s, tối đa 5 lần; hết 5 lần chuyển dead-letter — dead-letter yêu cầu hành
+  động operator tường minh (requeue/cancel/supersede), không tự động retry vô hạn. Các
+  giá trị này cấu hình qua settings/env, không hard-code, để chỉnh theo SLO thực đo sau
+  canary.
+- **Canary scope Phase 6**: `agent_execution_mode=durable` chỉ được exercise trong
+  test/CI (Postgres integration, hai-worker, fault-injection) ở phase này; không bật ở
+  bất kỳ môi trường dev/staging/prod thật nào cho đến khi có dashboard/runbook vận hành
+  riêng — việc đó thuộc phạm vi rollout sau Phase 6, không phải exit criterion của phase
+  này.
+
 ## Alternatives
 
 - Giữ `AgentSession.status` làm source of truth: ít thay đổi trước mắt nhưng tiếp

@@ -105,6 +105,18 @@ class Settings(BaseSettings):
     agent_execution_mode: Literal["inline", "durable"] = "inline"
     agent_checkpoint_history_enabled: bool = False
     agent_trace_enabled: bool = False
+    # How often a durable worker renews its job lease heartbeat while a claimed turn's graph is
+    # still executing. Must stay well under the job lease's own expiry window so a slow but live
+    # worker never gets reclaimed mid-execution.
+    agent_turn_job_heartbeat_interval_seconds: float = 20.0
+    # How often the recovery scanner scans for expired job leases and requeues/dead-letters them.
+    # A few multiples of the job lease window (see LEASE_SECONDS in agent_turn_job_service.py) so an
+    # expired lease is caught soon after it lapses without scanning the table too aggressively.
+    agent_turn_recovery_scan_interval_seconds: float = 30.0
+    # How often the durable worker's poll loop calls `AgentTurnJobService.claim()` again after
+    # finding no claimable job. Only matters when `agent_execution_mode="durable"`, which is not
+    # enabled by default in any environment.
+    agent_turn_worker_poll_interval_seconds: float = 2.0
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

@@ -60,6 +60,15 @@ class DraftCommandEffectState(enum.StrEnum):
     FAILED = "failed"
 
 
+class AgentTurnJobStatus(enum.StrEnum):
+    QUEUED = "queued"
+    CLAIMED = "claimed"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    DEAD_LETTER = "dead_letter"
+
+
 class TurnOutcomeType(enum.StrEnum):
     """Terminal/transition vocabulary for a logical turn's outcome (ADR 0001).
 
@@ -233,6 +242,44 @@ class TurnExecutionState(AuditMixin, Base):
     transition_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     turn: Mapped["AgentTurnEnvelope"] = relationship(back_populates="execution_state")
+
+
+class AgentTurnJob(AuditMixin, Base):
+    """Durable enqueue/claim record for a turn's execution, one row per turn (no independent
+    identity or sequence of its own — `turn_id` unique enforces "at most one job per turn").
+
+    `lease_generation` is not an independently mutable counter: every claim/renew/reclaim writes it
+    in lockstep with `TurnExecutionState.ownership_generation` inside the same row-locked
+    transaction, so the execution-state generation stays the single source of truth for the fence
+    and this column is always a mirror of it, never a value that can drift apart.
+
+    `cohort` is copied from the admitted envelope at enqueue time and never re-read from live
+    settings during claim/renew/reclaim/complete — the same snapshot-at-admission discipline every
+    other turn-scoped cohort field in this module already follows.
+    """
+
+    __tablename__ = "agent_turn_jobs"
+    __table_args__ = (
+        UniqueConstraint("turn_id", name="uq_agent_turn_jobs_turn_id"),
+        Index("ix_agent_turn_jobs_status", "status"),
+        Index("ix_agent_turn_jobs_lease_expires_at", "lease_expires_at"),
+    )
+
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=False, unique=True
+    )
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    scheduled_at: Mapped[Any] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    status: Mapped[AgentTurnJobStatus] = enum_column(
+        AgentTurnJobStatus, nullable=False, default=AgentTurnJobStatus.QUEUED
+    )
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    lease_expires_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    heartbeat_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cohort: Mapped[Any] = jsonb_column(nullable=False, default=dict)
+    expected_transition_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
 
 class DraftCommandLedger(AuditMixin, Base):

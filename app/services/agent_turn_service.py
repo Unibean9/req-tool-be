@@ -4,6 +4,7 @@ import hashlib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -36,6 +37,14 @@ class AdmittedTurn:
     queued: bool
     prior_status: AgentSessionStatus
     prior_interrupt_type: AgentSessionInterruptType | None
+    # Whether the session's latest message, as observed under the same row lock and before this
+    # turn's own message was inserted, was an agent direct-response. Must be captured before the
+    # insert: once this turn's user message is the latest row, the check can no longer see it.
+    prior_latest_message_is_direct_response: bool
+    # The envelope's cohort snapshot (execution_mode, etc.), so a caller deciding inline-vs-durable
+    # dispatch can read it without a second round trip. `None` on the duplicate-idempotency-replay
+    # return path, where the caller never dispatches a second time and therefore never reads it.
+    cohort: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -68,6 +77,25 @@ class AgentTurnService:
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
+    async def _latest_message_is_direct_response(self, session_id: uuid.UUID) -> bool:
+        """Mirrors `AgentService._latest_message_is_direct_response`. Must be called before this
+        turn's own message is inserted, otherwise it always sees the just-inserted USER message
+        instead of the prior AGENT response it is meant to detect."""
+        latest = (
+            await self.db.execute(
+                select(AgentMessage)
+                .where(AgentMessage.session_id == session_id)
+                .order_by(AgentMessage.created_at.desc(), AgentMessage.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return bool(
+            latest
+            and latest.role == AgentMessageRole.AGENT
+            and isinstance(latest.payload, dict)
+            and latest.payload.get("kind") == "response"
+        )
+
     async def admit_user_message(
         self,
         *,
@@ -99,6 +127,9 @@ class AgentTurnService:
 
             prior_status = session.status
             prior_interrupt_type = session.interrupt_type
+            # Must be captured now, before any message insert below (including the duplicate-replay
+            # branch's read, which inserts nothing but still must see the state as of admission).
+            prior_latest_message_is_direct_response = await self._latest_message_is_direct_response(session_id)
 
             if key_hash is not None:
                 existing = (
@@ -123,6 +154,7 @@ class AgentTurnService:
                         queued=bool(isinstance(message.payload, dict) and message.payload.get("queued")),
                         prior_status=prior_status,
                         prior_interrupt_type=prior_interrupt_type,
+                        prior_latest_message_is_direct_response=prior_latest_message_is_direct_response,
                     )
 
             if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
@@ -142,8 +174,11 @@ class AgentTurnService:
             payload: dict[str, str | bool] | None = None
             if queued:
                 payload = {"queued": True}
-                if mode_hint:
-                    payload["mode_hint"] = mode_hint
+            # mode_hint is persisted on the message even for a turn that runs immediately: the
+            # inline dispatch path still has it from its own request closure, but a durable worker
+            # reconstructing this turn later from `turn_id` alone has no closure to read it from.
+            if mode_hint:
+                payload = {**(payload or {}), "mode_hint": mode_hint}
             message = AgentMessage(session_id=session.id, role=AgentMessageRole.USER, content=content, payload=payload)
             self.db.add(message)
             await self.db.flush()
@@ -172,6 +207,14 @@ class AgentTurnService:
                 # Same snapshot-at-admission contract, gating whether the
                 # terminal projector also writes a TurnOutcome audit row for this turn.
                 "turn_outcomes_enabled": settings.agent_turn_outcomes_enabled,
+                # The session's status/interrupt_type as observed under this same row lock, before
+                # the mutation below flips it to ACTIVE/None for an immediately-runnable turn. A
+                # durable worker reconstructing this turn's initial_state/resume_command later (once
+                # the live session row has already moved on) reads these back instead of the inline
+                # dispatch path's in-memory prior_status/prior_interrupt_type, which it never sees.
+                "prior_status": prior_status.value,
+                "prior_interrupt_type": prior_interrupt_type.value if prior_interrupt_type is not None else None,
+                "prior_latest_message_is_direct_response": prior_latest_message_is_direct_response,
             }
             envelope = AgentTurnEnvelope(
                 session_id=session.id,
@@ -197,6 +240,8 @@ class AgentTurnService:
             queued=queued,
             prior_status=prior_status,
             prior_interrupt_type=prior_interrupt_type,
+            prior_latest_message_is_direct_response=prior_latest_message_is_direct_response,
+            cohort=cohort,
         )
 
     async def admit_approval(
