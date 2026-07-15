@@ -138,6 +138,39 @@ Resolves the Phase 7 "Might Be" assumption on `AsyncPostgresSaver`.
   must implement parent/session-sequence/fence-generation CAS append itself
   (Step 3) instead of getting it from the library.
 
+## Addendum 2026-07-16 — Phạm vi rút gọn và attribution `AgentRun.turn_id` (Phase 8)
+
+Phase 8 gốc (`phase-08-quality-observability-decommission.md`) có 6 bước: mở rộng
+CI gate, nightly live-eval workflow, redaction trace/audit, deploy gate topology,
+dashboard/alert/runbook và decommission checklist. Quyết định của người vận hành
+ngày 2026-07-16 giới hạn phiên làm việc này vào phần thực sự verify được bằng
+code/CI:
+
+- **Mở rộng CI gate bắt buộc**: cả 6 file `tests/integration/*_postgres.py` (trước
+  đó chỉ 1/6 chạy trong CI) nay chạy trong job `agent-turn-postgres`, và
+  `deploy.needs` vẫn phủ đủ mọi job — không cần đổi topology gate hiện có
+  (`needs`-based), chỉ cần lấp khoảng trống độ phủ lane Postgres.
+- **Trace/audit correlation**: thêm cột attribution `AgentRun.turn_id` (nullable,
+  FK tới `agent_turn_envelopes.id`, additive migration) — **không phải turn
+  identity**, chỉ để on-call join trigger → turn → attempt (`AgentRun`) →
+  command (`DraftCommandLedger`) → outcome (`TurnOutcome`) → event
+  (`AgentTurnEvent`) từ một `correlation_id`. `record_run_and_dispatch` nhận
+  `turn_id` optional; giá trị lấy từ `cfg.get("turn_id")` đã có sẵn trong
+  `analyze_node`, không cần plumbing mới.
+- **Redaction regression test**: `_audit_arg_value`/`_audit_text_value` trong
+  `turn_audit.py` đã redact các key trong `_AUDIT_TEXT_ARG_KEYS` từ trước; phase
+  này thêm test end-to-end chứng minh giá trị secret không tồn tại verbatim
+  trong `AgentRun.analysis_result` đã persist, không đổi logic redaction.
+
+**Không làm trong phiên này** (ghi nhận rõ, không âm thầm bỏ qua): nightly/on-demand
+live-provider workflow; dashboard/alert nối vào stack quan sát thật (chưa có stack
+nào trong repo — không có Grafana/Datadog/Prometheus config); decommission
+checklist thực thi (cần sign-off nghiệp vụ, không phải quyết định code). Hai file
+placeholder (`docs/runbooks/observability-spec.md`,
+`docs/runbooks/decommission-checklist.md`) được viết để có chỗ đặt tên
+owner/threshold, đánh dấu rõ `NOT ENFORCED` / `NOT STARTED`, không claim là đã
+hoàn thành.
+
 ## Alternatives
 
 - Giữ `AgentSession.status` làm source of truth: ít thay đổi trước mắt nhưng tiếp

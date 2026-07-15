@@ -25,7 +25,6 @@ from app.models.agent import (
     AgentToolCallStatus,
     AgentTurnEnvelope,
     TurnOutcome,
-    TurnOutcomeType,
 )
 from app.models.organization import Organization
 from app.models.project import Project
@@ -33,7 +32,7 @@ from app.models.user import User
 from app.services.agent_service import AgentService
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d02fa1bc91a3"
+EXPECTED_ALEMBIC_REVISION = "d2e5c8ecc7e0"
 pytestmark = pytest.mark.integration
 
 

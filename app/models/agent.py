@@ -460,9 +460,17 @@ class AgentRun(AuditMixin, Base):
     __table_args__ = (
         Index("ix_agent_runs_session_id", "session_id"),
         Index("ix_agent_runs_provider_config_id", "provider_config_id"),
+        Index("ix_agent_runs_turn_id", "turn_id"),
     )
 
     session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    # Attribution only, never identity: lets on-call join an LLM attempt back to its logical turn
+    # (and from there to trigger/command/outcome/event) without redefining what a turn is. Nullable
+    # because a run predating this column, or one recorded with no turn context available, has no
+    # value to backfill.
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=True
+    )
     analysis_result: Mapped[Any] = jsonb_column(nullable=False, default=dict)
     provider_config_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),

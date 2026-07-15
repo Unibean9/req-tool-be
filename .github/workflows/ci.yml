@@ -73,7 +73,7 @@ jobs:
   agent-turn-postgres:
     name: Agent Turn PostgreSQL Contract
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     services:
       postgres:
         image: postgres:16
@@ -109,6 +109,21 @@ jobs:
 
       - name: Prove PostgreSQL admission and fence
         run: uv run pytest -q tests/integration/test_agent_turn_postgres.py
+
+      - name: Prove durable turn job canary
+        run: uv run pytest -q tests/integration/test_agent_turn_durable_canary_postgres.py
+
+      - name: Prove durable turn job queue/claim/recovery
+        run: uv run pytest -q tests/integration/test_agent_turn_job_postgres.py
+
+      - name: Prove checkpoint v2 history and turn events
+        run: uv run pytest -q tests/integration/test_agent_checkpoint_history_postgres.py
+
+      - name: Prove artifact proposal completion
+        run: uv run pytest -q tests/integration/test_artifact_proposal_completion_postgres.py
+
+      - name: Prove write_draft command boundary idempotency
+        run: uv run pytest -q tests/integration/test_draft_command_postgres.py
 
   docker-validate:
     name: Docker / Validate Image

@@ -243,15 +243,20 @@ async def record_run_and_dispatch(
     gated_tools: list[dict[str, Any]],
     direct_response: str,
     locale: str,
+    turn_id: uuid.UUID | None = None,
 ) -> tuple[str, dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
     """Persist the AgentRun and coerce the gated tools into dispatchable calls.
 
     The dispatch ids embed the run id, so coercion happens inside the same DB scope that flushes
     the run — exactly the block analyze_node used to hold inline.
+
+    `turn_id` is attribution only (joins this run back to its logical turn for on-call
+    correlation), never identity — omitting it (None) is always a valid, supported call.
     """
     async with session_factory() as db:
         run = AgentRun(
             session_id=session_id,
+            turn_id=turn_id,
             analysis_result=analysis_result_base,
             token_usage=token_usage,
             latency_ms=latency_ms,

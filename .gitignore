@@ -66,6 +66,8 @@ docs/*
 !docs/
 !docs/adr/
 !docs/adr/*.md
+!docs/runbooks/
+!docs/runbooks/*.md
 .claude/session-data/*
 
 # my-skills generated files

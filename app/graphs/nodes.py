@@ -691,6 +691,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         coverage_complete=coverage["coverage_complete"],
         session_phase=effective_state.get("session_phase"),
     )
+    turn_id_raw = cfg.get("turn_id")
     run_id, analysis_result, dispatched_tools, dispatched_tool_calls = await record_run_and_dispatch(
         session_factory=cfg["session_factory"],
         session_id=session_id,
@@ -700,6 +701,7 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
         gated_tools=gated_tools,
         direct_response=direct_response,
         locale=locale,
+        turn_id=uuid.UUID(str(turn_id_raw)) if turn_id_raw else None,
     )
 
     return _analysis_turn_result(
