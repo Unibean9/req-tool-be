@@ -111,9 +111,9 @@ async def execute_claimed_job(
     `AgentService._run_graph` keyword argument this wrapper does not itself derive from `job`
     (session_id, project_id, artifact_type, step_key, workflow_area, agent_role, missing_context,
     llm_client, strong_llm_client, focused_artifact_id, initial_state, resume_command,
-    allow_empty_completion, turn_id); `owner_id`/`ownership_generation` are always injected here
-    from `job.lease_owner`/`job.lease_generation` and must not also be present in
-    `run_graph_kwargs`.
+    allow_empty_completion, turn_id, checkpoint_version); `owner_id`/`ownership_generation` are
+    always injected here from `job.lease_owner`/`job.lease_generation` and must not also be
+    present in `run_graph_kwargs`.
 
     Always cancels the heartbeat task and calls `AgentTurnJobService.complete()` in a `finally`
     block, regardless of whether graph execution succeeded, raised a `StaleTurnOwnershipError`, or

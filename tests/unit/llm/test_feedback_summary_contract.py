@@ -170,7 +170,9 @@ async def test_recovery_seed_replaces_channel_and_resets_old_ignored_counts():
     assert "ignored_counts" not in state_update["feedback_summary"]
 
     checkpoint = {"channel_values": {"feedback_summary": {"ignored_counts": {"resurfaced_questions": 9}}}}
-    command = service._resume_command(SimpleNamespace(graph_checkpoint=checkpoint), {"all_resolved": True}, state_update)
+    command = await service._resume_command(
+        SimpleNamespace(graph_checkpoint=checkpoint), {"all_resolved": True}, state_update
+    )
     assert command.update["feedback_summary"] == replacement
     assert "ignored_counts" not in command.update["feedback_summary"]
 

@@ -2,7 +2,7 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, LargeBinary, String, Text, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
@@ -67,6 +67,16 @@ class AgentTurnJobStatus(enum.StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     DEAD_LETTER = "dead_letter"
+
+
+class AgentTurnEventType(enum.StrEnum):
+    """Outbox event vocabulary. Only the values an actual writer emits belong here — see
+    `emit_turn_event` (`app/graphs/analysis/turn_event_log.py`) for `CHECKPOINT_APPENDED` and
+    `turn_outcome_projector.py` for `OUTCOME_COMMITTED`; do not add a value with no writer.
+    """
+
+    CHECKPOINT_APPENDED = "checkpoint_appended"
+    OUTCOME_COMMITTED = "outcome_committed"
 
 
 class TurnOutcomeType(enum.StrEnum):
@@ -149,6 +159,17 @@ class AgentSession(AuditMixin, Base):
     turn_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     # Chỉ turn này được phép chiếm checkpoint của session. Admission/drain thay đổi nó dưới row lock.
     active_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    # Session-grain checkpoint cohort. Set once at session creation from the checkpoint-history
+    # feature flag at that instant and never re-read live afterward — a LangGraph checkpoint is
+    # keyed by thread_id (= session_id), not by turn, so a session must stay on the same reader for
+    # its whole lifetime even if the flag flips mid-session. "v1" reads/writes `graph_checkpoint`
+    # through `AgentSessionCheckpointer`; "v2" reads/writes the `agent_checkpoints` history table
+    # through `AgentCheckpointHistorySaver`. `graph_checkpoint` is left unused (stays `{}`) for v2
+    # sessions rather than dual-written.
+    checkpoint_version: Mapped[str] = mapped_column(String(8), nullable=False, default="v1", server_default="v1")
+    # Monotonic per-session outbox cursor. Only `emit_turn_event` increments it, in the same
+    # transaction as the `AgentTurnEvent` row it writes — never a second, independent counter.
+    event_cursor: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
 
     messages: Mapped[list["AgentMessage"]] = relationship(
         back_populates="session",
@@ -339,6 +360,82 @@ class TurnOutcome(AuditMixin, Base):
     outcome_type: Mapped[TurnOutcomeType] = enum_column(TurnOutcomeType, nullable=False)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
     committed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class AgentCheckpoint(AuditMixin, Base):
+    """Checkpoint v2 history row — one row per LangGraph checkpoint ever appended for a session on
+    the `checkpoint_version == "v2"` cohort, written only by `AgentCheckpointHistorySaver`
+    (`app/graphs/checkpointer.py`).
+
+    `parent_checkpoint_id` must equal the session's current head `checkpoint_id` at append time (or
+    both be null for a session's first checkpoint) AND `ownership_generation` must match the
+    admitting turn's live `TurnExecutionState.ownership_generation` — both checked inside the same
+    transaction as the insert by the saver; a mismatch raises rather than silently overwriting or
+    forking history, so `alist()` walking this table by `created_at`/`parent_checkpoint_id` is always
+    a single linear chain per session, never a fork. `turn_id` is nullable only because a v2
+    session's very first checkpoint could in principle be written before any turn concept applies;
+    every v2 session in practice always has one, since only new-cohort sessions ever land on v2.
+    `session_sequence` is copied from the admitting turn's `AgentTurnEnvelope.session_sequence` at
+    write time for audit correlation only — it is not this table's identity or ordering key
+    (`created_at`/`parent_checkpoint_id` are). `pending_writes` holds the same task/channel/value
+    shape `AgentSessionCheckpointer` (v1) stores, scoped to this row's own `checkpoint_id` rather than
+    a shared session-wide blob.
+    """
+
+    __tablename__ = "agent_checkpoints"
+    __table_args__ = (
+        UniqueConstraint("session_id", "checkpoint_id", name="uq_agent_checkpoints_session_checkpoint"),
+        Index("ix_agent_checkpoints_session_created_at", "session_id", "created_at"),
+        Index("ix_agent_checkpoints_session_parent", "session_id", "parent_checkpoint_id"),
+        Index("ix_agent_checkpoints_turn_id", "turn_id"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=True
+    )
+    checkpoint_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    session_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    ownership_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    serde_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    # Named checkpoint_metadata (not metadata) because `metadata` is reserved by
+    # DeclarativeBase for the schema MetaData collection; the underlying column stays "metadata".
+    checkpoint_metadata: Mapped[Any] = jsonb_column("metadata", nullable=False, default=dict)
+    new_versions: Mapped[Any] = jsonb_column(nullable=False, default=dict)
+    pending_writes: Mapped[Any] = jsonb_column(nullable=False, default=list)
+
+
+class AgentTurnEvent(AuditMixin, Base):
+    """Outbox/event log row — an audited side effect of an already-committed transition, written
+    only by `emit_turn_event` (`app/graphs/analysis/turn_event_log.py`) inside the same transaction
+    as the transition it records, and only for sessions on the `checkpoint_version == "v2"` cohort.
+
+    `session_sequence` is copied from `AgentSession.event_cursor` at write time and is this table's
+    ordering AND dedup key (the unique constraint below) — a race that computes the same next-cursor
+    value twice is rejected by the constraint and swallowed as a no-op by the writer, never
+    duplicated or reordered. This table is a projection/audit surface, not a second source of truth:
+    reconciliation and resume decisions read committed `TurnOutcome`/checkpoint state, never this
+    table alone. `payload` is redacted before insert (never at read time) using the same
+    allowlist-by-key approach `turn_audit.py` already applies to `AgentRun.analysis_result`.
+    """
+
+    __tablename__ = "agent_turn_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "session_sequence", name="uq_agent_turn_events_session_sequence"),
+        Index("ix_agent_turn_events_session_id", "session_id"),
+        Index("ix_agent_turn_events_turn_id", "turn_id"),
+    )
+
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    turn_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=True
+    )
+    session_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[AgentTurnEventType] = enum_column(AgentTurnEventType, nullable=False)
+    parent_checkpoint_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    payload: Mapped[Any] = jsonb_column(nullable=False, default=dict)
 
 
 class AgentMessage(AuditMixin, Base):

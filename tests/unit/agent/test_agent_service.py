@@ -24,7 +24,6 @@ from app.models.agent import (
     AgentToolCallStatus,
     AgentTurnEnvelope,
     TurnOutcome,
-    TurnOutcomeType,
 )
 from app.models.artifact import (
     Artifact,
@@ -583,7 +582,7 @@ async def test_resume_command_keys_interrupts_and_merges_state_update(
             ]
         }
 
-    command = svc._resume_command(session, {"content": "Co"}, state_update=state_update)
+    command = await svc._resume_command(session, {"content": "Co"}, state_update=state_update)
 
     if interrupt_specs:
         assert command.resume == {

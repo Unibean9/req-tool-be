@@ -113,7 +113,7 @@ async def test_resume_command_resets_readiness_reject_streak(client, db_session)
     agent_session = await _make_agent_session(client, db_session, project_id)
     svc = AgentService(db=db_session, graph=None, session_factory=_session_factory())
 
-    command = svc._resume_command(agent_session, {"content": "hi"})
+    command = await svc._resume_command(agent_session, {"content": "hi"})
 
     assert command.update["readiness_reject_streak"] == 0
 

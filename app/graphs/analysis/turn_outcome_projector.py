@@ -26,11 +26,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.graphs.analysis.turn_event_log import emit_turn_event, latest_checkpoint_id_for_session
 from app.models.agent import (
     AgentSession,
     AgentSessionInterruptType,
     AgentSessionStatus,
     AgentTurnEnvelope,
+    AgentTurnEventType,
     TurnExecutionState,
     TurnOutcome,
     TurnOutcomeType,
@@ -76,6 +78,12 @@ _STATUS_BY_OUTCOME: dict[TurnOutcomeType, AgentSessionStatus] = {
     TurnOutcomeType.RECOVERABLE_FAILURE: AgentSessionStatus.TURN_FAILED,
     TurnOutcomeType.CANCELLED: AgentSessionStatus.EXPIRED,
 }
+
+# The subset of TurnOutcomeType that represents a committed terminal transition. Callers that need
+# to distinguish "a terminal outcome landed" from "any outcome row exists" (e.g. crash-window
+# reconciliation, which must not treat a non-terminal WAIT_APPROVAL/WAIT_INPUT/CONTINUE row as proof
+# the turn concluded) filter on this set rather than re-deriving it.
+TERMINAL_OUTCOME_TYPES = frozenset(_STATUS_BY_OUTCOME.keys())
 
 # Compatibility mapping for the non-terminal outcomes: each pair is the exact
 # (status, interrupt_type) shape the two direct-write call sites this replaces already produced,
@@ -142,6 +150,35 @@ async def _record_outcome_if_enabled(
         reason,
         turn_id,
         session_id,
+    )
+
+
+async def _emit_outcome_event_if_v2(
+    db: AsyncSession,
+    session_row: AgentSession,
+    turn_id: uuid.UUID | None,
+    outcome_type: TurnOutcomeType,
+    reason: str | None,
+) -> None:
+    """Append an `OUTCOME_COMMITTED` outbox row alongside the status write, for v2-cohort sessions
+    only (`emit_turn_event` no-ops for v1). Skips the extra checkpoint-head lookup entirely for the
+    common v1 case.
+
+    Uses `getattr` (not direct attribute access) because several existing call sites pass a
+    lightweight duck-typed `session_row` stand-in (not a real `AgentSession`) that predates this
+    cohort field — those callers have no turn-v2 concept at all and must keep behaving exactly like
+    v1 (no-op) rather than raising `AttributeError`.
+    """
+    if getattr(session_row, "checkpoint_version", "v1") != "v2":
+        return
+    parent_checkpoint_id = await latest_checkpoint_id_for_session(db, session_row.id)
+    await emit_turn_event(
+        db,
+        session_row=session_row,
+        turn_id=turn_id,
+        event_type=AgentTurnEventType.OUTCOME_COMMITTED,
+        parent_checkpoint_id=parent_checkpoint_id,
+        payload={"outcome_type": outcome_type.value, "reason": reason},
     )
 
 
@@ -220,6 +257,7 @@ async def project_terminal_outcome(
     await _check_ownership_fence(db, turn_id, owner_id, expected_ownership_generation)
     await _record_outcome_if_enabled(db, session_row, turn_id, outcome_type, reason)
     session_row.status = status
+    await _emit_outcome_event_if_v2(db, session_row, turn_id, outcome_type, reason)
 
 
 async def project_non_terminal_outcome(
@@ -249,3 +287,4 @@ async def project_non_terminal_outcome(
     await _record_outcome_if_enabled(db, session_row, turn_id, outcome_type, reason)
     session_row.status = status
     session_row.interrupt_type = interrupt_type
+    await _emit_outcome_event_if_v2(db, session_row, turn_id, outcome_type, reason)

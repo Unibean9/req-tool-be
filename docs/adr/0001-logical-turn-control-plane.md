@@ -104,6 +104,40 @@ Owner vận hành chốt các câu hỏi mở tại Phase 1 trước khi Phase 6
   riêng — việc đó thuộc phạm vi rollout sau Phase 6, không phải exit criterion của phase
   này.
 
+## Addendum 2026-07-16 — Checkpoint v2 saver selection (Phase 7)
+
+Resolves the Phase 7 "Might Be" assumption on `AsyncPostgresSaver`.
+
+- **Decision**: Phase 7 checkpoint v2 stays a custom `BaseCheckpointSaver` subclass
+  (extending the existing `AgentSessionCheckpointer` pattern in
+  `app/graphs/checkpointer.py`) writing history rows through the same
+  SQLAlchemy/asyncpg session used by turn admission, not the official
+  `langgraph-checkpoint-postgres` `AsyncPostgresSaver`.
+- **Why**: `AsyncPostgresSaver` (package `langgraph-checkpoint-postgres`, latest
+  3.1.0 as of 2026-05-12) requires the `psycopg` (async) driver with its own
+  connection/pool (`autocommit=True`, `row_factory=dict_row`) — a second Postgres
+  driver next to the repo's pinned `asyncpg` + SQLAlchemy async stack. It manages
+  its own commit boundary and has no notion of this codebase's turn ownership
+  fence, so the Phase 7 requirement "append history only with expected parent +
+  session sequence + active fence generation compare-and-set" (Constraints,
+  Phase 7 Step 3) cannot be expressed as a single transaction against its API —
+  it would need wrapping/subclassing anyway, at the cost of a duplicate driver
+  and duplicate pool lifecycle. The existing custom saver already commits inside
+  the same transaction as `TurnExecutionState`/`AgentTurnJob` writes, so extending
+  its schema for parent-linked history plus a CAS predicate keeps one driver, one
+  pool, and one transactional boundary.
+  - Source: `pyproject.toml` (`asyncpg>=0.30.0`, `sqlalchemy[asyncio]>=2.0.40`,
+    `langgraph==1.2.6`; no `langgraph-checkpoint-postgres` dependency); installed
+    `langgraph-checkpoint==4.1.1` (`pip show`); PyPI project page and LangChain
+    reference docs for `AsyncPostgresSaver` (`langgraph.checkpoint.postgres.aio`),
+    fetched 2026-07-16. Confidence: high on driver/version facts, medium on
+    whether a future LangGraph release changes this trade-off — re-check before
+    reopening this decision.
+- **Consequence**: v2 checkpoint history table and CAS logic are new code
+  maintained in this repo rather than delegated to an upstream saver; Phase 7
+  must implement parent/session-sequence/fence-generation CAS append itself
+  (Step 3) instead of getting it from the library.
+
 ## Alternatives
 
 - Giữ `AgentSession.status` làm source of truth: ít thay đổi trước mắt nhưng tiếp

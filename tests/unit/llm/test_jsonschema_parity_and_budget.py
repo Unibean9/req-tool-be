@@ -147,7 +147,8 @@ def test_error_is_valueerror_with_location():
 # --- per-turn diagnosis judge budget -----------------------------------------
 
 
-def test_resume_resets_diagnosis_judge_budget(db_session):
+@pytest.mark.asyncio
+async def test_resume_resets_diagnosis_judge_budget(db_session):
     from contextlib import asynccontextmanager
 
     from app.models.agent import AgentSession
@@ -162,7 +163,7 @@ def test_resume_resets_diagnosis_judge_budget(db_session):
         project_id=uuid.uuid4(), artifact_type="goal", workflow_area="analysis", graph_checkpoint={}
     )
 
-    command = svc._resume_command(session, {"content": "tiếp"})
+    command = await svc._resume_command(session, {"content": "tiếp"})
 
     # Per-turn budget: each human resume clears the counter so the next turn can escalate again.
     assert command.update["diagnosis_judge_calls_used"] == 0

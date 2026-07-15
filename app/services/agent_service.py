@@ -13,12 +13,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.documents.registry import all_container_types, container_for
 from app.graphs.analysis.turn_outcome_projector import check_ownership_fence, project_terminal_outcome
-from app.graphs.checkpointer import AgentSessionCheckpointer
+from app.graphs.analysis.turn_reconciliation import ReconciliationOutcome, reconcile_turn_checkpoint
+from app.graphs.checkpointer import AgentCheckpointHistorySaver, AgentSessionCheckpointer
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.lifecycle_context import has_stale_curation
 from app.graphs.policy import ARTIFACT_PREDECESSORS
 from app.graphs.state import build_initial_workflow_state
 from app.models.agent import (
+    AgentCheckpoint,
     AgentMessage,
     AgentMessageRole,
     AgentRun,
@@ -187,6 +189,9 @@ class AgentService:
                 agent_role=agent_role,
                 status=AgentSessionStatus.WAITING_FOR_HUMAN,
                 graph_checkpoint={},
+                # Session-grain checkpoint cohort, snapshotted once at this instant — never re-read
+                # live for this session's lifetime (see AgentSession.checkpoint_version docstring).
+                checkpoint_version="v2" if settings.agent_checkpoint_history_enabled else "v1",
                 missing_context=missing or None,
                 focused_artifact_id=focused_artifact_id,
                 provider_config_id=provider_config_id,
@@ -452,6 +457,7 @@ class AgentService:
                 turn_id=turn_id,
                 owner_id=owner_id,
                 ownership_generation=ownership_generation,
+                checkpoint_version=session.checkpoint_version,
             )
 
         if admitted_turn_id is not None:
@@ -559,7 +565,7 @@ class AgentService:
             resume_command = None
         else:
             initial_state = None
-            resume_command = self._resume_command(
+            resume_command = await self._resume_command(
                 session, {"content": content}, state_update={"mode_hint": mode_hint} if mode_hint else None
             )
         return initial_state, resume_command
@@ -633,6 +639,7 @@ class AgentService:
             "initial_state": initial_state,
             "resume_command": resume_command,
             "turn_id": turn_id,
+            "checkpoint_version": session.checkpoint_version,
         }
 
     async def _queue_message(
@@ -891,6 +898,7 @@ class AgentService:
                     turn_id=turn_id,
                     owner_id=owner_id,
                     ownership_generation=ownership_generation,
+                    checkpoint_version=resume_context["checkpoint_version"],
                 )
 
             # The effect executor's lease is released in `finally` above before this task is
@@ -1465,7 +1473,7 @@ class AgentService:
         if llm_client is None:
             llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
 
-        resume_command = self._resume_command(session_row, {"all_resolved": True}, state_update=state_update)
+        resume_command = await self._resume_command(session_row, {"all_resolved": True}, state_update=state_update)
         session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
         await self.db.commit()
@@ -1485,6 +1493,7 @@ class AgentService:
                 initial_state=None,
                 resume_command=resume_command,
                 allow_empty_completion=allow_empty_completion,
+                checkpoint_version=session_row.checkpoint_version,
             )
         )
 
@@ -1521,7 +1530,7 @@ class AgentService:
         strong_llm_client = None
         if llm_client is None:
             llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
-        resume_command = self._resume_command(session_row, {"all_resolved": True})
+        resume_command = await self._resume_command(session_row, {"all_resolved": True})
         resume_context = {
             "artifact_type": session_row.artifact_type,
             "step_key": session_row.step_key,
@@ -1532,6 +1541,7 @@ class AgentService:
             "llm_client": llm_client,
             "strong_llm_client": strong_llm_client,
             "resume_command": resume_command,
+            "checkpoint_version": session_row.checkpoint_version,
         }
         session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
@@ -1557,7 +1567,22 @@ class AgentService:
         turn_id: uuid.UUID | None = None,
         owner_id: str | None = None,
         ownership_generation: int | None = None,
+        checkpoint_version: str = "v1",
     ) -> None:
+        # AgentCheckpointHistorySaver hard-requires turn_id/owner_id/ownership_generation for every
+        # write; a v2 session resumed through a caller that never admitted a turn (e.g. reject/in-loop
+        # feedback recovery, which predate turn admission on those paths) would otherwise reach that
+        # requirement deep inside a fire-and-forget task, where the resulting
+        # MissingCheckpointHistoryTurnContextError is swallowed as an unhandled task exception and the
+        # session is silently stranded. Fail loudly and early instead until those paths admit turns too.
+        if checkpoint_version == "v2" and turn_id is None:
+            logger.error(
+                "agent_v2_resume_missing_turn_context session_id=%s: this resume path has not been "
+                "wired to admit a turn yet, so the v2 checkpoint saver cannot append safely",
+                session_id,
+            )
+            return
+
         config = self._make_config(
             session_id,
             project_id,
@@ -1567,7 +1592,25 @@ class AgentService:
             turn_id=turn_id,
             turn_owner_id=owner_id,
             turn_ownership_generation=ownership_generation,
+            checkpoint_version=checkpoint_version,
         )
+
+        # Reconciliation is only meaningful on a v2 resume (a fresh first message has no prior
+        # checkpoint history to reconcile against). Never called for v1 — its resume path is
+        # unchanged. A NEEDS_OPERATOR result aborts before the graph is ever invoked: the turn stays
+        # exactly as it was, no status write, no model call.
+        if checkpoint_version == "v2" and resume_command is not None and turn_id is not None:
+            async with self.session_factory() as db:
+                reconciliation = await reconcile_turn_checkpoint(db, turn_id)
+            if reconciliation.outcome == ReconciliationOutcome.NEEDS_OPERATOR:
+                logger.error(
+                    "agent_turn_reconciliation_needs_operator turn_id=%s session_id=%s detail=%s",
+                    turn_id,
+                    session_id,
+                    reconciliation.detail,
+                )
+                return
+
         timeout = settings.agent_turn_timeout_seconds
         if focused_artifact_id is None:
             async with self.session_factory() as db:
@@ -1860,6 +1903,7 @@ class AgentService:
                 turn_id=turn_id,
                 owner_id=owner_id,
                 ownership_generation=ownership_generation,
+                checkpoint_version=session_row.checkpoint_version,
             )
 
         if queued_turn_id is not None:
@@ -1880,6 +1924,7 @@ class AgentService:
         turn_id: uuid.UUID | None = None,
         turn_owner_id: str | None = None,
         turn_ownership_generation: int | None = None,
+        checkpoint_version: str = "v1",
     ) -> dict[str, Any]:
         return {
             "configurable": {
@@ -1895,13 +1940,17 @@ class AgentService:
                 "turn_id": str(turn_id) if turn_id else None,
                 "turn_owner_id": turn_owner_id,
                 "turn_ownership_generation": turn_ownership_generation,
+                # Snapshotted once from the caller's already-loaded AgentSession.checkpoint_version —
+                # DelegatingCheckpointer reads only this key, never the database itself, to pick the
+                # v1/v2 saver.
+                "checkpoint_version": checkpoint_version,
             }
         }
 
-    def _resume_command(
+    async def _resume_command(
         self, session: AgentSession, value: dict[str, Any], state_update: dict[str, Any] | None = None
     ) -> Command:
-        interrupt_ids = self._pending_interrupt_ids(session)
+        interrupt_ids = await self._pending_interrupt_ids(session)
         resume = {iid: value for iid in interrupt_ids} if interrupt_ids else value
         # A resume is a human-in-the-loop boundary (reply or approval), so the silent-loop circuit
         # breaker resets here: turn_count counts internal steps per request, not across the session.
@@ -1919,7 +1968,19 @@ class AgentService:
             },
         )
 
-    def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
+    async def _pending_interrupt_ids(self, session: AgentSession) -> list[str]:
+        """Interrupt ids pending on the session's current checkpoint head, read from whichever
+        reader `session.checkpoint_version` selects. v1 decodes the single shared `graph_checkpoint`
+        blob in memory (no I/O, unchanged from before this cohort existed); v2 reads the checkpoint
+        history head row's own `pending_writes` column, already scoped to that row's `checkpoint_id`
+        by `AgentCheckpointHistorySaver.aput_writes`.
+        """
+        # getattr (not direct attribute access): a handful of existing tests pass a lightweight
+        # duck-typed session stand-in that predates this cohort field; those must keep behaving
+        # exactly like v1 rather than raising AttributeError.
+        if getattr(session, "checkpoint_version", "v1") == "v2":
+            return await self._pending_interrupt_ids_v2(session)
+
         payload = session.graph_checkpoint or {}
         pending_writes = payload.get("pending_writes") or []
         if not pending_writes:
@@ -1927,13 +1988,44 @@ class AgentService:
 
         current_id = payload.get("checkpoint_id")
         checker = AgentSessionCheckpointer(session_id=str(session.id), session_factory=self.session_factory)
+        return self._extract_interrupt_ids(
+            pending_writes,
+            checker._load_pending_write,
+            current_checkpoint_id=current_id,
+        )
+
+    async def _pending_interrupt_ids_v2(self, session: AgentSession) -> list[str]:
+        async with self.session_factory() as db:
+            row = (
+                await db.execute(
+                    select(AgentCheckpoint)
+                    .where(AgentCheckpoint.session_id == session.id)
+                    .order_by(AgentCheckpoint.created_at.desc())
+                    .limit(1)
+                )
+            ).scalars().first()
+        if row is None or not row.pending_writes:
+            return []
+        checker = AgentCheckpointHistorySaver(session_id=str(session.id), session_factory=self.session_factory)
+        return self._extract_interrupt_ids(row.pending_writes, checker._load_pending_write)
+
+    @staticmethod
+    def _extract_interrupt_ids(
+        pending_writes: list[dict[str, Any]],
+        load_pending_write: Any,
+        *,
+        current_checkpoint_id: str | None = None,
+    ) -> list[str]:
+        """Shared `__interrupt__` decode/dedup walk for both v1's shared blob and v2's per-row
+        `pending_writes`, differing only in how each caller fetched `pending_writes` and (for v1
+        only) the extra same-checkpoint filter its shared blob needs."""
         interrupt_ids: list[str] = []
         seen: set[str] = set()
         for item in reversed(pending_writes):
-            if current_id is not None and item.get("checkpoint_id") != current_id:
+            if current_checkpoint_id is not None and item.get("checkpoint_id") != current_checkpoint_id:
                 continue
             try:
-                _, channel, value = checker._load_pending_write(item)
+                _, channel, value = load_pending_write(item)
             except Exception:
                 continue
             if channel != "__interrupt__":

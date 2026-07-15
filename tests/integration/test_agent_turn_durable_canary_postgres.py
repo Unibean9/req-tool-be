@@ -36,7 +36,7 @@ from app.services.agent_turn_job_service import AgentTurnJobService
 from app.services.agent_turn_worker import execute_claimed_job
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d38efc70b4f0"
+EXPECTED_ALEMBIC_REVISION = "d02fa1bc91a3"
 pytestmark = pytest.mark.integration
 
 
