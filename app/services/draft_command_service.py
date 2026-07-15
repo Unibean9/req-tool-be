@@ -1,4 +1,5 @@
-"""Command boundary for write_draft's mutating effect (Phase 4).
+"""Command boundary for mutating effects of write_draft, finalize, create_artifact_link
+and propose_retirement.
 
 Only reached when the admitting turn's cohort snapshot has `command_handlers_enabled=True`
 (recorded once at admission by `AgentTurnService.admit_user_message`, never read live from
@@ -35,11 +36,31 @@ from app.models.agent import (
 )
 
 
+def _logical_command_id(
+    action_type: str,
+    turn_id: uuid.UUID,
+    canonical_intent: str,
+    expected_base_version_id: uuid.UUID | None = None,
+) -> str:
+    """Stable business identity shared by every action_type: action + turn + canonical intent +
+    expected base version (when the action has one). Two calls in the same turn with the same
+    action_type/content/base-version are the same logical command (retry) regardless of provider
+    tool-call ID/run ID; anything different is a distinct logical command.
+
+    Each action_type gets its own thin wrapper below (not reused across action_types directly) so a
+    canonical-intent format change for one action can never accidentally collide with another's
+    namespace — the action_type is folded into the hash input either way, but the wrappers keep each
+    call site's intent shape self-documenting.
+    """
+    payload = "|".join([action_type, str(turn_id), str(expected_base_version_id or ""), canonical_intent])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def canonical_write_draft_intent(title: str, body: str) -> str:
     """Normalize the model-facing intent so retries with the same content hash identically.
 
     Deliberately excludes anything nondeterministic (timestamps, tool-call id, run id): those are
-    correlation only, never business identity (see module docstring / phase-04 brief).
+    correlation only, never business identity (see module docstring).
     """
     return json.dumps(
         {"title": str(title or "").strip(), "body": str(body or "").strip()},
@@ -57,10 +78,53 @@ def write_draft_logical_command_id(
     are the same logical command (retry) regardless of tool-call ID/run ID; a different base version
     or different content is a distinct logical command.
     """
-    payload = "|".join(
-        ["write_draft", str(turn_id), str(expected_base_version_id or ""), canonical_intent]
+    return _logical_command_id("write_draft", turn_id, canonical_intent, expected_base_version_id)
+
+
+def canonical_finalize_intent(summary: str) -> str:
+    """Normalize finalize's model-facing intent (its closing summary) for retry hashing."""
+    return json.dumps({"summary": str(summary or "").strip()}, sort_keys=True, ensure_ascii=False)
+
+
+def finalize_logical_command_id(turn_id: uuid.UUID, canonical_intent: str) -> str:
+    """finalize has no artifact base version (its effect is a session/interrupt transition, not an
+    artifact mutation), so the identity is just turn + canonical intent."""
+    return _logical_command_id("finalize", turn_id, canonical_intent)
+
+
+def canonical_artifact_link_intent(
+    source_artifact_id: uuid.UUID | str, target_artifact_id: uuid.UUID | str, relation_type: str
+) -> str:
+    """Normalize create_artifact_link's execution-time intent for retry hashing."""
+    return json.dumps(
+        {
+            "source_artifact_id": str(source_artifact_id),
+            "target_artifact_id": str(target_artifact_id),
+            "relation_type": str(relation_type),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def create_artifact_link_logical_command_id(turn_id: uuid.UUID, canonical_intent: str) -> str:
+    return _logical_command_id("create_artifact_link", turn_id, canonical_intent)
+
+
+def canonical_retirement_intent(artifact_id: uuid.UUID | str, superseded_by_artifact_id: uuid.UUID | str | None) -> str:
+    """Normalize propose_retirement's execution-time intent for retry hashing."""
+    return json.dumps(
+        {
+            "artifact_id": str(artifact_id),
+            "superseded_by_artifact_id": str(superseded_by_artifact_id) if superseded_by_artifact_id else None,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+
+
+def propose_retirement_logical_command_id(turn_id: uuid.UUID, canonical_intent: str) -> str:
+    return _logical_command_id("propose_retirement", turn_id, canonical_intent)
 
 
 @dataclass(frozen=True)
@@ -75,19 +139,25 @@ class DraftCommandService:
 
     Operates on the caller's own session/transaction — it does not open its own transaction — so the
     fence check, duplicate check, and effect/ledger commit are part of the same short DB transaction
-    the caller already holds, per the phase-04 constraint that fencing must be validated inside the
-    same transaction as the mutation (a pre-check-only fence would leave a race window).
+    the caller already holds, since fencing must be validated inside the same transaction as the
+    mutation (a pre-check-only fence would leave a race window).
     """
 
     def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
-    async def check_duplicate(self, logical_command_id: str) -> AgentToolCall | None:
-        ledger = (
+    async def find_ledger(self, logical_command_id: str) -> DraftCommandLedger | None:
+        """Look up the ledger row itself, for action_types whose effect is not an AgentToolCall
+        (e.g. finalize/artifact-link execution) — `check_duplicate` below stays the write_draft-
+        shaped convenience wrapper so its existing callers/tests are unaffected."""
+        return (
             await self.db.execute(
                 select(DraftCommandLedger).where(DraftCommandLedger.logical_command_id == logical_command_id)
             )
         ).scalar_one_or_none()
+
+    async def check_duplicate(self, logical_command_id: str) -> AgentToolCall | None:
+        ledger = await self.find_ledger(logical_command_id)
         if ledger is None or ledger.tool_call_id is None:
             return None
         return await self.db.get(AgentToolCall, ledger.tool_call_id)
@@ -124,18 +194,25 @@ class DraftCommandService:
         *,
         turn_id: uuid.UUID,
         logical_command_id: str,
-        tool_call: AgentToolCall,
-        artifact_id: uuid.UUID | None,
+        action_type: str,
         attempt: int,
+        tool_call: AgentToolCall | None = None,
+        artifact_id: uuid.UUID | None = None,
     ) -> None:
         """Add the ledger row in the same (still-open) transaction as the effect the caller just
-        persisted — the caller commits both atomically."""
+        persisted — the caller commits both atomically.
+
+        `tool_call`/`artifact_id` are optional: finalize's effect is a session/interrupt
+        transition, not an AgentToolCall or artifact row, so it records a ledger row with both
+        left `None` — the unique `logical_command_id` constraint is still the exactly-once
+        invariant either way.
+        """
         self.db.add(
             DraftCommandLedger(
                 turn_id=turn_id,
                 logical_command_id=logical_command_id,
-                action_type="write_draft",
-                tool_call_id=tool_call.id,
+                action_type=action_type,
+                tool_call_id=tool_call.id if tool_call is not None else None,
                 artifact_id=artifact_id,
                 effect_state=DraftCommandEffectState.COMMITTED,
                 attempt=attempt,

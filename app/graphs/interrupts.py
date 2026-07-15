@@ -1,6 +1,7 @@
 """Interrupt-raising helpers shared by graph nodes and agent tools.
 
-Neutral leaf module: imports only state, models, and LangGraph primitives — never nodes or
+Neutral leaf module: imports only state, models, LangGraph primitives, and the non-terminal
+outcome projector (itself a leaf with no path back to nodes/agent_tools) — never nodes or
 agent_tools — so both can depend on it without a circular import.
 """
 
@@ -11,13 +12,13 @@ from langchain_core.runnables import RunnableConfig
 from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
+from app.graphs.analysis.turn_outcome_projector import project_non_terminal_outcome
 from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
     AgentSession,
-    AgentSessionInterruptType,
-    AgentSessionStatus,
+    TurnOutcomeType,
 )
 
 
@@ -34,21 +35,18 @@ async def _save_and_interrupt_ask(
 ) -> str:
     """Persist one agent turn (idempotently), mark the session, then interrupt.
 
-    Shared by ask_user and respond. interrupt_kind controls both DB fields:
-    - "ask_human"      → status=WAITING_FOR_HUMAN, interrupt_type=ASK_HUMAN (default, approval flow)
-    - "stream_response" → status=ACTIVE, interrupt_type=STREAM_RESPONSE (conversational Q&A)
+    Shared by ask_user and respond. interrupt_kind controls the non-terminal outcome projected:
+    - "ask_human"       → WAIT_INPUT (status=WAITING_FOR_HUMAN, interrupt_type=ASK_HUMAN)
+    - "stream_response" → DIRECT_RESPONSE (status=ACTIVE, interrupt_type=STREAM_RESPONSE)
 
     Keying the idempotency guard on run_id makes an HTTP-resume (which re-executes the tool body
     from the top) skip the duplicate insert (R1).
     """
-    _INTERRUPT_KIND_MAP = {
-        "ask_human": (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionInterruptType.ASK_HUMAN),
-        "stream_response": (AgentSessionStatus.ACTIVE, AgentSessionInterruptType.STREAM_RESPONSE),
+    _INTERRUPT_KIND_OUTCOME = {
+        "ask_human": TurnOutcomeType.WAIT_INPUT,
+        "stream_response": TurnOutcomeType.DIRECT_RESPONSE,
     }
-    session_status, session_interrupt_type = _INTERRUPT_KIND_MAP.get(
-        interrupt_kind,
-        _INTERRUPT_KIND_MAP["ask_human"],
-    )
+    outcome_type = _INTERRUPT_KIND_OUTCOME.get(interrupt_kind, TurnOutcomeType.WAIT_INPUT)
 
     cfg = config["configurable"]
     session_factory = cfg["session_factory"]
@@ -75,8 +73,9 @@ async def _save_and_interrupt_ask(
                 )
             )
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-        session_row.status = session_status
-        session_row.interrupt_type = session_interrupt_type
+        turn_id_raw = cfg.get("turn_id")
+        turn_id = uuid.UUID(str(turn_id_raw)) if turn_id_raw else None
+        await project_non_terminal_outcome(db, session_row, outcome_type, turn_id=turn_id)
         await db.commit()
 
     interrupt_payload = {"type": "respond" if kind == "assessment" else "ask_human", "message": content}

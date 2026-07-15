@@ -16,7 +16,7 @@ from app.models.user import User
 from app.services.agent_turn_service import AgentTurnService
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "b5c6d7e8f9a0"
+EXPECTED_ALEMBIC_REVISION = "c27dfb69a3e9"
 pytestmark = pytest.mark.integration
 
 
@@ -183,3 +183,92 @@ async def test_postgres_distinct_keys_queue_behind_one_session_owner(postgres_se
                 idempotency_key="wrong-project",
             )
         assert getattr(wrong_project.value, "status_code", None) == 404
+
+
+@pytest.mark.asyncio
+async def test_postgres_concurrent_cancel_with_same_key_is_fenced_to_one_turn(postgres_session_factory):
+    async with postgres_session_factory() as db:
+        user = User(email=f"turn-cancel-{uuid.uuid4()}@example.com", hashed_password="hash")
+        db.add(user)
+        await db.flush()
+        org = Organization(name="Turn cancel test", slug=f"turn-cancel-{uuid.uuid4().hex}", owner_id=user.id)
+        db.add(org)
+        await db.flush()
+        project = Project(org_id=org.id, name="Turn cancel test", slug=f"turn-cancel-{uuid.uuid4().hex}")
+        db.add(project)
+        await db.flush()
+        session = AgentSession(
+            project_id=project.id,
+            artifact_type="problem",
+            workflow_area="analysis",
+            status=AgentSessionStatus.ACTIVE,
+            created_by_id=user.id,
+        )
+        db.add(session)
+        await db.commit()
+        project_id, session_id, user_id = project.id, session.id, user.id
+
+    async def cancel_same_key():
+        async with postgres_session_factory() as db:
+            return await AgentTurnService(db).admit_cancel(
+                project_id=project_id,
+                session_id=session_id,
+                user_id=user_id,
+                idempotency_key="same-cancel",
+            )
+
+    first, second = await asyncio.gather(cancel_same_key(), cancel_same_key())
+    assert first.turn_id == second.turn_id
+
+    async with postgres_session_factory() as db:
+        envelopes = (
+            await db.execute(select(AgentTurnEnvelope).where(AgentTurnEnvelope.session_id == session_id))
+        ).scalars().all()
+        assert len(envelopes) == 1
+        persisted_session = await db.get(AgentSession, session_id)
+        assert persisted_session.status == AgentSessionStatus.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_postgres_concurrent_retry_with_same_key_is_fenced_to_one_turn(postgres_session_factory):
+    async with postgres_session_factory() as db:
+        user = User(email=f"turn-retry-{uuid.uuid4()}@example.com", hashed_password="hash")
+        db.add(user)
+        await db.flush()
+        org = Organization(name="Turn retry test", slug=f"turn-retry-{uuid.uuid4().hex}", owner_id=user.id)
+        db.add(org)
+        await db.flush()
+        project = Project(org_id=org.id, name="Turn retry test", slug=f"turn-retry-{uuid.uuid4().hex}")
+        db.add(project)
+        await db.flush()
+        session = AgentSession(
+            project_id=project.id,
+            artifact_type="problem",
+            workflow_area="analysis",
+            status=AgentSessionStatus.TURN_FAILED,
+            created_by_id=user.id,
+        )
+        db.add(session)
+        await db.commit()
+        project_id, session_id, user_id = project.id, session.id, user.id
+
+    async def retry_same_key():
+        async with postgres_session_factory() as db:
+            return await AgentTurnService(db).admit_retry(
+                project_id=project_id,
+                session_id=session_id,
+                user_id=user_id,
+                idempotency_key="same-retry",
+            )
+
+    first, second = await asyncio.gather(retry_same_key(), retry_same_key())
+    assert first.turn_id == second.turn_id
+
+    async with postgres_session_factory() as db:
+        envelopes = (
+            await db.execute(select(AgentTurnEnvelope).where(AgentTurnEnvelope.session_id == session_id))
+        ).scalars().all()
+        assert len(envelopes) == 1
+        persisted_session = await db.get(AgentSession, session_id)
+        assert persisted_session.status == AgentSessionStatus.ACTIVE
+        assert persisted_session.active_turn_id == first.turn_id

@@ -48,8 +48,35 @@ def test_analysis_modules_do_not_import_nodes():
                 assert all(a.name != "app.graphs.nodes" for a in node.names), f"{path.name} imports app.graphs.nodes"
 
 
+_INTERRUPTS_ALLOWED_GRAPHS_IMPORTS = {"app.graphs.state", "app.graphs.analysis.turn_outcome_projector"}
+
+
+def test_turn_outcome_projector_does_not_import_cycle_modules():
+    """turn_outcome_projector.py is the one analysis module interrupts.py is allowed to import
+
+    (see test_interrupts_is_a_leaf_module below), so — unlike the other analysis modules, which
+    may legitimately import agent_tools — it must never import nodes/agent_tools/interrupts
+    itself, or interrupts.py would gain a path back into that cycle.
+    """
+    tree = ast.parse((APP_GRAPHS / "analysis" / "turn_outcome_projector.py").read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module not in _CYCLE_MODULES, f"turn_outcome_projector.py imports {node.module}"
+        if isinstance(node, ast.Import):
+            assert all(a.name not in _CYCLE_MODULES for a in node.names), (
+                f"turn_outcome_projector.py imports one of {_CYCLE_MODULES}"
+            )
+
+
 def test_interrupts_is_a_leaf_module():
+    """interrupts.py may only depend on app.graphs.state or on app.graphs.analysis.* modules that
+    are themselves verified (by test_turn_outcome_projector_does_not_import_cycle_modules) to
+    never import nodes/agent_tools/interrupts — so this stays a leaf with no path back into that
+    cycle.
+    """
     tree = ast.parse((APP_GRAPHS / "interrupts.py").read_text(encoding="utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("app.graphs."):
-            assert node.module == "app.graphs.state", f"interrupts.py may only import state, got {node.module}"
+            assert node.module in _INTERRUPTS_ALLOWED_GRAPHS_IMPORTS, (
+                f"interrupts.py may only import {_INTERRUPTS_ALLOWED_GRAPHS_IMPORTS}, got {node.module}"
+            )

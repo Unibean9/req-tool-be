@@ -10,17 +10,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.graphs.analysis.turn_outcome_projector import project_terminal_outcome
 from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
     AgentSession,
     AgentSessionInterruptType,
     AgentSessionStatus,
+    AgentToolCall,
+    AgentToolCallStatus,
     AgentTurnEnvelope,
     AgentTurnTrigger,
     AgentTurnTriggerType,
     TurnExecutionState,
     TurnExecutionStatus,
+    TurnOutcomeType,
 )
 
 
@@ -32,6 +36,24 @@ class AdmittedTurn:
     queued: bool
     prior_status: AgentSessionStatus
     prior_interrupt_type: AgentSessionInterruptType | None
+
+
+@dataclass(frozen=True)
+class AdmittedApprovalTurn:
+    turn_id: uuid.UUID
+    duplicate: bool
+
+
+@dataclass(frozen=True)
+class AdmittedCancelTurn:
+    turn_id: uuid.UUID
+    duplicate: bool
+
+
+@dataclass(frozen=True)
+class AdmittedRetryTurn:
+    turn_id: uuid.UUID
+    duplicate: bool
 
 
 def idempotency_key_hash(value: str | None) -> str | None:
@@ -143,10 +165,13 @@ class AgentTurnService:
                 "turn_admission": "v1",
                 "policy_resolver_mode": settings.agent_policy_resolver_mode,
                 "execution_mode": settings.agent_execution_mode,
-                # Snapshotted once at admission (Phase 4): write_draft's command handler reads this
+                # Snapshotted once at admission: write_draft's command handler reads this
                 # per-turn value, never settings.agent_command_handlers_enabled live, so a flag flip
                 # mid-flight cannot change behavior for an already-admitted turn.
                 "command_handlers_enabled": settings.agent_command_handlers_enabled,
+                # Same snapshot-at-admission contract, gating whether the
+                # terminal projector also writes a TurnOutcome audit row for this turn.
+                "turn_outcomes_enabled": settings.agent_turn_outcomes_enabled,
             }
             envelope = AgentTurnEnvelope(
                 session_id=session.id,
@@ -173,6 +198,246 @@ class AgentTurnService:
             prior_status=prior_status,
             prior_interrupt_type=prior_interrupt_type,
         )
+
+    async def admit_approval(
+        self,
+        *,
+        project_id: uuid.UUID,
+        tool_call_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> AdmittedApprovalTurn:
+        """Admit an approval turn from an already-authorized tool call; never trusts turn context from the client."""
+        if self.db.in_transaction():
+            await self.db.commit()
+        async with self.db.begin():
+            tool_call = (
+                await self.db.execute(select(AgentToolCall).where(AgentToolCall.id == tool_call_id).with_for_update())
+            ).scalar_one_or_none()
+            if tool_call is None:
+                raise HTTPException(404, detail="Tool call not found")
+            session = (
+                await self.db.execute(
+                    select(AgentSession)
+                    .where(AgentSession.id == tool_call.run.session_id, AgentSession.project_id == project_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if session is None or session.created_by_id != user_id:
+                raise HTTPException(404, detail="Tool call not found")
+            existing = (
+                await self.db.execute(
+                    select(AgentTurnTrigger)
+                    .where(AgentTurnTrigger.tool_call_id == tool_call_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if existing is not None and existing.turn_id is not None:
+                return AdmittedApprovalTurn(turn_id=existing.turn_id, duplicate=True)
+            if tool_call.status != AgentToolCallStatus.PROPOSED:
+                raise HTTPException(400, detail="Tool call is not in proposed status")
+            if session.status != AgentSessionStatus.WAITING_FOR_HUMAN:
+                raise HTTPException(400, detail="Session is not waiting for approval")
+            trigger = AgentTurnTrigger(
+                session_id=session.id,
+                trigger_type=AgentTurnTriggerType.APPROVAL,
+                actor_id=user_id,
+                tool_call_id=tool_call.id,
+            )
+            self.db.add(trigger)
+            await self.db.flush()
+            session.turn_sequence += 1
+            cohort = {
+                "turn_admission": "v1",
+                "policy_resolver_mode": settings.agent_policy_resolver_mode,
+                "execution_mode": settings.agent_execution_mode,
+                "command_handlers_enabled": settings.agent_command_handlers_enabled,
+                "turn_outcomes_enabled": settings.agent_turn_outcomes_enabled,
+            }
+            envelope = AgentTurnEnvelope(
+                session_id=session.id,
+                session_sequence=session.turn_sequence,
+                original_trigger_id=trigger.id,
+                actor_id=user_id,
+                cohort=cohort,
+                correlation_id=str(uuid.uuid4()),
+            )
+            self.db.add(envelope)
+            await self.db.flush()
+            trigger.turn_id = envelope.id
+            session.active_turn_id = envelope.id
+            self.db.add(TurnExecutionState(turn_id=envelope.id, status=TurnExecutionStatus.PENDING))
+        return AdmittedApprovalTurn(turn_id=envelope.id, duplicate=False)
+
+    async def admit_cancel(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None,
+        idempotency_key: str | None,
+        reason: str | None = None,
+    ) -> AdmittedCancelTurn:
+        """Admit a typed cancel trigger and project the CANCELLED terminal outcome for it.
+
+        Cancel has no resume step waiting on a graph run the way approval does, so this admission
+        boundary is also the terminal owner for the turn it opens — there is no separate executor
+        to defer the outcome to.
+        """
+        if user_id is None:
+            raise HTTPException(401, detail="Authenticated actor is required for agent turn admission")
+        key_hash = idempotency_key_hash(idempotency_key)
+        if self.db.in_transaction():
+            await self.db.commit()
+        async with self.db.begin():
+            session = (
+                await self.db.execute(
+                    select(AgentSession)
+                    .where(AgentSession.id == session_id, AgentSession.project_id == project_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if session is None or session.created_by_id is None or session.created_by_id != user_id:
+                raise HTTPException(404, detail="Agent session not found")
+
+            if key_hash is not None:
+                existing = (
+                    await self.db.execute(
+                        select(AgentTurnTrigger)
+                        .where(
+                            AgentTurnTrigger.session_id == session_id,
+                            AgentTurnTrigger.trigger_type == AgentTurnTriggerType.CANCEL,
+                            AgentTurnTrigger.idempotency_key_hash == key_hash,
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if existing is not None and existing.turn_id is not None:
+                    return AdmittedCancelTurn(turn_id=existing.turn_id, duplicate=True)
+
+            if session.status in (AgentSessionStatus.COMPLETED, AgentSessionStatus.FAILED, AgentSessionStatus.EXPIRED):
+                raise HTTPException(400, detail="Session has already ended and cannot be cancelled")
+
+            trigger = AgentTurnTrigger(
+                session_id=session.id,
+                trigger_type=AgentTurnTriggerType.CANCEL,
+                idempotency_key_hash=key_hash,
+                actor_id=user_id,
+            )
+            self.db.add(trigger)
+            await self.db.flush()
+            session.turn_sequence += 1
+            cohort = {
+                "turn_admission": "v1",
+                "policy_resolver_mode": settings.agent_policy_resolver_mode,
+                "execution_mode": settings.agent_execution_mode,
+                "command_handlers_enabled": settings.agent_command_handlers_enabled,
+                "turn_outcomes_enabled": settings.agent_turn_outcomes_enabled,
+            }
+            envelope = AgentTurnEnvelope(
+                session_id=session.id,
+                session_sequence=session.turn_sequence,
+                original_trigger_id=trigger.id,
+                actor_id=user_id,
+                cohort=cohort,
+                correlation_id=str(uuid.uuid4()),
+            )
+            self.db.add(envelope)
+            await self.db.flush()
+            trigger.turn_id = envelope.id
+            session.active_turn_id = envelope.id
+            self.db.add(
+                TurnExecutionState(
+                    turn_id=envelope.id,
+                    status=TurnExecutionStatus.TERMINAL,
+                    attempt=1,
+                    transition_version=1,
+                )
+            )
+            await project_terminal_outcome(
+                self.db, session, TurnOutcomeType.CANCELLED, reason or "user_cancelled", turn_id=envelope.id
+            )
+        return AdmittedCancelTurn(turn_id=envelope.id, duplicate=False)
+
+    async def admit_retry(
+        self,
+        *,
+        project_id: uuid.UUID,
+        session_id: uuid.UUID,
+        user_id: uuid.UUID | None,
+        idempotency_key: str | None,
+    ) -> AdmittedRetryTurn:
+        """Admit a typed retry trigger that resumes the session's persisted checkpoint.
+
+        Per ADR 0001, retry never re-invokes the model to re-decide: this only opens a new turn
+        envelope over the existing, unchanged `graph_checkpoint` and reactivates the session so
+        the next graph run resumes it — exactly the same reactivation this admission boundary
+        already does for a plain user message, and no model call happens inside it either way.
+        """
+        if user_id is None:
+            raise HTTPException(401, detail="Authenticated actor is required for agent turn admission")
+        key_hash = idempotency_key_hash(idempotency_key)
+        if self.db.in_transaction():
+            await self.db.commit()
+        async with self.db.begin():
+            session = (
+                await self.db.execute(
+                    select(AgentSession)
+                    .where(AgentSession.id == session_id, AgentSession.project_id == project_id)
+                    .with_for_update()
+                )
+            ).scalar_one_or_none()
+            if session is None or session.created_by_id is None or session.created_by_id != user_id:
+                raise HTTPException(404, detail="Agent session not found")
+
+            if key_hash is not None:
+                existing = (
+                    await self.db.execute(
+                        select(AgentTurnTrigger)
+                        .where(
+                            AgentTurnTrigger.session_id == session_id,
+                            AgentTurnTrigger.trigger_type == AgentTurnTriggerType.RETRY,
+                            AgentTurnTrigger.idempotency_key_hash == key_hash,
+                        )
+                        .with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if existing is not None and existing.turn_id is not None:
+                    return AdmittedRetryTurn(turn_id=existing.turn_id, duplicate=True)
+
+            if session.status != AgentSessionStatus.TURN_FAILED:
+                raise HTTPException(400, detail="Session is not in a retryable state")
+
+            trigger = AgentTurnTrigger(
+                session_id=session.id,
+                trigger_type=AgentTurnTriggerType.RETRY,
+                idempotency_key_hash=key_hash,
+                actor_id=user_id,
+            )
+            self.db.add(trigger)
+            await self.db.flush()
+            session.turn_sequence += 1
+            cohort = {
+                "turn_admission": "v1",
+                "policy_resolver_mode": settings.agent_policy_resolver_mode,
+                "execution_mode": settings.agent_execution_mode,
+                "command_handlers_enabled": settings.agent_command_handlers_enabled,
+                "turn_outcomes_enabled": settings.agent_turn_outcomes_enabled,
+            }
+            envelope = AgentTurnEnvelope(
+                session_id=session.id,
+                session_sequence=session.turn_sequence,
+                original_trigger_id=trigger.id,
+                actor_id=user_id,
+                cohort=cohort,
+                correlation_id=str(uuid.uuid4()),
+            )
+            self.db.add(envelope)
+            await self.db.flush()
+            trigger.turn_id = envelope.id
+            session.active_turn_id = envelope.id
+            session.status = AgentSessionStatus.ACTIVE
+            self.db.add(TurnExecutionState(turn_id=envelope.id, status=TurnExecutionStatus.PENDING))
+        return AdmittedRetryTurn(turn_id=envelope.id, duplicate=False)
 
     async def claim_inline(self, *, turn_id: uuid.UUID, owner_id: str, lease_seconds: int = 120) -> int | None:
         """Claim bằng row lock; không giữ transaction khi caller gọi LLM."""

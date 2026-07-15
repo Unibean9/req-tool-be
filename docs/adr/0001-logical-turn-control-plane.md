@@ -37,6 +37,11 @@ Approval là typed trigger để resume execution. Nó không được trực ti
 session thành `COMPLETED`; approval trùng hoặc đến sai thứ tự phải được xử lý theo
 identity/precedence của trigger.
 
+Quyết định làm rõ ngày 2026-07-15: kể cả approval cuối cùng của một batch proposal
+cũng chỉ tạo ordered resume trigger. Chỉ graph/terminal owner, sau khi resume,
+được phát `TurnOutcome` terminal; approval command không được project terminal
+outcome trực tiếp.
+
 ### State và terminal
 
 `AgentSession.status` không còn là nơi nén conversation, execution, waiting,

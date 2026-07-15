@@ -1,4 +1,4 @@
-"""Postgres-backed fault-injection tests for Phase 4's write_draft command boundary.
+"""Postgres-backed fault-injection tests for write_draft's command boundary.
 
 Only runs when AGENT_TURN_POSTGRES_URL is configured (mirrors test_agent_turn_postgres.py). These
 tests exercise DraftCommandService directly against real Postgres row-locking/unique-constraint
@@ -36,7 +36,7 @@ from app.services.draft_command_service import (
 )
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "e5f6a7b8c9d0"
+EXPECTED_ALEMBIC_REVISION = "c27dfb69a3e9"
 pytestmark = pytest.mark.integration
 
 
@@ -159,6 +159,7 @@ async def test_postgres_duplicate_logical_command_concurrent_writers(postgres_se
             service.record_effect(
                 turn_id=turn_id,
                 logical_command_id=logical_command_id,
+                action_type="write_draft",
                 tool_call=tool_call,
                 artifact_id=None,
                 attempt=0,
@@ -209,6 +210,7 @@ async def test_postgres_reconciliation_reads_committed_effect_without_replay(pos
         service.record_effect(
             turn_id=turn_id,
             logical_command_id=logical_command_id,
+            action_type="write_draft",
             tool_call=tool_call,
             artifact_id=None,
             attempt=0,

@@ -19,14 +19,14 @@ from sqlalchemy import select
 
 from app.graphs import agent_tools
 from app.graphs.agent_tools._shared import _missing_required_arg_update, _tool_not_available_update
+from app.graphs.analysis.turn_outcome_projector import project_non_terminal_outcome
 from app.graphs.decision_graph import impact
 from app.graphs.state import WorkflowState
 from app.models.agent import (
     AgentSession,
-    AgentSessionInterruptType,
-    AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
+    TurnOutcomeType,
 )
 from app.models.artifact import ArtifactLink, RelationType
 from app.schemas.artifact import ArtifactLinkCreateRequest
@@ -88,8 +88,10 @@ async def _save_approval_proposal(
                 )
             )
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS
+        cfg = config["configurable"]
+        turn_id_raw = cfg.get("turn_id")
+        turn_id = uuid.UUID(str(turn_id_raw)) if turn_id_raw else None
+        await project_non_terminal_outcome(db, session_row, TurnOutcomeType.WAIT_APPROVAL, turn_id=turn_id)
         await db.commit()
 
 

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.documents.registry import all_container_types, container_for
+from app.graphs.analysis.turn_outcome_projector import project_terminal_outcome
 from app.graphs.checkpointer import AgentSessionCheckpointer
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.lifecycle_context import has_stale_curation
@@ -27,6 +28,7 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
     AgentTurnTrigger,
+    TurnOutcomeType,
 )
 from app.models.artifact import (
     Artifact,
@@ -47,6 +49,13 @@ from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.agent_turn_service import AgentTurnService
 from app.services.artifact_service import ArtifactInUseError, ArtifactLinkService, ArtifactService
 from app.services.document_service import DocumentService
+from app.services.draft_command_service import (
+    DraftCommandService,
+    canonical_artifact_link_intent,
+    canonical_retirement_intent,
+    create_artifact_link_logical_command_id,
+    propose_retirement_logical_command_id,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +210,7 @@ class AgentService:
                 locked_existing = (
                     await self.db.execute(existing_query.with_for_update())
                 ).scalar_one_or_none()
-                if locked_existing is not None and expire_abandoned_session(locked_existing):
+                if locked_existing is not None and await expire_abandoned_session(self.db, locked_existing):
                     await self.db.commit()
                     try:
                         session = _new_session()
@@ -474,11 +483,11 @@ class AgentService:
         return msg
 
     async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner_factory: Any) -> None:
-        """Adapter inline dùng cùng ownership contract với durable worker Phase 6.
+        """Adapter inline dùng cùng ownership contract với durable worker tương lai.
 
         `runner_factory` builds the graph-invocation coroutine lazily, called only after the claim
         below succeeds — this is how owner_id/ownership_generation (unknown until claimed) reach the
-        tool handler's config (Phase 4 command boundary) without executing any graph code early.
+        tool handler's config (command boundary) without executing any graph code early.
         """
         owner_id = f"inline:{uuid.uuid4()}"
         async with self.session_factory() as db:
@@ -598,83 +607,175 @@ class AgentService:
         if tool_call.status != AgentToolCallStatus.PROPOSED:
             raise HTTPException(400, detail="Tool call is not in proposed status")
 
-        snapshot = tool_call.input_snapshot or {}
-        artifact: Artifact | None = None
-        version: ArtifactVersion | None = None
-        tool_kind = _approval_tool_kind(tool_call.tool_name)
-        if _is_artifact_body_proposal(tool_call.tool_name):
-            stale_detail = await self._guard_current_base_version(project_id, snapshot, None, raise_on_stale=False)
-            if stale_detail is not None:
-                await self._supersede_tool_call_for_in_loop_recovery(
-                    project_id=project_id,
-                    session_id=session_id,
-                    tool_call=tool_call,
-                    feedback_summary={
-                        "stale_base_version": {**stale_detail, "artifact_id": snapshot.get("focused_artifact_id")}
-                    },
-                    llm_client=_llm_client,
-                )
-                raise HTTPException(409, detail=stale_detail)
-            lifecycle_rejection = await self._guard_lifecycle_predecessors(project_id, snapshot)
-            if lifecycle_rejection is not None:
-                await self._supersede_tool_call_for_in_loop_recovery(
-                    project_id=project_id,
-                    session_id=session_id,
-                    tool_call=tool_call,
-                    feedback_summary={"lifecycle_persist_rejection": lifecycle_rejection},
-                    llm_client=_llm_client,
-                )
-                raise HTTPException(409, detail=lifecycle_rejection)
-            try:
-                artifact, version = await self._execute_create_artifact(
-                    project_id=project_id,
-                    snapshot=snapshot,
-                    run_id=tool_call.run_id,
-                    tool_call_id=tool_call.id,
-                    created_by_id=created_by_id,
-                )
-            except HTTPException as exc:
-                feedback_summary = _candidate_readiness_rejection_feedback(snapshot, exc)
-                if feedback_summary is None:
+        # Approval creates its own server-side logical turn. Never reuse the proposal turn and
+        # never accept owner/generation from the HTTP request.
+        actor_id = user_id or created_by_id
+        admitted = None
+        owner_id = None
+        generation = None
+        # Direct legacy service calls without an authenticated actor stay on their compatibility
+        # path. The REST path always supplies user_id and therefore cannot bypass admission.
+        if actor_id is not None:
+            admitted = await AgentTurnService(self.db).admit_approval(
+                project_id=project_id, tool_call_id=tool_call_id, user_id=actor_id
+            )
+            owner_id = f"approval:{uuid.uuid4()}"
+            generation = await AgentTurnService(self.db).claim_inline(turn_id=admitted.turn_id, owner_id=owner_id)
+            if generation is None:
+                # A concurrent request owns the same admitted approval; do not execute a second effect.
+                await self.db.refresh(tool_call)
+                if tool_call.status == AgentToolCallStatus.EXECUTED:
+                    return tool_call
+                raise HTTPException(409, detail="Approval turn is already being processed")
+
+        approval_error = False
+        approved_tool_call: AgentToolCall | None = None
+        resume_context: dict[str, Any] | None = None
+        try:
+            snapshot = tool_call.input_snapshot or {}
+            artifact: Artifact | None = None
+            version: ArtifactVersion | None = None
+            tool_kind = _approval_tool_kind(tool_call.tool_name)
+            if _is_artifact_body_proposal(tool_call.tool_name):
+                stale_detail = await self._guard_current_base_version(project_id, snapshot, None, raise_on_stale=False)
+                if stale_detail is not None:
+                    await self._supersede_tool_call_for_in_loop_recovery(
+                        project_id=project_id,
+                        session_id=session_id,
+                        tool_call=tool_call,
+                        feedback_summary={
+                            "stale_base_version": {**stale_detail, "artifact_id": snapshot.get("focused_artifact_id")}
+                        },
+                        llm_client=_llm_client,
+                    )
+                    raise HTTPException(409, detail=stale_detail)
+                lifecycle_rejection = await self._guard_lifecycle_predecessors(project_id, snapshot)
+                if lifecycle_rejection is not None:
+                    await self._supersede_tool_call_for_in_loop_recovery(
+                        project_id=project_id,
+                        session_id=session_id,
+                        tool_call=tool_call,
+                        feedback_summary={"lifecycle_persist_rejection": lifecycle_rejection},
+                        llm_client=_llm_client,
+                    )
+                    raise HTTPException(409, detail=lifecycle_rejection)
+                try:
+                    artifact, version = await self._execute_create_artifact(
+                        project_id=project_id,
+                        snapshot=snapshot,
+                        run_id=tool_call.run_id,
+                        tool_call_id=tool_call.id,
+                        created_by_id=created_by_id,
+                    )
+                except HTTPException as exc:
+                    feedback_summary = _candidate_readiness_rejection_feedback(snapshot, exc)
+                    if feedback_summary is None:
+                        raise
+                    await self._supersede_tool_call_for_in_loop_recovery(
+                        project_id=project_id,
+                        session_id=session_id,
+                        tool_call=tool_call,
+                        feedback_summary=feedback_summary,
+                        llm_client=_llm_client,
+                    )
                     raise
-                await self._supersede_tool_call_for_in_loop_recovery(
+            elif tool_kind == "create_artifact_link":
+                link = await self._execute_create_artifact_link(
                     project_id=project_id,
                     session_id=session_id,
-                    tool_call=tool_call,
-                    feedback_summary=feedback_summary,
-                    llm_client=_llm_client,
+                    snapshot=snapshot,
+                    created_by_id=created_by_id,
+                    turn_id=admitted.turn_id if admitted is not None else None,
+                    turn_owner_id=owner_id,
+                    turn_ownership_generation=generation,
                 )
-                raise
-        elif tool_kind == "create_artifact_link":
-            link = await self._execute_create_artifact_link(
-                project_id=project_id,
-                session_id=session_id,
-                snapshot=snapshot,
-                created_by_id=created_by_id,
-            )
-            snapshot = {**snapshot, "created_link_id": str(link.id)}
-            tool_call.input_snapshot = snapshot
-        elif tool_kind == "propose_retirement":
-            artifact = await self._execute_retirement(
-                project_id=project_id,
-                session_id=session_id,
-                snapshot=snapshot,
-                created_by_id=created_by_id,
-            )
-        else:
-            raise HTTPException(400, detail=f"Unsupported approval tool: {tool_call.tool_name}")
+                snapshot = {**snapshot, "created_link_id": str(link.id)}
+                tool_call.input_snapshot = snapshot
+            elif tool_kind == "propose_retirement":
+                artifact = await self._execute_retirement(
+                    project_id=project_id,
+                    session_id=session_id,
+                    snapshot=snapshot,
+                    created_by_id=created_by_id,
+                    turn_id=admitted.turn_id if admitted is not None else None,
+                    turn_owner_id=owner_id,
+                    turn_ownership_generation=generation,
+                )
+            else:
+                raise HTTPException(400, detail=f"Unsupported approval tool: {tool_call.tool_name}")
 
-        tool_call.status = AgentToolCallStatus.EXECUTED
-        if artifact is not None:
-            tool_call.created_artifact_id = artifact.id
-        if version is not None:
-            tool_call.created_version_id = version.id
-        tool_call.resolved_at = datetime.now(UTC)
-        await self.db.commit()
+            tool_call.status = AgentToolCallStatus.EXECUTED
+            if artifact is not None:
+                tool_call.created_artifact_id = artifact.id
+            if version is not None:
+                tool_call.created_version_id = version.id
+            tool_call.resolved_at = datetime.now(UTC)
+            await self.db.commit()
+            # Approval is never a terminal owner.  The final resolved proposal makes the session
+            # runnable again; the resumed graph alone may emit a terminal TurnOutcome.
+            resume_context = await self._prepare_resume_when_all_artifact_proposals_approved(
+                session_id=session_id, llm_client=_llm_client
+            )
+            approved_tool_call = tool_call
+        except BaseException:
+            approval_error = True
+            # Approval owns its own in-flight transaction. Only roll back on the error branch;
+            # an unconditional rollback after commit would expire the `tool_call` about to be
+            # returned and could force a lazy-load outside the router's greenlet.
+            if self.db.in_transaction():
+                await self.db.rollback()
+            raise
+        finally:
+            # Every path after claim must release the lease. Success paths already committed at
+            # the effect/completion boundary; the error path already rolled back at its origin.
+            if admitted is not None and owner_id is not None and generation is not None:
+                try:
+                    await AgentTurnService(self.db).release_inline(
+                        turn_id=admitted.turn_id, owner_id=owner_id, generation=generation
+                    )
+                except Exception:
+                    if not approval_error:
+                        raise
+                    logger.exception("approval lease release failed after approval error")
+        if approved_tool_call is None:
+            raise RuntimeError("Approval completed without a tool call result")
+        if resume_context is not None:
+            def _runner_factory(
+                *,
+                turn_id: uuid.UUID | None = None,
+                owner_id: str | None = None,
+                ownership_generation: int | None = None,
+            ):
+                return self._run_graph(
+                    session_id=session_id,
+                    project_id=project_id,
+                    artifact_type=resume_context["artifact_type"],
+                    step_key=resume_context["step_key"],
+                    workflow_area=resume_context["workflow_area"],
+                    agent_role=resume_context["agent_role"],
+                    focused_artifact_id=resume_context["focused_artifact_id"],
+                    missing_context=resume_context["missing_context"],
+                    llm_client=resume_context["llm_client"],
+                    strong_llm_client=resume_context["strong_llm_client"],
+                    initial_state=None,
+                    resume_command=resume_context["resume_command"],
+                    turn_id=turn_id,
+                    owner_id=owner_id,
+                    ownership_generation=ownership_generation,
+                )
 
-        await self._complete_when_all_artifact_proposals_approved(session_id=session_id)
-        await self.db.refresh(tool_call)
-        return tool_call
+            # The effect executor's lease is released in `finally` above before this task is
+            # created.  Scheduling earlier lets the resumed runner race its own approval fence
+            # and lose the claim.
+            if admitted is not None:
+                asyncio.create_task(self._run_admitted_graph(turn_id=admitted.turn_id, runner_factory=_runner_factory))
+            else:
+                # Compatibility path for old direct service callers that have no authenticated
+                # actor and therefore no admissible approval turn.  It still resumes the graph;
+                # it must never directly project COMPLETED.
+                asyncio.create_task(_runner_factory())
+        await self.db.refresh(approved_tool_call)
+        return approved_tool_call
 
     async def reject_tool_call(
         self,
@@ -920,6 +1021,9 @@ class AgentService:
         session_id: uuid.UUID,
         snapshot: dict[str, Any],
         created_by_id: uuid.UUID | None,
+        turn_id: uuid.UUID | None = None,
+        turn_owner_id: str | None = None,
+        turn_ownership_generation: int | None = None,
     ) -> ArtifactLink:
         try:
             body = ArtifactLinkCreateRequest(
@@ -931,6 +1035,26 @@ class AgentService:
         except (TypeError, ValueError) as exc:
             raise HTTPException(422, detail="Tool call link input is invalid") from exc
         actor_id = await self._approval_actor_id(session_id=session_id, created_by_id=created_by_id)
+        # The command boundary only runs when approval carried the full server-side logical turn context.
+        command_service: DraftCommandService | None = None
+        logical_command_id: str | None = None
+        turn_state = None
+        if turn_id is not None and turn_owner_id is not None and turn_ownership_generation is not None:
+            command_service = DraftCommandService(self.db)
+            canonical_intent = canonical_artifact_link_intent(
+                body.source_artifact_id, body.target_artifact_id, body.relation_type.value
+            )
+            logical_command_id = create_artifact_link_logical_command_id(turn_id, canonical_intent)
+            existing_ledger = await command_service.find_ledger(logical_command_id)
+            if existing_ledger is not None and existing_ledger.artifact_id is not None:
+                existing_link = await self.db.get(ArtifactLink, existing_ledger.artifact_id)
+                if existing_link is not None:
+                    return existing_link
+            turn_state = await command_service.fence_or_none(
+                turn_id=turn_id, owner_id=turn_owner_id, expected_generation=turn_ownership_generation
+            )
+            if turn_state is None:
+                raise HTTPException(409, detail="Turn fence is stale for create_artifact_link")
         try:
             response = await ArtifactLinkService(self.db).create(
                 project_id=project_id,
@@ -944,6 +1068,14 @@ class AgentService:
         link = await self.db.get(ArtifactLink, response.id)
         if link is None:
             raise HTTPException(500, detail="Artifact link was not created")
+        if command_service is not None and logical_command_id is not None:
+            command_service.record_effect(
+                turn_id=turn_id,
+                logical_command_id=logical_command_id,
+                action_type="create_artifact_link",
+                artifact_id=link.id,
+                attempt=turn_state.attempt if turn_state is not None else 0,
+            )
         return link
 
     async def _execute_retirement(
@@ -953,6 +1085,9 @@ class AgentService:
         session_id: uuid.UUID,
         snapshot: dict[str, Any],
         created_by_id: uuid.UUID | None,
+        turn_id: uuid.UUID | None = None,
+        turn_owner_id: str | None = None,
+        turn_ownership_generation: int | None = None,
     ) -> Artifact:
         try:
             artifact_id = uuid.UUID(str(snapshot.get("artifact_id")))
@@ -964,8 +1099,26 @@ class AgentService:
         if not reason:
             raise HTTPException(422, detail="Tool call retirement input is missing reason")
         actor_id = await self._approval_actor_id(session_id=session_id, created_by_id=created_by_id)
+        # The command boundary only runs when approval carried the full server-side logical turn context.
+        command_service: DraftCommandService | None = None
+        logical_command_id: str | None = None
+        turn_state = None
+        if turn_id is not None and turn_owner_id is not None and turn_ownership_generation is not None:
+            command_service = DraftCommandService(self.db)
+            canonical_intent = canonical_retirement_intent(artifact_id, superseded_by_id)
+            logical_command_id = propose_retirement_logical_command_id(turn_id, canonical_intent)
+            existing_ledger = await command_service.find_ledger(logical_command_id)
+            if existing_ledger is not None and existing_ledger.artifact_id is not None:
+                existing_artifact = await self.db.get(Artifact, existing_ledger.artifact_id)
+                if existing_artifact is not None:
+                    return existing_artifact
+            turn_state = await command_service.fence_or_none(
+                turn_id=turn_id, owner_id=turn_owner_id, expected_generation=turn_ownership_generation
+            )
+            if turn_state is None:
+                raise HTTPException(409, detail="Turn fence is stale for propose_retirement")
         try:
-            return await ArtifactService(self.db).archive_artifact(
+            archived = await ArtifactService(self.db).archive_artifact(
                 project_id=project_id,
                 artifact_id=artifact_id,
                 user_id=actor_id,
@@ -973,6 +1126,15 @@ class AgentService:
                 superseded_by_id=superseded_by_id,
                 source="agent_retirement",
             )
+            if command_service is not None and logical_command_id is not None:
+                command_service.record_effect(
+                    turn_id=turn_id,
+                    logical_command_id=logical_command_id,
+                    action_type="propose_retirement",
+                    artifact_id=archived.id,
+                    attempt=turn_state.attempt if turn_state is not None else 0,
+                )
+            return archived
         except ArtifactInUseError as exc:
             raise HTTPException(
                 409,
@@ -1197,12 +1359,23 @@ class AgentService:
             )
         )
 
-    async def _complete_when_all_artifact_proposals_approved(self, *, session_id: uuid.UUID) -> None:
+    async def _prepare_resume_when_all_artifact_proposals_approved(
+        self, *, session_id: uuid.UUID, llm_client: Any = None
+    ) -> dict[str, Any] | None:
+        """Commit the ordered approval-resume transition without deciding terminal state.
+
+        The caller schedules the returned graph runner only after it has released the approval
+        effect fence.  Returning a data-only context also keeps this transaction free of graph
+        execution and makes the ordering explicit for a future durable worker.
+        """
         session_row = (
             await self.db.execute(select(AgentSession).where(AgentSession.id == session_id).with_for_update())
         ).scalar_one()
         if session_row.status != AgentSessionStatus.WAITING_FOR_HUMAN:
-            return
+            # A concurrent decision already transitioned this session.  Close the lock transaction
+            # before the approval caller attempts to release its own fence.
+            await self.db.commit()
+            return None
         pending_count = (
             await self.db.execute(
                 select(func.count(AgentToolCall.id))
@@ -1213,10 +1386,28 @@ class AgentService:
             )
         ).scalar() or 0
         if pending_count > 0:
-            return
-        session_row.status = AgentSessionStatus.COMPLETED
+            # This approval is not the last one in the batch.
+            await self.db.commit()
+            return None
+        strong_llm_client = None
+        if llm_client is None:
+            llm_client, strong_llm_client = await self._resolve_llm_client(session_row.provider_config_id)
+        resume_command = self._resume_command(session_row, {"all_resolved": True})
+        resume_context = {
+            "artifact_type": session_row.artifact_type,
+            "step_key": session_row.step_key,
+            "workflow_area": session_row.workflow_area,
+            "agent_role": session_row.agent_role,
+            "focused_artifact_id": session_row.focused_artifact_id,
+            "missing_context": session_row.missing_context or [],
+            "llm_client": llm_client,
+            "strong_llm_client": strong_llm_client,
+            "resume_command": resume_command,
+        }
+        session_row.status = AgentSessionStatus.ACTIVE
         session_row.interrupt_type = None
         await self.db.commit()
+        return resume_context
 
     async def _run_graph(
         self,
@@ -1292,7 +1483,9 @@ class AgentService:
                     reason_code = forced_stop_reason or "turn_limit"
                     logger.error("turn failed: reason_code=%s session_id=%s", reason_code, session_id)
                     log_gate_decision("turn_failure", reason_code, session_id=str(session_id))
-                    row.status = AgentSessionStatus.FAILED
+                    await project_terminal_outcome(
+                        db, row, TurnOutcomeType.TERMINAL_FAILURE, reason_code, turn_id=turn_id
+                    )
                     db.add(
                         AgentMessage(
                             session_id=session_id,
@@ -1311,7 +1504,9 @@ class AgentService:
                         # chưa tồn tại là hoàn tất.
                         logger.error("turn failed: reason_code=no_terminal_outcome session_id=%s", session_id)
                         log_gate_decision("turn_failure", "no_terminal_outcome", session_id=str(session_id))
-                        row.status = AgentSessionStatus.TURN_FAILED
+                        await project_terminal_outcome(
+                            db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "no_terminal_outcome", turn_id=turn_id
+                        )
                         row.interrupt_type = None
                         db.add(
                             AgentMessage(
@@ -1321,7 +1516,9 @@ class AgentService:
                             )
                         )
                     else:
-                        row.status = AgentSessionStatus.COMPLETED
+                        await project_terminal_outcome(
+                            db, row, TurnOutcomeType.COMPLETED, "graph_ended", turn_id=turn_id
+                        )
                 await db.commit()
         except TimeoutError:
             async with self.session_factory() as db:
@@ -1333,9 +1530,11 @@ class AgentService:
                 if row.status not in (AgentSessionStatus.WAITING_FOR_HUMAN, AgentSessionStatus.COMPLETED):
                     logger.exception("turn failed: reason_code=turn_timeout session_id=%s", session_id)
                     log_gate_decision("turn_failure", "turn_timeout", session_id=str(session_id))
-                    # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout
-                    # (see checkpointer read in phase-03 evidence), so the session is resumable.
-                    row.status = AgentSessionStatus.TURN_FAILED
+                    # TURN_FAILED, not FAILED: the checkpoint's prior WorkflowState survives a timeout,
+                    # so the session is resumable.
+                    await project_terminal_outcome(
+                        db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "turn_timeout", turn_id=turn_id
+                    )
                     row.interrupt_type = None
                     db.add(
                         AgentMessage(
@@ -1356,7 +1555,9 @@ class AgentService:
                     logger.exception("turn failed: reason_code=graph_exception session_id=%s", session_id)
                     log_gate_decision("turn_failure", "graph_exception", session_id=str(session_id))
                     # TURN_FAILED, not FAILED: same resumability reasoning as the timeout branch above.
-                    row.status = AgentSessionStatus.TURN_FAILED
+                    await project_terminal_outcome(
+                        db, row, TurnOutcomeType.RECOVERABLE_FAILURE, "graph_exception", turn_id=turn_id
+                    )
                     row.interrupt_type = None
                     db.add(
                         AgentMessage(
@@ -1524,7 +1725,7 @@ class AgentService:
                 "llm_client": llm_client,
                 "strong_llm_client": strong_llm_client,
                 "agent_role": agent_role,
-                # Turn context for the Phase 4 command boundary (write_draft). None for any turn
+                # Turn context for the command boundary (write_draft). None for any turn
                 # not admitted through AgentTurnService — the tool handler falls back to its fully
                 # legacy path when this is absent, regardless of the global flag.
                 "turn_id": str(turn_id) if turn_id else None,
@@ -1709,7 +1910,7 @@ def _agent_failure_message(exc: Exception) -> str:
     return f"Agent could not complete the current analysis turn. Technical reason: {message[:500]}"
 
 
-def expire_abandoned_session(session: AgentSession) -> bool:
+async def expire_abandoned_session(db: AsyncSession, session: AgentSession) -> bool:
     """Lazily mark an abandoned ACTIVE/WAITING_FOR_HUMAN session EXPIRED.
 
     Takes a session row already loaded from the DB and mutates it in place if it has been
@@ -1717,7 +1918,10 @@ def expire_abandoned_session(session: AgentSession) -> bool:
     boundary. TURN_FAILED is a resumable resting state, not an abandonment candidate, and is
     never touched here regardless of how stale updated_at is.
 
-    Returns True if the session was marked EXPIRED, False otherwise.
+    Returns True if the session was marked EXPIRED, False otherwise. No turn context exists for
+    this lazy-expiry path (it is not tied to any specific turn), so the terminal write never
+    carries a `turn_id` and therefore never gets a `TurnOutcome` audit row (see
+    `project_terminal_outcome`); only the compatibility status write happens, same as before.
     """
     if session.status not in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
         return False
@@ -1727,7 +1931,9 @@ def expire_abandoned_session(session: AgentSession) -> bool:
         updated_at = updated_at.replace(tzinfo=UTC)
     if datetime.now(UTC) - updated_at < ttl:
         return False
-    session.status = AgentSessionStatus.EXPIRED
+    await project_terminal_outcome(
+        db, session, TurnOutcomeType.CANCELLED, "session_abandoned_ttl_exceeded"
+    )
     session.interrupt_type = None
     logger.info(
         "session expired: reason_code=session_abandoned_ttl_exceeded session_id=%s", session.id

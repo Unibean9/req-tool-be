@@ -162,7 +162,7 @@ class AgentEventService:
                 expire_row = (
                     await expire_db.execute(select(AgentSession).where(AgentSession.id == session_id))
                 ).scalar_one_or_none()
-                if expire_row is not None and expire_abandoned_session(expire_row):
+                if expire_row is not None and await expire_abandoned_session(expire_db, expire_row):
                     await expire_db.commit()
                     session_status = expire_row.status
                     session_interrupt_type = expire_row.interrupt_type

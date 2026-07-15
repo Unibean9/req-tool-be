@@ -2,7 +2,7 @@ import enum
 import uuid
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func, text
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.dialects.postgresql import UUID
@@ -58,6 +58,24 @@ class DraftCommandEffectState(enum.StrEnum):
     PENDING = "pending"
     COMMITTED = "committed"
     FAILED = "failed"
+
+
+class TurnOutcomeType(enum.StrEnum):
+    """Terminal/transition vocabulary for a logical turn's outcome (ADR 0001).
+
+    Only the terminal values (`COMPLETED`, `TERMINAL_FAILURE`, `RECOVERABLE_FAILURE`, `CANCELLED`)
+    are ever committed today, through `project_terminal_outcome` — the non-terminal values are
+    defined for the full outcome vocabulary but have no writer yet.
+    """
+
+    CONTINUE = "continue"
+    WAIT_INPUT = "wait_input"
+    WAIT_APPROVAL = "wait_approval"
+    DIRECT_RESPONSE = "direct_response"
+    COMPLETED = "completed"
+    RECOVERABLE_FAILURE = "recoverable_failure"
+    TERMINAL_FAILURE = "terminal_failure"
+    CANCELLED = "cancelled"
 
 
 def enum_column(enum_class: type[enum.Enum], **kwargs):
@@ -175,6 +193,7 @@ class AgentTurnTrigger(AuditMixin, Base):
         UniqueConstraint(
             "session_id", "trigger_type", "idempotency_key_hash", name="uq_agent_turn_trigger_idempotency"
         ),
+        UniqueConstraint("tool_call_id", name="uq_agent_turn_trigger_approval_tool_call"),
         Index("ix_agent_turn_triggers_session_id", "session_id"),
         Index("ix_agent_turn_triggers_turn_id", "turn_id"),
     )
@@ -188,6 +207,10 @@ class AgentTurnTrigger(AuditMixin, Base):
     actor_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     message_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("agent_messages.id"), nullable=True
+    )
+    # Approval identity is server-side: one logical approval turn per proposed tool call.
+    tool_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_tool_calls.id"), nullable=True
     )
 
     turn: Mapped["AgentTurnEnvelope | None"] = relationship(back_populates="triggers", foreign_keys=[turn_id])
@@ -213,7 +236,8 @@ class TurnExecutionState(AuditMixin, Base):
 
 
 class DraftCommandLedger(AuditMixin, Base):
-    """Idempotency/effect ledger for write_draft's command boundary (Phase 4).
+    """Idempotency/effect ledger for the command boundary shared by write_draft, finalize,
+    create_artifact_link and propose_retirement.
 
     `logical_command_id` is the business identity (turn + action type + canonical intent + expected
     base version) — not the provider tool-call ID, which only rides `tool_call_id` for correlation.
@@ -242,6 +266,32 @@ class DraftCommandLedger(AuditMixin, Base):
         DraftCommandEffectState, nullable=False, default=DraftCommandEffectState.COMMITTED
     )
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+
+
+class TurnOutcome(AuditMixin, Base):
+    """Committed terminal-outcome audit row.
+
+    Written only by `project_terminal_outcome` (`app/graphs/analysis/turn_outcome_projector.py`),
+    and only when the admitting turn's cohort snapshot has `turn_outcomes_enabled=True` — same
+    snapshot-at-admission contract as `command_handlers_enabled`. A turn without this
+    flag, or a terminal write with no turn context at all (e.g. lazy session expiry), never gets a
+    row here; the compatibility `AgentSession.status` write still happens either way.
+    """
+
+    __tablename__ = "agent_turn_outcomes"
+    __table_args__ = (
+        UniqueConstraint("turn_id", name="uq_agent_turn_outcomes_turn_id"),
+        Index("ix_agent_turn_outcomes_turn_id", "turn_id"),
+        Index("ix_agent_turn_outcomes_session_id", "session_id"),
+    )
+
+    turn_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_turn_envelopes.id"), nullable=False
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("agent_sessions.id"), nullable=False)
+    outcome_type: Mapped[TurnOutcomeType] = enum_column(TurnOutcomeType, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    committed_at: Mapped[Any] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
 
 class AgentMessage(AuditMixin, Base):

@@ -97,6 +97,11 @@ class Settings(BaseSettings):
     agent_turn_admission_enabled: bool = False
     agent_policy_resolver_mode: Literal["legacy", "shadow", "enforce"] = "legacy"
     agent_command_handlers_enabled: bool = False
+    # Gates whether the terminal projector also writes a `TurnOutcome` audit
+    # row (snapshotted per turn cohort at admission, never read live — see AgentTurnService).
+    # The projector itself is always the sole writer of terminal AgentSession.status regardless of
+    # this flag; off just means no TurnOutcome row is committed alongside that write.
+    agent_turn_outcomes_enabled: bool = False
     agent_execution_mode: Literal["inline", "durable"] = "inline"
     agent_checkpoint_history_enabled: bool = False
     agent_trace_enabled: bool = False

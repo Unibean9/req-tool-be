@@ -77,6 +77,7 @@ from app.graphs.analysis.turn_audit import (  # noqa: F401
     build_analysis_result_base,
     record_run_and_dispatch,
 )
+from app.graphs.analysis.turn_outcome_projector import project_non_terminal_outcome
 from app.graphs.decision_graph import (
     add_parked_questions_for_gaps,
     completeness_sweep,
@@ -99,8 +100,7 @@ from app.models.agent import (
     AgentMessage,
     AgentMessageRole,
     AgentSession,
-    AgentSessionInterruptType,
-    AgentSessionStatus,
+    TurnOutcomeType,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,8 +386,9 @@ async def converse_node(state: WorkflowState, config: RunnableConfig) -> dict[st
                 )
             )
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        turn_id_raw = cfg.get("turn_id")
+        turn_id = uuid.UUID(str(turn_id_raw)) if turn_id_raw else None
+        await project_non_terminal_outcome(db, session_row, TurnOutcomeType.WAIT_INPUT, turn_id=turn_id)
         await db.commit()
 
     user_response = interrupt({"type": "ask_human", "message": message})

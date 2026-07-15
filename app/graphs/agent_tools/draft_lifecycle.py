@@ -29,6 +29,7 @@ from app.graphs.agent_tools._shared import (
     _recoverable_tool_update,
 )
 from app.graphs.analysis.section_validation import VIOLATION, validate_section
+from app.graphs.analysis.turn_outcome_projector import project_non_terminal_outcome
 from app.graphs.decision_graph import (
     render_node_map,
     render_view,
@@ -40,11 +41,10 @@ from app.graphs.state import WorkflowState
 from app.graphs.validators import validate_proposal
 from app.models.agent import (
     AgentSession,
-    AgentSessionInterruptType,
-    AgentSessionStatus,
     AgentToolCall,
     AgentToolCallStatus,
     AgentTurnEnvelope,
+    TurnOutcomeType,
 )
 from app.models.artifact import Artifact, ArtifactStatus, ArtifactVersion
 from app.models.project import Project
@@ -52,7 +52,9 @@ from app.schemas.artifact_synthesis import ArtifactSynthesisMetadata, evaluate_c
 from app.services.document_service import DocumentService
 from app.services.draft_command_service import (
     DraftCommandService,
+    canonical_finalize_intent,
     canonical_write_draft_intent,
+    finalize_logical_command_id,
     write_draft_logical_command_id,
 )
 
@@ -330,9 +332,9 @@ async def _write_draft_impl(
         )
     tool_key = f"write_draft:{focused_artifact_id}"
     project_id = uuid.UUID(str(cfg["project_id"])) if cfg.get("project_id") else None
-    # Turn context (Phase 4 command boundary) — present only when the admitting turn's cohort
+    # Turn context (command boundary) — present only when the admitting turn's cohort
     # enabled it at admission time. Threaded through RunnableConfig/state only, never the public
-    # tool JSON schema (see phase-04 brief risk on plumbing location).
+    # tool JSON schema.
     turn_id_raw = cfg.get("turn_id")
     turn_owner_id = cfg.get("turn_owner_id")
     turn_ownership_generation = cfg.get("turn_ownership_generation")
@@ -541,6 +543,7 @@ async def _write_draft_impl(
                 command_service.record_effect(
                     turn_id=turn_id,
                     logical_command_id=logical_command_id,
+                    action_type="write_draft",
                     tool_call=new_tool_call,
                     artifact_id=focused.id,
                     attempt=turn_state.attempt if turn_state is not None else 0,
@@ -577,8 +580,7 @@ async def _write_draft_impl(
                         session_id=str(session_id),
                     )
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.PROPOSE_ARTIFACTS
+        await project_non_terminal_outcome(db, session_row, TurnOutcomeType.WAIT_APPROVAL, turn_id=turn_id)
         await db.commit()
 
     agent_tools.interrupt({"type": "propose_artifacts", "tool_name": "write_draft"})
@@ -757,8 +759,84 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
     project_id_raw = cfg.get("project_id")
     finalize_project_id = uuid.UUID(str(project_id_raw)) if project_id_raw else None
     exec_summary_draft: str | None = None
+    # Turn context (command boundary) — same plumbing/gate as write_draft's:
+    # present only when the admitting turn's cohort enabled it at admission time.
+    turn_id_raw = cfg.get("turn_id")
+    turn_owner_id = cfg.get("turn_owner_id")
+    turn_ownership_generation = cfg.get("turn_ownership_generation")
 
     async with session_factory() as db:
+        turn_id: uuid.UUID | None = None
+        command_service: DraftCommandService | None = None
+        use_command_handler = False
+        if turn_id_raw:
+            turn_id = uuid.UUID(str(turn_id_raw))
+            envelope = await db.get(AgentTurnEnvelope, turn_id)
+            cohort_enabled = bool((envelope.cohort or {}).get("command_handlers_enabled")) if envelope else False
+            use_command_handler = (
+                cohort_enabled and turn_owner_id is not None and turn_ownership_generation is not None
+            )
+            if use_command_handler:
+                command_service = DraftCommandService(db)
+
+        if use_command_handler:
+            canonical_intent = canonical_finalize_intent(summary)
+            logical_command_id = finalize_logical_command_id(turn_id, canonical_intent)
+            existing_ledger = await command_service.find_ledger(logical_command_id)
+            if existing_ledger is not None:
+                # Checkpoint already contains the interrupt from the winning execution. A replay
+                # must not mutate the session or emit interrupt() a second time.
+                return Command(update={"messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)]})
+            if existing_ledger is None:
+                turn_state = await command_service.fence_or_none(
+                    turn_id=turn_id,
+                    owner_id=turn_owner_id,
+                    expected_generation=turn_ownership_generation,
+                )
+                if turn_state is None:
+                    agent_tools.log_gate_decision(
+                        "turn_fence",
+                        "stale",
+                        reason="owner_or_generation_or_lease_mismatch",
+                        session_id=str(session_id),
+                    )
+                    return _recoverable_tool_update(
+                        RecoverableToolError(
+                            code="turn_fence_stale",
+                            message=(
+                                "Cannot finalize: this turn's execution ownership is no longer "
+                                "valid (owner/generation/lease mismatch)."
+                            ),
+                            recovery="Do not retry this call; the current owner of this turn will resume it.",
+                        ),
+                        tool_call_id,
+                    )
+                command_service.record_effect(
+                    turn_id=turn_id,
+                    logical_command_id=logical_command_id,
+                    action_type="finalize",
+                    attempt=turn_state.attempt,
+                )
+                try:
+                    # Same flush-then-catch pattern as write_draft: surface a concurrent winner's
+                    # already-committed ledger row deterministically instead of an unhandled
+                    # IntegrityError from this transaction's own insert.
+                    await db.flush()
+                except IntegrityError:
+                    await db.rollback()
+                    if await command_service.find_ledger(logical_command_id) is None:
+                        raise
+                    # A concurrent execution already committed this logical command.  It owns
+                    # the session transition and interrupt, so this execution is a replay/no-op.
+                    return Command(update={"messages": [ToolMessage(content=summary, tool_call_id=tool_call_id)]})
+                else:
+                    agent_tools.log_gate_decision(
+                        "turn_fence",
+                        "committed",
+                        reason=f"turn={turn_id} logical_command={logical_command_id} action=finalize",
+                        session_id=str(session_id),
+                    )
+
         if finalize_project_id is not None:
             project_id = finalize_project_id
             missing_predecessors: list[str] = []
@@ -793,8 +871,7 @@ async def _finalize_impl(summary: str, state: WorkflowState, config: RunnableCon
                 exec_summary_draft = await _persist_executive_summary_draft(db, project_id)
 
         session_row = (await db.execute(select(AgentSession).where(AgentSession.id == session_id))).scalar_one()
-        session_row.status = AgentSessionStatus.WAITING_FOR_HUMAN
-        session_row.interrupt_type = AgentSessionInterruptType.ASK_HUMAN
+        await project_non_terminal_outcome(db, session_row, TurnOutcomeType.WAIT_INPUT, turn_id=turn_id)
         await db.commit()
 
     interrupt_payload: dict[str, Any] = {"type": "finalize", "message": summary}

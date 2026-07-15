@@ -23,6 +23,8 @@ from app.models.agent import (
     AgentToolCall,
     AgentToolCallStatus,
     AgentTurnEnvelope,
+    TurnOutcome,
+    TurnOutcomeType,
 )
 from app.models.artifact import (
     Artifact,
@@ -1690,20 +1692,47 @@ async def test_approve_tool_call_batch_first_does_not_resume(client, db_session,
 
 
 @pytest.mark.asyncio
-async def test_approve_tool_call_batch_all_approved_completes_without_resume(client, db_session, _no_background_tasks):
-    project_id = await _setup(client)
+async def test_approve_tool_call_batch_all_approved_schedules_admitted_graph_without_terminal_outcome(
+    client, db_session, _no_background_tasks
+):
+    project_id, user_id = await _setup_with_user(client)
     svc = _make_service(db_session)
 
-    session, _, tc1, tc2 = await _make_propose_session(db_session, project_id)
+    session, _, tc1, tc2 = await _make_propose_session(db_session, project_id, created_by_id=user_id)
     call_count_before = _no_background_tasks.call_count
 
-    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc1.id, created_by_id=None)
-    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=None)
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc1.id, created_by_id=user_id, user_id=user_id)
+    await svc.approve_tool_call(project_id=project_id, tool_call_id=tc2.id, created_by_id=user_id, user_id=user_id)
 
     await db_session.refresh(session)
-    assert session.status == AgentSessionStatus.COMPLETED
+    assert session.status == AgentSessionStatus.ACTIVE
     assert session.interrupt_type is None
-    assert _no_background_tasks.call_count == call_count_before
+    assert _no_background_tasks.call_count == call_count_before + 1
+    assert "_run_admitted_graph" in _no_background_tasks.call_args.args[0].__qualname__
+    outcomes = (
+        await db_session.execute(select(TurnOutcome).where(TurnOutcome.session_id == session.id))
+    ).scalars().all()
+    assert outcomes == []
+
+
+@pytest.mark.asyncio
+async def test_approve_tool_call_final_approval_does_not_write_cohort_outcome(client, db_session, monkeypatch):
+    project_id, user_id = await _setup_with_user(client)
+    monkeypatch.setattr(settings, "agent_turn_outcomes_enabled", True)
+    svc = _make_service(db_session)
+    session, _, tc1, tc2 = await _make_propose_session(db_session, project_id, created_by_id=user_id)
+
+    await svc.approve_tool_call(
+        project_id=project_id, tool_call_id=tc1.id, created_by_id=user_id, user_id=user_id
+    )
+    await svc.approve_tool_call(
+        project_id=project_id, tool_call_id=tc2.id, created_by_id=user_id, user_id=user_id
+    )
+
+    outcomes = (
+        await db_session.execute(select(TurnOutcome).where(TurnOutcome.session_id == session.id))
+    ).scalars().all()
+    assert outcomes == []
 
 
 @pytest.mark.asyncio
@@ -2766,6 +2795,7 @@ async def test_approve_propose_retirement_blocks_live_downstream_link(client, db
         )
     )
     await db_session.flush()
+    dependent_id = dependent.id
     _session, _run, tc = await _make_public_tool_call_session(
         db_session,
         project_id,
@@ -2778,7 +2808,7 @@ async def test_approve_propose_retirement_blocks_live_downstream_link(client, db
         await svc.approve_tool_call(project_id=project_id, tool_call_id=tc.id, created_by_id=user_id)
 
     assert exc.value.status_code == 409
-    assert str(dependent.id) in exc.value.detail["artifact_ids"]
+    assert str(dependent_id) in exc.value.detail["artifact_ids"]
     await db_session.refresh(tc)
     await db_session.refresh(retired)
     assert tc.status == AgentToolCallStatus.PROPOSED
@@ -3231,7 +3261,7 @@ async def test_expire_abandoned_session_marks_stale_active_or_waiting_session_ex
     await db_session.flush()
     session.updated_at = datetime.now(UTC) - timedelta(hours=settings.session_abandoned_ttl + 1)
 
-    expired = expire_abandoned_session(session)
+    expired = await expire_abandoned_session(db_session, session)
 
     assert expired is True
     assert session.status == AgentSessionStatus.EXPIRED
@@ -3273,7 +3303,7 @@ async def test_expire_abandoned_session_never_expires_recent_active_or_terminal_
     )
     session.updated_at = datetime.now(UTC) - timedelta(hours=hours)
 
-    expired = expire_abandoned_session(session)
+    expired = await expire_abandoned_session(db_session, session)
 
     assert expired is False
     assert session.status == status
