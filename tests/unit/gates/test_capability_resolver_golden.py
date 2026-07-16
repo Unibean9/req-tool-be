@@ -1,20 +1,18 @@
 """Golden differential: legacy menu verdict vs `CapabilityResolver` decision for the read-only pilot
 capabilities (`run_critique`, `run_readiness_check`, `recommend_next_workflow`), reusing the state
 fixtures from `test_menu_gating_matrix.py`'s hand-computed matrix. 0 high-severity mismatch is the
-enforce-readiness bar (phase-03 Acceptance Criteria).
+enforce-readiness bar.
 """
-
-import hashlib
 
 import pytest
 
 from app.graphs import gating
-from app.graphs.agent_tools import CRITIQUE_ROUNDS_MAX, current_session_phase
+from app.graphs.agent_tools import current_session_phase
 from app.graphs.gating import Mode, menu_rules
 from app.graphs.gating.capability_resolver import CapabilityResolver
 from app.graphs.gating.decision_projection import compare_decision
 from app.graphs.gating.workflow_snapshot import ActorContextRef, TurnCohortRef, build_workflow_snapshot
-from app.schemas.artifact_synthesis import ArtifactReadinessState
+from tests.unit.gates import _menu_gating_states as states
 
 _PILOT_CAPABILITIES = ("run_critique", "run_readiness_check", "recommend_next_workflow")
 
@@ -45,72 +43,40 @@ def _assert_zero_high_severity_mismatch(state):
 
 
 def test_golden_no_draft_no_phase():
-    _assert_zero_high_severity_mismatch({})
+    _assert_zero_high_severity_mismatch(states.NO_DRAFT_NO_PHASE)
 
 
 def test_golden_has_draft_critique_zero():
-    _assert_zero_high_severity_mismatch(
-        {"user_confirmed": True, "draft_body": "A draft", "critique_rounds": 0}
-    )
+    _assert_zero_high_severity_mismatch(states.HAS_DRAFT_CRITIQUE_ZERO)
 
 
 def test_golden_has_draft_critique_gt_zero_gate_closed():
-    _assert_zero_high_severity_mismatch(
-        {"user_confirmed": True, "draft_body": "A draft", "critique_rounds": 1}
-    )
+    _assert_zero_high_severity_mismatch(states.HAS_DRAFT_CRITIQUE_GT_ZERO_GATE_CLOSED)
 
 
 def test_golden_has_draft_critique_gt_zero_gate_open():
-    draft = "A draft"
-    state = {
-        "user_confirmed": True,
-        "draft_body": draft,
-        "critique_rounds": 1,
-        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
-        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
-        "last_critiqued_draft_hash": hashlib.md5(draft.encode()).hexdigest()[:8],
-    }
-    _assert_zero_high_severity_mismatch(state)
+    _assert_zero_high_severity_mismatch(states.has_draft_critique_gt_zero_gate_open())
 
 
 def test_golden_critique_rounds_at_max():
-    draft = "A draft"
-    state = {
-        "user_confirmed": True,
-        "draft_body": draft,
-        "critique_rounds": CRITIQUE_ROUNDS_MAX,
-        "last_critiqued_draft_hash": hashlib.md5(draft.encode()).hexdigest()[:8],
-    }
-    _assert_zero_high_severity_mismatch(state)
+    _assert_zero_high_severity_mismatch(states.critique_rounds_at_max())
 
 
 def test_golden_coverage_signal_without_draft():
-    _assert_zero_high_severity_mismatch(
-        {"user_confirmed": True, "section_coverage": {"a": "filled", "b": "partial"}}
-    )
+    _assert_zero_high_severity_mismatch(states.COVERAGE_SIGNAL_WITHOUT_DRAFT)
 
 
 def test_golden_phase_excludes_tool():
     from app.graphs.session_phase import INTENT
 
-    _assert_zero_high_severity_mismatch(
-        {"session_phase": INTENT, "draft_body": "A draft", "critique_rounds": 1}
-    )
+    _assert_zero_high_severity_mismatch(states.phase_excludes_tool(INTENT))
 
 
 @pytest.mark.parametrize("name", _PILOT_CAPABILITIES)
 def test_valid_cohort_matches_legacy_exactly_no_accepted_exception(name):
     """With a valid cohort, resolver/legacy must agree exactly (no "accepted" cohort-missing
     exception can mask a real policy divergence for these three capabilities)."""
-    draft = "A draft"
-    state = {
-        "user_confirmed": True,
-        "draft_body": draft,
-        "critique_rounds": 1,
-        "quality_report": {"quality_gate_result": "pass", "blocking_issues": []},
-        "candidate_readiness": {"state": ArtifactReadinessState.SUFFICIENT, "score": 1.0, "gaps": []},
-        "last_critiqued_draft_hash": hashlib.md5(draft.encode()).hexdigest()[:8],
-    }
+    state = states.has_draft_critique_gt_zero_gate_open()
     legacy = _legacy_verdicts(state)[name]
     snapshot = build_workflow_snapshot(state, turn_cohort=_VALID_COHORT, actor_context=_VALID_ACTOR)
     decision = _resolver.resolve(name, snapshot, evaluation_context="menu")

@@ -30,6 +30,7 @@ from app.models.agent import (
 
 LEASE_SECONDS = 60
 MAX_ATTEMPTS_BEFORE_DEAD_LETTER = 5
+RECLAIM_BACKOFF_BASE_SECONDS = 2.0
 
 
 def _lease_expired(lease_expires_at: datetime | None, now: datetime) -> bool:
@@ -40,6 +41,25 @@ def _lease_expired(lease_expires_at: datetime | None, now: datetime) -> bool:
     if lease_expires_at.tzinfo is None:
         lease_expires_at = lease_expires_at.replace(tzinfo=UTC)
     return lease_expires_at < now
+
+
+def _not_yet_scheduled(scheduled_at: datetime | None, now: datetime) -> bool:
+    """Same naive/aware normalization as `_lease_expired`, for the backoff delay set on a
+    requeued job. `None` never blocks claiming (a freshly enqueued job has a `scheduled_at`
+    server default of "now", not `None`; `None` only exists here as a defensive fallback)."""
+    if scheduled_at is None:
+        return False
+    if scheduled_at.tzinfo is None:
+        scheduled_at = scheduled_at.replace(tzinfo=UTC)
+    return scheduled_at > now
+
+
+def _reclaim_backoff_seconds(attempt: int) -> float:
+    """Exponential backoff before a job reclaimed by `reclaim_expired` becomes claimable again:
+    base 2s, doubling per attempt. Without this, a crash-looping worker could drain the whole
+    `MAX_ATTEMPTS_BEFORE_DEAD_LETTER` budget as fast as the recovery scanner's poll interval
+    allows, instead of backing off between attempts."""
+    return RECLAIM_BACKOFF_BASE_SECONDS * (2 ** max(attempt - 1, 0))
 
 
 class AgentTurnJobService:
@@ -103,6 +123,10 @@ class AgentTurnJobService:
         never enters the candidate set at all while an earlier one is still non-terminal,
         regardless of that earlier job's own lock/lease state — this avoids the stale-snapshot
         race a plain non-locking "is an earlier job still claimed" read would be exposed to.
+
+        A `queued` job whose `scheduled_at` is still in the future (set by `reclaim_expired`'s
+        backoff) is skipped, not claimed — it still blocks head-of-line for later jobs in the
+        same session while waiting out its backoff.
         """
         now = datetime.now(UTC)
         if self.db.in_transaction():
@@ -136,6 +160,8 @@ class AgentTurnJobService:
             ).scalars().all()
             for job in rows:
                 if job.status != AgentTurnJobStatus.QUEUED and not _lease_expired(job.lease_expires_at, now):
+                    continue
+                if job.status == AgentTurnJobStatus.QUEUED and _not_yet_scheduled(job.scheduled_at, now):
                     continue
                 state = (
                     await self.db.execute(
@@ -219,8 +245,12 @@ class AgentTurnJobService:
 
     async def reclaim_expired(self) -> list[AgentTurnJob]:
         """Scan for stale leases and requeue (or dead-letter past the attempt cap) each one under
-        its own row lock. This is the function a recovery scanner calls periodically; this
-        increment only needs it to be correct and tested, not actually scheduled.
+        its own row lock. This is the function a recovery scanner calls periodically.
+
+        A requeued job's `scheduled_at` is pushed forward by an exponential backoff
+        (`_reclaim_backoff_seconds`); `claim()` will not return it again until that delay has
+        elapsed, even though it still counts as non-terminal for head-of-line purposes in the
+        meantime.
         """
         now = datetime.now(UTC)
         if self.db.in_transaction():
@@ -266,10 +296,12 @@ class AgentTurnJobService:
                 job.lease_owner = None
                 job.lease_expires_at = None
                 job.attempt += 1
-                job.status = (
-                    AgentTurnJobStatus.DEAD_LETTER
-                    if job.attempt >= MAX_ATTEMPTS_BEFORE_DEAD_LETTER
-                    else AgentTurnJobStatus.QUEUED
-                )
+                if job.attempt >= MAX_ATTEMPTS_BEFORE_DEAD_LETTER:
+                    job.status = AgentTurnJobStatus.DEAD_LETTER
+                else:
+                    job.status = AgentTurnJobStatus.QUEUED
+                    # Delay re-eligibility so a crash-looping worker backs off between attempts
+                    # instead of being claimable again the instant the next scan/poll runs.
+                    job.scheduled_at = now + timedelta(seconds=_reclaim_backoff_seconds(job.attempt))
                 reclaimed.append(job)
         return reclaimed

@@ -248,3 +248,38 @@ async def test_reclaim_expired_requeues_and_dead_letters_by_attempt_cap(client, 
     assert dead_letter_job.id in reclaimed_ids
     assert reclaimed_ids[dead_letter_job.id].status == AgentTurnJobStatus.DEAD_LETTER
     assert reclaimed_ids[dead_letter_job.id].attempt == 5
+
+    # Requeued job carries a backoff delay: not claimable the instant it is requeued.
+    assert reclaimed_ids[requeue_job.id].scheduled_at > datetime.now(UTC)
+
+
+@pytest.mark.asyncio
+async def test_reclaim_expired_backoff_defers_claimability_until_it_elapses(client, db_session):
+    """A crash-looping worker must not be able to re-drain its dead-letter attempt budget as
+    fast as the recovery scanner polls: `reclaim_expired` sets `scheduled_at` into the future,
+    and `claim()` must not return the job again until that delay has actually elapsed."""
+    project_id = await _project(client)
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    envelope = await _seed_envelope(db_session, agent_session)
+    service = AgentTurnJobService(db_session)
+
+    job = await service.enqueue(turn_id=envelope.id, expected_transition_version=0, cohort={})
+    assert await service.claim(worker_id="worker-a") is not None
+
+    job.lease_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db_session.commit()
+
+    reclaimed = await service.reclaim_expired()
+    assert len(reclaimed) == 1
+    assert reclaimed[0].status == AgentTurnJobStatus.QUEUED
+    assert reclaimed[0].scheduled_at > datetime.now(UTC)
+
+    # Still within the backoff window: not claimable yet, even though it is QUEUED.
+    assert await service.claim(worker_id="worker-b") is None
+
+    # Once the backoff window has elapsed, the job becomes claimable again.
+    job.scheduled_at = datetime.now(UTC) - timedelta(seconds=1)
+    await db_session.commit()
+    reclaimed_again = await service.claim(worker_id="worker-c")
+    assert reclaimed_again is not None
+    assert reclaimed_again.id == job.id

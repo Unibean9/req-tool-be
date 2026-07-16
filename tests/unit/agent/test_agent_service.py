@@ -1008,6 +1008,39 @@ async def test_direct_response_keeps_session_open_and_follow_up_uses_checkpoint(
 
 
 @pytest.mark.asyncio
+async def test_build_user_message_turn_state_uses_decision_snapshot_not_live_session_row(client, db_session):
+    """`_build_user_message_turn_state` must branch on its `decision_*` snapshot parameters, never
+    re-derive the same decision from the live `session.status`/`session.interrupt_type` row —
+    those live fields already reflect this turn's own message by the time this method runs. Set
+    the live row to values that contradict the snapshot and confirm the snapshot wins."""
+    project_id = await _setup(client)
+    from tests.factories import _make_agent_session
+
+    agent_session = await _make_agent_session(client, db_session, project_id)
+    agent_session.status = AgentSessionStatus.ACTIVE
+    agent_session.interrupt_type = None
+    await db_session.commit()
+
+    service = _make_service(db_session)
+    initial_state, resume_command = await service._build_user_message_turn_state(
+        session=agent_session,
+        content="hello",
+        mode_hint=None,
+        decision_status=AgentSessionStatus.TURN_FAILED,
+        decision_interrupt_type=None,
+        decision_latest_message_is_direct_response=False,
+    )
+
+    assert resume_command is None
+    assert initial_state == {
+        "messages": [{"role": "user", "content": "hello"}],
+        "turn_count": 0,
+        "readiness_reject_streak": 0,
+        "diagnosis_judge_calls_used": 0,
+    }
+
+
+@pytest.mark.asyncio
 @pytest.mark.golden
 async def test_run_graph_turn_cap_marks_failed_not_completed(client, db_session, caplog):
     """A graph that ENDs with an undispatched tool_call (route_node hit the turn cap before the
