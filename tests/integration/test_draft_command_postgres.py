@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -34,9 +34,9 @@ from app.services.draft_command_service import (
     canonical_write_draft_intent,
     write_draft_logical_command_id,
 )
+from tests.integration.conftest import assert_postgres_schema_contract
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d2e5c8ecc7e0"
 pytestmark = pytest.mark.integration
 
 
@@ -47,18 +47,7 @@ async def postgres_session_factory():
     engine = create_async_engine(POSTGRES_URL, pool_pre_ping=True)
     try:
         async with engine.connect() as connection:
-            assert connection.dialect.name == "postgresql"
-            # No Base.metadata.create_all() here: schema must come from `alembic upgrade head`,
-            # same as CI, so a mis-stamped local database fails loudly instead of being masked.
-            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == EXPECTED_ALEMBIC_REVISION
-            ledger_table = await connection.scalar(
-                text(
-                    "SELECT 1 FROM information_schema.tables "
-                    "WHERE table_schema = current_schema() AND table_name = 'agent_draft_commands'"
-                )
-            )
-            assert ledger_table == 1
+            await assert_postgres_schema_contract(connection, table_name="agent_draft_commands")
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
         await engine.dispose()

@@ -1,4 +1,4 @@
-"""Proof concurrency cho Phase 2; chỉ chạy khi có PostgreSQL thật."""
+"""Proof of concurrency behavior; only runs when a real PostgreSQL instance is configured."""
 
 import asyncio
 import os
@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.agent import AgentSession, AgentSessionStatus, AgentTurnEnvelope, TurnExecutionState
@@ -14,33 +14,22 @@ from app.models.organization import Organization
 from app.models.project import Project
 from app.models.user import User
 from app.services.agent_turn_service import AgentTurnService
+from tests.integration.conftest import assert_postgres_schema_contract
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d2e5c8ecc7e0"
 pytestmark = pytest.mark.integration
 
 
 @pytest_asyncio.fixture
 async def postgres_session_factory():
     if not POSTGRES_URL:
-        pytest.skip("AGENT_TURN_POSTGRES_URL chưa được cấu hình")
+        pytest.skip("AGENT_TURN_POSTGRES_URL is not configured")
     engine = create_async_engine(POSTGRES_URL, pool_pre_ping=True)
     try:
         async with engine.connect() as connection:
-            assert connection.dialect.name == "postgresql"
-            # Fixture này không gọi Base.metadata.create_all(): schema contract phải được tạo
-            # duy nhất bởi `alembic upgrade head`, giống CI. Kiểm tra cả migration cũ để phát
-            # hiện database local bị stamp sai thay vì che lỗi bằng ORM metadata.
-            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == EXPECTED_ALEMBIC_REVISION
-            executive_summary = await connection.scalar(
-                text(
-                    "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_schema = current_schema() "
-                    "AND table_name = 'projects' AND column_name = 'executive_summary'"
-                )
+            await assert_postgres_schema_contract(
+                connection, table_name="projects", column_name="executive_summary"
             )
-            assert executive_summary == 1
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
         await engine.dispose()

@@ -7,10 +7,10 @@ calling `agent_tools.current_session_phase`/`agent_tools._phase_signals` — bot
 `log_gate_decision` as a side effect (via `_finalize_gate_open`), so building a snapshot must never
 reuse them or it would inflate the legacy gate's log volume purely as a side effect of shadow
 comparison. The duplication here is deliberate and temporary: it is the pure-authority replacement
-this phase is migrating toward, not a new legacy-parallel rule copy.
+this migration is heading toward, not a new legacy-parallel rule copy.
 
 `turn_cohort`/`actor_context` are the only fields a caller supplies out of band (quoted, never
-derived, from `AgentTurnEnvelope` — see Phase 2). Everything else is derived from `state`. Turn
+derived, from `AgentTurnEnvelope`). Everything else is derived from `state`. Turn
 admission is not yet threaded through `WorkflowState`, so every current call site builds a snapshot
 with both left `None`; `CapabilityResolver` must fail closed on that, never guess a capability open.
 """

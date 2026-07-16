@@ -14,7 +14,7 @@ import uuid
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.agent import (
@@ -30,9 +30,9 @@ from app.models.organization import Organization
 from app.models.project import Project
 from app.models.user import User
 from app.services.agent_service import AgentService
+from tests.integration.conftest import assert_postgres_schema_contract
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d2e5c8ecc7e0"
 pytestmark = pytest.mark.integration
 
 
@@ -43,9 +43,7 @@ async def postgres_session_factory():
     engine = create_async_engine(POSTGRES_URL, pool_pre_ping=True)
     try:
         async with engine.connect() as connection:
-            assert connection.dialect.name == "postgresql"
-            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == EXPECTED_ALEMBIC_REVISION
+            await assert_postgres_schema_contract(connection)
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
         await engine.dispose()
@@ -113,8 +111,8 @@ async def _approve_then_check_completion(session_factory, session_id, tool_call_
             session_id=session_id, llm_client=object()
         )
         # `approve_tool_call()` releases its lease immediately after this helper. The losing approval
-        # race phải đóng transaction `FOR UPDATE`, nếu không release_inline() sẽ ném lỗi vì
-        # transaction còn mở.
+        # race must close its `FOR UPDATE` transaction, otherwise `release_inline()` would raise
+        # because the transaction is still open.
         assert not db.in_transaction()
         return result
 

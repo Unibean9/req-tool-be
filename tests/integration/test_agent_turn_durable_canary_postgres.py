@@ -24,7 +24,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.agent import AgentSession, AgentSessionStatus, AgentTurnJob, AgentTurnJobStatus
@@ -34,9 +34,9 @@ from app.models.user import User
 from app.services.agent_service import AgentService
 from app.services.agent_turn_job_service import AgentTurnJobService
 from app.services.agent_turn_worker import execute_claimed_job
+from tests.integration.conftest import assert_postgres_schema_contract
 
 POSTGRES_URL = os.getenv("AGENT_TURN_POSTGRES_URL")
-EXPECTED_ALEMBIC_REVISION = "d2e5c8ecc7e0"
 pytestmark = pytest.mark.integration
 
 
@@ -47,9 +47,7 @@ async def postgres_session_factory():
     engine = create_async_engine(POSTGRES_URL, pool_pre_ping=True)
     try:
         async with engine.connect() as connection:
-            assert connection.dialect.name == "postgresql"
-            revision = await connection.scalar(text("SELECT version_num FROM alembic_version"))
-            assert revision == EXPECTED_ALEMBIC_REVISION
+            await assert_postgres_schema_contract(connection)
         yield async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
     finally:
         await engine.dispose()

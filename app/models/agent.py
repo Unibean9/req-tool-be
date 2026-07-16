@@ -155,9 +155,9 @@ class AgentSession(AuditMixin, Base):
         nullable=True,
     )
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
-    # Cursor additive cho control plane. Chỉ admission service được tăng giá trị này dưới row lock.
+    # Additive cursor for the control plane. Only the admission service increments this value, under a row lock.
     turn_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    # Chỉ turn này được phép chiếm checkpoint của session. Admission/drain thay đổi nó dưới row lock.
+    # Only this turn is allowed to occupy the session's checkpoint. Admission/drain change it under a row lock.
     active_turn_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
     # Session-grain checkpoint cohort. Set once at session creation from the checkpoint-history
     # feature flag at that instant and never re-read live afterward — a LangGraph checkpoint is
@@ -187,7 +187,7 @@ class AgentSession(AuditMixin, Base):
 
 
 class AgentTurnEnvelope(AuditMixin, Base):
-    """Biên logical turn bất biến; state thực thi nằm ở bảng tách riêng."""
+    """Immutable logical turn boundary; execution state lives in a separate table."""
 
     __tablename__ = "agent_turn_envelopes"
     __table_args__ = (

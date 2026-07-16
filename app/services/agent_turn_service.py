@@ -1,4 +1,4 @@
-"""Admission và ownership fence dùng chung cho inline runner và worker tương lai."""
+"""Admission and ownership fence shared by the inline runner and the future worker."""
 
 import hashlib
 import uuid
@@ -106,12 +106,13 @@ class AgentTurnService:
         idempotency_key: str | None,
         mode_hint: str | None = None,
     ) -> AdmittedTurn:
-        """Ghi trigger và quyết định inline/queue dưới cùng session row lock."""
+        """Write the trigger and decide inline/queue under the same session row lock."""
         if user_id is None:
             raise HTTPException(401, detail="Authenticated actor is required for agent turn admission")
         key_hash = idempotency_key_hash(idempotency_key)
-        # Ingress legacy vừa đọc session bằng cùng request session. Kết thúc read transaction
-        # trước khi mở boundary admission có row lock; không giữ transaction qua LLM.
+        # The legacy ingress just read the session using this same request's session. End that
+        # read transaction before opening the row-locked admission boundary; never hold a
+        # transaction across an LLM call.
         if self.db.in_transaction():
             await self.db.commit()
         async with self.db.begin():
@@ -193,7 +194,7 @@ class AgentTurnService:
             await self.db.flush()
             session.turn_sequence += 1
             if not queued:
-                # Đây chỉ là projection legacy; envelope/trigger/state vẫn là control plane.
+                # This is only a legacy projection; the envelope/trigger/state remains the control plane.
                 session.status = AgentSessionStatus.ACTIVE
                 session.interrupt_type = None
             cohort = {
@@ -229,8 +230,8 @@ class AgentTurnService:
             await self.db.flush()
             trigger.turn_id = envelope.id
             if not queued:
-                # Khóa session là boundary ownership chung: hai idempotency key khác không thể
-                # cùng được chạy graph trên một checkpoint/session.
+                # The session lock is the shared ownership boundary: two different idempotency
+                # keys can never both run the graph against the same checkpoint/session.
                 session.active_turn_id = envelope.id
             self.db.add(TurnExecutionState(turn_id=envelope.id, status=TurnExecutionStatus.PENDING))
         return AdmittedTurn(
@@ -485,7 +486,7 @@ class AgentTurnService:
         return AdmittedRetryTurn(turn_id=envelope.id, duplicate=False)
 
     async def claim_inline(self, *, turn_id: uuid.UUID, owner_id: str, lease_seconds: int = 120) -> int | None:
-        """Claim bằng row lock; không giữ transaction khi caller gọi LLM."""
+        """Claim via row lock; never hold the transaction while the caller calls the LLM."""
         now = datetime.now(UTC)
         async with self.db.begin():
             envelope = await self.db.get(AgentTurnEnvelope, turn_id)
@@ -523,7 +524,7 @@ class AgentTurnService:
             return state.ownership_generation
 
     async def release_inline(self, *, turn_id: uuid.UUID, owner_id: str, generation: int) -> bool:
-        """Không cho executor lease cũ xoá ownership của executor mới."""
+        """Prevent a stale executor's old lease from clearing a newer executor's ownership."""
         async with self.db.begin():
             state = (
                 await self.db.execute(

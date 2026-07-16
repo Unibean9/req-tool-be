@@ -344,8 +344,8 @@ class AgentService:
     ) -> AgentMessage:
         admitted = None
         if settings.agent_turn_admission_enabled:
-            # Không đọc status rồi quyết định ở đây: admission giữ session row lock để một
-            # checkpoint chỉ có một turn inline; turn đến sau được persist dạng queue.
+            # Do not read status and decide here: admission holds the session row lock so a
+            # checkpoint has only one inline turn; a later turn is persisted as queued instead.
             admitted = await AgentTurnService(self.db).admit_user_message(
                 project_id=project_id,
                 session_id=session_id,
@@ -484,7 +484,7 @@ class AgentService:
         return msg
 
     async def _run_admitted_graph(self, *, turn_id: uuid.UUID, runner_factory: Any) -> None:
-        """Adapter inline dùng cùng ownership contract với durable worker tương lai.
+        """Inline adapter that shares the same ownership contract as the future durable worker.
 
         `runner_factory` builds the graph-invocation coroutine lazily, called only after the claim
         below succeeds — this is how owner_id/ownership_generation (unknown until claimed) reach the
@@ -935,8 +935,8 @@ class AgentService:
         tool_call.resolved_at = datetime.now(UTC)
         await self.db.commit()
 
-        # Người dùng đã quyết định không persist proposal; đây là một terminal outcome hợp lệ dù graph
-        # resume không tạo thêm tool call hoặc direct response.
+        # The user decided not to persist the proposal; this is a valid terminal outcome even if
+        # the graph resume creates no further tool call or direct response.
         await self._check_and_resume(
             project_id=project_id,
             session_id=session_id,
@@ -1638,9 +1638,10 @@ class AgentService:
             # paused tool is stale and must not be promoted: WAITING_FOR_HUMAN re-set by a tool
             # re-running on resume, or ACTIVE+STREAM_RESPONSE while halted on a conversational ask (D4).
             graph_ended = not (isinstance(result, dict) and "__interrupt__" in result)
-            # Graph END cùng tool call chưa dispatch hoặc cờ circuit-breaker nghĩa là chưa hoàn tất.
-            # Synthetic ToolMessage đóng tool-use block của provider, nên chỉ kiểm tra pending call
-            # không thể nhận ra forced stop sau ToolMessage cuối cùng.
+            # Graph END with an undispatched tool call or a circuit-breaker flag means the turn is
+            # not actually complete. The synthetic ToolMessage closes the provider's tool-use
+            # block, so checking pending calls alone cannot detect a forced stop that happens
+            # after the last ToolMessage.
             forced_stop_reason = _result_forced_stop_reason(result)
             turn_limit_hit = graph_ended and (
                 _result_has_pending_tool_calls(result) or forced_stop_reason is not None
@@ -1682,9 +1683,9 @@ class AgentService:
                         row.status = AgentSessionStatus.WAITING_FOR_HUMAN
                         row.interrupt_type = None
                     elif _result_has_no_outcome(result) and not allow_empty_completion:
-                        # Empty response hoặc toàn bộ tool bị gate loại không tạo proposal đã persist
-                        # hay phản hồi cho người dùng. Giữ checkpoint có thể resume thay vì báo artifact
-                        # chưa tồn tại là hoàn tất.
+                        # An empty response, or every tool being gated out, creates no persisted
+                        # proposal or user-facing reply. Keep the checkpoint resumable instead of
+                        # reporting an artifact that does not exist as complete.
                         logger.error("turn failed: reason_code=no_terminal_outcome session_id=%s", session_id)
                         log_gate_decision("turn_failure", "no_terminal_outcome", session_id=str(session_id))
                         await project_terminal_outcome(
@@ -2106,7 +2107,7 @@ def _result_is_direct_response(result: Any) -> bool:
 
 
 def _result_has_no_outcome(result: Any) -> bool:
-    """Kiểm tra analyze kết thúc mà không dispatch action hoặc tạo direct response."""
+    """Return whether analyze finished without dispatching an action or producing a direct response."""
     if not isinstance(result, dict):
         return False
     analysis_result = result.get("analysis_result")
@@ -2114,14 +2115,15 @@ def _result_has_no_outcome(result: Any) -> bool:
 
 
 def _result_forced_stop_reason(result: Any) -> str | None:
-    """Đọc lý do circuit-breaker có cấu trúc từ synthetic tool result."""
+    """Read the structured circuit-breaker reason from a synthetic tool result."""
     if not isinstance(result, dict):
         return None
     messages = result.get("messages") or []
     if not messages:
         return None
-    # WorkflowState.messages là lịch sử cộng dồn. Chỉ ToolMessage cuối của lượt hiện tại mới là
-    # synthetic result có quyền quyết định terminal state; marker cũ không được làm hỏng lượt mới.
+    # WorkflowState.messages is a cumulative history. Only the current turn's last ToolMessage is
+    # the synthetic result allowed to decide the terminal state; a stale marker must not corrupt
+    # a new turn.
     metadata = getattr(messages[-1], "additional_kwargs", None)
     reason = metadata.get("agent_stop_reason") if isinstance(metadata, dict) else None
     if reason in {"max_agent_turns", "repeated_tool_calls"}:

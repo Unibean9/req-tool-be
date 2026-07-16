@@ -1,4 +1,4 @@
-"""Negative-proof regression test for the required CI lane (Phase 8 Step 1).
+"""Negative-proof regression test for the required CI lane.
 
 Guards two invariants that GitHub Actions itself does not check for us:
 
