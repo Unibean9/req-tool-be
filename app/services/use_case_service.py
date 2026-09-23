@@ -37,17 +37,20 @@ from app.schemas.use_case import (
     UseCaseValidationResponse,
 )
 from app.services.llm_clients import LLMClientFactory
-from app.use_cases.completion import complete_use_case_table
+from app.use_cases.completion import _ensure_actor_associations, complete_use_case_table
 from app.use_cases.models import (
     RequirementsSourceSnapshot,
     UseCaseActor,
     UseCaseEntry,
+    UseCaseGroupDetailDraftList,
+    UseCaseGroupsDraftList,
     UseCaseModel,
     UseCaseRelation,
     UseCaseRelationshipDraftList,
     UseCaseSubsystem,
 )
 from app.use_cases.plantuml import render_plantuml
+from app.use_cases.rules import validate_use_case_model
 from app.use_cases.source_loader import load_project_requirements_source
 
 _LEVEL_ORDER = {"L0": 0, "L1": 1, "L2": 2}
@@ -351,6 +354,140 @@ class UseCaseService:
         await self.db.flush()
         return self._response(response_payload, max_level=body.max_level)
 
+    async def generate_groups(
+        self,
+        *,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        body: UseCaseGenerateRequest,
+    ) -> UseCaseModelResponse:
+        """Phase 1 of the split generation flow: extract capability/domain groups (L0) and the
+        actor roster only -- not individual use cases -- so the output (and therefore the risk of
+        timing out) is a fraction of the size of generating the whole project's use cases in one
+        call. Reads the project's Business Capabilities content in whatever format it was
+        actually written; an earlier version of this method parsed that content with a regex tied
+        to one fixed "BC-xx" heading/ID convention and silently returned zero groups for any
+        project that used a different one (a table with its own numbering, in this project's
+        case) -- this calls the model instead, the same way the rest of the app already trusts it
+        to read free-form BRD/PRD content.
+
+        Each L0 row's id is the "group id" the FE loops over to call generate_group_use_cases for
+        that group's own L1/L2 detail.
+        """
+        project = await self._project(project_id)
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        from app.use_cases.harness import UseCaseGroupsHarness
+
+        harness = UseCaseGroupsHarness(source)
+        client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+        try:
+            raw_result, usage = await asyncio.wait_for(
+                client.generate(
+                    messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                    system=harness.build_system_instruction(),
+                    max_tokens=settings.use_case_generation_max_tokens,
+                    response_format=harness.response_format(),
+                ),
+                timeout=settings.use_case_generation_timeout_seconds,
+            )
+            draft_payload = _decode_llm_payload(raw_result)
+            drafts = UseCaseGroupsDraftList.model_validate(draft_payload)
+        except TimeoutError as exc:
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT, detail="Use-case group generation timed out"
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "USE_CASE_GROUPS_GENERATION_FAILED", "message": str(exc)[:500]},
+            ) from exc
+
+        actor_ids_by_name: dict[str, str] = {}
+        actors: list[UseCaseActor] = []
+
+        def actor_id_for(name: str, source_refs: list[str]) -> str:
+            key = name.strip().lower()
+            if key in actor_ids_by_name:
+                return actor_ids_by_name[key]
+            new_id = self._next_id("ACT", name, {item.id for item in actors})
+            actors.append(
+                UseCaseActor(id=new_id, name=name.strip(), kind="human_role", source_refs=source_refs or ["internal"])
+            )
+            actor_ids_by_name[key] = new_id
+            return new_id
+
+        for actor_draft in drafts.actors:
+            actor_id_for(actor_draft.name, actor_draft.source_refs)
+
+        subsystems: list[UseCaseSubsystem] = []
+        use_cases: list[UseCaseEntry] = []
+        for group in drafts.groups:
+            if not group.user_segment:
+                continue
+            primary_id = actor_id_for(group.user_segment[0], group.source_refs)
+            secondary_ids = [
+                item
+                for item in (actor_id_for(role, group.source_refs) for role in group.user_segment[1:])
+                if item != primary_id
+            ]
+            subsystem_id = self._next_id("SUB", group.name, {item.id for item in subsystems})
+            subsystems.append(UseCaseSubsystem(id=subsystem_id, name=group.name, source_refs=group.source_refs))
+            use_case_id = self._next_id("UC-SUM", group.name, {item.id for item in use_cases})
+            use_cases.append(
+                UseCaseEntry(
+                    id=use_case_id,
+                    name=group.name,
+                    level="L0",
+                    abstraction="summary",
+                    primary_actor_id=primary_id,
+                    secondary_actor_ids=secondary_ids,
+                    subsystem_id=subsystem_id,
+                    parent_use_case_id=None,
+                    description=f"The actor can {group.goal.rstrip('.').lower()}."[:600],
+                    precondition="The project is available to the actor.",
+                    priority="should",
+                    status="inferred",
+                    source_refs=group.source_refs,
+                )
+            )
+        if not use_cases:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={
+                    "code": "USE_CASE_GROUPS_EMPTY",
+                    "message": (
+                        "No capability groups with a named user segment could be extracted from the stored "
+                        "BRD/PRD. Add or clarify the Business Capabilities content and try again."
+                    ),
+                },
+            )
+
+        model = UseCaseModel(system_name=project.name, actors=actors, subsystems=subsystems, use_cases=use_cases)
+        _ensure_actor_associations(model)
+        report = validate_use_case_model(model, source)
+        response_payload = self._core_to_payload(
+            project=project,
+            source=source,
+            model=model,
+            report=report,
+            provider=provider,
+            usage=usage,
+            relations_generated=False,
+        )
+        record = await self._record(project_id, for_update=True)
+        if record is None:
+            record = UseCaseModelRecord(project_id=project_id)
+            self.db.add(record)
+            await self.db.flush()
+        record.model_data = response_payload
+        record.source_hash = source.source_hash
+        record.generated_by_id = user_id
+        record.last_generation_error = None
+        await self.db.flush()
+        return self._response(response_payload, max_level=body.max_level)
+
     async def generate_relations(
         self,
         *,
@@ -430,6 +567,152 @@ class UseCaseService:
             "model": provider.model_name,
             "usage": usage,
             "relationsGenerated": True,
+        }
+        await self._save(record, payload)
+        return self._response(payload, max_level=body.max_level)
+
+    async def generate_group_use_cases(
+        self,
+        *,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        group_id: str,
+        body: UseCaseGenerateRequest,
+    ) -> UseCaseModelResponse:
+        """Phase 2 of the split generation flow: propose one capability group's own L1 user-goal
+        use cases (and L2 detail where warranted). The output is scoped to this one group, so it
+        stays a fraction of the size of generating every group's use cases in one call -- the
+        actual fix for generation timing out on a larger project.
+
+        Idempotent per group: re-running replaces that group's previously generated L1/L2 rows
+        instead of accumulating duplicates alongside them.
+        """
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        group = self._find(payload["useCases"], group_id)
+        if group is None or group.get("level") != "L0":
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Use-case group not found")
+
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        from app.use_cases.harness import UseCaseGroupUseCasesHarness
+
+        actor_ids = {item["id"] for item in payload["actors"]}
+        harness = UseCaseGroupUseCasesHarness(
+            source=source,
+            group={
+                "id": group["id"],
+                "name": group["title"],
+                "goal": group.get("description") or group["title"],
+            },
+            actors=[{"id": item["id"], "name": item["name"]} for item in payload["actors"]],
+        )
+        client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+        try:
+            raw_result, usage = await asyncio.wait_for(
+                client.generate(
+                    messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                    system=harness.build_system_instruction(),
+                    max_tokens=settings.use_case_generation_max_tokens,
+                    response_format=harness.response_format(),
+                ),
+                timeout=settings.use_case_generation_timeout_seconds,
+            )
+            draft_payload = _decode_llm_payload(raw_result)
+            drafts = UseCaseGroupDetailDraftList.model_validate(draft_payload).use_cases
+        except TimeoutError as exc:
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT, detail="Use-case group generation timed out"
+            ) from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "USE_CASE_GROUP_GENERATION_FAILED", "message": str(exc)[:500]},
+            ) from exc
+
+        # Idempotent per group: drop this group's previously generated L1 rows and their L2
+        # children before merging the fresh drafts, rather than accumulating duplicates.
+        existing_l1_ids = {
+            item["id"]
+            for item in payload["useCases"]
+            if item.get("level") == "L1" and item.get("parentUseCaseId") == group_id
+        }
+        existing_l2_ids = {
+            item["id"]
+            for item in payload["useCases"]
+            if item.get("level") == "L2" and item.get("parentUseCaseId") in existing_l1_ids
+        }
+        stale_ids = existing_l1_ids | existing_l2_ids
+        if stale_ids:
+            payload["useCases"] = [item for item in payload["useCases"] if item["id"] not in stale_ids]
+            payload["relationships"] = [
+                item
+                for item in payload["relationships"]
+                if item.get("sourceId") not in stale_ids and item.get("targetId") not in stale_ids
+            ]
+
+        subsystem = group.get("subsystem") or ""
+        tag_to_id: dict[str, str] = {}
+        accepted = 0
+
+        def append_use_case(*, level: str, name: str, parent_id: str, draft) -> str:
+            new_id = self._next_use_case_id(payload, UseCaseLevel(level), subsystem)
+            secondary_ids = [item for item in draft.secondary_actor_ids if item in actor_ids]
+            payload["useCases"].append(
+                {
+                    "id": new_id,
+                    "level": level,
+                    "title": name,
+                    "primaryActorId": draft.primary_actor_id,
+                    "supportingActorIds": secondary_ids,
+                    "subsystem": subsystem,
+                    "status": _status_title("inferred"),
+                    "priority": _priority_title(draft.priority),
+                    "parentUseCaseId": parent_id,
+                    "description": draft.description,
+                    "precondition": draft.precondition,
+                    "sourceTrace": _source_trace(draft.source_refs, source),
+                }
+            )
+            self._sync_parent_relationship(payload, child_id=new_id, parent_id=parent_id)
+            return new_id
+
+        # Two passes: L1 first so its real id exists before an L2 draft resolves its
+        # parent_local_tag against it. Never trust an actor/tag id the model invented.
+        for draft in drafts:
+            if draft.level != "L1" or draft.primary_actor_id not in actor_ids:
+                continue
+            new_id = append_use_case(level="L1", name=draft.name, parent_id=group_id, draft=draft)
+            tag_to_id[draft.local_tag] = new_id
+            accepted += 1
+        for draft in drafts:
+            if draft.level != "L2" or draft.primary_actor_id not in actor_ids:
+                continue
+            parent_id = tag_to_id.get(draft.parent_local_tag or "")
+            if parent_id is None:
+                continue
+            append_use_case(level="L2", name=draft.name, parent_id=parent_id, draft=draft)
+            accepted += 1
+
+        model = self._rebuild_model_for_render(payload, project.name)
+        payload["plantUml"] = {
+            "language": "plantuml",
+            "source": render_plantuml(model),
+            "editable": True,
+            "stale": False,
+            "generatedFrom": "use-case-table",
+        }
+        payload["validation"] = None
+        payload["generation"] = {
+            "source": "ai",
+            "providerConfigId": str(provider.id),
+            "provider": provider.provider_type.value,
+            "model": provider.model_name,
+            "usage": usage,
+            "relationsGenerated": bool((payload.get("generation") or {}).get("relationsGenerated")),
+            "lastGroupGenerated": group_id,
+            "lastGroupUseCasesAdded": accepted,
         }
         await self._save(record, payload)
         return self._response(payload, max_level=body.max_level)
@@ -912,7 +1195,7 @@ class UseCaseService:
         source: RequirementsSourceSnapshot,
         model: UseCaseModel,
         report,
-        provider: LLMProviderConfig,
+        provider: LLMProviderConfig | None,
         usage: dict[str, int] | None,
         relations_generated: bool = True,
     ) -> dict[str, Any]:
@@ -983,14 +1266,24 @@ class UseCaseService:
             sourceHash=source.source_hash,
             validation=validation,
             plantUml=plant_uml,
-            generation={
-                "source": "ai",
-                "providerConfigId": str(provider.id),
-                "provider": provider.provider_type.value,
-                "model": provider.model_name,
-                "usage": usage,
-                "relationsGenerated": relations_generated,
-            },
+            generation=(
+                {
+                    "source": "ai",
+                    "providerConfigId": str(provider.id),
+                    "provider": provider.provider_type.value,
+                    "model": provider.model_name,
+                    "usage": usage,
+                    "relationsGenerated": relations_generated,
+                }
+                if provider is not None
+                else {
+                    # Phase 1 (generate_groups) is deterministic -- built straight from the stored
+                    # PRD's business-capability/functional-requirement structure, no LLM call, so
+                    # there is no provider/usage to report.
+                    "source": "deterministic",
+                    "relationsGenerated": relations_generated,
+                }
+            ),
         )
         return payload.model_dump(by_alias=True, mode="json")
 

@@ -90,6 +90,48 @@ async def generate_use_case_relations(
     return ok(await UseCaseService(db).generate_relations(project_id=project_id, user_id=user.id, body=body))
 
 
+@router.post(
+    "/use-case-model/groups/generate",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def generate_use_case_groups(
+    project_id: uuid.UUID,
+    body: UseCaseGenerateRequest = Body(default_factory=UseCaseGenerateRequest),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Split-generation alternative to /generate: build the L0/L1 group skeleton deterministically
+    (no LLM call, cannot time out). Call generate_use_case_group_use_cases once per returned L0
+    group afterward to fill in L2 detail without ever generating the whole project in one call."""
+
+    await require_project_access(project_id, user, db)
+    return ok(await UseCaseService(db).generate_groups(project_id=project_id, user_id=user.id, body=body))
+
+
+@router.post(
+    "/use-case-model/groups/{group_id}/use-cases/generate",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def generate_use_case_group_use_cases(
+    project_id: uuid.UUID,
+    group_id: str,
+    body: UseCaseGenerateRequest = Body(default_factory=UseCaseGenerateRequest),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Fill in L2 detail for one capability group returned by /groups/generate. Scoped to that
+    group's own source slice, so this call stays small regardless of project size."""
+
+    await require_project_access(project_id, user, db)
+    return ok(
+        await UseCaseService(db).generate_group_use_cases(
+            project_id=project_id, user_id=user.id, group_id=group_id, body=body
+        )
+    )
+
+
 @router.patch(
     "/use-case-model/uml",
     response_model=ApiResponse[UseCasePlantUmlResponse],

@@ -255,6 +255,81 @@ class UseCaseRelationshipDraftList(BaseModel):
     relations: list[UseCaseRelationshipDraft] = Field(default_factory=list)
 
 
+class UseCaseActorDraft(BaseModel):
+    """One actor proposed by the groups-generation pass (Phase 1 of the split generation flow).
+
+    No stable id is trusted from the model -- same rationale as UseCaseRelationshipDraft: the
+    service assigns a collision-free ACT-* id once the draft is merged, deduping by name across
+    every group so a role used by several groups becomes one shared actor.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=120)
+    kind: ActorKind = "human_role"
+    source_refs: list[str] = Field(min_length=1)
+
+
+class UseCaseGroupDraft(BaseModel):
+    """One capability/domain group proposed by the groups-generation pass (Phase 1 of the split
+    generation flow) -- an L0 row, not an individual use case. Read from the project's Business
+    Capabilities content in whatever format it was actually written (no assumed ID/heading
+    convention), unlike a regex-based parse of one fixed convention.
+
+    No stable id is trusted from the model -- the service assigns SUB-*/UC-SUM-* ids
+    deterministically once merged.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=160)
+    goal: str = Field(min_length=1, max_length=600)
+    user_segment: list[str] = Field(default_factory=list)
+    source_refs: list[str] = Field(min_length=1)
+
+
+class UseCaseGroupsDraftList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    actors: list[UseCaseActorDraft] = Field(default_factory=list)
+    groups: list[UseCaseGroupDraft] = Field(default_factory=list)
+
+
+class UseCaseGroupDetailDraft(BaseModel):
+    """One use case (an L1 user goal, or an L2 sub-use-case) proposed by the per-group detail
+    pass (Phase 2 of the split generation flow). Scoped to a single capability group so the
+    prompt/output stay a fraction of the size of generating the whole project's use cases in one
+    call -- the actual fix for use-case generation timing out on a larger project.
+
+    No stable UC-* id is trusted from the model, and neither is the L1 parent's id (it doesn't
+    exist yet when the model writes this, since it too is proposed in this same call): each draft
+    carries a small model-chosen `local_tag`, and an L2 draft points at its L1 parent via
+    `parent_local_tag`. The service assigns real ids in two passes (L1 first, then L2) and resolves
+    `parent_local_tag` through the tags it just minted -- same "never trust an invented id"
+    rationale as UseCaseRelationshipDraft, just two levels instead of one.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    level: Literal["L1", "L2"]
+    local_tag: str = Field(min_length=1, max_length=20)
+    parent_local_tag: str | None = Field(default=None, max_length=20)
+    name: str = Field(min_length=1, max_length=160)
+    primary_actor_id: str = Field(pattern=r"^ACT-[A-Z0-9-]+$")
+    secondary_actor_ids: list[str] = Field(default_factory=list)
+    description: str = Field(min_length=1, max_length=600)
+    precondition: str = Field(min_length=1, max_length=400)
+    priority: UseCasePriority
+    source_refs: list[str] = Field(min_length=1)
+    note: str | None = Field(default=None, max_length=400)
+
+
+class UseCaseGroupDetailDraftList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    use_cases: list[UseCaseGroupDetailDraft] = Field(default_factory=list)
+
+
 class UseCaseDiagramDefinition(BaseModel):
     """Legacy semantic diagram definition kept only for backward-compatible stored records."""
 

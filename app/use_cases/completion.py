@@ -37,25 +37,9 @@ _FR_RE = re.compile(
 )
 _FR_CODE_RE = re.compile(r"FR-(?P<family>[A-Z0-9]+)-(?P<number>\d+)", re.IGNORECASE)
 
-_ACTOR_IDS = {
-    "system administrator": "ACT-ADMIN",
-    "research project manager": "ACT-MANAGER",
-    "researcher / data analyst": "ACT-RESEARCHER",
-    "researcher": "ACT-RESEARCHER",
-    "reviewer / stakeholder": "ACT-REVIEWER",
-    "reviewer": "ACT-REVIEWER",
-}
-_ACTOR_NAMES = {value: key.title() for key, value in _ACTOR_IDS.items()}
-# Keep the exact display names used by the stakeholder register rather than title-casing the
-# slash-separated role.
-_ACTOR_NAMES.update(
-    {
-        "ACT-ADMIN": "System Administrator",
-        "ACT-MANAGER": "Research Project Manager",
-        "ACT-RESEARCHER": "Researcher / Data Analyst",
-        "ACT-REVIEWER": "Reviewer / Stakeholder",
-    }
-)
+# Fallback persona used only when a capability declares no **user_segment** at all -- a generic,
+# project-agnostic label rather than a guess at any specific project's role names.
+_GENERIC_ACTOR_ROLE = "User"
 
 _GROUP_TITLES = {
     "AUTH": "Authenticate User Access",
@@ -170,27 +154,30 @@ def _build_source_model(source: RequirementsSourceSnapshot) -> UseCaseModel:
         )
 
     stakeholder_ref = _component_ref(source, "brd", "stakeholder_register")
-    actor_ids = OrderedDict()
+    # id -> display name, keyed by the generic slug so every id ever handed out by _actor_id()
+    # below is guaranteed to land here too (no hardcoded, project-specific id table to fall out of
+    # sync with).
+    actor_names: OrderedDict[str, str] = OrderedDict()
     for capability in capabilities:
         for role in capability.user_segment:
             actor_id = _actor_id(role)
             if actor_id:
-                actor_ids[actor_id] = None
+                actor_names.setdefault(actor_id, role)
     family_entries: dict[tuple[str, str], UseCaseEntry] = {}
     for family in families:
         for role in _roles_for_capability(family.bc_id, capabilities):
             actor_id = _actor_id(role)
             if actor_id:
-                actor_ids[actor_id] = None
+                actor_names.setdefault(actor_id, role)
 
     actors = [
         UseCaseActor(
             id=actor_id,
-            name=_ACTOR_NAMES[actor_id],
+            name=name,
             kind="human_role",
             source_refs=[stakeholder_ref] if stakeholder_ref else _fallback_component_refs(source),
         )
-        for actor_id in actor_ids
+        for actor_id, name in actor_names.items()
     ]
     actors_by_id = {item.id: item for item in actors}
 
@@ -245,7 +232,10 @@ def _build_source_model(source: RequirementsSourceSnapshot) -> UseCaseModel:
         subsystem = subsystem_by_bc.get(family.bc_id)
         if capability is None or subsystem is None:
             continue
-        roles = _roles_for_family(family, capability)
+        # An L1 use case's actors are exactly its capability's declared user_segment (or the
+        # generic fallback when none was declared) -- no family-code-specific role overrides,
+        # since those would be guessing at a persona the source never actually named.
+        roles = list(capability.user_segment) or [_GENERIC_ACTOR_ROLE]
         primary_id, secondary_ids = _actor_roles(roles)
         title = _family_title(family)
         source_refs = _unique_refs(
@@ -539,29 +529,14 @@ def _roles_for_capability(bc_id: str, capabilities: Iterable[_Capability]) -> li
     capability = next((item for item in capabilities if item.id == bc_id), None)
     if capability is not None and capability.user_segment:
         return capability.user_segment
-    return ["Researcher / Data Analyst"]
-
-
-def _roles_for_family(family: _RequirementFamily, capability: _Capability) -> list[str]:
-    roles = list(capability.user_segment) or ["Researcher / Data Analyst"]
-    if family.family == "AUTH":
-        return ["Researcher / Data Analyst", "System Administrator"]
-    if family.family == "PROJ":
-        return ["Research Project Manager", "System Administrator"]
-    if family.family == "ADMIN":
-        return ["System Administrator", "Research Project Manager"]
-    if family.family in {"EVAL", "DEC", "HGATE", "EGATE", "REFLOOP"} and "Research Project Manager" in roles:
-        return ["Research Project Manager", *[role for role in roles if role != "Research Project Manager"]]
-    if family.family in {"REPORT", "MANU", "VIZ"} and "Reviewer / Stakeholder" in roles:
-        return [roles[0], "Reviewer / Stakeholder"]
-    return roles
+    return [_GENERIC_ACTOR_ROLE]
 
 
 def _actor_roles(roles: list[str]) -> tuple[str, list[str]]:
     ids = [_actor_id(role) for role in roles]
     ids = [item for item in ids if item]
     if not ids:
-        ids = ["ACT-RESEARCHER"]
+        ids = [_actor_id(_GENERIC_ACTOR_ROLE)]
     primary = ids[0]
     return primary, [item for item in ids[1:] if item != primary]
 
@@ -597,8 +572,17 @@ def _family_title(family: _RequirementFamily) -> str:
 
 
 def _actor_id(role: str) -> str | None:
-    normalized = " ".join(role.lower().split())
-    return _ACTOR_IDS.get(normalized)
+    """Turn any role/persona string into a stable ACT-<SLUG> id -- generic across projects (no
+    hardcoded role->id table), so every id this returns is always backed by a real actor entry
+    (see the actor_names collection in _build_source_model)."""
+    normalized = " ".join(role.split()).strip()
+    if not normalized:
+        return None
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", normalized).strip("-").upper()
+    slug = re.sub(r"-+", "-", slug)
+    if not slug:
+        return None
+    return f"ACT-{slug[:40]}"
 
 
 def _actor_ids(item: UseCaseEntry) -> list[str]:

@@ -9,6 +9,8 @@ from app.use_cases.diagram import build_diagram_render_plan
 from app.use_cases.models import (
     DiagramRenderPlan,
     RequirementsSourceSnapshot,
+    UseCaseGroupDetailDraftList,
+    UseCaseGroupsDraftList,
     UseCaseModel,
     UseCaseRelationshipDraftList,
     UseCaseValidationReport,
@@ -228,6 +230,171 @@ class UseCaseRelationshipHarness:
         }
 
 
+USE_CASE_GROUPS_SYSTEM_PROMPT = """You are the ReqTool Use-Case Modeling Agent, extracting only
+the top-level capability/domain groups and the actor roster for this project -- NOT individual use
+cases yet (those come from a separate, smaller follow-up call per group).
+
+Your only source of truth is the CURRENT PROJECT REQUIREMENTS SOURCE SNAPSHOT supplied in the user
+message. The project's Business Capabilities content may use ANY heading/table/ID convention (for
+example numbered domains with a capability table, or "BC-xx" headings, or something else) -- read
+it exactly as written; do not assume a specific numbering scheme or reject content that doesn't
+match one.
+
+MISSION
+1. Identify the distinct capability/domain groups the source's Business Capabilities content
+   already presents (however it labels or organizes them) -- do not invent a group the source does
+   not support, and do not split or merge a group the source already presents as one.
+2. For each group, extract: name, goal (one sentence, business terms), and user_segment (the
+   role(s) who use it, exactly as named in the source -- from the Stakeholder Register or the
+   capability's own text).
+3. Separately extract the full actor roster (every distinct role/external system the source
+   names), so a role shared by several groups becomes one actor instead of being repeated.
+4. Every group and actor MUST cite one or more exact evidence_id values from the snapshot.
+
+NO INVENTED FEATURES (same rule as the full-model pass)
+- Do not add a UI screen, API, database, notification, report, or integration as a group.
+- Do not use conversation text as evidence.
+
+OUTPUT
+Return JSON only matching the supplied schema: `actors` and `groups` arrays. Do not return an id
+for either (the service assigns ids) and do not enumerate individual use cases here -- that is a
+separate, later call per group. Do not return Markdown or prose.
+"""
+
+
+@dataclass(frozen=True)
+class UseCaseGroupsHarness:
+    """Prompt boundary for Phase 1 of the split generation flow: capability groups + the actor
+    roster only, nothing else.
+
+    Its output is small regardless of project size (a handful of groups, not every use case), so
+    this call is what actually avoids the single-shot generate()'s timeout risk: the heavier
+    per-group use-case detail is a separate, smaller call per group (UseCaseGroupUseCasesHarness).
+    Reads the project's Business Capabilities content in whatever format it was actually written --
+    unlike a regex parse tied to one fixed ID convention, this generalizes across projects.
+    """
+
+    source: RequirementsSourceSnapshot
+
+    def build_system_instruction(self) -> str:
+        return USE_CASE_GROUPS_SYSTEM_PROMPT
+
+    def build_user_prompt(self) -> str:
+        return "\n\n".join(
+            (
+                "Extract the capability/domain groups and actor roster for this stored project source snapshot.",
+                f"source_hash: {self.source.source_hash}",
+                "First reason over every component internally. Return only the final JSON object.",
+                "\n--- FULL STORED BRD/PRD COMPONENTS ---\n" + self.source.render_full_source(),
+                "\n--- COMPLETE EVIDENCE INDEX ---\n" + self.source.render_evidence_index(),
+                "\n--- JSON SCHEMA ---\n" + _groups_schema_text(),
+            )
+        )
+
+    def output_schema(self) -> dict[str, Any]:
+        return UseCaseGroupsDraftList.model_json_schema()
+
+    def response_format(self) -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "reqtool_use_case_groups",
+                "strict": True,
+                "schema": self.output_schema(),
+            },
+        }
+
+
+USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT = """You are the ReqTool Use-Case Modeling Agent, generating
+detail for ONE capability group at a time instead of the whole project in one call.
+
+The group below (and the actor roster) is already final for this pass -- do not rename, add,
+remove, or re-scope it. Your only job is to propose this group's own L1 user-goal use cases, and
+L2 sub-use-cases where genuinely warranted, grounded in the CURRENT PROJECT REQUIREMENTS SOURCE
+SNAPSHOT supplied in the user message.
+
+MISSION
+1. Propose the L1 user-goal use cases that belong under this group only -- do not propose a use
+   case for a different group's scope.
+2. For each L1 goal, decide whether it needs L2 detail at all. Most L1 goals do not -- add an L2
+   row only for a genuinely shared subfunction (reused by more than one goal) or a complex goal
+   whose steps are independently meaningful use cases. Do not decompose an ordinary sequential
+   workflow into steps; that belongs in the L1 description, not as L2 rows.
+3. Every generated use case MUST cite one or more exact evidence_id values from the snapshot.
+4. primary_actor_id/secondary_actor_ids MUST be chosen from the supplied actor list only -- never
+   invent a new actor here.
+5. Each draft carries a `local_tag` you choose (e.g. "G1", "G2") so an L2 draft can reference its
+   L1 parent via `parent_local_tag` -- neither this group's own id nor any use case's real id
+   exists yet; the service assigns them after this call. An L1 draft leaves `parent_local_tag`
+   null (its parent is this group itself).
+
+NO INVENTED FEATURES (same rule as the full-model pass)
+- Do not add a UI screen, API, database, notification, report, or integration as a use case.
+- Do not use conversation text as evidence.
+- An empty use_cases list is correct when this group genuinely has no distinct user goals beyond
+  its own summary.
+
+LANGUAGE
+Active Verb + business Object from the actor's point of view -- no passive voice, no
+screen/button/API/database terms.
+
+OUTPUT
+Return JSON only matching the supplied schema: a `use_cases` array. Do not return a real `id`, a
+`subsystem_id`, a `status`, or `relationship_ids` -- the service fills those in. Do not return
+Markdown or prose.
+"""
+
+
+@dataclass(frozen=True)
+class UseCaseGroupUseCasesHarness:
+    """Prompt boundary for the per-group follow-up call (Phase 2) that proposes one capability
+    group's own L1/L2 use cases only.
+
+    The output is scoped to one group regardless of project size, so it stays a fraction of the
+    size of generating every group's use cases in one call -- the actual fix for generation timing
+    out on a larger project. Unlike an earlier version of this harness, the source is NOT narrowed
+    by a regex slice (that assumed one fixed capability-ID convention and silently produced an
+    empty slice for any project that uses a different one) -- it gets the same full source the
+    groups pass saw, and relies on the model to scope its own output to the given group.
+    """
+
+    source: RequirementsSourceSnapshot
+    group: dict[str, Any]
+    actors: list[dict[str, Any]]
+
+    def build_system_instruction(self) -> str:
+        return USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT
+
+    def build_user_prompt(self) -> str:
+        import json
+
+        return "\n\n".join(
+            (
+                f"Generate use cases for this one capability group only: {self.group.get('name')}.",
+                f"source_hash: {self.source.source_hash}",
+                "First reason over the source internally. Return only the final JSON object.",
+                "\n--- THIS GROUP ---\n" + json.dumps(self.group, ensure_ascii=False, indent=2),
+                "\n--- ACTORS ---\n" + json.dumps(self.actors, ensure_ascii=False, indent=2),
+                "\n--- FULL STORED BRD/PRD COMPONENTS ---\n" + self.source.render_full_source(),
+                "\n--- COMPLETE EVIDENCE INDEX ---\n" + self.source.render_evidence_index(),
+                "\n--- JSON SCHEMA ---\n" + _group_detail_schema_text(),
+            )
+        )
+
+    def output_schema(self) -> dict[str, Any]:
+        return UseCaseGroupDetailDraftList.model_json_schema()
+
+    def response_format(self) -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "reqtool_use_case_group_detail",
+                "strict": True,
+                "schema": self.output_schema(),
+            },
+        }
+
+
 def _schema_text() -> str:
     import json
 
@@ -238,3 +405,15 @@ def _relationship_schema_text() -> str:
     import json
 
     return json.dumps(UseCaseRelationshipDraftList.model_json_schema(), ensure_ascii=False, indent=2)
+
+
+def _groups_schema_text() -> str:
+    import json
+
+    return json.dumps(UseCaseGroupsDraftList.model_json_schema(), ensure_ascii=False, indent=2)
+
+
+def _group_detail_schema_text() -> str:
+    import json
+
+    return json.dumps(UseCaseGroupDetailDraftList.model_json_schema(), ensure_ascii=False, indent=2)
