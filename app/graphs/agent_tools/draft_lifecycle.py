@@ -94,8 +94,9 @@ def _draft_structural_violations(artifact_type: str, body: str) -> list[str]:
 def _assembled_draft_sections(state: WorkflowState, artifact_type: str) -> str | None:
     """Assemble write_draft_section's accumulated sections into a full body, in contract order.
 
-    Returns None unless every required heading has been saved — a partial set must not silently
-    replace whatever the model passed as `body`, since that would drop the sections not yet written.
+    Returns None unless every required heading has been saved AND marked done -- a partial or
+    still-open set must not silently replace whatever the model passed as `body`, since that would
+    drop the sections not yet written (or cut off a table mid-batch).
     """
     sections = state.get("draft_sections") or {}
     if not sections:
@@ -104,9 +105,9 @@ def _assembled_draft_sections(state: WorkflowState, artifact_type: str) -> str |
         required_headings = output_contract(artifact_type).required_headings
     except ValueError:
         return None
-    if any(heading not in sections for heading in required_headings):
+    if any(heading not in sections or not sections[heading].get("done") for heading in required_headings):
         return None
-    return "\n\n".join(sections[heading] for heading in required_headings)
+    return "\n\n".join(sections[heading]["content"] for heading in required_headings)
 
 
 def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
@@ -517,7 +518,12 @@ def _normalize_heading(value: str) -> str:
 
 
 async def _write_draft_section_impl(
-    heading: str, content: str, state: WorkflowState, tool_call_id: str
+    heading: str,
+    content: str,
+    state: WorkflowState,
+    tool_call_id: str,
+    append: bool = False,
+    done: bool = True,
 ) -> Command:
     if not str(content or "").strip():
         return _missing_required_arg_update("write_draft_section", "content", tool_call_id, state.get("locale"))
@@ -546,18 +552,33 @@ async def _write_draft_section_impl(
             tool_call_id,
         )
 
-    merged = {**(state.get("draft_sections") or {}), matched: f"{matched}\n{content.strip()}"}
-    missing = [item for item in required_headings if item not in merged]
-    if missing:
+    existing = (state.get("draft_sections") or {}).get(matched)
+    if append and existing and str(existing.get("content") or "").strip():
+        new_content = f"{existing['content']}\n{content.strip()}"
+    else:
+        new_content = f"{matched}\n{content.strip()}"
+    merged = {**(state.get("draft_sections") or {}), matched: {"content": new_content, "done": done}}
+
+    if not done:
         status_message = (
-            f"Saved section {matched!r}. Still needed: {', '.join(missing)}. Call write_draft_section "
-            "for each remaining heading, then call write_draft to assemble and propose the draft."
+            f"Saved a batch into section {matched!r} (not yet complete -- more batches expected). "
+            "Call write_draft_section again with the SAME heading and append=true to add the next "
+            "batch, or append=true and done=true once this is the last one. Do this in a separate "
+            "turn each time, not several write_draft_section calls for this same heading at once."
         )
     else:
-        status_message = (
-            "All required sections are saved. Call write_draft now -- the accumulated sections are "
-            "assembled into the body automatically."
-        )
+        not_ready = [item for item in required_headings if item not in merged or not merged[item]["done"]]
+        if not_ready:
+            status_message = (
+                f"Saved section {matched!r}. Still needed: {', '.join(not_ready)}. Call "
+                "write_draft_section for each remaining heading, then call write_draft to assemble "
+                "and propose the draft."
+            )
+        else:
+            status_message = (
+                "All required sections are saved. Call write_draft now -- the accumulated sections are "
+                "assembled into the body automatically."
+            )
     return Command(
         update={
             "draft_sections": merged,
@@ -571,26 +592,40 @@ async def write_draft_section(
     heading: Annotated[
         str,
         "One of this artifact's required section headings, exact match (see REQUIRED OUTPUT "
-        "CONTRACT in your instructions), e.g. '## Constraints'.",
+        "CONTRACT in your instructions), e.g. '## Constraints' or '## Functional Requirements'.",
     ],
     content: Annotated[
         str,
-        "This section's content only -- do not repeat the heading line. Same rules as write_draft's "
+        "This batch's content only -- do not repeat the heading line. Same rules as write_draft's "
         "body: mark inferred / missing / needs_confirmation parts explicitly.",
     ],
     state: Annotated[dict, InjectedState],
     tool_call_id: Annotated[str, InjectedToolCallId],
+    append: Annotated[
+        bool,
+        "true to add this content onto what was already saved for this heading (continuing a "
+        "table written in batches); false (default) replaces the heading's saved content.",
+    ] = False,
+    done: Annotated[
+        bool,
+        "false if more batches are still coming for THIS heading (e.g. a long table written a "
+        "chunk at a time) -- the heading will not count as complete until a later call sets this "
+        "true. true (default) if this call is the whole section, or the last batch of it.",
+    ] = True,
 ) -> Command:
-    """Save one required section of a multi-section artifact's draft, instead of writing the whole
-    document in a single write_draft call.
+    """Save one required section of an artifact's draft, instead of writing the whole document in a
+    single write_draft call.
 
     For an artifact with several required headings, call this once per heading to build the draft
-    incrementally -- each call is smaller and faster than generating the entire body at once. Once
-    every required heading has been saved, call write_draft as usual (body can be a short placeholder)
-    to assemble and propose the draft. Skip this tool for a single-heading artifact; call write_draft
-    directly.
+    incrementally. For a heading whose content is a large table (many rows), write it in batches of
+    roughly 8-10 rows: call this repeatedly for the SAME heading with append=true, and done=false on
+    every batch except the last (done=true on the final one) -- one call per turn, not several calls
+    for the same heading in one turn. Each call is smaller and faster than generating everything at
+    once. Once every required heading is saved and done, call write_draft as usual (body can be a
+    short placeholder) to assemble and propose the draft. Skip this tool entirely for a small,
+    single-heading artifact; call write_draft directly.
     """
-    return await _write_draft_section_impl(heading, content, state, tool_call_id)
+    return await _write_draft_section_impl(heading, content, state, tool_call_id, append, done)
 
 
 @tool

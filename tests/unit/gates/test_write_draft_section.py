@@ -1,6 +1,7 @@
 """write_draft_section: accumulate a multi-section draft across several small calls instead of one
-large write_draft body, and _resolve_proposed_body's assembly of the accumulated sections once every
-required heading has been saved.
+large write_draft body -- either one call per heading, or (append=true/done=false) several row
+batches for a single heading whose content is a large table -- and _resolve_proposed_body's assembly
+of the accumulated sections once every required heading is present and done.
 """
 
 from unittest.mock import patch
@@ -71,7 +72,9 @@ async def test_partial_save_lists_remaining_headings_and_accumulates(client, db_
     state, _config, _run, _session = await _seed(client, db_session)
 
     first = await _write_draft_section_impl("## Vision", "A concrete vision statement.", state, "call_1")
-    assert first.update["draft_sections"] == {"## Vision": "## Vision\nA concrete vision statement."}
+    assert first.update["draft_sections"] == {
+        "## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True}
+    }
     message = first.update["messages"][0].content
     assert "## Objectives" in message
     assert "## Success Metrics" in message
@@ -81,8 +84,8 @@ async def test_partial_save_lists_remaining_headings_and_accumulates(client, db_
     state["draft_sections"] = first.update["draft_sections"]
     second = await _write_draft_section_impl("## Objectives", "- Ship the thing.", state, "call_2")
     assert second.update["draft_sections"] == {
-        "## Vision": "## Vision\nA concrete vision statement.",
-        "## Objectives": "## Objectives\n- Ship the thing.",
+        "## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True},
+        "## Objectives": {"content": "## Objectives\n- Ship the thing.", "done": True},
     }
     assert "## Success Metrics" in second.update["messages"][0].content
     assert "## Vision" not in second.update["messages"][0].content.split("still needed:", 1)[-1]
@@ -92,14 +95,60 @@ async def test_partial_save_lists_remaining_headings_and_accumulates(client, db_
 async def test_last_section_reports_ready_for_write_draft(client, db_session):
     state, _config, _run, _session = await _seed(client, db_session)
     state["draft_sections"] = {
-        "## Vision": "## Vision\nA concrete vision statement.",
-        "## Objectives": "## Objectives\n- Ship the thing.",
+        "## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True},
+        "## Objectives": {"content": "## Objectives\n- Ship the thing.", "done": True},
     }
 
     command = await _write_draft_section_impl("## Success Metrics", "- Adoption reaches 80%.", state, "call_3")
 
     assert set(command.update["draft_sections"]) == set(HEADINGS)
+    assert all(entry["done"] for entry in command.update["draft_sections"].values())
     assert "call write_draft now" in command.update["messages"][0].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_done_false_keeps_the_heading_open_and_prompts_for_more_batches(client, db_session):
+    state, _config, _run, _session = await _seed(client, db_session)
+
+    command = await _write_draft_section_impl(
+        "## Success Metrics", "- Metric 1.", state, "call_1", append=False, done=False
+    )
+
+    entry = command.update["draft_sections"]["## Success Metrics"]
+    assert entry == {"content": "## Success Metrics\n- Metric 1.", "done": False}
+    message = command.update["messages"][0].content
+    assert "not yet complete" in message
+    assert "append=true" in message
+
+
+@pytest.mark.asyncio
+async def test_append_true_concatenates_onto_the_existing_batch(client, db_session):
+    state, _config, _run, _session = await _seed(client, db_session)
+    state["draft_sections"] = {
+        "## Success Metrics": {"content": "## Success Metrics\n- Metric 1.", "done": False}
+    }
+
+    command = await _write_draft_section_impl(
+        "## Success Metrics", "- Metric 2.", state, "call_2", append=True, done=True
+    )
+
+    entry = command.update["draft_sections"]["## Success Metrics"]
+    assert entry == {"content": "## Success Metrics\n- Metric 1.\n- Metric 2.", "done": True}
+
+
+@pytest.mark.asyncio
+async def test_append_false_replaces_rather_than_concatenates(client, db_session):
+    """append defaults to False: a fresh call for an already-saved heading (e.g. a revision) must
+    replace its content, not silently accumulate onto stale text."""
+    state, _config, _run, _session = await _seed(client, db_session)
+    state["draft_sections"] = {
+        "## Vision": {"content": "## Vision\nOld statement.", "done": True}
+    }
+
+    command = await _write_draft_section_impl("## Vision", "New statement.", state, "call_2")
+
+    entry = command.update["draft_sections"]["## Vision"]
+    assert entry == {"content": "## Vision\nNew statement.", "done": True}
 
 
 @pytest.mark.asyncio
@@ -107,14 +156,15 @@ async def test_last_section_reports_ready_for_write_draft(client, db_session):
 async def test_write_draft_assembles_from_completed_sections_ignoring_the_passed_body(
     mock_interrupt, client, db_session
 ):
-    """Once every required heading is saved, write_draft's own `body` argument is irrelevant --
-    _resolve_proposed_body assembles the real body from draft_sections instead, so the model can
-    pass a short placeholder for the final call rather than regenerating the whole document."""
+    """Once every required heading is saved and done, write_draft's own `body` argument is
+    irrelevant -- _resolve_proposed_body assembles the real body from draft_sections instead, so the
+    model can pass a short placeholder for the final call rather than regenerating the whole
+    document."""
     state, config, run, _session = await _seed(client, db_session)
     state["draft_sections"] = {
-        "## Vision": "## Vision\nA concrete vision statement.",
-        "## Objectives": "## Objectives\n- Ship the thing.",
-        "## Success Metrics": "## Success Metrics\n- Adoption reaches 80%.",
+        "## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True},
+        "## Objectives": {"content": "## Objectives\n- Ship the thing.", "done": True},
+        "## Success Metrics": {"content": "## Success Metrics\n- Adoption reaches 80%.", "done": True},
     }
 
     command = await _write_draft_impl("Vision", "placeholder", state, config, "call_4")
@@ -133,11 +183,39 @@ async def test_write_draft_assembles_from_completed_sections_ignoring_the_passed
 
 @pytest.mark.asyncio
 @patch("app.graphs.agent_tools.interrupt")
+async def test_write_draft_falls_back_to_passed_body_when_a_section_is_still_open(
+    mock_interrupt, client, db_session
+):
+    """A section saved with done=False (mid-batch) must not be treated as complete -- write_draft
+    falls back to whatever body the model passed instead of assembling a cut-off table."""
+    state, config, _run, _session = await _seed(client, db_session)
+    state["draft_sections"] = {
+        "## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True},
+        "## Objectives": {"content": "## Objectives\n- Ship the thing.", "done": True},
+        "## Success Metrics": {"content": "## Success Metrics\n- Metric 1.", "done": False},
+    }
+    complete_body = "\n\n".join(
+        [
+            "## Vision\nA concrete vision statement.",
+            "## Objectives\n- Ship the thing.",
+            "## Success Metrics\n- Adoption reaches 80%.",
+        ]
+    )
+
+    command = await _write_draft_impl("Vision", complete_body, state, config, "call_5")
+
+    assert not (command.update.get("tool_errors") or [])
+    assert command.update["draft_body"] == complete_body
+
+
+@pytest.mark.asyncio
+@patch("app.graphs.agent_tools.interrupt")
 async def test_write_draft_falls_back_to_passed_body_when_sections_incomplete(mock_interrupt, client, db_session):
     """A partial draft_sections accumulator (model called write_draft early) must not clobber a
-    real body the model supplies -- only a COMPLETE set of sections overrides write_draft's body."""
+    real body the model supplies -- only a COMPLETE, all-done set of sections overrides write_draft's
+    body."""
     state, config, _run, _session = await _seed(client, db_session)
-    state["draft_sections"] = {"## Vision": "## Vision\nA concrete vision statement."}
+    state["draft_sections"] = {"## Vision": {"content": "## Vision\nA concrete vision statement.", "done": True}}
     complete_body = "\n\n".join(
         [
             "## Vision\nA concrete vision statement.",

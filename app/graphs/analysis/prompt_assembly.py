@@ -385,29 +385,33 @@ def _build_predecessor_content_block(predecessor_bodies: list[dict[str, Any]]) -
 
 
 def _build_draft_sections_progress_block(state: WorkflowState) -> str:
-    """Progress on write_draft_section's accumulator, when the artifact type has more than one
-    required heading and at least one section has been saved this session."""
+    """Progress on write_draft_section's accumulator, when the mechanism is relevant for this
+    artifact type (multiple required headings, or a table that may need row-batching) and at least
+    one section has been saved this session."""
     draft_sections = state.get("draft_sections") or {}
     if not draft_sections:
         return ""
     try:
-        required_headings = output_contract(state["artifact_type"]).required_headings
+        contract = output_contract(state["artifact_type"])
     except ValueError:
         return ""
-    if len(required_headings) <= 1:
+    required_headings = contract.required_headings
+    if len(required_headings) <= 1 and not contract.table_columns:
         return ""
-    saved = [heading for heading in required_headings if heading in draft_sections]
-    missing = [heading for heading in required_headings if heading not in draft_sections]
-    if not missing:
+    done = [h for h in required_headings if h in draft_sections and draft_sections[h].get("done")]
+    in_progress = [h for h in required_headings if h in draft_sections and not draft_sections[h].get("done")]
+    missing = [h for h in required_headings if h not in draft_sections]
+    if not in_progress and not missing:
         return (
             "\n\nDRAFT SECTIONS: all required headings are saved -- call write_draft now to "
             "assemble and propose (body can be a short placeholder).\n"
         )
-    return (
-        "\n\nDRAFT SECTIONS -- saved: "
-        f"{', '.join(saved) or '(none)'}; still needed: {', '.join(missing)}. "
-        "Call write_draft_section for each remaining heading.\n"
-    )
+    lines = [f"- done: {', '.join(done) if done else '(none)'}"]
+    if in_progress:
+        lines.append(f"- in progress (more batches expected): {', '.join(in_progress)}")
+    if missing:
+        lines.append(f"- not started: {', '.join(missing)}")
+    return "\n\nDRAFT SECTIONS:\n" + "\n".join(lines) + "\n"
 
 
 def _build_artifact_reference_policy_block(
@@ -799,6 +803,15 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         if len(contract.required_headings) > 1
         else ""
     )
+    table_batching_note = (
+        "- A heading whose content is a table can grow large (many rows): write it with "
+        "write_draft_section in batches of roughly 8-10 rows instead of all at once -- call it "
+        "repeatedly for that SAME heading with append=true, done=false on every batch except the "
+        "last (done=true on the final one), one call per turn. This applies even if the artifact "
+        "has only one required heading.\n"
+        if contract.table_columns
+        else ""
+    )
     return (
         "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"
@@ -813,6 +826,7 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         "and mark missing content clearly.\n"
         f"- Guidance: {contract.guidance}\n"
         f"{multi_section_note}"
+        f"{table_batching_note}"
         "Required headings:\n"
         f"{headings}\n"
         f"Table columns when using a table: {columns}\n"

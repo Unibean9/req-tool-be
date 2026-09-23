@@ -121,11 +121,21 @@ def merge_section_findings(
     return {**left, **right}
 
 
-def merge_draft_sections(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
+def merge_draft_sections(
+    left: dict[str, dict[str, Any]] | None, right: dict[str, dict[str, Any]] | None
+) -> dict[str, dict[str, Any]]:
     """Merge write_draft_section updates per heading-key, mirroring merge_decision_nodes.
 
+    Each value is {"content": str, "done": bool} -- "done" False means more batches are expected
+    for that heading (a large table written a chunk at a time) before it counts toward the
+    "every required heading saved" completeness check (see _assembled_draft_sections).
+
     Two write_draft_section calls in one turn each build from the same pre-turn snapshot and return
-    the full dict; per-key union keeps both writes instead of the second clobbering the first.
+    the full dict; per-key union keeps both writes instead of the second clobbering the first -- this
+    only protects calls that target DIFFERENT headings in the same turn. Two calls appending to the
+    SAME heading in the same turn would both build from the same stale snapshot and the second would
+    clobber the first's batch, so write_draft_section's docstring tells the model to spread same-
+    heading batches across separate turns instead of dispatching them together.
     """
     if not left:
         return right or {}
@@ -363,14 +373,16 @@ class WorkflowState(TypedDict):
     # prior defect through the union merge. Two decision tools in one turn each return the full dict
     # built from the same snapshot, so per-key merge keeps both — mirroring decision_nodes.
     section_findings: Annotated[dict[str, list[dict[str, Any]]], merge_section_findings]
-    # Accumulated write_draft_section calls, keyed by required heading (e.g. "## Constraints"),
-    # each value the full "## Heading\n<content>" text for that section. Lets a multi-section
-    # artifact (constraints_assumptions, domain_entity, ...) be drafted across several small tool
-    # calls instead of one large write_draft body — write_draft assembles from here once every
-    # required heading is present (see _resolve_proposed_body) and resets it to {} on success.
+    # Accumulated write_draft_section calls, keyed by required heading (e.g. "## Constraints" or
+    # "## Functional Requirements"). Each value is {"content": <full "## Heading\n..." text so far>,
+    # "done": <bool>}. Lets a large artifact -- multi-heading (constraints_assumptions, domain_entity)
+    # or single-heading-but-many-table-rows (functional_requirement, use_case) -- be drafted across
+    # several small tool calls instead of one large write_draft body. write_draft assembles from here
+    # once every required heading is present AND marked done (see _assembled_draft_sections).
     # Merge reducer for the same reason as decision_nodes/section_findings: two calls in one turn
-    # each build from the same pre-turn snapshot.
-    draft_sections: Annotated[dict[str, str], merge_draft_sections]
+    # each build from the same pre-turn snapshot (see merge_draft_sections for the same-heading
+    # same-turn caveat this does NOT cover).
+    draft_sections: Annotated[dict[str, dict[str, Any]], merge_draft_sections]
 
 
 def build_initial_workflow_state(
