@@ -17,6 +17,11 @@ tasks:
       - docker compose -f docker/docker-compose.dev.yml --env-file .env down -v
       - docker compose -f docker/docker-compose.dev.yml --env-file .env up -d
 
+  seed:demo:
+    desc: Seed the BRD/PRD demo workspace for the selected GitHub-authenticated user
+    cmds:
+      - uv run python scripts/seed_research_platform_demo.py {{.CLI_ARGS}}
+
   dev:
     desc: Run FastAPI development server
     cmds:

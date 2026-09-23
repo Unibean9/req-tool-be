@@ -25,6 +25,7 @@ from app.models import (  # noqa: F401
     User,
     WorkflowRun,
     WorkflowStep,
+    UseCaseModelRecord,
 )
 from app.config import settings
 
