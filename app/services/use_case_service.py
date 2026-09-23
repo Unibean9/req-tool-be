@@ -29,22 +29,36 @@ from app.schemas.use_case import (
     UseCaseGenerateRequest,
     UseCaseLevel,
     UseCaseModelResponse,
+    UseCasePlantUmlResponse,
+    UseCasePlantUmlUpdateRequest,
     UseCaseRelationshipResponse,
     UseCaseResponse,
     UseCaseUpdateRequest,
     UseCaseValidationResponse,
 )
 from app.services.llm_clients import LLMClientFactory
-from app.use_cases.diagram import build_diagram_render_plan
-from app.use_cases.models import RequirementsSourceSnapshot, UseCaseModel
+from app.use_cases.completion import complete_use_case_table
+from app.use_cases.models import (
+    RequirementsSourceSnapshot,
+    UseCaseActor,
+    UseCaseEntry,
+    UseCaseModel,
+    UseCaseRelation,
+    UseCaseRelationshipDraftList,
+    UseCaseSubsystem,
+)
+from app.use_cases.plantuml import render_plantuml
 from app.use_cases.source_loader import load_project_requirements_source
 
 _LEVEL_ORDER = {"L0": 0, "L1": 1, "L2": 2}
 _SLUG_RE = re.compile(r"[^A-Z0-9]+")
+_ABSTRACTION_BY_LEVEL = {"L0": "summary", "L1": "user_goal", "L2": "subfunction"}
+_STATUS_VALUE = {"Confirmed": "confirmed", "Inferred": "inferred", "Suggested": "suggested"}
+_PRIORITY_VALUE = {"Must": "must", "Should": "should", "Could": "could"}
 
 
 class UseCaseService:
-    """Own the aggregate used by the use-case table and diagram endpoints."""
+    """Own the aggregate used by the use-case table and editable PlantUML endpoint."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -283,20 +297,26 @@ class UseCaseService:
         source = await load_project_requirements_source(self.db, project_id=project_id)
         from app.use_cases.harness import UseCaseGenerationHarness
 
-        harness = UseCaseGenerationHarness(source)
+        harness = UseCaseGenerationHarness(source, include_relations=False)
         client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
         try:
             raw_result, usage = await asyncio.wait_for(
                 client.generate(
                     messages=[{"role": "user", "content": harness.build_user_prompt()}],
                     system=harness.build_system_instruction(),
-                    max_tokens=settings.analyze_max_tokens,
+                    max_tokens=settings.use_case_generation_max_tokens,
                     response_format=harness.response_format(),
                 ),
                 timeout=settings.use_case_generation_timeout_seconds,
             )
             payload = _decode_llm_payload(raw_result)
-            model, report = harness.parse_and_validate(payload)
+            candidate = UseCaseModel.model_validate(payload)
+            # The provider may summarize a long PRD and omit entire functional-requirement
+            # families.  Complete the table from the stored BRD/PRD registry before validating
+            # relations; this keeps the table authoritative while preserving explicit candidate
+            # include/extend/generalization relations that can be mapped to it.
+            model = complete_use_case_table(source, candidate)
+            model, report = harness.parse_and_validate(model)
         except TimeoutError as exc:
             raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail="Use-case generation timed out") from exc
         except HTTPException:
@@ -314,6 +334,10 @@ class UseCaseService:
             report=report,
             provider=provider,
             usage=usage,
+            # The table pass above deliberately withholds include/extend/generalization so the
+            # request stays small and fast; the deterministic BRD/PRD floor model can still carry
+            # a couple of hardcoded extend relations, so check the actual model rather than assume.
+            relations_generated=any(relation.kind != "association" for relation in model.relations),
         )
         record = await self._record(project_id, for_update=True)
         if record is None:
@@ -326,6 +350,228 @@ class UseCaseService:
         record.last_generation_error = None
         await self.db.flush()
         return self._response(response_payload, max_level=body.max_level)
+
+    async def generate_relations(
+        self,
+        *,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        body: UseCaseGenerateRequest,
+    ) -> UseCaseModelResponse:
+        """Resolve include/extend/generalization relations for an already-generated table.
+
+        This is the second half of the split generation flow: it never re-derives actors,
+        subsystems, or use cases, so the prompt/response stay small compared to a full table
+        regeneration.
+        """
+
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        if not payload["useCases"]:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail="Generate the use-case table before generating relationships",
+            )
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        from app.use_cases.harness import UseCaseRelationshipHarness
+
+        harness = UseCaseRelationshipHarness(
+            source=source,
+            use_cases=[
+                {
+                    "id": item["id"],
+                    "name": item["title"],
+                    "subsystem": item["subsystem"],
+                    "level": item["level"],
+                    "primaryActorId": item["primaryActorId"],
+                    "supportingActorIds": item.get("supportingActorIds") or [],
+                }
+                for item in payload["useCases"]
+            ],
+            actors=[{"id": item["id"], "name": item["name"]} for item in payload["actors"]],
+        )
+        client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+        try:
+            raw_result, usage = await asyncio.wait_for(
+                client.generate(
+                    messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                    system=harness.build_system_instruction(),
+                    max_tokens=settings.use_case_generation_max_tokens,
+                    response_format=harness.response_format(),
+                ),
+                timeout=settings.use_case_generation_timeout_seconds,
+            )
+            draft_payload = _decode_llm_payload(raw_result)
+            drafts = UseCaseRelationshipDraftList.model_validate(draft_payload).relations
+        except TimeoutError as exc:
+            raise HTTPException(status.HTTP_504_GATEWAY_TIMEOUT, detail="Relationship generation timed out") from exc
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "USE_CASE_RELATIONSHIP_GENERATION_FAILED", "message": str(exc)[:500]},
+            ) from exc
+
+        self._apply_relationship_drafts(payload, drafts)
+        model = self._rebuild_model_for_render(payload, project.name)
+        payload["plantUml"] = {
+            "language": "plantuml",
+            "source": render_plantuml(model),
+            "editable": True,
+            "stale": False,
+            "generatedFrom": "use-case-table",
+        }
+        payload["validation"] = None
+        payload["generation"] = {
+            "source": "ai",
+            "providerConfigId": str(provider.id),
+            "provider": provider.provider_type.value,
+            "model": provider.model_name,
+            "usage": usage,
+            "relationsGenerated": True,
+        }
+        await self._save(record, payload)
+        return self._response(payload, max_level=body.max_level)
+
+    def _apply_relationship_drafts(self, payload: dict[str, Any], drafts: list[Any]) -> None:
+        """Keep hierarchy links, replace every prior include/extend/generalization/association.
+
+        Each draft is checked with the exact same structural rule ``create_relationship`` uses so
+        an AI-proposed relation can never bypass a check a manually created one would fail.
+        """
+
+        payload["relationships"] = [
+            item for item in payload["relationships"] if item.get("type") == RelationshipType.PART_OF.value
+        ]
+        seen: set[tuple[str, str, str]] = set()
+        for draft in drafts:
+            if draft.kind == "association":
+                continue
+            key = (draft.kind, draft.source_id, draft.target_id)
+            if key in seen:
+                continue
+            try:
+                request = RelationshipCreateRequest(
+                    sourceId=draft.source_id,
+                    targetId=draft.target_id,
+                    type=RelationshipType(draft.kind),
+                    condition=draft.condition,
+                )
+                self._validate_relationship(payload, request)
+            except HTTPException:
+                continue
+            relation_id = self._next_relationship_id(payload, draft.source_id, draft.target_id)
+            payload["relationships"].append(
+                {
+                    "id": relation_id,
+                    "sourceId": draft.source_id,
+                    "targetId": draft.target_id,
+                    "type": draft.kind,
+                    "condition": draft.condition,
+                }
+            )
+            seen.add(key)
+
+    @staticmethod
+    def _rebuild_model_for_render(payload: dict[str, Any], system_name: str) -> UseCaseModel:
+        """Reconstruct a renderable ``UseCaseModel`` from the persisted FE-shape aggregate.
+
+        Only ``render_plantuml`` consumes the result, so fields the renderer never reads
+        (description, precondition, source_refs) get safe placeholders instead of the original
+        evidence, which this flattened aggregate does not retain.
+        """
+
+        subsystem_ids: dict[str, str] = {}
+
+        def subsystem_id_for(name: str) -> str:
+            key = name or "General"
+            if key not in subsystem_ids:
+                slug = _SLUG_RE.sub("-", key.upper()).strip("-") or "GEN"
+                subsystem_ids[key] = f"SUB-{slug}"
+            return subsystem_ids[key]
+
+        actors = [
+            UseCaseActor(id=item["id"], name=item["name"], kind="human_role", source_refs=["internal"])
+            for item in payload["actors"]
+        ]
+        use_cases: list[UseCaseEntry] = []
+        subsystems: dict[str, UseCaseSubsystem] = {}
+        for item in payload["useCases"]:
+            subsystem_name = item.get("subsystem") or "General"
+            subsystem_id = subsystem_id_for(subsystem_name)
+            subsystems.setdefault(
+                subsystem_id, UseCaseSubsystem(id=subsystem_id, name=subsystem_name, source_refs=["internal"])
+            )
+            use_cases.append(
+                UseCaseEntry(
+                    id=item["id"],
+                    name=item["title"],
+                    level=item["level"],
+                    abstraction=_ABSTRACTION_BY_LEVEL.get(item["level"], "user_goal"),
+                    primary_actor_id=item["primaryActorId"],
+                    secondary_actor_ids=item.get("supportingActorIds") or [],
+                    subsystem_id=subsystem_id,
+                    parent_use_case_id=item.get("parentUseCaseId"),
+                    description=item.get("description") or "Not specified.",
+                    precondition=item.get("precondition") or "Not specified.",
+                    priority=_PRIORITY_VALUE.get(item["priority"], "should"),
+                    status=_STATUS_VALUE.get(item["status"], "suggested"),
+                    source_refs=["internal"],
+                )
+            )
+        relations = [
+            UseCaseRelation(
+                id=item["id"],
+                kind=item["type"],
+                source_id=item["sourceId"],
+                target_id=item["targetId"],
+                condition=item.get("condition"),
+            )
+            for item in payload["relationships"]
+            if item.get("type") != RelationshipType.PART_OF.value
+        ]
+        return UseCaseModel(
+            system_name=system_name,
+            actors=actors,
+            subsystems=list(subsystems.values()),
+            use_cases=use_cases,
+            relations=relations,
+        )
+
+    async def update_plant_uml(
+        self,
+        *,
+        project_id: uuid.UUID,
+        body: UseCasePlantUmlUpdateRequest,
+    ) -> UseCasePlantUmlResponse:
+        """Persist an edited PlantUML document without regenerating the table.
+
+        The source is intentionally kept as text so a developer can adjust layout, skinparams,
+        notes, or labels without changing the source-backed use-case aggregate.  Only the two
+        PlantUML document markers are required here; PlantUML itself remains the renderer of the
+        document's full syntax.
+        """
+
+        source = body.source.strip()
+        if not _is_plantuml_source(source):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="PlantUML source must contain @startuml and @enduml markers",
+            )
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        plant_uml = {
+            "language": "plantuml",
+            "source": source,
+            "editable": True,
+            "stale": False,
+            "generatedFrom": "manual",
+        }
+        payload["plantUml"] = plant_uml
+        payload["generation"] = {"source": "manual-uml"}
+        await self._save(record, payload)
+        return UseCasePlantUmlResponse.model_validate(plant_uml)
 
     async def _project(self, project_id: uuid.UUID) -> Project:
         project = await self.db.get(Project, project_id)
@@ -556,6 +802,9 @@ class UseCaseService:
     def _invalidate_manual_state(payload: dict[str, Any]) -> None:
         payload["validation"] = None
         payload["generation"] = {"source": "manual"}
+        plant_uml = payload.get("plantUml")
+        if isinstance(plant_uml, dict):
+            plant_uml["stale"] = True
 
     def _response(
         self,
@@ -566,6 +815,34 @@ class UseCaseService:
         include_relationships: bool = True,
     ) -> UseCaseModelResponse:
         data = copy.deepcopy(payload)
+        if data.get("diagrams"):
+            # A structural issue in one diagram must not hide the other diagrams. Generation can
+            # persist a render plan for valid diagrams while omitting plans whose edge endpoints
+            # are malformed. Reconstruct only the missing plans from the semantic aggregate so
+            # the FE can review every level/subsystem; validation remains authoritative for SRS.
+            existing_plans = data.get("diagramPlans") or []
+            existing_ids = {
+                str(item.get("diagramId"))
+                for item in existing_plans
+                if isinstance(item, dict) and item.get("diagramId")
+            }
+            missing_plans = [
+                item
+                for item in _draft_diagram_plans(data)
+                if str(item.get("diagramId")) not in existing_ids
+            ]
+            data["diagramPlans"] = [*existing_plans, *missing_plans]
+        # Older plans did not carry the subsystem label. Enrich them from the semantic
+        # diagram definitions so each L1 plan is distinguishable in the FE selector.
+        diagrams_by_id = {
+            str(item.get("id")): item
+            for item in data.get("diagrams", [])
+            if isinstance(item, dict) and item.get("id")
+        }
+        for plan in data.get("diagramPlans", []):
+            if isinstance(plan, dict) and "subsystem" not in plan:
+                diagram = diagrams_by_id.get(str(plan.get("diagramId")), {})
+                plan["subsystem"] = diagram.get("subsystem")
         max_rank = _LEVEL_ORDER[max_level.value]
         visible_use_cases = [
             item for item in data.get("useCases", []) if _LEVEL_ORDER.get(str(item.get("level")), 2) <= max_rank
@@ -595,6 +872,23 @@ class UseCaseService:
             for item in data.get("diagramPlans", [])
             if _LEVEL_ORDER.get(str(item.get("level")), 2) <= max_rank
         ]
+        # Keep the overview first, followed by deterministic subsystem diagrams. This makes the
+        # FE default view predictable and prevents the first L1 plan from looking like the model
+        # lost its L0 overview.
+        data["diagrams"].sort(
+            key=lambda item: (
+                _LEVEL_ORDER.get(str(item.get("level")), 2),
+                str(item.get("subsystem") or ""),
+                str(item.get("id") or ""),
+            )
+        )
+        data["diagramPlans"].sort(
+            key=lambda item: (
+                _LEVEL_ORDER.get(str(item.get("level")), 2),
+                str(item.get("subsystem") or ""),
+                str(item.get("diagramId") or ""),
+            )
+        )
         response = UseCaseModelResponse.model_validate(data)
         return response
 
@@ -620,6 +914,7 @@ class UseCaseService:
         report,
         provider: LLMProviderConfig,
         usage: dict[str, int] | None,
+        relations_generated: bool = True,
     ) -> dict[str, Any]:
         subsystem_names = {item.id: item.name for item in model.subsystems}
         primary_actor_ids = {item.primary_actor_id for item in model.use_cases}
@@ -669,43 +964,32 @@ class UseCaseService:
                     "condition": relation.condition,
                 }
             )
-        diagrams = [
-            {
-                "id": item.id,
-                "level": item.level,
-                "systemBoundary": item.system_boundary,
-                "subsystem": subsystem_names.get(item.subsystem_id) if item.subsystem_id else None,
-                "actorIds": item.actor_ids,
-                "useCaseIds": item.use_case_ids,
-                "relationIds": item.relation_ids,
-            }
-            for item in model.diagrams
-        ]
-        diagram_plans: list[dict[str, Any]] = []
-        if not report.errors:
-            for item in model.diagrams:
-                try:
-                    plan = build_diagram_render_plan(model, item.id, require_confirmed=False)
-                except ValueError:
-                    continue
-                diagram_plans.append(plan.model_dump(by_alias=True))
         validation = UseCaseValidationResponse.model_validate(report.model_dump())
+        plant_uml = {
+            "language": "plantuml",
+            "source": render_plantuml(model),
+            "editable": True,
+            "stale": False,
+            "generatedFrom": "use-case-table",
+        }
         payload = UseCaseModelResponse(
             projectId=str(project.id),
             projectName=project.name,
             actors=actors,
             useCases=use_cases,
             relationships=relationships,
-            diagrams=diagrams,
-            diagramPlans=diagram_plans,
+            diagrams=[],
+            diagramPlans=[],
             sourceHash=source.source_hash,
             validation=validation,
+            plantUml=plant_uml,
             generation={
                 "source": "ai",
                 "providerConfigId": str(provider.id),
                 "provider": provider.provider_type.value,
                 "model": provider.model_name,
                 "usage": usage,
+                "relationsGenerated": relations_generated,
             },
         )
         return payload.model_dump(by_alias=True, mode="json")
@@ -717,6 +1001,126 @@ def _empty_payload(project: Project) -> dict[str, Any]:
     )
 
 
+def _draft_diagram_plans(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build render-only plans from a persisted FE aggregate.
+
+    Generation stores the semantic diagram definitions even when validation blocks SRS
+    eligibility.  This fallback deliberately performs only endpoint and notation checks; the
+    validation report remains responsible for evidence, language, actor coverage, and level
+    correctness.  Invalid edges are skipped so one malformed relation cannot hide the complete
+    draft canvas.
+    """
+
+    actors = {str(item.get("id")): item for item in payload.get("actors", []) if item.get("id")}
+    use_cases = {str(item.get("id")): item for item in payload.get("useCases", []) if item.get("id")}
+    relationships = {str(item.get("id")): item for item in payload.get("relationships", []) if item.get("id")}
+    plans: list[dict[str, Any]] = []
+
+    for diagram in payload.get("diagrams", []):
+        diagram_id = str(diagram.get("id") or "")
+        if not diagram_id:
+            continue
+        actor_ids = [str(item) for item in diagram.get("actorIds", []) if str(item) in actors]
+        use_case_ids = [str(item) for item in diagram.get("useCaseIds", []) if str(item) in use_cases]
+        node_ids = set(actor_ids) | set(use_case_ids)
+        primary_actor_ids = {
+            str(use_cases[item].get("primaryActorId"))
+            for item in use_case_ids
+            if use_cases[item].get("primaryActorId")
+        }
+        secondary_actor_ids = {
+            str(actor_id)
+            for item in use_case_ids
+            for actor_id in use_cases[item].get("supportingActorIds", [])
+        }
+        nodes: list[dict[str, Any]] = [
+            {
+                "id": f"BOUNDARY-{diagram_id}",
+                "kind": "system_boundary",
+                "label": str(diagram.get("systemBoundary") or "System"),
+                "shape": "rectangle",
+                "side": "inside",
+            }
+        ]
+        for actor_id in actor_ids:
+            actor = actors[actor_id]
+            nodes.append(
+                {
+                    "id": actor_id,
+                    "kind": "actor",
+                    "label": str(actor.get("name") or actor_id),
+                    "shape": "actor",
+                    "side": (
+                        "right" if actor_id in secondary_actor_ids and actor_id not in primary_actor_ids else "left"
+                    ),
+                }
+            )
+        for use_case_id in use_case_ids:
+            item = use_cases[use_case_id]
+            nodes.append(
+                {
+                    "id": use_case_id,
+                    "kind": "use_case",
+                    "label": f"{use_case_id} {item.get('title') or use_case_id}",
+                    "shape": "ellipse",
+                    "side": "inside",
+                }
+            )
+
+        edges: list[dict[str, Any]] = []
+        for relation_id in diagram.get("relationIds", []):
+            relation = relationships.get(str(relation_id))
+            if relation is None:
+                continue
+            kind = str(relation.get("type") or "")
+            source_id = str(relation.get("sourceId") or "")
+            target_id = str(relation.get("targetId") or "")
+            if kind == RelationshipType.PART_OF.value or source_id not in node_ids or target_id not in node_ids:
+                continue
+            source_is_actor = source_id in actors
+            target_is_actor = target_id in actors
+            source_is_use_case = source_id in use_cases
+            target_is_use_case = target_id in use_cases
+            if kind == RelationshipType.ASSOCIATION.value:
+                if not ((source_is_actor and target_is_use_case) or (source_is_use_case and target_is_actor)):
+                    continue
+                line_style, directed, marker, label = "solid", False, "none", None
+            elif kind in {RelationshipType.INCLUDE.value, RelationshipType.EXTEND.value}:
+                if not (source_is_use_case and target_is_use_case):
+                    continue
+                line_style, directed, marker, label = "dashed", True, "open_arrow", f"«{kind}»"
+            elif kind == RelationshipType.GENERALIZATION.value:
+                if not ((source_is_actor and target_is_actor) or (source_is_use_case and target_is_use_case)):
+                    continue
+                line_style, directed, marker, label = "solid", True, "open_triangle", None
+            else:
+                continue
+            edges.append(
+                {
+                    "id": str(relation.get("id") or relation_id),
+                    "sourceId": source_id,
+                    "targetId": target_id,
+                    "kind": kind,
+                    "lineStyle": line_style,
+                    "directed": directed,
+                    "marker": marker,
+                    "label": label,
+                    "condition": relation.get("condition"),
+                }
+            )
+        plans.append(
+            {
+                "diagramId": diagram_id,
+                "level": diagram.get("level"),
+                "systemBoundary": str(diagram.get("systemBoundary") or "System"),
+                "subsystem": diagram.get("subsystem"),
+                "nodes": nodes,
+                "edges": edges,
+            }
+        )
+    return plans
+
+
 def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
     payload = copy.deepcopy(raw) if isinstance(raw, dict) else {}
     payload.setdefault("projectId", str(project.id))
@@ -724,6 +1128,8 @@ def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
     for key in ("actors", "useCases", "relationships", "diagrams", "diagramPlans"):
         if not isinstance(payload.get(key), list):
             payload[key] = []
+    if not isinstance(payload.get("plantUml"), dict):
+        payload["plantUml"] = None
     for item in payload["useCases"]:
         if isinstance(item, dict):
             # Older drafts briefly stored detail-only relationships inside each row.  Keep the
@@ -777,3 +1183,10 @@ def _decode_llm_payload(raw: Any) -> dict[str, Any]:
     if not isinstance(parsed, dict):
         raise ValueError("LLM response must be a JSON object")
     return parsed
+
+
+def _is_plantuml_source(source: str) -> bool:
+    return bool(
+        re.search(r"(?im)^\s*@startuml(?:\s|$)", source)
+        and re.search(r"(?im)^\s*@enduml(?:\s|$)", source)
+    )

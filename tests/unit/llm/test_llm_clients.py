@@ -17,6 +17,7 @@ from app.services.llm_clients import (
     MistralLLMClient,
     OpenAILLMClient,
     _extract_bedrock_text,
+    _extract_google_text,
     _google_contents,
     _parse_generate_text,
     _parse_google_tool_response,
@@ -205,6 +206,24 @@ async def test_google_generate_unwraps_json_schema_response_format(monkeypatch):
     assert body["responseMimeType"] == "application/json"
     assert body["responseJsonSchema"] == ANALYSIS_RESULT_SCHEMA
     assert "responseSchema" not in body
+
+
+def test_google_text_extractor_joins_final_parts_and_skips_thoughts():
+    data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"thought": True, "text": "internal reasoning"},
+                        {"text": '{"answer":'},
+                        {"text": '"ok"}'},
+                    ]
+                }
+            }
+        ]
+    }
+
+    assert _extract_google_text(data) == '{"answer":"ok"}'
 
 
 def test_openai_responses_schema_makes_optional_fields_nullable_and_required():

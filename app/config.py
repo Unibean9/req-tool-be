@@ -88,6 +88,9 @@ class Settings(BaseSettings):
 
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000
+    # Use-case generation returns the complete multi-level table and diagram definitions.  It can
+    # be substantially larger than an analyst turn, so keep its output budget independent.
+    use_case_generation_max_tokens: int = 16000
 
     # "auto" → model decides whether to call a tool (enables clean terminal-text turns).
     # "required" → model must pick at least one tool (pre-M1 behaviour, for rollback).

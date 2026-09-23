@@ -10,6 +10,7 @@ from app.use_cases.models import (
     DiagramRenderPlan,
     RequirementsSourceSnapshot,
     UseCaseModel,
+    UseCaseRelationshipDraftList,
     UseCaseValidationReport,
 )
 from app.use_cases.rules import validate_use_case_model
@@ -29,7 +30,7 @@ MISSION
    and non-association relation MUST cite one or more exact evidence_id values from the snapshot.
 3. Use status=confirmed only when the source explicitly supports the item. Use inferred when the
    item is a conservative normalization of cited evidence. Use suggested only for a reviewable
-   candidate. Do not make inferred/suggested items eligible for the SRS diagram.
+   candidate. Human review is required before an inferred/suggested row is treated as ready for SRS.
 
 NO INVENTED FEATURES
 - Do not add a chatbot, dashboard, notification, report, integration, actor, workflow, or feature
@@ -48,15 +49,15 @@ SOURCE-TO-MODEL PROCEDURE
 2. Language: Actor is a concrete role/external-system noun. System/subsystem is a noun phrase.
    Use Case is active Verb + business Object from the actor's point of view. Avoid passive voice,
    screen names, button names, API/database terms, and vague 'Handle/Process Data' names.
-3. Abstraction: L0 is the single system overview with Summary use cases (Actor × subsystem). L1
-   contains one diagram per subsystem with User Goal use cases. L2 is optional detail only for a
-   genuinely shared subfunction or a complex user goal. Do not use L2 for ordinary step-by-step
-   decomposition. Use parent_use_case_id to make the table hierarchy explicit; an L2 shared
-   subfunction may have multiple include parents instead. A 'Manage X' summary is allowed only
-   when its description lists at least two concrete CRUD-style operations.
+3. Abstraction: L0 is the system overview with Summary use cases (Actor × subsystem). L1 contains
+   User Goal use cases under the relevant capability. L2 is optional detail only for a genuinely
+   shared subfunction or a complex user goal. Do not use L2 for ordinary step-by-step decomposition.
+   Use parent_use_case_id to make the table hierarchy explicit; an L2 shared subfunction may have
+   multiple include parents instead. A 'Manage X' summary is allowed only when its description
+   lists at least two concrete CRUD-style operations.
 4. IDs: use one stable, never-reused UC-01/UC-001 or UC-SUB-01 format consistently. Use the same
-   id and name in the table, every diagram, and traceability. Do not put actor, priority, sprint,
-   or status in an id.
+   id and name in the table, the generated UML source, and traceability. Do not put actor, priority,
+   sprint, or status in an id.
 
 UML/SRS NOTATION
 - System Boundary is a named rectangle. Actors are outside it; use cases are inside ellipses.
@@ -69,15 +70,17 @@ UML/SRS NOTATION
   for a real is-a relationship between two actors or two use cases.
 - Never include Log In/Authenticate in every use case; put authentication in a standalone use case
   or a precondition. Never use an association to show a data flow or a sequence.
-- Keep each diagram readable: approximately 5–12 use cases, at most 6 actors, and no more than 5
-  include/extend relations. Produce exactly one L0 and one L1 per represented subsystem; produce
-  L2 only when needed.
+- The backend renders one editable PlantUML document from the completed table. Do not return
+  coordinates, React Flow nodes, diagram plans, or a second diagram representation. Keep
+  include/extend relations evidence-backed and limited to reusable behavior or a real business
+  extension point.
 
 OUTPUT
-Return JSON only matching the supplied UseCaseModel schema. Do not return Markdown, Mermaid,
+Return JSON only matching the supplied UseCaseModel schema. Leave the legacy `diagrams` field empty;
+the backend generates PlantUML after the table is completed. Do not return Markdown, Mermaid,
 coordinates, or prose. The backend validator is authoritative and will reject unsupported refs,
-invalid names, wrong relation direction/notation, out-of-scope items, missing actors, and diagram
-size/level violations. Human review is required before any inferred/suggested row becomes confirmed.
+invalid names, wrong relation direction/notation, out-of-scope items, or missing actors. Human
+review is required before any inferred/suggested row becomes confirmed.
 """
 
 
@@ -87,6 +90,7 @@ class UseCaseGenerationHarness:
 
     source: RequirementsSourceSnapshot
     language: str = "match_source"
+    include_relations: bool = True
 
     def build_messages(self) -> list[dict[str, Any]]:
         return [
@@ -98,17 +102,27 @@ class UseCaseGenerationHarness:
         return USE_CASE_AGENT_SYSTEM_PROMPT
 
     def build_user_prompt(self) -> str:
-        return "\n\n".join(
+        parts = [
+            "Generate the use-case model for this stored project source snapshot.",
+            f"source_hash: {self.source.source_hash}",
+            f"language_policy: {self.language} (keep diagram labels consistent with the source documents)",
+            "First reason over every component internally. Return only the final JSON object.",
+        ]
+        if not self.include_relations:
+            parts.append(
+                "RELATIONS PASS: this call only establishes actors, subsystems, and use cases. "
+                "Return an empty `relations` list. include/extend/generalization relations are "
+                "resolved in a separate follow-up call against this same completed table; do not "
+                "guess at them here."
+            )
+        parts.extend(
             (
-                "Generate the use-case model for this stored project source snapshot.",
-                f"source_hash: {self.source.source_hash}",
-                f"language_policy: {self.language} (keep diagram labels consistent with the source documents)",
-                "First reason over every component internally. Return only the final JSON object.",
                 "\n--- FULL STORED BRD/PRD COMPONENTS ---\n" + self.source.render_full_source(),
                 "\n--- COMPLETE EVIDENCE INDEX ---\n" + self.source.render_evidence_index(),
                 "\n--- JSON SCHEMA ---\n" + _schema_text(),
             )
         )
+        return "\n\n".join(parts)
 
     def output_schema(self) -> dict[str, Any]:
         return UseCaseModel.model_json_schema()
@@ -147,7 +161,80 @@ class UseCaseGenerationHarness:
         return build_diagram_render_plan(model, diagram_id, require_confirmed=require_confirmed)
 
 
+USE_CASE_RELATIONSHIP_SYSTEM_PROMPT = """You are the ReqTool Use-Case Relationship Agent.
+
+The actors, subsystems, and use cases below are already final for this pass; do not rename,
+add, remove, or re-scope any of them. Your only job is to propose include/extend/generalization
+relations between them, grounded in the same CURRENT PROJECT REQUIREMENTS SOURCE SNAPSHOT you are
+given. Do not return association relations: every actor-to-use-case association is already
+established by each use case's primary/supporting actors and must not be repeated here.
+
+RELATION SEMANTICS
+- «include» is a dashed directed arrow from the base use case to the mandatory shared included use
+  case. Use it only for reusable behavior shared by at least two use cases; never for a single-use
+  step, and never invent an included use case that is not already in the supplied list.
+- «extend» is a dashed directed arrow from the optional extension use case to the base use case and
+  MUST include a business condition/extension point. The base remains complete without it.
+- Generalization is a directed is-a relation (child -> parent) between two actors or two use cases
+  from the supplied lists; use it only for a genuine specialization, not a loose similarity.
+- Never invent a relation to justify padding the output. An empty or short relations list is
+  correct when the source does not support reusable/optional/is-a behavior.
+
+OUTPUT
+Return JSON only matching the supplied schema: a `relations` array of
+`{kind, source_id, target_id, condition}` objects, where `source_id`/`target_id` are existing
+actor or use-case ids from the supplied lists. Do not return an `id`, Markdown, or prose.
+"""
+
+
+@dataclass(frozen=True)
+class UseCaseRelationshipHarness:
+    """Prompt boundary for the follow-up call that resolves include/extend/generalization only."""
+
+    source: RequirementsSourceSnapshot
+    use_cases: list[dict[str, Any]]
+    actors: list[dict[str, Any]]
+
+    def build_system_instruction(self) -> str:
+        return USE_CASE_RELATIONSHIP_SYSTEM_PROMPT
+
+    def build_user_prompt(self) -> str:
+        import json
+
+        return "\n\n".join(
+            (
+                "Propose include/extend/generalization relations for this already-completed use-case table.",
+                f"source_hash: {self.source.source_hash}",
+                "First reason over every component internally. Return only the final JSON object.",
+                "\n--- ACTORS ---\n" + json.dumps(self.actors, ensure_ascii=False, indent=2),
+                "\n--- USE CASES ---\n" + json.dumps(self.use_cases, ensure_ascii=False, indent=2),
+                "\n--- FULL STORED BRD/PRD COMPONENTS ---\n" + self.source.render_full_source(),
+                "\n--- COMPLETE EVIDENCE INDEX ---\n" + self.source.render_evidence_index(),
+                "\n--- JSON SCHEMA ---\n" + _relationship_schema_text(),
+            )
+        )
+
+    def output_schema(self) -> dict[str, Any]:
+        return UseCaseRelationshipDraftList.model_json_schema()
+
+    def response_format(self) -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "reqtool_use_case_relationships",
+                "strict": True,
+                "schema": self.output_schema(),
+            },
+        }
+
+
 def _schema_text() -> str:
     import json
 
     return json.dumps(UseCaseModel.model_json_schema(), ensure_ascii=False, indent=2)
+
+
+def _relationship_schema_text() -> str:
+    import json
+
+    return json.dumps(UseCaseRelationshipDraftList.model_json_schema(), ensure_ascii=False, indent=2)

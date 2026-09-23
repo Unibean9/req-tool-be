@@ -310,7 +310,23 @@ def _create_google_sdk(*, api_key: str, timeout: float):
     from google import genai
     from google.genai import types
 
-    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+    # Gemini returns 503 UNAVAILABLE ("high demand") and 504 DEADLINE_EXCEEDED for transient
+    # overload; without retry_options the SDK never retries (it defaults to None = no retries) and
+    # every spike bubbles straight up as a hard failure. The default http_status_codes already
+    # cover 408/429/5xx, so only attempts/backoff need to be set.
+    #
+    # This helper is shared by every Google call, including the health-check ping, which uses a
+    # short per-call timeout (10s) wrapped by an even tighter outer deadline
+    # (llm_provider_health_timeout_seconds = 25s). attempts must stay low enough that even a
+    # genuinely slow/hanging attempt (not a fast-failing 503) can retry once and still land inside
+    # that outer deadline instead of being cut off mid-retry and surfacing as a bare
+    # ``asyncio.TimeoutError`` with no useful message. The generate() path has a much larger
+    # budget (120s per call / 180s outer) and tolerates this fine.
+    retry_options = types.HttpRetryOptions(attempts=2, initial_delay=1.0, max_delay=5.0, exp_base=2.0, jitter=1.0)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(timeout * 1000), retry_options=retry_options),
+    )
 
 
 async def _openai_create_response(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
@@ -453,7 +469,7 @@ class ChatCompletionsLLMClient:
         body = {
             "model": self.config.model,
             "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
-            "max_tokens": 20,
+            "max_tokens": 100,
             "tools": [_to_openai_chat_tool(_TOOL_CALL_PROBE)],
             "tool_choice": self._wire_tool_choice(tool_choice),
         }
@@ -594,7 +610,7 @@ class GoogleLLMClient:
                 "toolConfig": {
                     "functionCallingConfig": {"mode": "ANY" if tool_choice == "required" else "AUTO"}
                 },
-                "maxOutputTokens": 20,
+                "maxOutputTokens": 100,
             },
         }
         data = await _google_generate_content(self.config.api_key, 10.0, body)
@@ -681,7 +697,7 @@ class AnthropicLLMClient:
     async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         body = {
             "model": self.config.model,
-            "max_tokens": 20,
+            "max_tokens": 100,
             "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
             "tools": [
                 {
@@ -841,7 +857,7 @@ class BedrockLLMClient:
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-                inferenceConfig={"maxTokens": 20, "temperature": 0.0},
+                inferenceConfig={"maxTokens": 100, "temperature": 0.0},
                 toolConfig=tool_config,
             )
             return _has_valid_probe_tool_call(_parse_bedrock_tool_response(response).tool_calls)
@@ -858,7 +874,7 @@ class BedrockLLMClient:
             tool_config["toolChoice"] = {"any": {}}
         body = {
             "messages": [{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-            "inferenceConfig": {"maxTokens": 20, "temperature": 0.0},
+            "inferenceConfig": {"maxTokens": 100, "temperature": 0.0},
             "toolConfig": tool_config,
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -1543,9 +1559,17 @@ def _extract_google_text(data: dict[str, Any]) -> str | None:
     if not candidates:
         return None
     parts = candidates[0].get("content", {}).get("parts") or []
-    if not parts:
-        return None
-    return parts[0].get("text")
+    text_parts = [
+        str(part["text"])
+        for part in parts
+        if isinstance(part, dict) and part.get("text") is not None and not part.get("thought", False)
+    ]
+    # Thinking-capable Gemini models can return a thought part before the final JSON part.  If a
+    # provider returns only thought-marked parts, retain the old fallback so the caller still gets
+    # a useful parse error rather than silently treating the response as empty.
+    if not text_parts:
+        text_parts = [str(part["text"]) for part in parts if isinstance(part, dict) and part.get("text") is not None]
+    return "".join(text_parts) or None
 
 
 def _bedrock_content(content: Any) -> list[dict[str, Any]]:

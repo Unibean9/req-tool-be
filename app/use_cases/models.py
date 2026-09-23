@@ -233,8 +233,30 @@ class UseCaseRelation(BaseModel):
     source_refs: list[str] = Field(default_factory=list)
 
 
+class UseCaseRelationshipDraft(BaseModel):
+    """One include/extend/generalization relation proposed by the relationship-resolution pass.
+
+    The LLM is not trusted with a stable, collision-free ``REL-*`` id here; the service assigns
+    one deterministically after the draft passes the same structural checks as a manually created
+    relationship.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: RelationKind
+    source_id: str
+    target_id: str
+    condition: str | None = Field(default=None, max_length=300)
+
+
+class UseCaseRelationshipDraftList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relations: list[UseCaseRelationshipDraft] = Field(default_factory=list)
+
+
 class UseCaseDiagramDefinition(BaseModel):
-    """A semantic diagram definition; a renderer supplies positions and concrete UI nodes."""
+    """Legacy semantic diagram definition kept only for backward-compatible stored records."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -248,7 +270,7 @@ class UseCaseDiagramDefinition(BaseModel):
 
 
 class UseCaseModel(BaseModel):
-    """The only model a future API should persist or hand to the FE renderer."""
+    """The source-backed table aggregate used to render the editable UML document."""
 
     model_config = ConfigDict(extra="forbid")
 

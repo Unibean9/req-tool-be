@@ -1,4 +1,4 @@
-"""Use-case table, diagram, and generation endpoints."""
+"""Use-case table, PlantUML source, and generation endpoints."""
 
 from __future__ import annotations
 
@@ -23,6 +23,8 @@ from app.schemas.use_case import (
     UseCaseGenerateRequest,
     UseCaseLevel,
     UseCaseModelResponse,
+    UseCasePlantUmlResponse,
+    UseCasePlantUmlUpdateRequest,
     UseCaseRelationshipResponse,
     UseCaseResponse,
     UseCaseUpdateRequest,
@@ -69,6 +71,40 @@ async def generate_use_case_model(
 ) -> Any:
     await require_project_access(project_id, user, db)
     return ok(await UseCaseService(db).generate(project_id=project_id, user_id=user.id, body=body))
+
+
+@router.post(
+    "/use-case-model/relations/generate",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def generate_use_case_relations(
+    project_id: uuid.UUID,
+    body: UseCaseGenerateRequest = Body(default_factory=UseCaseGenerateRequest),
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Resolve include/extend/generalization for an already-generated table (step 2 of 2)."""
+
+    await require_project_access(project_id, user, db)
+    return ok(await UseCaseService(db).generate_relations(project_id=project_id, user_id=user.id, body=body))
+
+
+@router.patch(
+    "/use-case-model/uml",
+    response_model=ApiResponse[UseCasePlantUmlResponse],
+    response_model_by_alias=True,
+)
+async def update_use_case_uml(
+    project_id: uuid.UUID,
+    body: UseCasePlantUmlUpdateRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Save developer edits to the PlantUML source without rerunning the LLM."""
+
+    await require_project_access(project_id, user, db)
+    return ok(await UseCaseService(db).update_plant_uml(project_id=project_id, body=body))
 
 
 @router.get(

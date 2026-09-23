@@ -1,10 +1,10 @@
-"""HTTP contracts for the editable use-case table and diagram model."""
+"""HTTP contracts for the editable use-case table and PlantUML source."""
 
 from __future__ import annotations
 
 import enum
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -111,6 +111,7 @@ class DiagramPlanResponse(UseCaseApiModel):
     diagram_id: str = Field(alias="diagramId")
     level: UseCaseLevel
     system_boundary: str = Field(alias="systemBoundary")
+    subsystem: str | None = None
     nodes: list[DiagramNodeResponse] = Field(default_factory=list)
     edges: list[DiagramEdgeResponse] = Field(default_factory=list)
 
@@ -129,6 +130,22 @@ class UseCaseValidationResponse(UseCaseApiModel):
     confirmed_use_case_ids: list[str] = Field(default_factory=list, alias="confirmedUseCaseIds")
 
 
+class UseCasePlantUmlResponse(UseCaseApiModel):
+    """Editable PlantUML source rendered from the current use-case table."""
+
+    language: Literal["plantuml"] = "plantuml"
+    source: str
+    editable: bool = True
+    stale: bool = False
+    generated_from: Literal["use-case-table", "manual"] = Field(
+        default="use-case-table", alias="generatedFrom"
+    )
+
+
+class UseCasePlantUmlUpdateRequest(UseCaseApiModel):
+    source: str = Field(min_length=1, max_length=500_000)
+
+
 class UseCaseModelResponse(UseCaseApiModel):
     project_id: str = Field(alias="projectId")
     project_name: str = Field(alias="projectName")
@@ -140,6 +157,7 @@ class UseCaseModelResponse(UseCaseApiModel):
     source_hash: str | None = Field(default=None, alias="sourceHash")
     validation: UseCaseValidationResponse | None = None
     generation: dict[str, Any] | None = None
+    plant_uml: UseCasePlantUmlResponse | None = Field(default=None, alias="plantUml")
 
 
 class ActorCreateRequest(UseCaseApiModel):

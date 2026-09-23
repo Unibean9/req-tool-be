@@ -1,8 +1,8 @@
 """Deterministic use-case rules from the supplied SRS guide and reference article.
 
 The LLM may propose names and relations, but this module is the authority that decides whether a
-model is traceable and renderable.  Unsupported or out-of-scope proposals are reported as issues;
-the API can persist the reviewable result without exposing it as an eligible SRS diagram.
+model is traceable and ready for UML/SRS review. Unsupported or out-of-scope proposals are
+reported as issues; the API can persist the reviewable table while keeping the UML source editable.
 """
 
 from __future__ import annotations
@@ -27,21 +27,29 @@ _VERB_PREFIXES = {
     "analyze",
     "approve",
     "assign",
+    "assess",
+    "audit",
     "build",
     "capture",
     "check",
+    "clean",
     "compare",
     "configure",
     "control",
     "create",
     "define",
     "delete",
+    "establish",
     "evaluate",
     "execute",
+    "authenticate",
+    "flag",
     "generate",
+    "govern",
     "handle",
     "inspect",
     "invite",
+    "improve",
     "manage",
     "measure",
     "monitor",
@@ -49,6 +57,7 @@ _VERB_PREFIXES = {
     "pay",
     "plan",
     "preserve",
+    "profile",
     "publish",
     "record",
     "refine",
@@ -63,6 +72,7 @@ _VERB_PREFIXES = {
     "send",
     "submit",
     "track",
+    "trace",
     "upload",
     "validate",
     "version",
@@ -208,24 +218,20 @@ def validate_use_case_model(
                 )
 
     _validate_actor_and_goal_coverage(issues, model, actors_by_id, use_cases_by_id)
-    _validate_diagrams(issues, model, actors_by_id, use_cases_by_id, relations_by_id)
+    # PlantUML is rendered from the completed table after validation.  Legacy semantic diagram
+    # definitions may still be present in an older candidate, but they are no longer a generation
+    # gate and are not exposed as the current FE output.
 
     confirmed_ids = [item.id for item in model.use_cases if item.status == "confirmed"]
     error_free = not any(issue.severity == "error" for issue in issues)
-    eligible_diagram_ids = [
-        diagram.id
-        for diagram in model.diagrams
-        if _diagram_has_no_errors(diagram, issues)
-        and all(use_cases_by_id.get(item_id, None) is not None for item_id in diagram.use_case_ids)
-        and all(use_cases_by_id[item_id].status == "confirmed" for item_id in diagram.use_case_ids)
-    ]
+    eligible_diagram_ids: list[str] = []
     all_confirmed = bool(model.use_cases) and len(confirmed_ids) == len(model.use_cases)
     if model.use_cases and not all_confirmed:
         issues.append(
             _issue(
                 "warning",
                 "HUMAN_CONFIRMATION_REQUIRED",
-                "Inferred or suggested use cases are not eligible for the SRS diagrams until a human confirms them.",
+                "Inferred or suggested use cases require human confirmation before SRS/UML review.",
                 "use_cases",
             )
         )
@@ -241,7 +247,7 @@ def validate_use_case_model(
 
     return UseCaseValidationReport(
         issues=issues,
-        eligible_for_srs=error_free and all_confirmed and bool(model.diagrams),
+        eligible_for_srs=error_free and all_confirmed,
         eligible_diagram_ids=eligible_diagram_ids,
         confirmed_use_case_ids=confirmed_ids,
     )
