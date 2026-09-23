@@ -57,6 +57,12 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     "ask_user": ToolMetadata("ask_user", readonly=False, interrupts=True, writes_db=True),
     "respond": ToolMetadata("respond", readonly=False, interrupts=True, writes_db=True),
     "write_draft": ToolMetadata("write_draft", readonly=False, interrupts=True, writes_db=True),
+    # Accumulates one section of a multi-section draft into state.draft_sections; no interrupt, no
+    # DB write — the actual proposal still happens through write_draft once every required heading
+    # is saved. Classified like "note" so it can ride along with an interrupt-bearing tool call.
+    "write_draft_section": ToolMetadata(
+        "write_draft_section", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True
+    ),
     "confirm_intent": ToolMetadata("confirm_intent", readonly=False, interrupts=True, writes_db=True),
     "note": ToolMetadata("note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True),
     # Deprecated alias of "note" — kept so ToolNode resuming an old checkpoint (whose tool_call

@@ -121,6 +121,19 @@ def merge_section_findings(
     return {**left, **right}
 
 
+def merge_draft_sections(left: dict[str, str] | None, right: dict[str, str] | None) -> dict[str, str]:
+    """Merge write_draft_section updates per heading-key, mirroring merge_decision_nodes.
+
+    Two write_draft_section calls in one turn each build from the same pre-turn snapshot and return
+    the full dict; per-key union keeps both writes instead of the second clobbering the first.
+    """
+    if not left:
+        return right or {}
+    if not right:
+        return left
+    return {**left, **right}
+
+
 SOURCE_CONTEXT_LIMIT = 12
 
 
@@ -350,6 +363,14 @@ class WorkflowState(TypedDict):
     # prior defect through the union merge. Two decision tools in one turn each return the full dict
     # built from the same snapshot, so per-key merge keeps both — mirroring decision_nodes.
     section_findings: Annotated[dict[str, list[dict[str, Any]]], merge_section_findings]
+    # Accumulated write_draft_section calls, keyed by required heading (e.g. "## Constraints"),
+    # each value the full "## Heading\n<content>" text for that section. Lets a multi-section
+    # artifact (constraints_assumptions, domain_entity, ...) be drafted across several small tool
+    # calls instead of one large write_draft body — write_draft assembles from here once every
+    # required heading is present (see _resolve_proposed_body) and resets it to {} on success.
+    # Merge reducer for the same reason as decision_nodes/section_findings: two calls in one turn
+    # each build from the same pre-turn snapshot.
+    draft_sections: Annotated[dict[str, str], merge_draft_sections]
 
 
 def build_initial_workflow_state(
@@ -411,4 +432,5 @@ def build_initial_workflow_state(
         "session_phase": None,
         "out_of_phase_tool_calls": 0,
         "section_findings": {},
+        "draft_sections": {},
     }

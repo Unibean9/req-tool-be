@@ -384,6 +384,32 @@ def _build_predecessor_content_block(predecessor_bodies: list[dict[str, Any]]) -
     )
 
 
+def _build_draft_sections_progress_block(state: WorkflowState) -> str:
+    """Progress on write_draft_section's accumulator, when the artifact type has more than one
+    required heading and at least one section has been saved this session."""
+    draft_sections = state.get("draft_sections") or {}
+    if not draft_sections:
+        return ""
+    try:
+        required_headings = output_contract(state["artifact_type"]).required_headings
+    except ValueError:
+        return ""
+    if len(required_headings) <= 1:
+        return ""
+    saved = [heading for heading in required_headings if heading in draft_sections]
+    missing = [heading for heading in required_headings if heading not in draft_sections]
+    if not missing:
+        return (
+            "\n\nDRAFT SECTIONS: all required headings are saved -- call write_draft now to "
+            "assemble and propose (body can be a short placeholder).\n"
+        )
+    return (
+        "\n\nDRAFT SECTIONS -- saved: "
+        f"{', '.join(saved) or '(none)'}; still needed: {', '.join(missing)}. "
+        "Call write_draft_section for each remaining heading.\n"
+    )
+
+
 def _build_artifact_reference_policy_block(
     artifacts: list[dict], current_artifact_type: str, preloaded_types: frozenset[str] = frozenset()
 ) -> str:
@@ -462,6 +488,9 @@ def _build_tool_selection_prompt(
         else ""
     )
     section_coverage_hint = _build_section_coverage_hint(state) if _phase_includes(state, "section_coverage") else ""
+    draft_sections_block = (
+        _build_draft_sections_progress_block(state) if _phase_includes(state, "decision_view") else ""
+    )
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
     situation_report_block = _build_situation_report_block(state)
@@ -478,6 +507,7 @@ def _build_tool_selection_prompt(
         f"Tools available this turn: {tool_menu}.\n"
         "Choose 1-3 suitable tools and fill each tool's fields according to the system prompt policy."
         f"{section_coverage_hint}"
+        f"{draft_sections_block}"
         f"{key_facts_block}"
         f"{summary_block}"
         f"{feedback_block}"
@@ -761,6 +791,14 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
+    multi_section_note = (
+        "- This artifact has multiple required sections: write each one with its own "
+        "write_draft_section(heading, content) call instead of one large write_draft body -- "
+        "each call is smaller and faster. Call write_draft only after every required heading has "
+        "been saved this way; write_draft then assembles them automatically.\n"
+        if len(contract.required_headings) > 1
+        else ""
+    )
     return (
         "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"
@@ -774,6 +812,7 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         "- Do not weaken the body by dropping headings; if data is insufficient, keep headings "
         "and mark missing content clearly.\n"
         f"- Guidance: {contract.guidance}\n"
+        f"{multi_section_note}"
         "Required headings:\n"
         f"{headings}\n"
         f"Table columns when using a table: {columns}\n"

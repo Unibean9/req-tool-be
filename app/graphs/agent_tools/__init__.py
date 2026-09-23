@@ -151,9 +151,11 @@ from app.graphs.agent_tools.draft_lifecycle import (  # noqa: E402
     _resolve_proposed_body,
     _stale_predecessor_warnings,
     _write_draft_impl,
+    _write_draft_section_impl,
     finalize,
     synthesize_executive_summary,
     write_draft,
+    write_draft_section,
 )
 from app.graphs.agent_tools.interaction import (  # noqa: E402
     _BATCH_QUESTION_TYPES,
@@ -222,6 +224,7 @@ def get_all_analyzer_tools() -> list:
         ask_user,
         respond,
         write_draft,
+        write_draft_section,
         finalize,
         note,
         critique_note,
@@ -310,6 +313,7 @@ def get_available_tools(state: WorkflowState) -> list:
         ask_user,
         respond,
         write_draft,
+        write_draft_section,
         note,
         confirm_intent,
         read_artifact,
@@ -399,6 +403,7 @@ __all__ = [
     '_tool_is_available',
     '_tool_not_available_update',
     '_write_draft_impl',
+    '_write_draft_section_impl',
     '_write_note_impl',
     'artifact_stage',
     'ask_user',
@@ -430,4 +435,5 @@ __all__ = [
     'web_search',
     'web_search_tool',
     'write_draft',
+    'write_draft_section',
 ]
