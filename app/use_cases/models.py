@@ -151,7 +151,14 @@ class RequirementsSourceSnapshot(BaseModel):
         return "\n\n".join(blocks)
 
     def render_evidence_index(self) -> str:
-        """Render all citations compactly so every generated item can cite a source id."""
+        """Render citation identity and a short locator excerpt.
+
+        ``render_full_source`` is the authoritative, complete BRD/PRD input.  The evidence
+        index only exists to make stable ``source_refs`` easy to choose.  Including the full
+        excerpt for every evidence item duplicates the source several times and can make a
+        generation request exceed the provider's practical deadline, so keep this derived
+        index bounded while retaining the evidence id and locator needed for traceability.
+        """
 
         lines = [
             "evidence_id | document | component | kind | locator | excerpt",
@@ -159,6 +166,8 @@ class RequirementsSourceSnapshot(BaseModel):
         ]
         for item in self.evidence:
             excerpt = " ".join(item.excerpt.split()).replace("|", "\\|")
+            if len(excerpt) > 160:
+                excerpt = excerpt[:159].rstrip() + "…"
             lines.append(
                 "| ".join(
                     (

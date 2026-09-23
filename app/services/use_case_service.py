@@ -293,7 +293,7 @@ class UseCaseService:
                     max_tokens=settings.analyze_max_tokens,
                     response_format=harness.response_format(),
                 ),
-                timeout=settings.agent_turn_timeout_seconds,
+                timeout=settings.use_case_generation_timeout_seconds,
             )
             payload = _decode_llm_payload(raw_result)
             model, report = harness.parse_and_validate(payload)

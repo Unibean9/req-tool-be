@@ -616,7 +616,12 @@ class GoogleLLMClient:
         config: dict[str, Any] = {"maxOutputTokens": max_tokens}
         if response_format:
             config["responseMimeType"] = "application/json"
-            config["responseSchema"] = response_format.get("schema", response_format)
+            # Gemini's responseSchema is a provider-specific OpenAPI subset.  The shared
+            # harness sends the OpenAI-style wrapper {type: json_schema, json_schema: {...}},
+            # which must be unwrapped and sent through responseJsonSchema.  Passing the wrapper
+            # to responseSchema makes google-genai validate `name`/`strict`/`json_schema` as
+            # fields of types.Schema and fail before the network request is made.
+            config["responseJsonSchema"] = _json_schema_body(response_format)
         if system:
             config["systemInstruction"] = {"parts": [{"text": system}]}
 
@@ -626,7 +631,9 @@ class GoogleLLMClient:
             "config": config,
         }
 
-        data = await _google_generate_content(self.config.api_key, 30.0, body)
+        # A complete BRD/PRD snapshot can take longer to process than a normal chat turn.
+        # The service-level timeout remains the final request deadline.
+        data = await _google_generate_content(self.config.api_key, 120.0, body)
 
         text = _extract_google_text(data)
         return _parse_generate_text(text, response_format), _extract_google_usage(data)
@@ -1110,6 +1117,14 @@ def _json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
             "strict": response_format.get("strict", True),
         }
     return response_format
+
+
+def _json_schema_body(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Extract the provider-neutral JSON Schema from any supported response-format wrapper."""
+
+    schema_format = _json_schema_format(response_format)
+    schema = schema_format.get("schema")
+    return schema if isinstance(schema, dict) else schema_format
 
 
 def _responses_json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:

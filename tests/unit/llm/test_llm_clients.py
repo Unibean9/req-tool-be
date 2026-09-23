@@ -178,6 +178,35 @@ async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch
     }
 
 
+@pytest.mark.asyncio
+async def test_google_generate_unwraps_json_schema_response_format(monkeypatch):
+    recorder = _install_httpx_recorder(
+        monkeypatch,
+        {"candidates": [{"content": {"parts": [{"text": json.dumps(ANALYSIS_RESULT)}]}}]},
+    )
+    client = GoogleLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "reqtool_use_case_model",
+            "strict": True,
+            "schema": ANALYSIS_RESULT_SCHEMA,
+        },
+    }
+
+    await client.generate(
+        messages=[{"role": "user", "content": "Analyze requirements"}],
+        system="You are a BA.",
+        max_tokens=256,
+        response_format=response_format,
+    )
+
+    body = recorder.requests[0]["json"]
+    assert body["responseMimeType"] == "application/json"
+    assert body["responseJsonSchema"] == ANALYSIS_RESULT_SCHEMA
+    assert "responseSchema" not in body
+
+
 def test_openai_responses_schema_makes_optional_fields_nullable_and_required():
     schema = {
         "type": "object",
