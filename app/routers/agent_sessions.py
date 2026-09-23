@@ -156,6 +156,11 @@ async def stream_session_events(
             session_id=session_id,
             user_id=user.id,
             request=request,
+            # While WAITING_FOR_HUMAN the panel can stay open indefinitely with nothing changing;
+            # back off from the 0.5s active-turn cadence instead of rebuilding the full snapshot
+            # (session + messages + tool calls + every artifact's version/review history) twice
+            # a second for no reason.
+            idle_interval_seconds=5.0,
         ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},

@@ -73,6 +73,7 @@ class AgentEventService:
         user_id: uuid.UUID,
         request: Request,
         interval_seconds: float = 0.5,
+        idle_interval_seconds: float | None = None,
         heartbeat_seconds: float = HEARTBEAT_INTERVAL_SECONDS,
     ) -> AsyncIterator[str]:
         snapshot = await self.build_snapshot(project_id=project_id, session_id=session_id, user_id=user_id)
@@ -96,7 +97,16 @@ class AgentEventService:
                 )
                 return
 
-            await asyncio.sleep(interval_seconds)
+            # WAITING_FOR_HUMAN can sit open for as long as the workbench panel stays on screen;
+            # rebuilding the full snapshot (session + messages + tool calls + every artifact's
+            # full version/review history) every interval_seconds is fine while a turn is
+            # actively producing output, but at rest it burns DB load for no visible change.
+            # build_snapshot's lazy TTL expiry still runs on this cadence, just far less often —
+            # session_abandoned_ttl is measured in hours, so seconds of slack here don't matter.
+            sleep_seconds = interval_seconds
+            if idle_interval_seconds is not None and status == AgentSessionStatus.WAITING_FOR_HUMAN.value:
+                sleep_seconds = idle_interval_seconds
+            await asyncio.sleep(sleep_seconds)
             try:
                 next_snapshot = await self.build_snapshot(
                     project_id=project_id,

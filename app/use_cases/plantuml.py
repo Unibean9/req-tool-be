@@ -145,21 +145,15 @@ def _system_block(
 
 
 def _actor_use_case_connections(model: UseCaseModel) -> dict[str, set[str]]:
+    """Primary-actor connections only, so left/right placement matches what actually gets drawn.
+
+    Weighing this by secondary actors too (who no longer get an association line, see
+    _association_lines) would balance sides using edges the diagram never renders.
+    """
+
     connections: dict[str, set[str]] = defaultdict(set)
     for item in model.use_cases:
         connections[item.primary_actor_id].add(item.id)
-        for actor_id in item.secondary_actor_ids:
-            connections[actor_id].add(item.id)
-
-    use_case_ids = {item.id for item in model.use_cases}
-    actor_ids = {actor.id for actor in model.actors}
-    for relation in model.relations:
-        if relation.kind != _ASSOCIATION:
-            continue
-        if relation.source_id in actor_ids and relation.target_id in use_case_ids:
-            connections[relation.source_id].add(relation.target_id)
-        elif relation.target_id in actor_ids and relation.source_id in use_case_ids:
-            connections[relation.target_id].add(relation.source_id)
     return connections
 
 
@@ -278,11 +272,23 @@ def _association_lines(
     use_case_aliases: dict[str, str],
     use_case_order: dict[str, int],
 ) -> list[str]:
+    """Draw only the primary-actor association per use case.
+
+    Drawing every secondary actor too roughly doubles the association count; on a
+    system-wide diagram with dozens of use cases that is the single biggest source of long,
+    crossing lines. Secondary actors stay fully available in the table/use-case detail view,
+    they just are not redrawn here. An actor that is never anyone's primary actor ends up
+    without an association line on this diagram as a result.
+    """
+
+    primary_actor_by_use_case = {item.id: item.primary_actor_id for item in model.use_cases}
     seen: set[tuple[str, str]] = set()
     entries: list[tuple[int, str, str]] = []
 
     def add(actor_id: str, use_case_id: str) -> None:
         if actor_id not in actor_aliases or use_case_id not in use_case_aliases:
+            return
+        if actor_id != primary_actor_by_use_case.get(use_case_id):
             return
         key = (actor_id, use_case_id)
         if key in seen:
@@ -298,12 +304,10 @@ def _association_lines(
         elif relation.target_id in actor_aliases and relation.source_id in use_case_aliases:
             add(relation.target_id, relation.source_id)
 
-    # Fall back to the table's declared primary/secondary actors so every use case stays
-    # connected even when the relationship list omits an explicit association row.
+    # Fall back to the table's declared primary actor so every use case stays connected even
+    # when the relationship list omits an explicit association row.
     for item in model.use_cases:
         add(item.primary_actor_id, item.id)
-        for actor_id in item.secondary_actor_ids:
-            add(actor_id, item.id)
 
     if not entries:
         return []

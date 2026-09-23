@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     # healthy operation — hitting it means the model is stuck looping without interacting.
     max_agent_turns: int = 30
     llm_provider_health_timeout_seconds: float = 25.0
-    agent_turn_timeout_seconds: float = 90.0
+    # A multi-step graph turn (context gathering, drafting, self-critique) can chain several LLM
+    # calls; a single call alone has been observed to take 60-70s against a loaded provider, so
+    # 90s left almost no room for a second step and made ordinary artifact drafting time out.
+    agent_turn_timeout_seconds: float = 180.0
     # Use-case generation sends the complete stored BRD/PRD snapshot and can take longer than
     # an ordinary agent turn.  Keep this separate so normal agent-loop latency is unchanged.
     use_case_generation_timeout_seconds: float = 180.0
