@@ -45,6 +45,10 @@ _TOOL_CALL_PROBE = {
 
 _PROVIDER_TOOL_CALLS_KEY = "provider_tool_calls"
 
+# Claude Sonnet can spend more than 20 output tokens preparing a valid tool input. Keep the
+# health-check probe budget above that threshold so a forced tool call is not returned with `{}`.
+_BEDROCK_TOOL_PROBE_MAX_TOKENS = 64
+
 
 def _to_bedrock_probe_tool() -> dict[str, Any]:
     return {
@@ -834,7 +838,7 @@ class BedrockLLMClient:
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-                inferenceConfig={"maxTokens": 20, "temperature": 0.0},
+                inferenceConfig={"maxTokens": _BEDROCK_TOOL_PROBE_MAX_TOKENS, "temperature": 0.0},
                 toolConfig=tool_config,
             )
             return _has_valid_probe_tool_call(_parse_bedrock_tool_response(response).tool_calls)
@@ -851,7 +855,7 @@ class BedrockLLMClient:
             tool_config["toolChoice"] = {"any": {}}
         body = {
             "messages": [{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-            "inferenceConfig": {"maxTokens": 20, "temperature": 0.0},
+            "inferenceConfig": {"maxTokens": _BEDROCK_TOOL_PROBE_MAX_TOKENS, "temperature": 0.0},
             "toolConfig": tool_config,
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
