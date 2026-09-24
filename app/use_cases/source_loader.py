@@ -27,7 +27,10 @@ from app.use_cases.models import (
 
 _ENTITY_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?P<id>"
-    r"BR-\d{1,3}|BRule-\d{1,3}|BC-\d{1,3}|"
+    # BRD rules use a domain letter (BR-R1, BR-D3, BR-L4) as well as the
+    # older numeric form.  Keep both forms source-backed so relationship
+    # citations can resolve to the exact stored rule row.
+    r"BR-(?:[A-Z]{1,4}\d{1,3}|\d{1,3})|BRule-\d{1,3}|BC-\d{1,3}|"
     r"FR-[A-Za-z0-9-]*\d{1,3}|NFR-\d{1,3}|"
     r"PG-\d{1,3}|BO-\d{1,3}|KPI-\d{1,3})"
     r"(?:\s*[:—-]\s*|\s+)(?P<name>[^|\n]+)?",
@@ -492,6 +495,8 @@ def _split_table_line(line: str) -> list[str]:
 
 
 def _entity_kind(entity_id: str, artifact_type: str) -> str:
+    if re.match(r"^BR-[A-Z]", entity_id):
+        return "business_rule"
     if entity_id.startswith("BR-"):
         return "business_requirement"
     if entity_id.startswith("BRULE-"):
@@ -505,6 +510,93 @@ def _entity_kind(entity_id: str, artifact_type: str) -> str:
     if artifact_type == "business_rules":
         return "business_rule"
     return "workflow"
+
+
+def canonical_evidence_refs(
+    values: Any,
+    source: RequirementsSourceSnapshot | None,
+    *,
+    fallback_internal: bool = False,
+) -> list[str]:
+    """Resolve API/LLM evidence labels back to stable source evidence IDs.
+
+    The UI renders evidence as ``PRD · prd.functional_requirement:L11`` while
+    the model stores IDs such as ``entity:prd:functional_requirement:FR-TM01:11``.
+    Providers may append an explanation to that label, or cite a requirement
+    code directly.  Validation must never treat either rendered form as a new
+    evidence ID, so resolve the code/locator and discard anything unknown.
+    """
+
+    if isinstance(values, str):
+        values = [values]
+    refs = [str(value).strip() for value in values or [] if str(value).strip()]
+    if not source:
+        return refs or (["internal"] if fallback_internal else [])
+
+    evidence = source.evidence_by_id()
+    by_entity: dict[str, list[str]] = {}
+    by_locator: dict[str, list[str]] = {}
+    for item in source.evidence:
+        if item.entity_id:
+            by_entity.setdefault(item.entity_id.casefold(), []).append(item.evidence_id)
+        by_locator.setdefault(item.locator.casefold(), []).append(item.evidence_id)
+
+    def choose(candidates: list[str]) -> str | None:
+        if not candidates:
+            return None
+        # Prefer an entity row over a heading/component when a locator has
+        # several evidence records on the same source line.
+        priority = {
+            "functional_requirement": 0,
+            "non_functional_requirement": 0,
+            "business_rule": 0,
+            "business_requirement": 1,
+            "business_capability": 1,
+            "subsystem": 2,
+            "heading": 3,
+            "component": 4,
+        }
+        return min(candidates, key=lambda ref: priority.get(evidence[ref].kind, 5))
+
+    output: list[str] = []
+    seen: set[str] = set()
+    for raw in refs:
+        if raw in evidence or raw.startswith("sha256:") or raw == "internal":
+            resolved = raw
+        else:
+            normalized = re.sub(r"\s+", " ", raw).strip()
+            resolved = None
+            # A provider often includes a requirement/rule code in the
+            # explanation.  Prefer that precise entity over a line locator.
+            codes = re.findall(r"\b(?:NFR|FR|BRule|BR|BC)-[A-Z0-9]+\b", normalized, flags=re.I)
+            for code in codes:
+                resolved = choose(by_entity.get(code.casefold(), []))
+                if resolved:
+                    break
+            if resolved is None:
+                # Match the canonical display label, including labels with an
+                # appended explanation after an em dash.
+                for locator in sorted(by_locator, key=len, reverse=True):
+                    candidates = by_locator[locator]
+                    if locator in normalized.casefold():
+                        resolved = choose(candidates)
+                        if resolved:
+                            break
+            if resolved is None:
+                # ``brd.business_rules BR-R1`` does not use the UI separator;
+                # the code pass above normally resolves it, but a plain
+                # component citation is still useful when no code exists.
+                for locator, candidates in by_locator.items():
+                    if locator in normalized.casefold().replace(" · ", "."):
+                        resolved = choose(candidates)
+                        if resolved:
+                            break
+        if resolved and resolved not in seen:
+            output.append(resolved)
+            seen.add(resolved)
+    if not output and fallback_internal:
+        return ["internal"]
+    return output
 
 
 def _clean_entity_name(value: str) -> str:

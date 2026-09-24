@@ -21,7 +21,6 @@ from app.schemas.use_case import (
     RelationshipCreateRequest,
     UseCaseCreateRequest,
     UseCaseGenerateRequest,
-    UseCaseLevel,
     UseCaseModelResponse,
     UseCasePlantUmlResponse,
     UseCasePlantUmlUpdateRequest,
@@ -41,7 +40,6 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["Use Cases"])
 )
 async def get_use_case_model(
     project_id: uuid.UUID,
-    max_level: UseCaseLevel = Query(default=UseCaseLevel.L2, alias="maxLevel"),
     include_actors: bool = Query(default=True, alias="includeActors"),
     include_relationships: bool = Query(default=True, alias="includeRelationships"),
     user: User = Depends(current_user),
@@ -51,7 +49,6 @@ async def get_use_case_model(
     return ok(
         await UseCaseService(db).get_model(
             project_id=project_id,
-            max_level=max_level,
             include_actors=include_actors,
             include_relationships=include_relationships,
         )
@@ -101,9 +98,7 @@ async def generate_use_case_groups(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Split-generation alternative to /generate: build the L0/L1 group skeleton deterministically
-    (no LLM call, cannot time out). Call generate_use_case_group_use_cases once per returned L0
-    group afterward to fill in L2 detail without ever generating the whole project in one call."""
+    """Deprecated split-generation compatibility route; new clients should call ``/generate``."""
 
     await require_project_access(project_id, user, db)
     return ok(await UseCaseService(db).generate_groups(project_id=project_id, user_id=user.id, body=body))
@@ -121,8 +116,7 @@ async def generate_use_case_group_use_cases(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Fill in L2 detail for one capability group returned by /groups/generate. Scoped to that
-    group's own source slice, so this call stays small regardless of project size."""
+    """Deprecated per-module compatibility route; new clients use the complete model endpoint."""
 
     await require_project_access(project_id, user, db)
     return ok(

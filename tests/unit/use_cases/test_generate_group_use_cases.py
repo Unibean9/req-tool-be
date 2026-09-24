@@ -9,6 +9,13 @@ generate_groups calls the model too (an earlier version parsed the Business Capa
 a regex tied to one fixed "BC-xx" heading/ID convention and silently returned zero groups for any
 project using a different one -- exactly what happened on a real project whose capabilities were a
 numbered table with "C1"/"C2"/... ids instead).
+
+A group is a module (UseCaseSubsystem), not a use case -- an earlier version of generate_groups
+also minted a redundant "L0" UseCaseEntry per group (id like UC-SUM-*) to stand in for the module,
+which made the module indistinguishable from a real use case in the table/diagram. These tests
+exercise the current shape: generate_groups returns `modules` (no use_cases at all), and
+generate_group_use_cases takes a module id and produces top-level L1 rows (parentUseCaseId=None)
+plus optional L2 children nested under an L1 via local tags.
 """
 
 import uuid
@@ -76,22 +83,10 @@ def _payload_after_generate_groups() -> dict:
             {"id": "ACT-GROUP-MEMBER", "name": "Group Member", "kind": "Primary actor"},
             {"id": "ACT-GROUP-ADMIN", "name": "Group Admin", "kind": "Supporting actor"},
         ],
-        "useCases": [
-            {
-                "id": "UC-SUM-TASK-MANAGEMENT",
-                "level": "L0",
-                "title": "Task Management",
-                "primaryActorId": "ACT-GROUP-MEMBER",
-                "supportingActorIds": [],
-                "subsystem": "Task Management",
-                "status": "Inferred",
-                "priority": "Should",
-                "parentUseCaseId": None,
-                "description": "The actor can manage tasks.",
-                "precondition": "The project is available to the actor.",
-                "sourceTrace": [],
-            },
+        "modules": [
+            {"id": "SUB-TASK-MANAGEMENT", "name": "Task Management", "goal": "Let a team track its work."},
         ],
+        "useCases": [],
         "relationships": [],
         "diagrams": [],
         "diagramPlans": [],
@@ -164,19 +159,16 @@ async def test_generate_groups_reads_whatever_format_the_capabilities_doc_actual
     with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
         response = await service.generate_groups(project_id=PROJECT_ID, user_id=USER_ID, body=_body())
 
-    groups = [item for item in response.use_cases if item.level == "L0"]
-    assert len(groups) == 1
-    assert groups[0].title == "Task Management"
+    assert response.use_cases == []
+    assert len(response.modules) == 1
+    assert response.modules[0].name == "Task Management"
+    assert response.modules[0].goal == "Let a team track its work."
+    assert response.modules[0].id.startswith("SUB-")
     assert {actor.name for actor in response.actors} == {"Group Member", "Group Admin"}
-    # Every actor referenced by the group has an association relation.
-    assert any(
-        r.source_id == groups[0].primary_actor_id and r.target_id == groups[0].id and r.type == "association"
-        for r in response.relationships
-    )
 
 
 @pytest.mark.asyncio
-async def test_generate_groups_rejects_when_nothing_has_a_user_segment():
+async def test_generate_groups_rejects_when_nothing_could_be_extracted():
     """An earlier deterministic version silently produced an empty (but "successful") model when
     it couldn't parse the source. This version fails loudly instead, so the FE surfaces an error
     rather than showing an empty catalog with no indication anything went wrong."""
@@ -187,15 +179,7 @@ async def test_generate_groups_rejects_when_nothing_has_a_user_segment():
     provider = SimpleNamespace(
         id=uuid.uuid4(), provider_type=SimpleNamespace(value="anthropic"), model_name="claude-test"
     )
-    draft_response = (
-        {
-            "actors": [],
-            "groups": [
-                {"name": "Orphan Group", "goal": "n/a", "user_segment": [], "source_refs": ["entity:prd:use_case:C1:5"]}
-            ],
-        },
-        {},
-    )
+    draft_response = ({"actors": [], "groups": []}, {})
     service._project = AsyncMock(return_value=project)
     service._record = AsyncMock(return_value=SimpleNamespace(model_data=None))
     service._llm_client = AsyncMock(
@@ -252,13 +236,16 @@ async def test_generate_group_use_cases_merges_l1_and_l2_drafts_via_local_tags()
 
     with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
         response = await service.generate_group_use_cases(
-            project_id=PROJECT_ID, user_id=USER_ID, group_id="UC-SUM-TASK-MANAGEMENT", body=_body()
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
         )
 
     l1_rows = [item for item in response.use_cases if item.level == "L1"]
     l2_rows = [item for item in response.use_cases if item.level == "L2"]
     assert len(l1_rows) == 1 and l1_rows[0].title == "Create Task"
-    assert l1_rows[0].parent_use_case_id == "UC-SUM-TASK-MANAGEMENT"
+    # L1 is top-level within its module -- no parent use-case id (the module is not a use case).
+    assert l1_rows[0].parent_use_case_id is None
+    assert l1_rows[0].subsystem == "Task Management"
+    assert l1_rows[0].id.startswith("UC-")
     assert len(l2_rows) == 1 and l2_rows[0].title == "Assign Task Owner"
     assert l2_rows[0].parent_use_case_id == l1_rows[0].id
     assert l2_rows[0].supporting_actor_ids == ["ACT-GROUP-ADMIN"]
@@ -291,7 +278,7 @@ async def test_generate_group_use_cases_drops_l2_whose_parent_tag_does_not_resol
 
     with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
         response = await service.generate_group_use_cases(
-            project_id=PROJECT_ID, user_id=USER_ID, group_id="UC-SUM-TASK-MANAGEMENT", body=_body()
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
         )
 
     assert [item for item in response.use_cases if item.level == "L2"] == []
@@ -323,7 +310,7 @@ async def test_generate_group_use_cases_drops_drafts_with_unknown_actor():
 
     with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
         response = await service.generate_group_use_cases(
-            project_id=PROJECT_ID, user_id=USER_ID, group_id="UC-SUM-TASK-MANAGEMENT", body=_body()
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
         )
 
     assert [item for item in response.use_cases if item.level in {"L1", "L2"}] == []
@@ -331,12 +318,9 @@ async def test_generate_group_use_cases_drops_drafts_with_unknown_actor():
 
 @pytest.mark.asyncio
 async def test_generate_group_use_cases_is_idempotent_per_group():
-    """Re-running a group replaces its previously generated L1/L2 rows instead of duplicating
-    them."""
+    """Re-running a module replaces its previously generated L1/L2 rows instead of duplicating
+    them. Matched by subsystem name -- there is no module-parent use-case id anymore."""
     payload = _payload_after_generate_groups()
-    # Deliberately NOT "UC-L1-001"/"UC-L2-001" -- that's the exact id _next_use_case_id would
-    # mint next, which would make a freshly-generated row LOOK like a leaked stale one by pure id
-    # coincidence. Use ids the id scheme would never naturally produce, so a leak is unambiguous.
     payload["useCases"].append(
         {
             "id": "UC-STALE-OLD-L1",
@@ -347,7 +331,7 @@ async def test_generate_group_use_cases_is_idempotent_per_group():
             "subsystem": "Task Management",
             "status": "Inferred",
             "priority": "Could",
-            "parentUseCaseId": "UC-SUM-TASK-MANAGEMENT",
+            "parentUseCaseId": None,
             "description": "A previous generation's row that should be replaced, not duplicated.",
             "precondition": "n/a",
             "sourceTrace": [],
@@ -369,16 +353,8 @@ async def test_generate_group_use_cases_is_idempotent_per_group():
             "sourceTrace": [],
         }
     )
-    payload["relationships"].extend(
-        [
-            {
-                "id": "REL-PART-OF-1",
-                "sourceId": "UC-SUM-TASK-MANAGEMENT",
-                "targetId": "UC-STALE-OLD-L1",
-                "type": "part-of",
-            },
-            {"id": "REL-PART-OF-2", "sourceId": "UC-STALE-OLD-L1", "targetId": "UC-STALE-OLD-L2", "type": "part-of"},
-        ]
+    payload["relationships"].append(
+        {"id": "REL-PART-OF-2", "sourceId": "UC-STALE-OLD-L1", "targetId": "UC-STALE-OLD-L2", "type": "part-of"},
     )
     draft_response = (
         {
@@ -403,7 +379,7 @@ async def test_generate_group_use_cases_is_idempotent_per_group():
 
     with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
         response = await service.generate_group_use_cases(
-            project_id=PROJECT_ID, user_id=USER_ID, group_id="UC-SUM-TASK-MANAGEMENT", body=_body()
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
         )
 
     l1_titles = {item.title for item in response.use_cases if item.level == "L1"}
@@ -422,6 +398,6 @@ async def test_generate_group_use_cases_unknown_group_is_404():
 
     with pytest.raises(HTTPException) as exc_info:
         await service.generate_group_use_cases(
-            project_id=PROJECT_ID, user_id=USER_ID, group_id="UC-SUM-DOES-NOT-EXIST", body=_body()
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-DOES-NOT-EXIST", body=_body()
         )
     assert exc_info.value.status_code == 404

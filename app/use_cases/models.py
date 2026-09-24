@@ -7,16 +7,24 @@ repository are examples and are never read by this package.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-UseCaseLevel = Literal["L0", "L1", "L2"]
-UseCaseAbstraction = Literal["summary", "user_goal", "subfunction"]
-UseCaseStatus = Literal["confirmed", "inferred", "suggested"]
-UseCasePriority = Literal["must", "should", "could"]
-RelationKind = Literal["association", "include", "extend", "generalization"]
-ActorKind = Literal["human_role", "external_system", "time"]
+UseCaseLevel = Literal["L0", "L1", "L2"]  # legacy type for old imports only
+UseCaseAbstraction = Literal["summary", "user_goal", "subfunction"]  # legacy type
+UseCaseStatus = Literal["confirmed", "inferred", "suggested"]  # legacy type
+EvidenceType = Literal["explicit", "inferred"]
+UseCasePriority = Literal["required", "recommended", "optional"]
+RelationshipType = Literal["include", "extend", "generalization"]
+LegacyRelationKind = Literal["association", "include", "extend", "generalization"]
+RelationshipDraftKind = Literal["include", "extend", "generalization"]
+ActorKind = Literal["human", "external_system", "scheduler"]
+ActorType = ActorKind
+ActorSide = Literal["left", "right"]
+FlowType = Literal["main", "alternative", "exception"]
+FlowParticipantType = Literal["actor", "system", "external_system"]
 EvidenceKind = Literal[
     "component",
     "heading",
@@ -183,105 +191,380 @@ class RequirementsSourceSnapshot(BaseModel):
         return "\n".join(lines)
 
 
-class UseCaseActor(BaseModel):
+class UseCaseSystem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(pattern=r"^ACT-[A-Z0-9-]+$")
-    name: str = Field(min_length=1, max_length=120)
-    kind: ActorKind = "human_role"
-    source_refs: list[str] = Field(min_length=1)
-
-
-class UseCaseSubsystem(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^SUB-[A-Z0-9-]+$")
+    id: str = Field(default="SYSTEM", min_length=1)
     name: str = Field(min_length=1, max_length=160)
-    source_refs: list[str] = Field(min_length=1)
-
-
-class UseCaseEntry(BaseModel):
-    """One row in the Use Case List and one oval on any diagram where it appears."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^UC-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
-    name: str = Field(min_length=1, max_length=160)
-    level: UseCaseLevel
-    abstraction: UseCaseAbstraction
-    primary_actor_id: str = Field(pattern=r"^ACT-[A-Z0-9-]+$")
-    secondary_actor_ids: list[str] = Field(default_factory=list)
-    subsystem_id: str = Field(pattern=r"^SUB-[A-Z0-9-]+$")
-    parent_use_case_id: str | None = Field(default=None, pattern=r"^UC-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
-    description: str = Field(min_length=1, max_length=600)
-    precondition: str = Field(min_length=1, max_length=400)
-    relationship_ids: list[str] = Field(default_factory=list)
-    priority: UseCasePriority
-    status: UseCaseStatus
-    source_refs: list[str] = Field(min_length=1)
-    note: str | None = Field(default=None, max_length=400)
-
-
-class UseCaseRelation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^REL-[A-Za-z0-9-]+$")
-    kind: RelationKind
-    source_id: str
-    target_id: str
-    condition: str | None = Field(default=None, max_length=300)
+    description: str | None = Field(default=None, max_length=600)
     source_refs: list[str] = Field(default_factory=list)
 
 
-class UseCaseRelationshipDraft(BaseModel):
-    """One include/extend/generalization relation proposed by the relationship-resolution pass.
+class UseCaseActor(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
-    The LLM is not trusted with a stable, collision-free ``REL-*`` id here; the service assigns
-    one deterministically after the draft passes the same structural checks as a manually created
-    relationship.
-    """
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=120)
+    kind: ActorKind = "human"
+    side: ActorSide | None = None
+    source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_type_alias(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "kind" not in data and data.get("type") is not None:
+            data["kind"] = data["type"]
+        kind = str(data.get("kind") or "human").lower()
+        data["kind"] = {
+            "human_role": "human",
+            "primary actor": "human",
+            "supporting actor": "human",
+            "time": "scheduler",
+        }.get(kind, kind)
+        if isinstance(data.get("source_refs"), str):
+            data["source_refs"] = [data["source_refs"]]
+        if isinstance(data.get("sourceTrace"), str):
+            data["sourceTrace"] = [data["sourceTrace"]]
+        if "source_refs" not in data and "sourceTrace" in data:
+            data["source_refs"] = data["sourceTrace"]
+        data.pop("sourceTrace", None)
+        data.pop("parent_actor_id", None)
+        data.pop("parentActorId", None)
+        data.pop("type", None)
+        return data
+
+
+class UseCaseModule(BaseModel):
+    """A BRD/PRD capability group. A module is never a use case."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: RelationKind
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=160)
+    goal: str | None = Field(default=None, max_length=600)
+    source_refs: list[str] = Field(default_factory=list)
+
+
+UseCaseSubsystem = UseCaseModule
+
+
+class UseCaseFlowStep(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    step: int = Field(ge=1)
+    participant_type: FlowParticipantType
+    participant_id: str | None = Field(default=None, min_length=1)
+    action: str = Field(min_length=1, max_length=300)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.setdefault("participant_type", data.get("participantType"))
+        data.setdefault("participant_id", data.get("participantId"))
+        return data
+
+
+class UseCaseFlow(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    flow_type: Literal["alternative", "exception"]
+    label: str = Field(min_length=1, max_length=160)
+    branch_at_step: int | None = Field(default=None, ge=1)
+    steps: list[UseCaseFlowStep] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.setdefault("flow_type", data.get("flowType"))
+        data.setdefault("branch_at_step", data.get("branchAtStep"))
+        return data
+
+
+class UseCaseRequirementLink(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(min_length=1, max_length=120)
+    type: Literal["functional", "business_rule", "non_functional"]
+    title: str | None = Field(default=None, max_length=300)
+    source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            if isinstance(value, str):
+                return {"id": value, "type": "functional"}
+            return value
+        data = dict(value)
+        data.setdefault("source_refs", data.get("sourceTrace", []))
+        if isinstance(data.get("source_refs"), str):
+            data["source_refs"] = [data["source_refs"]]
+        data.pop("sourceTrace", None)
+        return data
+
+
+class UseCaseEntry(BaseModel):
+    """One generated use case in the canonical System → Module → Use Case hierarchy."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=160)
+    module_id: str = Field(min_length=1)
+    primary_actor_id: str = Field(min_length=1)
+    secondary_actor_ids: list[str] = Field(default_factory=list)
+    description: str = Field(min_length=1, max_length=600)
+    trigger: str | None = Field(default=None, max_length=300)
+    preconditions: list[str] = Field(default_factory=list)
+    main_flow: list[UseCaseFlowStep] = Field(default_factory=list)
+    alternative_flows: list[UseCaseFlow] = Field(default_factory=list)
+    exception_flows: list[UseCaseFlow] = Field(default_factory=list)
+    postconditions_success: list[str] = Field(default_factory=list)
+    postconditions_failure: list[str] = Field(default_factory=list)
+    business_rules: list[str] = Field(default_factory=list)
+    related_requirements: list[UseCaseRequirementLink] = Field(default_factory=list)
+    relationship_ids: list[str] = Field(default_factory=list)
+    priority: UseCasePriority = "recommended"
+    evidence: EvidenceType = "inferred"
+    source_refs: list[str] = Field(default_factory=list)
+    note: str | None = Field(default=None, max_length=400)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_payload(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "name" not in data and data.get("title"):
+            data["name"] = data["title"]
+        if "module_id" not in data:
+            module = data.get("module_id") or data.get("moduleId") or data.get("subsystem_id")
+            if not module and data.get("subsystem"):
+                slug = re.sub(r"[^A-Z0-9]+", "-", str(data["subsystem"]).upper()).strip("-") or "GENERAL"
+                module = f"SUB-{slug}"
+            if module:
+                data["module_id"] = module
+        if "secondary_actor_ids" not in data:
+            if "supportingActorIds" in data:
+                data["secondary_actor_ids"] = data["supportingActorIds"]
+            elif "secondaryActorIds" in data:
+                data["secondary_actor_ids"] = data["secondaryActorIds"]
+        if "primary_actor_id" not in data and data.get("primaryActorId"):
+            data["primary_actor_id"] = data["primaryActorId"]
+        if "primary_actor_id" not in data and data.get("primary_actors"):
+            primary_actors = data.get("primary_actors")
+            if isinstance(primary_actors, list) and primary_actors:
+                data["primary_actor_id"] = primary_actors[0]
+        if "secondary_actor_ids" not in data and data.get("secondary_actors") is not None:
+            data["secondary_actor_ids"] = data["secondary_actors"]
+        if "description" not in data:
+            data["description"] = data.get("goal") or data.get("name") or data.get("title")
+        if "preconditions" not in data:
+            legacy = data.get("precondition")
+            data["preconditions"] = [legacy] if isinstance(legacy, str) and legacy.strip() else []
+        aliases = {
+            "module_id": "moduleId",
+            "secondary_actor_ids": "supportingActorIds",
+            "trigger": "trigger",
+            "main_flow": "mainFlow",
+            "alternative_flows": "alternativeFlows",
+            "exception_flows": "exceptionFlows",
+            "postconditions_success": "postconditionsSuccess",
+            "postconditions_failure": "postconditionsFailure",
+            "business_rules": "businessRules",
+            "relationship_ids": "relationshipIds",
+            "source_refs": "sourceTrace",
+        }
+        for target, alias in aliases.items():
+            if target not in data and alias in data:
+                data[target] = data[alias]
+        if "evidence" not in data:
+            status = str(data.get("status", "")).lower()
+            data["evidence"] = "explicit" if status in {"confirmed", "explicit"} else "inferred"
+        priority = str(data.get("priority", "")).lower()
+        data["priority"] = {"must": "required", "should": "recommended", "could": "optional"}.get(
+            priority, priority or "recommended"
+        )
+        refs = data.get("related_requirements")
+        if refs is None:
+            refs = data.get("relatedRequirements")
+        if refs is None:
+            refs = data.get("requirements")
+        if refs is not None:
+            if isinstance(refs, str):
+                refs = [refs]
+            data["related_requirements"] = refs
+        if isinstance(data.get("source_refs"), str):
+            data["source_refs"] = [data["source_refs"]]
+        if isinstance(data.get("sourceTrace"), str):
+            data["sourceTrace"] = [data["sourceTrace"]]
+        for key in (
+            "title",
+            "primaryActorId",
+            "primary_actors",
+            "supportingActorIds",
+            "secondaryActorIds",
+            "secondary_actors",
+            "moduleId",
+            "subsystem",
+            "subsystem_id",
+            "level",
+            "abstraction",
+            "status",
+            "precondition",
+            "goal",
+            "requirements",
+            "parentUseCaseId",
+            "parent_use_case_id",
+            "mainFlow",
+            "alternativeFlows",
+            "exceptionFlows",
+            "postconditionsSuccess",
+            "postconditionsFailure",
+            "businessRules",
+            "relationshipIds",
+            "sourceTrace",
+            "relatedRequirements",
+        ):
+            data.pop(key, None)
+        return data
+
+    @property
+    def subsystem_id(self) -> str:
+        return self.module_id
+
+    @property
+    def parent_use_case_id(self) -> None:
+        return None
+
+    @property
+    def level(self) -> str:
+        return "L1"
+
+    @property
+    def abstraction(self) -> str:
+        return "user_goal"
+
+    @property
+    def status(self) -> str:
+        return "confirmed" if self.evidence == "explicit" else "inferred"
+
+    @property
+    def precondition(self) -> str:
+        return "\n".join(self.preconditions)
+
+
+class UseCaseRelation(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    id: str = Field(min_length=1)
+    # Actor association is derived from actor IDs and is intentionally not part of the
+    # canonical semantic relationship schema sent to the LLM or exposed by the API.
+    kind: RelationshipType
     source_id: str
     target_id: str
     condition: str | None = Field(default=None, max_length=300)
+    reason: str | None = Field(default=None, max_length=500)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    review_state: Literal["accepted", "review_required", "rejected"] | None = None
+    source_refs: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.setdefault("kind", data.get("type"))
+        data.setdefault("source_id", data.get("sourceId") or data.get("source"))
+        data.setdefault("target_id", data.get("targetId") or data.get("target"))
+        data.setdefault("source_refs", data.get("sourceTrace") or data.get("evidence", []))
+        if isinstance(data.get("source_refs"), str):
+            data["source_refs"] = [data["source_refs"]]
+        data.setdefault("review_state", data.get("reviewState"))
+        data.pop("sourceId", None)
+        data.pop("targetId", None)
+        data.pop("source", None)
+        data.pop("target", None)
+        data.pop("type", None)
+        data.pop("sourceTrace", None)
+        data.pop("evidence", None)
+        data.pop("reviewState", None)
+        return data
+
+
+class UseCaseRelationshipDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    kind: RelationshipDraftKind
+    source_id: str
+    target_id: str
+    condition: str | None = Field(default=None, max_length=300)
+    reason: str | None = Field(default=None, max_length=500)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    evidence: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_spec_aliases(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.setdefault("kind", data.get("type"))
+        data.setdefault("source_id", data.get("sourceId") or data.get("source"))
+        data.setdefault("target_id", data.get("targetId") or data.get("target"))
+        data.setdefault("evidence", data.get("sourceTrace", []))
+        if isinstance(data.get("evidence"), str):
+            data["evidence"] = [data["evidence"]]
+        for key in ("type", "sourceId", "targetId", "source", "target", "sourceTrace"):
+            data.pop(key, None)
+        return data
 
 
 class UseCaseRelationshipDraftList(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     relations: list[UseCaseRelationshipDraft] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_relationships_alias(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "relations" not in data and "relationships" in data:
+            data["relations"] = data["relationships"]
+        data.pop("relationships", None)
+        return data
 
 
 class UseCaseActorDraft(BaseModel):
-    """One actor proposed by the groups-generation pass (Phase 1 of the split generation flow).
-
-    No stable id is trusted from the model -- same rationale as UseCaseRelationshipDraft: the
-    service assigns a collision-free ACT-* id once the draft is merged, deduping by name across
-    every group so a role used by several groups becomes one shared actor.
-    """
-
     model_config = ConfigDict(extra="forbid")
-
     name: str = Field(min_length=1, max_length=120)
-    kind: ActorKind = "human_role"
+    kind: ActorKind = "human"
     source_refs: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_kind(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        kind = str(data.get("kind") or data.get("type") or "human").lower()
+        data["kind"] = {"human_role": "human", "primary actor": "human", "supporting actor": "human"}.get(kind, kind)
+        return data
 
 
 class UseCaseGroupDraft(BaseModel):
-    """One capability/domain group proposed by the groups-generation pass (Phase 1 of the split
-    generation flow) -- an L0 row, not an individual use case. Read from the project's Business
-    Capabilities content in whatever format it was actually written (no assumed ID/heading
-    convention), unlike a regex-based parse of one fixed convention.
-
-    No stable id is trusted from the model -- the service assigns SUB-*/UC-SUM-* ids
-    deterministically once merged.
-    """
-
     model_config = ConfigDict(extra="forbid")
-
     name: str = Field(min_length=1, max_length=160)
     goal: str = Field(min_length=1, max_length=600)
     user_segment: list[str] = Field(default_factory=list)
@@ -290,76 +573,126 @@ class UseCaseGroupDraft(BaseModel):
 
 class UseCaseGroupsDraftList(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     actors: list[UseCaseActorDraft] = Field(default_factory=list)
     groups: list[UseCaseGroupDraft] = Field(default_factory=list)
 
 
 class UseCaseGroupDetailDraft(BaseModel):
-    """One use case (an L1 user goal, or an L2 sub-use-case) proposed by the per-group detail
-    pass (Phase 2 of the split generation flow). Scoped to a single capability group so the
-    prompt/output stay a fraction of the size of generating the whole project's use cases in one
-    call -- the actual fix for use-case generation timing out on a larger project.
-
-    No stable UC-* id is trusted from the model, and neither is the L1 parent's id (it doesn't
-    exist yet when the model writes this, since it too is proposed in this same call): each draft
-    carries a small model-chosen `local_tag`, and an L2 draft points at its L1 parent via
-    `parent_local_tag`. The service assigns real ids in two passes (L1 first, then L2) and resolves
-    `parent_local_tag` through the tags it just minted -- same "never trust an invented id"
-    rationale as UseCaseRelationshipDraft, just two levels instead of one.
-    """
+    """AI output for one module. No level or parent row is emitted."""
 
     model_config = ConfigDict(extra="forbid")
-
-    level: Literal["L1", "L2"]
-    local_tag: str = Field(min_length=1, max_length=20)
-    parent_local_tag: str | None = Field(default=None, max_length=20)
+    local_tag: str | None = Field(default=None, max_length=40)
     name: str = Field(min_length=1, max_length=160)
-    primary_actor_id: str = Field(pattern=r"^ACT-[A-Z0-9-]+$")
+    primary_actor_id: str = Field(min_length=1)
     secondary_actor_ids: list[str] = Field(default_factory=list)
     description: str = Field(min_length=1, max_length=600)
-    precondition: str = Field(min_length=1, max_length=400)
-    priority: UseCasePriority
+    trigger: str | None = Field(default=None, max_length=300)
+    preconditions: list[str] = Field(default_factory=list)
+    main_flow: list[UseCaseFlowStep] = Field(default_factory=list)
+    alternative_flows: list[UseCaseFlow] = Field(default_factory=list)
+    exception_flows: list[UseCaseFlow] = Field(default_factory=list)
+    postconditions_success: list[str] = Field(default_factory=list)
+    postconditions_failure: list[str] = Field(default_factory=list)
+    business_rules: list[str] = Field(default_factory=list)
+    related_requirements: list[UseCaseRequirementLink] = Field(default_factory=list)
+    priority: UseCasePriority = "recommended"
+    evidence: EvidenceType = "inferred"
     source_refs: list[str] = Field(min_length=1)
     note: str | None = Field(default=None, max_length=400)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_draft(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "preconditions" not in data and data.get("precondition"):
+            data["preconditions"] = [data["precondition"]]
+        if "evidence" not in data:
+            data["evidence"] = (
+                "explicit" if str(data.get("status", "")).lower() in {"confirmed", "explicit"} else "inferred"
+            )
+        priority = str(data.get("priority", "")).lower()
+        data["priority"] = {"must": "required", "should": "recommended", "could": "optional"}.get(
+            priority, priority or "recommended"
+        )
+        if "primary_actor_id" not in data and data.get("primaryActorId"):
+            data["primary_actor_id"] = data["primaryActorId"]
+        if "secondary_actor_ids" not in data and data.get("supportingActorIds") is not None:
+            data["secondary_actor_ids"] = data["supportingActorIds"]
+        for key in (
+            "level",
+            "parent_local_tag",
+            "precondition",
+            "status",
+            "primaryActorId",
+            "supportingActorIds",
+            "parentUseCaseId",
+        ):
+            data.pop(key, None)
+        return data
 
 
 class UseCaseGroupDetailDraftList(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     use_cases: list[UseCaseGroupDetailDraft] = Field(default_factory=list)
 
 
-class UseCaseDiagramDefinition(BaseModel):
-    """Legacy semantic diagram definition kept only for backward-compatible stored records."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(pattern=r"^DGM-L[012](?:-[A-Z0-9-]+)?$")
-    level: UseCaseLevel
-    system_boundary: str = Field(min_length=1, max_length=160)
-    subsystem_id: str | None = Field(default=None, pattern=r"^SUB-[A-Z0-9-]+$")
-    actor_ids: list[str] = Field(default_factory=list)
-    use_case_ids: list[str] = Field(default_factory=list)
-    relation_ids: list[str] = Field(default_factory=list)
-
-
 class UseCaseModel(BaseModel):
-    """The source-backed table aggregate used to render the editable UML document."""
+    """Canonical structured model: System → Module → Use Case + relationships."""
 
-    model_config = ConfigDict(extra="forbid")
-
-    system_name: str = Field(min_length=1, max_length=160)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    system: UseCaseSystem
+    modules: list[UseCaseModule] = Field(default_factory=list)
     actors: list[UseCaseActor] = Field(default_factory=list)
-    subsystems: list[UseCaseSubsystem] = Field(default_factory=list)
     use_cases: list[UseCaseEntry] = Field(default_factory=list)
-    relations: list[UseCaseRelation] = Field(default_factory=list)
-    diagrams: list[UseCaseDiagramDefinition] = Field(default_factory=list)
+    relationships: list[UseCaseRelation] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_legacy_model(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "system" not in data:
+            system_name = data.pop("system_name", None) or data.pop("projectName", None) or "Requirements System"
+            data["system"] = {"id": "SYSTEM", "name": system_name}
+        elif isinstance(data["system"], str):
+            data["system"] = {"id": "SYSTEM", "name": data["system"]}
+        if "modules" not in data:
+            data["modules"] = data.pop("subsystems", [])
+        if "use_cases" not in data:
+            data["use_cases"] = data.pop("useCases", data.get("use_cases", []))
+        if "relationships" not in data:
+            data["relationships"] = data.pop("relations", data.get("relationships", []))
+        data.pop("diagrams", None)
+        return data
+
+    @property
+    def system_name(self) -> str:
+        return self.system.name
+
+    @system_name.setter
+    def system_name(self, value: str) -> None:
+        self.system = UseCaseSystem(
+            id=self.system.id, name=value, description=self.system.description, source_refs=self.system.source_refs
+        )
+
+    @property
+    def subsystems(self) -> list[UseCaseModule]:
+        return self.modules
+
+    @property
+    def relations(self) -> list[UseCaseRelation]:
+        return self.relationships
+
+    @relations.setter
+    def relations(self, value: list[UseCaseRelation]) -> None:
+        self.relationships = value
 
 
 class ValidationIssue(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     severity: Literal["error", "warning"]
     code: str
     message: str
@@ -368,7 +701,6 @@ class ValidationIssue(BaseModel):
 
 class UseCaseValidationReport(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     issues: list[ValidationIssue] = Field(default_factory=list)
     eligible_for_srs: bool = False
     eligible_diagram_ids: list[str] = Field(default_factory=list)
@@ -383,9 +715,19 @@ class UseCaseValidationReport(BaseModel):
         return [issue for issue in self.issues if issue.severity == "warning"]
 
 
+# Kept only so legacy imports do not break while all new generation output uses one PlantUML
+# document. The canonical UseCaseModel deliberately does not contain this collection.
+class UseCaseDiagramDefinition(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str
+    system_boundary: str
+    actor_ids: list[str] = Field(default_factory=list)
+    use_case_ids: list[str] = Field(default_factory=list)
+    relation_ids: list[str] = Field(default_factory=list)
+
+
 class DiagramRenderNode(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     id: str
     kind: Literal["system_boundary", "actor", "use_case"]
     label: str
@@ -395,11 +737,10 @@ class DiagramRenderNode(BaseModel):
 
 class DiagramRenderEdge(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     id: str
     source_id: str
     target_id: str
-    kind: RelationKind
+    kind: LegacyRelationKind
     line_style: Literal["solid", "dashed"]
     directed: bool
     marker: Literal["none", "open_arrow", "open_triangle"]
@@ -409,9 +750,7 @@ class DiagramRenderEdge(BaseModel):
 
 class DiagramRenderPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
     diagram_id: str
-    level: UseCaseLevel
     system_boundary: str
     nodes: list[DiagramRenderNode] = Field(default_factory=list)
     edges: list[DiagramRenderEdge] = Field(default_factory=list)

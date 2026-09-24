@@ -21,10 +21,10 @@ def jsonb_column(*args, **kwargs):
 class UseCaseModelRecord(AuditMixin, Base):
     """One current, editable use-case model per project.
 
-    The model is intentionally stored as one JSON aggregate.  Actors, use cases, relationships,
-    and semantic diagrams are edited together, so a FE update cannot leave half of a diagram in a
-    different revision from its table.  The generated core model remains separately validated
-    before this aggregate is written.
+    The model is intentionally stored as one JSON aggregate. Actors, use cases, relationships,
+    and the editable PlantUML source are stored together, so a FE update cannot leave the table
+    and its source out of sync. The generated core model remains separately validated before this
+    aggregate is written.
     """
 
     __tablename__ = "use_case_models"

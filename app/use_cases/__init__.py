@@ -5,10 +5,8 @@ document components into a source snapshot, gives the agent a strict generation 
 validates the returned model before a future API or persistence layer can consume it.
 """
 
-from app.use_cases.diagram import build_diagram_render_plan
 from app.use_cases.harness import UseCaseGenerationHarness
 from app.use_cases.models import (
-    DiagramRenderPlan,
     RequirementsSourceSnapshot,
     UseCaseModel,
     UseCaseValidationReport,
@@ -20,8 +18,6 @@ from app.use_cases.source_loader import (
 )
 
 __all__ = [
-    "DiagramRenderPlan",
-    "build_diagram_render_plan",
     "RequirementsSourceSnapshot",
     "UseCaseGenerationHarness",
     "UseCaseModel",
