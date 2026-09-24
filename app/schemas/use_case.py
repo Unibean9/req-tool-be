@@ -169,6 +169,16 @@ class UseCasePlantUmlUpdateRequest(UseCaseApiModel):
     source: str = Field(min_length=1, max_length=500_000)
 
 
+class DiagramNodePositionRequest(UseCaseApiModel):
+    id: str = Field(min_length=1)
+    x: float
+    y: float
+
+
+class DiagramPositionsUpdateRequest(UseCaseApiModel):
+    positions: list[DiagramNodePositionRequest] = Field(min_length=1, max_length=500)
+
+
 class DiagramLayoutPointResponse(UseCaseApiModel):
     x: float
     y: float
@@ -196,6 +206,7 @@ class DiagramLayoutNodeResponse(UseCaseApiModel):
     priority: UseCasePriority | None = None
     actor_kind: ActorKind | None = Field(default=None, alias="actorKind")
     side: ActorSide | Literal["inside"] | None = None
+    manual: bool = False
 
 
 class DiagramLayoutEdgeResponse(UseCaseApiModel):

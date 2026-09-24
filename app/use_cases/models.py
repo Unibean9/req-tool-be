@@ -589,9 +589,19 @@ class UseCaseGroupDetailDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     local_tag: str | None = Field(default=None, max_length=40)
-    name: str = Field(min_length=1, max_length=160)
+    # 70, not the 160 every other name field in this file allows: a hard backstop for the naming
+    # convention the system prompt asks for (Verb + Noun, no actor, no implementation detail --
+    # "Send Notification", not "Trưởng nhóm cấu hình và gửi thông báo task qua Slack webhook").
+    # Long enough for a real Verb + Noun name in Vietnamese (more syllables per word than
+    # English) without being long enough to fit a whole sentence back in.
+    name: str = Field(min_length=1, max_length=70)
+    # One actor per use case, deliberately -- a second (supporting) actor was a real UML concept
+    # but made the diagram's actor<->use-case association lines dense enough to read as noise on
+    # a concept-stage project, and it doubled the surface the weight-balance/coverage logic in
+    # diagram_layout/layout.mjs had to reason about for comparatively little benefit. Dropping
+    # the field from this draft schema (not just ignoring it after the fact) means a structured-
+    # output provider is constrained to never propose one in the first place.
     primary_actor_id: str = Field(min_length=1)
-    secondary_actor_ids: list[str] = Field(default_factory=list)
     description: str = Field(min_length=1, max_length=600)
     trigger: str | None = Field(default=None, max_length=300)
     preconditions: list[str] = Field(default_factory=list)
@@ -625,8 +635,6 @@ class UseCaseGroupDetailDraft(BaseModel):
         )
         if "primary_actor_id" not in data and data.get("primaryActorId"):
             data["primary_actor_id"] = data["primaryActorId"]
-        if "secondary_actor_ids" not in data and data.get("supportingActorIds") is not None:
-            data["secondary_actor_ids"] = data["supportingActorIds"]
         for key in (
             "level",
             "parent_local_tag",
@@ -634,6 +642,8 @@ class UseCaseGroupDetailDraft(BaseModel):
             "status",
             "primaryActorId",
             "supportingActorIds",
+            "secondary_actor_ids",
+            "secondaryActorIds",
             "parentUseCaseId",
         ):
             data.pop(key, None)

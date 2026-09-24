@@ -166,23 +166,37 @@ function median(values) {
   return ordered[Math.floor(ordered.length / 2)];
 }
 
-function actorSides(input, useCasePositions) {
-  // `side` is always recomputed here, never taken from `input.actors[].side` -- the backend
-  // round-trips whatever this function last returned back into the stored actor list, and an
-  // earlier version of this function treated an actor's existing side as fixed and only
-  // balanced actors that had none yet. Once every actor had been assigned a side once (often
-  // early on, while the table was still small and every actor's weight was 0 or tied, which
-  // this same tie-break sends to "left"), no actor was ever rebalanced again on a later run,
-  // no matter how lopsided the real weights had become. Recomputing from scratch every time
-  // keeps this a pure function of the current table (same input -> same output, via the
-  // weight-then-name sort below), not of whatever an earlier, possibly much smaller table
-  // happened to produce.
-  const actors = asList(input.actors).map((actor, index) => ({
-    id: asString(actor?.id, `actor-${index + 1}`),
-    name: asString(actor?.name, "Actor"),
-    kind: asString(actor?.kind, "human"),
-    side: null,
-  }));
+// A node the user dragged and saved carries its persisted position back in on every later call
+// (the backend round-trips `diagramLayout.nodes[].manual`/x/y into `manualPosition` for any
+// actor/use case id that still exists) -- distinct from the old, since-removed "side" stickiness
+// bug: that one silently froze a position no one asked to freeze. This is an explicit, per-node
+// override the user asked for, so it takes precedence over anything this file would otherwise
+// compute for that one node, while every node without one is still recomputed fresh from the
+// current table, exactly as before.
+function manualPositionOf(item) {
+  const manual = item?.manualPosition;
+  if (!manual || typeof manual !== "object") return null;
+  const x = Number(manual.x);
+  const y = Number(manual.y);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
+function actorSides(input, boundary) {
+  const actors = asList(input.actors).map((actor, index) => {
+    const manual = manualPositionOf(actor);
+    return {
+      id: asString(actor?.id, `actor-${index + 1}`),
+      name: asString(actor?.name, "Actor"),
+      kind: asString(actor?.kind, "human"),
+      manual,
+      // A manually placed actor's side is read off which half of the canvas it was actually
+      // dropped on, not decided by the balance algorithm below -- its weight is then counted
+      // toward that side up front so the remaining (auto) actors balance against where this one
+      // really is, not wherever the algorithm would have put it if it were free to choose.
+      side: manual ? (manual.x < boundary.x + boundary.width / 2 ? "left" : "right") : null,
+    };
+  });
   const linked = new Map(actors.map((actor) => [actor.id, []]));
   for (const item of asList(input.useCases)) {
     const actorIds = [item?.primaryActorId, ...asList(item?.secondaryActorIds)].filter(Boolean);
@@ -191,12 +205,12 @@ function actorSides(input, useCasePositions) {
       linked.get(actorId).push(item.id);
     }
   }
-  let leftWeight = 0;
-  let rightWeight = 0;
-  const ordered = [...actors].sort(
-    (left, right) => linked.get(right.id).length - linked.get(left.id).length || left.name.localeCompare(right.name),
-  );
-  for (const actor of ordered) {
+  let leftWeight = actors.filter((actor) => actor.side === "left").reduce((sum, actor) => sum + linked.get(actor.id).length, 0);
+  let rightWeight = actors.filter((actor) => actor.side === "right").reduce((sum, actor) => sum + linked.get(actor.id).length, 0);
+  const unresolved = actors
+    .filter((actor) => !actor.manual)
+    .sort((left, right) => linked.get(right.id).length - linked.get(left.id).length || left.name.localeCompare(right.name));
+  for (const actor of unresolved) {
     actor.side = leftWeight <= rightWeight ? "left" : "right";
     if (actor.side === "left") leftWeight += linked.get(actor.id).length;
     else rightWeight += linked.get(actor.id).length;
@@ -204,8 +218,35 @@ function actorSides(input, useCasePositions) {
   return { actors, linked };
 }
 
+function boundaryPoint(node, towardX) {
+  // Exits from whichever side (left or right) faces the other endpoint, at vertical mid-height --
+  // the same rule the association edges already use for their actor/use-case connection point.
+  const exitLeft = towardX < node.x + node.width / 2;
+  return { x: exitLeft ? node.x : node.x + node.width, y: node.y + node.height / 2 };
+}
+
 function fallbackPoints(source, target) {
-  return [center(source), center(target)];
+  // Used whenever a relationship/generalization edge can no longer trust ELK's own routing (see
+  // the manual-position override above, and the rare case where sectionPoints comes back empty).
+  // A straight line has to still stop at each ellipse's boundary, not cut through its center and
+  // the label text inside it -- plain center() would draw exactly that.
+  const sourceCenter = center(source);
+  const targetCenter = center(target);
+  return [boundaryPoint(source, targetCenter.x), boundaryPoint(target, sourceCenter.x)];
+}
+
+function countOverlaps(placedNodes) {
+  let count = 0;
+  for (let i = 0; i < placedNodes.length; i += 1) {
+    for (let j = i + 1; j < placedNodes.length; j += 1) {
+      const a = placedNodes[i];
+      const b = placedNodes[j];
+      const overlapsX = a.x < b.x + b.width && b.x < a.x + a.width;
+      const overlapsY = a.y < b.y + b.height && b.y < a.y + a.height;
+      if (overlapsX && overlapsY) count += 1;
+    }
+  }
+  return count;
 }
 
 function buildLayout(input, elkGraph, elkResult) {
@@ -227,6 +268,7 @@ function buildLayout(input, elkGraph, elkResult) {
   const modules = new Map(asList(input.modules).map((module) => [module.id, module.name]));
   const nodes = [];
   for (const item of asList(input.useCases)) {
+    const manual = manualPositionOf(item);
     const position = useCasePositions.get(item.id) ?? { x: minX, y: minY, width: USE_CASE_WIDTH, height: USE_CASE_HEIGHT };
     nodes.push({
       id: item.id,
@@ -235,14 +277,30 @@ function buildLayout(input, elkGraph, elkResult) {
       moduleId: asString(item.moduleId),
       moduleName: asString(modules.get(item.moduleId), "General"),
       priority: asString(item.priority),
-      x: position.x + dx,
-      y: position.y + dy,
+      // The ELK pass above still computes a position for a manually placed use case like any
+      // other -- it has no notion of "manual" -- so the rest of the layout (other use cases in
+      // its module, the include/extend edges among them) is arranged as if this one were free to
+      // move too. Only here, at the very end, is that computed position discarded in favor of
+      // the saved one. That trade-off (an auto node can end up visually overlapping a pinned one
+      // instead of routing around its real position) is deliberate: a true node-locking layout
+      // pass would need ELK's interactive/constraint mode, which is far harder to keep
+      // predictable and verify than a plain, deterministic full recompute plus a final override.
+      x: manual ? manual.x : position.x + dx,
+      y: manual ? manual.y : position.y + dy,
       width: position.width,
       height: position.height,
+      manual: Boolean(manual),
     });
   }
   const useCasesById = new Map(nodes.map((node) => [node.id, node]));
-  const { actors, linked } = actorSides(input, useCasesById);
+  const { actors, linked } = actorSides(input, boundary);
+  // An actor with no linked use case at all (one that was only ever a secondary/supporting
+  // actor back when that existed, or simply never got assigned anything) has nothing to draw an
+  // association line to and nothing to say about its position on either side -- drawing it
+  // anyway is a dangling node with no information in it, and app/use_cases/rules.py already surfaces
+  // this in the table as an ACTOR_WITHOUT_USE_CASE validation warning, so it is not silently
+  // lost, just not given diagram real estate for nothing.
+  const connectedActors = actors.filter((actor) => linked.get(actor.id).length > 0);
   const desiredY = (actor) => {
     const ys = linked.get(actor.id).map((useCaseId) => useCasesById.get(useCaseId)?.y + USE_CASE_HEIGHT / 2).filter(Number.isFinite);
     return median(ys) ?? SYSTEM_Y + 120;
@@ -252,20 +310,39 @@ function buildLayout(input, elkGraph, elkResult) {
   // possible to the use cases it actually connects to. Sorting by name instead meant an actor
   // whose connections sit near the bottom could land alphabetically first and get placed at the
   // top on its own, while the actors that belonged near the top got cascade-pushed down below
-  // it -- stranding it far from its own edges with everyone else bunched together elsewhere.
+  // it -- stranding it far from its own edges with everyone else bunched together elsewhere. A
+  // manual actor sorts by its own saved position (still a real Y, just not linkage-derived) and
+  // is placed there exactly; only non-manual actors get pushed to clear the previous actor.
   const placeColumn = (side, x) => {
-    const ordered = actors
+    const effectiveDesiredY = (actor) => (actor.manual ? actor.manual.y : desiredY(actor));
+    const ordered = connectedActors
       .filter((actor) => actor.side === side)
-      .sort((left, right) => desiredY(left) - desiredY(right) || left.name.localeCompare(right.name));
+      .sort((left, right) => effectiveDesiredY(left) - effectiveDesiredY(right) || left.name.localeCompare(right.name));
     let previousY = null;
     for (const actor of ordered) {
-      const desired = desiredY(actor);
-      const y = Math.max(
-        SYSTEM_Y + 34,
-        previousY == null ? desired - ACTOR_HEIGHT / 2 : Math.max(desired - ACTOR_HEIGHT / 2, previousY + ACTOR_HEIGHT + 24),
-      );
+      let y;
+      if (actor.manual) {
+        y = actor.manual.y;
+      } else {
+        const desired = desiredY(actor);
+        y = Math.max(
+          SYSTEM_Y + 34,
+          previousY == null ? desired - ACTOR_HEIGHT / 2 : Math.max(desired - ACTOR_HEIGHT / 2, previousY + ACTOR_HEIGHT + 24),
+        );
+      }
       previousY = y;
-      nodes.push({ id: actor.id, kind: "actor", name: actor.name, actorKind: actor.kind, side, x, y, width: ACTOR_WIDTH, height: ACTOR_HEIGHT });
+      nodes.push({
+        id: actor.id,
+        kind: "actor",
+        name: actor.name,
+        actorKind: actor.kind,
+        side,
+        x: actor.manual ? actor.manual.x : x,
+        y,
+        width: ACTOR_WIDTH,
+        height: ACTOR_HEIGHT,
+        manual: Boolean(actor.manual),
+      });
     }
   };
   placeColumn("left", 0);
@@ -292,9 +369,18 @@ function buildLayout(input, elkGraph, elkResult) {
     const source = useCasesById.get(relation.sourceId);
     const target = useCasesById.get(relation.targetId);
     if (!source || !target) continue;
-    const elkEdge = elkEdges.get(relation.id);
-    const points = sectionPoints(elkEdge, dx, dy);
-    const actualPoints = points.length >= 2 ? points : fallbackPoints(source, target);
+    // ELK's bend-point routing for this edge was computed before either endpoint's manual
+    // override (if any) was applied, so it can no longer be trusted to still avoid other nodes
+    // once one end has moved -- fall back to a direct line between the two use cases instead,
+    // the same as association edges already use.
+    let actualPoints;
+    if (source.manual || target.manual) {
+      actualPoints = fallbackPoints(source, target);
+    } else {
+      const elkEdge = elkEdges.get(relation.id);
+      const points = sectionPoints(elkEdge, dx, dy);
+      actualPoints = points.length >= 2 ? points : fallbackPoints(source, target);
+    }
     const sourcePoint = actualPoints[0];
     const targetPoint = actualPoints[actualPoints.length - 1];
     const toRight = targetPoint.x >= sourcePoint.x;
@@ -321,7 +407,10 @@ function buildLayout(input, elkGraph, elkResult) {
       ...nodes,
     ],
     edges,
-    diagnostics: { warnings: [], overlapCount: 0 },
+    // A manual override can legitimately overlap an auto-placed node (see the note above on
+    // why this file does not attempt to route around a pinned node's real position), so this is
+    // no longer always 0 -- it is a real count now that that trade-off exists.
+    diagnostics: { warnings: [], overlapCount: countOverlaps(nodes) },
   };
 }
 

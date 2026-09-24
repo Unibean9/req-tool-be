@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.schemas.use_case import UseCaseLevel
+from app.schemas.use_case import DiagramNodePositionRequest, UseCaseLevel
 from app.services.use_case_service import UseCaseService
 from app.use_cases.models import (
     RequirementsSourceSnapshot,
@@ -288,6 +288,66 @@ async def test_generate_relations_completes_gracefully_with_no_use_cases_instead
     service._save.assert_awaited_once()
 
 
+def test_drop_actors_without_use_cases_keeps_only_referenced_actors():
+    """Deterministic, not AI-predicted: generate_groups (Phase 1) proposes the actor roster
+    before any use case exists, so it cannot know in advance which of them a later module batch
+    will actually assign. This runs once the full use-case set is known (see
+    _resolve_relationships_with_client, table generation's last step) and removes whichever
+    actor never ended up as anyone's primary (or a legacy secondary) actor."""
+    payload = {
+        "actors": [
+            {"id": "ACT-USED-PRIMARY", "name": "Used as primary"},
+            {"id": "ACT-USED-SECONDARY", "name": "Used as legacy secondary"},
+            {"id": "ACT-UNUSED", "name": "Never assigned to anything"},
+        ],
+        "useCases": [
+            {"id": "UC-1", "primaryActorId": "ACT-USED-PRIMARY", "secondaryActorIds": ["ACT-USED-SECONDARY"]},
+        ],
+    }
+
+    UseCaseService._drop_actors_without_use_cases(payload)
+
+    assert {actor["id"] for actor in payload["actors"]} == {"ACT-USED-PRIMARY", "ACT-USED-SECONDARY"}
+
+
+@pytest.mark.asyncio
+async def test_generate_relations_drops_actors_that_ended_up_unused():
+    payload = _payload_after_generate_groups()
+    payload["actors"].append({"id": "ACT-NEVER-USED", "name": "Never Used", "kind": "human"})
+    payload["useCases"] = [
+        {
+            "id": "UC-TMM-001",
+            "name": "Add Team Member",
+            "moduleId": "SUB-TASK-MANAGEMENT",
+            "primaryActorId": "ACT-GROUP-MEMBER",
+            "secondaryActorIds": [],
+            "evidence": "explicit",
+            "priority": "required",
+            "description": "A member is added to the team.",
+            "preconditions": [],
+            "sourceTrace": [],
+        }
+    ]
+    record = SimpleNamespace(model_data=payload)
+    provider = SimpleNamespace(id=uuid.uuid4(), provider_type=SimpleNamespace(value="anthropic"), model_name="claude-test")
+    draft_response = ({"relations": []}, {})
+    service = UseCaseService(db=AsyncMock())
+    service._project = AsyncMock(return_value=SimpleNamespace(id=PROJECT_ID, name="Task App"))
+    service._locked_payload = AsyncMock(return_value=(payload, record))
+    service._llm_client = AsyncMock(
+        return_value=(SimpleNamespace(generate=AsyncMock(return_value=draft_response)), provider)
+    )
+    service._attach_diagram_layout = AsyncMock(return_value=None)
+    service._save = AsyncMock()
+
+    with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
+        response = await service.generate_relations(project_id=PROJECT_ID, user_id=USER_ID, body=_body())
+
+    actor_ids = {actor.id for actor in response.actors}
+    assert "ACT-NEVER-USED" not in actor_ids
+    assert "ACT-GROUP-MEMBER" in actor_ids
+
+
 @pytest.mark.asyncio
 async def test_generate_group_use_cases_bounds_the_prompt_to_the_modules_own_source_refs():
     """generate_groups (Phase 1) already tags each module with the evidence it read that module
@@ -398,6 +458,137 @@ async def test_generate_diagram_recomputes_layout_when_use_cases_exist():
     assert len(response.use_cases) == 1
 
 
+def _payload_with_diagram() -> dict:
+    payload = _payload_after_generate_groups()
+    payload["useCases"] = [
+        {
+            "id": "UC-TMM-001",
+            "name": "Add Team Member",
+            "moduleId": "SUB-TASK-MANAGEMENT",
+            "primaryActorId": "ACT-GROUP-MEMBER",
+            "secondaryActorIds": [],
+            "evidence": "explicit",
+            "priority": "required",
+            "description": "A member is added to the team.",
+            "preconditions": [],
+            "sourceTrace": [],
+        }
+    ]
+    payload["diagramLayout"] = {
+        "engine": "elk",
+        "version": "0.11",
+        "system": {"id": "SYSTEM", "name": "Task App", "x": 0, "y": 0, "width": 800, "height": 470},
+        "nodes": [
+            {"id": "ACT-GROUP-MEMBER", "kind": "actor", "name": "Group Member", "x": 0, "y": 97, "width": 160, "height": 110, "side": "left", "manual": False},
+            {"id": "UC-TMM-001", "kind": "use_case", "name": "Add Team Member", "x": 328, "y": 116, "width": 224, "height": 72, "manual": False},
+        ],
+        "edges": [],
+        "diagnostics": {"warnings": [], "overlapCount": 0},
+    }
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# update_diagram_positions: saving positions the user dragged by hand
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_update_diagram_positions_requires_an_existing_diagram():
+    from fastapi import HTTPException
+
+    payload = _payload_after_generate_groups()
+    record = SimpleNamespace(model_data=payload)
+    service = UseCaseService(db=AsyncMock())
+    service._project = AsyncMock(return_value=SimpleNamespace(id=PROJECT_ID, name="Task App"))
+    service._locked_payload = AsyncMock(return_value=(payload, record))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.update_diagram_positions(
+            project_id=PROJECT_ID, positions=[DiagramNodePositionRequest(id="ACT-GROUP-MEMBER", x=1, y=2)]
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "USE_CASE_DIAGRAM_REQUIRED"
+
+
+@pytest.mark.asyncio
+async def test_update_diagram_positions_updates_known_nodes_and_marks_manual():
+    """Only ids that already exist in the current diagram are touched (an unknown id is
+    silently skipped, never used to create a node), and a touched node is marked manual so a
+    later regenerate (see _attach_diagram_layout) carries this position forward."""
+    payload = _payload_with_diagram()
+    record = SimpleNamespace(model_data=payload)
+    service = UseCaseService(db=AsyncMock())
+    service._project = AsyncMock(return_value=SimpleNamespace(id=PROJECT_ID, name="Task App"))
+    service._locked_payload = AsyncMock(return_value=(payload, record))
+    service._attach_diagram_layout = AsyncMock(return_value=None)
+    service._save = AsyncMock()
+
+    await service.update_diagram_positions(
+        project_id=PROJECT_ID,
+        positions=[
+            DiagramNodePositionRequest(id="ACT-GROUP-MEMBER", x=999, y=888),
+            DiagramNodePositionRequest(id="UC-DOES-NOT-EXIST", x=1, y=1),
+        ],
+    )
+
+    nodes_by_id = {node["id"]: node for node in payload["diagramLayout"]["nodes"]}
+    moved = nodes_by_id["ACT-GROUP-MEMBER"]
+    assert moved["x"] == 999
+    assert moved["y"] == 888
+    assert moved["manual"] is True
+    untouched = nodes_by_id["UC-TMM-001"]
+    assert untouched["manual"] is False
+    service._save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_diagram_positions_errors_when_no_ids_match():
+    from fastapi import HTTPException
+
+    payload = _payload_with_diagram()
+    record = SimpleNamespace(model_data=payload)
+    service = UseCaseService(db=AsyncMock())
+    service._project = AsyncMock(return_value=SimpleNamespace(id=PROJECT_ID, name="Task App"))
+    service._locked_payload = AsyncMock(return_value=(payload, record))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await service.update_diagram_positions(
+            project_id=PROJECT_ID, positions=[DiagramNodePositionRequest(id="UC-DOES-NOT-EXIST", x=1, y=1)]
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.detail["code"] == "USE_CASE_DIAGRAM_POSITIONS_NOT_FOUND"
+
+
+@pytest.mark.asyncio
+async def test_attach_diagram_layout_forwards_manual_positions_to_the_worker():
+    """A node already marked manual in the persisted layout must be handed back to the ELK
+    worker as manualPosition on the next recompute (table regenerate, Generate diagram, ...),
+    or the position the user saved would be silently lost on the very next regenerate."""
+    payload = _payload_with_diagram()
+    payload["diagramLayout"]["nodes"][0]["manual"] = True
+    payload["diagramLayout"]["nodes"][0]["x"] = 555
+    payload["diagramLayout"]["nodes"][0]["y"] = 444
+    service = UseCaseService(db=AsyncMock())
+    fake_layout = {
+        "engine": "elk",
+        "version": "0.11",
+        "system": {"id": "SYSTEM", "name": "Task App", "x": 0, "y": 0, "width": 800, "height": 470},
+        "nodes": [],
+        "edges": [],
+        "diagnostics": {"warnings": [], "overlapCount": 0},
+    }
+    worker = AsyncMock(return_value=fake_layout)
+    with patch("app.services.use_case_service.generate_diagram_layout", worker):
+        await service._attach_diagram_layout(payload)
+
+    sent_actors = worker.await_args.args[0]["actors"]
+    moved = next(a for a in sent_actors if a["id"] == "ACT-GROUP-MEMBER")
+    assert moved["manualPosition"] == {"x": 555, "y": 444}
+
+
 # ---------------------------------------------------------------------------
 # generate_group_use_cases (Phase 2)
 # ---------------------------------------------------------------------------
@@ -407,7 +598,10 @@ async def test_generate_diagram_recomputes_layout_when_use_cases_exist():
 async def test_generate_group_use_cases_produces_flat_rows_ignoring_legacy_level_tags():
     """The canonical model has no use-case hierarchy: every draft becomes an independent top-level
     row under the module. Legacy level/local_tag/parent_local_tag hints (from an older provider
-    prompt or a stale client) are accepted and silently dropped, not used to nest rows."""
+    prompt or a stale client) are accepted and silently dropped, not used to nest rows. A draft's
+    secondaryActorIds is dropped the same way: UseCaseGroupDetailDraft has no field for it, one
+    actor per use case now (see harness.py), so even a stale client sending one is ignored rather
+    than rejected."""
     payload = _payload_after_generate_groups()
     draft_response = (
         {
@@ -451,8 +645,7 @@ async def test_generate_group_use_cases_produces_flat_rows_ignoring_legacy_level
     assert names == {"Create Task", "Assign Task Owner"}
     assert all(item.module_id == "SUB-TASK-MANAGEMENT" for item in response.use_cases)
     assert all(item.id.startswith("UC-") for item in response.use_cases)
-    assign = next(item for item in response.use_cases if item.name == "Assign Task Owner")
-    assert assign.secondary_actor_ids == ["ACT-GROUP-ADMIN"]
+    assert all(item.secondary_actor_ids == [] for item in response.use_cases)
     service._save.assert_awaited_once()
 
 
@@ -665,3 +858,35 @@ async def test_generate_group_use_cases_unknown_group_is_404():
             project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-DOES-NOT-EXIST", body=_body()
         )
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_generate_group_use_cases_marks_the_run_failed_instead_of_leaving_it_running():
+    """The FE hook (useUseCaseModel.ts's generateTableMutation) stops the whole run at the first
+    failed module instead of skipping it and calling the remaining modules / the closing
+    generate_relations call -- so it never reaches the phase that would otherwise resolve the
+    shared "running" marker. Before this fix, a single module timing out left the project
+    reporting generation.status == "running" until the marker went stale on its own (10 minutes),
+    which looked exactly like the whole feature had hung rather than a request that had already
+    failed."""
+    from fastapi import HTTPException
+
+    now = datetime.now(UTC).isoformat()
+    payload = _payload_after_generate_groups()
+    payload["generation"] = {"status": "running", "generationId": "gen-1", "startedAt": now, "updatedAt": now}
+    record = SimpleNamespace(model_data=payload)
+    service = UseCaseService(db=AsyncMock())
+    service._project = AsyncMock(return_value=SimpleNamespace(id=PROJECT_ID, name="Task App"))
+    service._locked_payload = AsyncMock(return_value=(payload, record))
+    service._record = AsyncMock(return_value=record)
+    service._llm_client = AsyncMock(side_effect=TimeoutError())
+
+    with patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())):
+        with pytest.raises(HTTPException) as exc_info:
+            await service.generate_group_use_cases(
+                project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
+            )
+
+    assert exc_info.value.status_code == 504
+    assert record.model_data["generation"]["status"] == "failed"
+    assert record.model_data["generation"]["generationId"] == "gen-1"

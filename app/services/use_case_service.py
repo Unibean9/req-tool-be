@@ -24,6 +24,7 @@ from app.schemas.use_case import (
     ActorCreateRequest,
     ActorResponse,
     ActorUpdateRequest,
+    DiagramNodePositionRequest,
     RelationshipCreateRequest,
     RelationshipType,
     UseCaseCreateRequest,
@@ -472,16 +473,54 @@ class UseCaseService:
         drafts = UseCaseRelationshipDraftList.model_validate(_decode_llm_payload(raw_result)).relations
         self._apply_relationship_drafts(payload, drafts, source=source)
         self._refresh_relationship_ids(payload)
+        # This is the last step of table generation (both the monolithic /generate and the split
+        # generate_relations call it), so the full use-case set is finally known -- unlike Phase
+        # 1 (generate_groups), which proposes the actor roster before any use case exists and so
+        # cannot know in advance which of them will end up unused. Deterministic here rather than
+        # asking a provider to predict its own later output.
+        self._drop_actors_without_use_cases(payload)
         return usage
+
+    @staticmethod
+    def _drop_actors_without_use_cases(payload: dict[str, Any]) -> None:
+        used_actor_ids: set[str] = set()
+        for item in payload.get("useCases", []):
+            if item.get("primaryActorId"):
+                used_actor_ids.add(item["primaryActorId"])
+            used_actor_ids.update(item.get("secondaryActorIds") or [])
+        payload["actors"] = [actor for actor in payload.get("actors", []) if actor.get("id") in used_actor_ids]
 
     async def _attach_diagram_layout(self, payload: dict[str, Any]) -> str | None:
         try:
+            # Carry forward any actor/use-case position the user dragged and explicitly saved
+            # (see update_diagram_positions) into this recompute, so a later table/diagram
+            # regenerate does not wipe it out -- only an id with no prior manual node (new,
+            # never-positioned-by-hand) gets a fresh auto-computed position. The layout worker
+            # itself decides how to reconcile a manual position with everything else (see
+            # diagram_layout/layout.mjs); this just needs to still exist as an id in the current
+            # model, or it is silently dropped, matching normal idempotent-replace behaviour.
+            previous_nodes = (payload.get("diagramLayout") or {}).get("nodes") or []
+            manual_positions = {
+                node["id"]: {"x": node["x"], "y": node["y"]}
+                for node in previous_nodes
+                if node.get("manual")
+                and node.get("id")
+                and isinstance(node.get("x"), int | float)
+                and isinstance(node.get("y"), int | float)
+            }
+
+            def _with_manual_position(item: dict[str, Any]) -> dict[str, Any]:
+                position = manual_positions.get(item.get("id"))
+                return {**item, "manualPosition": position} if position else item
+
+            actors_input = [_with_manual_position(actor) for actor in payload.get("actors", [])]
+            use_cases_input = [_with_manual_position(item) for item in payload.get("useCases", [])]
             layout = await generate_diagram_layout(
                 {
                     "systemName": (payload.get("system") or {}).get("name") or payload.get("projectName"),
                     "modules": payload.get("modules", []),
-                    "actors": payload.get("actors", []),
-                    "useCases": payload.get("useCases", []),
+                    "actors": actors_input,
+                    "useCases": use_cases_input,
                     "relationships": payload.get("relationships", []),
                 }
             )
@@ -629,9 +668,10 @@ class UseCaseService:
         if module is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Use-case module not found")
         # A later phase of the run generate_groups already marked "running"; refresh its
-        # heartbeat but do not re-check it (see generate_groups for the check) and do not
-        # resolve it to a terminal status on failure -- a single module failing must not block
-        # the remaining modules the caller still has queued up.
+        # heartbeat but do not re-check it (see generate_groups for the check). On failure this
+        # does resolve the marker to "failed" (see the except blocks below) -- the FE hook stops
+        # the whole run at the first failed module instead of skipping it, so this is the last
+        # chance to leave the project in a terminal state rather than "running" forever.
         generation_id = (payload.get("generation") or {}).get("generationId")
         source = await load_project_requirements_source(self.db, project_id=project_id)
         try:
@@ -685,14 +725,7 @@ class UseCaseService:
             ]
             actor_ids = {item["id"] for item in payload["actors"]}
             next_id = self._next_use_case_id
-            candidates: list[tuple[Any, list[str]]] = []
-            for draft in drafts:
-                if draft.primary_actor_id not in actor_ids:
-                    continue
-                supporting = [
-                    item for item in draft.secondary_actor_ids if item in actor_ids and item != draft.primary_actor_id
-                ]
-                candidates.append((draft, supporting))
+            candidates = [draft for draft in drafts if draft.primary_actor_id in actor_ids]
             # Keep highest-priority rows first (stable sort preserves the model's own ordering
             # within a priority tier), then cap to this module's share of the concept-stage
             # budget -- but reserve one slot per actor this module's own candidates introduce
@@ -700,29 +733,29 @@ class UseCaseService:
             # row here happens to be lower-priority than this module's other rows drops out
             # entirely and ends up with no use case anywhere in the diagram, even though the
             # model did generate something for them.
-            candidates.sort(key=lambda pair: _PRIORITY_ORDER.get(pair[0].priority, 99))
+            candidates.sort(key=lambda draft: _PRIORITY_ORDER.get(draft.priority, 99))
             budget = _module_use_case_budget(payload, module["id"])
-            selected: list[tuple[Any, list[str]]] = []
+            selected: list[Any] = []
             selected_indices: set[int] = set()
             covered_actors: set[str] = set()
-            for index, (draft, supporting) in enumerate(candidates):
+            for index, draft in enumerate(candidates):
                 if len(selected) >= budget:
                     break
                 if draft.primary_actor_id in covered_actors:
                     continue
-                selected.append((draft, supporting))
+                selected.append(draft)
                 selected_indices.add(index)
                 covered_actors.add(draft.primary_actor_id)
-            for index, pair in enumerate(candidates):
+            for index, draft in enumerate(candidates):
                 if len(selected) >= budget:
                     break
                 if index not in selected_indices:
-                    selected.append(pair)
+                    selected.append(draft)
                     selected_indices.add(index)
             accepted = 0
-            for draft, supporting in selected:
+            for draft in selected:
                 use_case_id = next_id(payload, module["name"])
-                row = self._draft_row(use_case_id, module["id"], draft, supporting, source)
+                row = self._draft_row(use_case_id, module["id"], draft, source)
                 payload["useCases"].append(row)
                 accepted += 1
             model = self._payload_to_model(payload, project.name, source=source)
@@ -747,6 +780,13 @@ class UseCaseService:
             if layout_error:
                 payload["generation"]["error"] = layout_error
         except TimeoutError as exc:
+            # The FE hook stops the whole run at the first failed module rather than skipping it
+            # and moving on (see useUseCaseModel.ts's generateTableMutation) -- it never reaches
+            # generate_relations, the phase that would otherwise resolve this marker. Without
+            # this, the project would report "running" until the marker goes stale on its own.
+            await self._mark_generation_failed(
+                project=project, generation_id=generation_id, message="Module use-case generation timed out."
+            )
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={
@@ -754,10 +794,18 @@ class UseCaseService:
                     "message": "This module generation timed out; retry the module.",
                 },
             ) from exc
-        except HTTPException:
+        except HTTPException as exc:
+            await self._mark_generation_failed(
+                project=project, generation_id=generation_id, message=_http_exception_message(exc)
+            )
             raise
         except Exception as exc:
             logger.exception("Module use-case generation failed for %s/%s", project_id, group_id)
+            await self._mark_generation_failed(
+                project=project,
+                generation_id=generation_id,
+                message=f"Module use-case generation failed: {str(exc)[:400]}",
+            )
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 detail={"code": "USE_CASE_GROUP_GENERATION_FAILED", "message": str(exc)[:500]},
@@ -862,6 +910,57 @@ class UseCaseService:
                     "message": "Generate the use-case table before generating the diagram.",
                 },
             )
+        layout_error = await self._attach_diagram_layout(payload)
+        if layout_error:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "USE_CASE_DIAGRAM_GENERATION_FAILED", "message": layout_error},
+            )
+        payload = _normalise_payload(payload, project)
+        await self._save(record, payload)
+        return UseCaseModelResponse.model_validate(payload)
+
+    async def update_diagram_positions(
+        self, *, project_id: uuid.UUID, positions: list[DiagramNodePositionRequest]
+    ) -> UseCaseModelResponse:
+        """Persist actor/use-case positions the user dragged by hand.
+
+        Only updates nodes that already exist in the current diagram (an id that does not
+        resolve is silently skipped, never used to create one) and marks them `manual` so
+        _attach_diagram_layout carries the position forward on every later table/diagram
+        regenerate instead of recomputing it fresh like an untouched node.
+        """
+
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        layout = payload.get("diagramLayout")
+        if not isinstance(layout, dict) or not layout.get("nodes"):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "USE_CASE_DIAGRAM_REQUIRED",
+                    "message": "Generate the diagram before saving manual positions.",
+                },
+            )
+        nodes_by_id = {node.get("id"): node for node in layout["nodes"] if node.get("id")}
+        updated = 0
+        for position in positions:
+            node = nodes_by_id.get(position.id)
+            if node is None or node.get("kind") not in {"actor", "use_case"}:
+                continue
+            node["x"] = position.x
+            node["y"] = position.y
+            node["manual"] = True
+            updated += 1
+        if not updated:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={
+                    "code": "USE_CASE_DIAGRAM_POSITIONS_NOT_FOUND",
+                    "message": "None of the given node ids exist in the current diagram.",
+                },
+            )
+        payload["diagramLayout"] = layout
         layout_error = await self._attach_diagram_layout(payload)
         if layout_error:
             raise HTTPException(
@@ -1333,9 +1432,7 @@ class UseCaseService:
         ]
 
     @staticmethod
-    def _draft_row(
-        use_case_id: str, module_id: str, draft: Any, supporting: list[str], source: RequirementsSourceSnapshot
-    ) -> dict[str, Any]:
+    def _draft_row(use_case_id: str, module_id: str, draft: Any, source: RequirementsSourceSnapshot) -> dict[str, Any]:
         related_requirements = [
             link.model_copy(
                 update={"source_refs": canonical_evidence_refs(link.source_refs, source)}
@@ -1348,7 +1445,9 @@ class UseCaseService:
                 "name": draft.name,
                 "module_id": module_id,
                 "primary_actor_id": draft.primary_actor_id,
-                "secondary_actor_ids": supporting,
+                # One actor per use case -- see UseCaseGroupDetailDraft, which has no field for a
+                # second (supporting) actor to come from.
+                "secondary_actor_ids": [],
                 "description": draft.description,
                 "trigger": draft.trigger,
                 "preconditions": draft.preconditions,
@@ -1896,7 +1995,11 @@ def _candidate_rows_from_drafts(
                 data[field_name] = value
         if draft.primary_actor_id in actor_ids:
             data["primary_actor_id"] = draft.primary_actor_id
-        data["secondary_actor_ids"] = [item for item in draft.secondary_actor_ids if item in actor_ids]
+        # One actor per use case now -- the draft schema no longer has a secondary_actor_ids
+        # field for the provider to fill in (see UseCaseGroupDetailDraft), so this clears
+        # whatever the deterministic floor row it is enriching had, rather than leaving a stale
+        # one the AI pass never got a chance to confirm or drop.
+        data["secondary_actor_ids"] = []
         data["source_refs"] = draft.source_refs or target.source_refs
         try:
             output.append(UseCaseEntry.model_validate(data))

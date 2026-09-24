@@ -11,7 +11,10 @@ flow the LLM wrote with participantType/participantId (its only documented shape
 being saved.
 """
 
-from app.use_cases.models import UseCaseEntry, UseCaseFlow, UseCaseFlowStep
+import pytest
+from pydantic import ValidationError
+
+from app.use_cases.models import UseCaseEntry, UseCaseFlow, UseCaseFlowStep, UseCaseGroupDetailDraft
 
 
 def test_use_case_flow_step_accepts_camel_case_participant_fields():
@@ -63,3 +66,49 @@ def test_use_case_entry_validates_with_camel_case_flow_steps():
 
     assert [step.participant_type for step in entry.main_flow] == ["actor", "system"]
     assert entry.main_flow[0].participant_id == "ACT-MANAGER"
+
+
+def test_use_case_group_detail_draft_has_no_secondary_actor_field():
+    """One actor per use case now (see harness.py's system prompt) -- the field was removed from
+    this schema, not just ignored after parsing, so a structured-output provider is constrained
+    to never propose a second one. A legacy client or an older cached prompt sending one anyway
+    must not be rejected outright (extra="forbid" would otherwise 502 an entirely valid draft
+    over one stray field): _normalize_legacy_draft silently drops it instead."""
+    draft = UseCaseGroupDetailDraft.model_validate(
+        {
+            "name": "Assign Task Owner",
+            "primary_actor_id": "ACT-MANAGER",
+            "secondary_actor_ids": ["ACT-ADMIN"],
+            "secondaryActorIds": ["ACT-ADMIN"],
+            "supportingActorIds": ["ACT-ADMIN"],
+            "description": "The manager assigns a task owner.",
+            "priority": "recommended",
+            "evidence": "inferred",
+            "source_refs": ["entity:prd:use_case:C1:5"],
+        }
+    )
+
+    assert not hasattr(draft, "secondary_actor_ids")
+
+
+def test_use_case_group_detail_draft_name_is_capped_short():
+    """Backstop for the naming-convention instructions in USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT
+    (Verb + Noun, e.g. "Send Notification" -- not a full sentence): even if a provider ignores
+    the prompt, the schema itself refuses a name long enough to be one."""
+    base = {
+        "primary_actor_id": "ACT-MANAGER",
+        "description": "The manager assigns a task owner.",
+        "priority": "recommended",
+        "evidence": "inferred",
+        "source_refs": ["entity:prd:use_case:C1:5"],
+    }
+
+    UseCaseGroupDetailDraft.model_validate({**base, "name": "Assign Task Owner"})
+
+    with pytest.raises(ValidationError):
+        UseCaseGroupDetailDraft.model_validate(
+            {
+                **base,
+                "name": "Trưởng nhóm cấu hình và gửi thông báo task cho thành viên qua Slack webhook ngay lập tức",
+            }
+        )

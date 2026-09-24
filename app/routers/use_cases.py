@@ -19,6 +19,7 @@ from app.schemas.use_case import (
     ActorCreateRequest,
     ActorResponse,
     ActorUpdateRequest,
+    DiagramPositionsUpdateRequest,
     RelationshipCreateRequest,
     UseCaseCreateRequest,
     UseCaseGenerateRequest,
@@ -133,6 +134,27 @@ async def generate_use_case_diagram(
     return ok(await UseCaseService(db).generate_diagram(project_id=project_id))
 
 
+@router.patch(
+    "/use-case-model/diagram/positions",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def update_use_case_diagram_positions(
+    project_id: uuid.UUID,
+    body: DiagramPositionsUpdateRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Save actor/use-case positions dragged by hand. Only updates nodes that already exist in
+    the current diagram; marks them so later regenerates keep this position instead of
+    recomputing it."""
+
+    await require_project_access(project_id, user, db)
+    return ok(
+        await UseCaseService(db).update_diagram_positions(project_id=project_id, positions=body.positions)
+    )
+
+
 @router.post(
     "/use-case-model/groups/generate",
     response_model=ApiResponse[UseCaseModelResponse],
@@ -184,20 +206,24 @@ async def generate_use_case_group_use_cases(
     """
 
     await require_project_access(project_id, user, db)
+    service = UseCaseService(db)
     try:
         return ok(
-            await UseCaseService(db).generate_group_use_cases(
+            await service.generate_group_use_cases(
                 project_id=project_id, user_id=user.id, group_id=group_id, body=body
             )
         )
     except HTTPException:
         raise
-    except Exception:
-        # Deliberately does not touch the run's running marker (unlike /generate,
-        # /groups/generate and /relations/generate): one module failing must not block the
-        # caller's remaining queued-up modules or the closing relations call. Logged here so
-        # a failure that also escaped generate_group_use_cases' own handling is still visible.
+    except Exception as exc:
+        # Same rationale as /generate's handler above: release the running marker on an
+        # exception that escaped generate_group_use_cases' own handling, so a bug here cannot
+        # leave the Generate button permanently locked out.
         logger.exception("Module use-case generation request failed for %s/%s", project_id, group_id)
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Module use-case generation failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
         raise
 
 
