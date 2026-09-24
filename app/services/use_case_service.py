@@ -84,6 +84,25 @@ def _generation_heartbeat_is_stale(generation: dict[str, Any]) -> bool:
     return (datetime.now(UTC) - touched).total_seconds() > _GENERATION_STALE_AFTER_SECONDS
 
 
+# Concept-stage cap: keep the generated table small enough to read and diagram at a glance
+# instead of exhaustively enumerating every requirement family. Split evenly across modules
+# (remainder going to the earliest ones) so every module keeps some representation rather than
+# a few modules exhausting the whole budget while the rest generate rows that only get
+# discarded, and within a module the higher-priority rows are kept over lower-priority ones.
+_MAX_GENERATED_USE_CASES = 20
+_PRIORITY_ORDER = {"required": 0, "recommended": 1, "optional": 2}
+
+
+def _module_use_case_budget(payload: dict[str, Any], module_id: str) -> int:
+    modules = payload.get("modules") or []
+    total = len(modules)
+    if total == 0:
+        return _MAX_GENERATED_USE_CASES
+    base, remainder = divmod(_MAX_GENERATED_USE_CASES, total)
+    index = next((i for i, item in enumerate(modules) if item.get("id") == module_id), total)
+    return base + (1 if index < remainder else 0)
+
+
 class UseCaseService:
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -666,13 +685,42 @@ class UseCaseService:
             ]
             actor_ids = {item["id"] for item in payload["actors"]}
             next_id = self._next_use_case_id
-            accepted = 0
+            candidates: list[tuple[Any, list[str]]] = []
             for draft in drafts:
                 if draft.primary_actor_id not in actor_ids:
                     continue
                 supporting = [
                     item for item in draft.secondary_actor_ids if item in actor_ids and item != draft.primary_actor_id
                 ]
+                candidates.append((draft, supporting))
+            # Keep highest-priority rows first (stable sort preserves the model's own ordering
+            # within a priority tier), then cap to this module's share of the concept-stage
+            # budget -- but reserve one slot per actor this module's own candidates introduce
+            # before filling the rest by priority alone. Otherwise an actor whose only candidate
+            # row here happens to be lower-priority than this module's other rows drops out
+            # entirely and ends up with no use case anywhere in the diagram, even though the
+            # model did generate something for them.
+            candidates.sort(key=lambda pair: _PRIORITY_ORDER.get(pair[0].priority, 99))
+            budget = _module_use_case_budget(payload, module["id"])
+            selected: list[tuple[Any, list[str]]] = []
+            selected_indices: set[int] = set()
+            covered_actors: set[str] = set()
+            for index, (draft, supporting) in enumerate(candidates):
+                if len(selected) >= budget:
+                    break
+                if draft.primary_actor_id in covered_actors:
+                    continue
+                selected.append((draft, supporting))
+                selected_indices.add(index)
+                covered_actors.add(draft.primary_actor_id)
+            for index, pair in enumerate(candidates):
+                if len(selected) >= budget:
+                    break
+                if index not in selected_indices:
+                    selected.append(pair)
+                    selected_indices.add(index)
+            accepted = 0
+            for draft, supporting in selected:
                 use_case_id = next_id(payload, module["name"])
                 row = self._draft_row(use_case_id, module["id"], draft, supporting, source)
                 payload["useCases"].append(row)

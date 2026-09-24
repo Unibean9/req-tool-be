@@ -62,16 +62,28 @@ function buildElkGraph(input) {
     children: childrenByModule.get(module.id) ?? [],
   }));
 
+  // include/extend get a rendered "«include»"/"«extend»" label at the edge's midpoint (see the
+  // `label` field built below); generalization has none. Declaring an ELK `labels` box for the
+  // first two -- not just a bare source/target edge -- is what makes the layered algorithm treat
+  // the label's width as real space it must route around, instead of routing two use cases as
+  // close together as the plain node spacing allows and leaving the label to overlap whatever
+  // ends up in that gap.
+  const EDGE_LABEL_SIZE = { width: 74, height: 16 };
   const edges = asList(input.relationships)
     .filter((relation) => {
       const type = asString(relation?.type);
       return ["include", "extend", "generalization"].includes(type) && relation?.sourceId && relation?.targetId;
     })
-    .map((relation) => ({
-      id: asString(relation.id, `relation-${relation.sourceId}-${relation.targetId}`),
-      sources: [asString(relation.sourceId)],
-      targets: [asString(relation.targetId)],
-    }));
+    .map((relation) => {
+      const type = asString(relation?.type);
+      const hasLabel = type === "include" || type === "extend";
+      return {
+        id: asString(relation.id, `relation-${relation.sourceId}-${relation.targetId}`),
+        sources: [asString(relation.sourceId)],
+        targets: [asString(relation.targetId)],
+        labels: hasLabel ? [{ text: type === "include" ? "«include»" : "«extend»", ...EDGE_LABEL_SIZE }] : [],
+      };
+    });
 
   return {
     id: "root",
@@ -83,7 +95,13 @@ function buildElkGraph(input) {
       "elk.spacing.nodeNode": "50",
       "elk.spacing.edgeNode": "30",
       "elk.spacing.edgeEdge": "20",
+      "elk.spacing.edgeLabel": "12",
+      // A labeled edge between two use cases in adjacent layers needs enough of a gap for the
+      // label text to sit without touching either ellipse; the plain node-to-node default (80)
+      // was sized for unlabeled spacing only.
       "elk.layered.spacing.nodeNodeBetweenLayers": "80",
+      "elk.layered.spacing.edgeNodeBetweenLayers": "40",
+      "elk.layered.edgeLabels.sideSelection": "ALWAYS_UP",
       "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
       "elk.layered.nodePlacement.strategy": "BRANDES_KOEPF",
       "elk.layered.nodePlacement.favorStraightEdges": "true",

@@ -542,6 +542,118 @@ async def test_generate_group_use_cases_is_idempotent_per_group():
 
 
 @pytest.mark.asyncio
+async def test_generate_group_use_cases_caps_per_module_and_keeps_highest_priority():
+    """Concept-stage cap: the table stays small enough to read/diagram at a glance. The budget
+    is split evenly across modules (patched to 4 total here, 2 modules -> 2 each) so one module
+    cannot exhaust it, and within a module lower-priority drafts are dropped first."""
+    payload = _payload_after_generate_groups()
+    payload["modules"].append({"id": "SUB-REPORTING", "name": "Reporting", "goal": "See progress."})
+    draft_response = (
+        {
+            "use_cases": [
+                {
+                    "name": "Nice to Have Export",
+                    "primary_actor_id": "ACT-GROUP-MEMBER",
+                    "secondary_actor_ids": [],
+                    "description": "Lowest priority, should be dropped.",
+                    "precondition": "n/a",
+                    "priority": "optional",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+                {
+                    "name": "Create Task",
+                    "primary_actor_id": "ACT-GROUP-MEMBER",
+                    "secondary_actor_ids": [],
+                    "description": "Highest priority, must be kept.",
+                    "precondition": "n/a",
+                    "priority": "required",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+                {
+                    "name": "Assign Task Owner",
+                    "primary_actor_id": "ACT-GROUP-MEMBER",
+                    "secondary_actor_ids": [],
+                    "description": "Middle priority, must be kept over optional.",
+                    "precondition": "n/a",
+                    "priority": "recommended",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+            ]
+        },
+        {},
+    )
+    service = _service_with_mocks(payload, generate_result=draft_response)
+
+    with (
+        patch("app.services.use_case_service._MAX_GENERATED_USE_CASES", 4),
+        patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())),
+    ):
+        response = await service.generate_group_use_cases(
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
+        )
+
+    names = {item.name for item in response.use_cases}
+    assert names == {"Create Task", "Assign Task Owner"}
+    assert "Nice to Have Export" not in names
+
+
+@pytest.mark.asyncio
+async def test_generate_group_use_cases_cap_reserves_a_slot_per_actor_before_filling_by_priority():
+    """The priority cut must not be allowed to zero out an actor entirely. Here the two
+    highest-priority drafts both belong to the same actor and the budget is 2 -- picking purely
+    by priority would keep both of that actor's rows and drop the other actor's only row, even
+    though it is lower priority, leaving that actor with no use case anywhere in the diagram."""
+    payload = _payload_after_generate_groups()
+    draft_response = (
+        {
+            "use_cases": [
+                {
+                    "name": "Member Primary Required",
+                    "primary_actor_id": "ACT-GROUP-MEMBER",
+                    "secondary_actor_ids": [],
+                    "description": "Highest priority, actor already has one selected.",
+                    "precondition": "n/a",
+                    "priority": "required",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+                {
+                    "name": "Member Secondary Recommended",
+                    "primary_actor_id": "ACT-GROUP-MEMBER",
+                    "secondary_actor_ids": [],
+                    "description": "Second-highest priority, but same actor as the row above.",
+                    "precondition": "n/a",
+                    "priority": "recommended",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+                {
+                    "name": "Admin Only Optional",
+                    "primary_actor_id": "ACT-GROUP-ADMIN",
+                    "secondary_actor_ids": [],
+                    "description": "Lowest priority, but the only row for this actor -- must survive the cut.",
+                    "precondition": "n/a",
+                    "priority": "optional",
+                    "source_refs": ["entity:prd:use_case:C1:5"],
+                },
+            ]
+        },
+        {},
+    )
+    service = _service_with_mocks(payload, generate_result=draft_response)
+
+    with (
+        patch("app.services.use_case_service._MAX_GENERATED_USE_CASES", 2),
+        patch("app.services.use_case_service.load_project_requirements_source", AsyncMock(return_value=_source())),
+    ):
+        response = await service.generate_group_use_cases(
+            project_id=PROJECT_ID, user_id=USER_ID, group_id="SUB-TASK-MANAGEMENT", body=_body()
+        )
+
+    names = {item.name for item in response.use_cases}
+    assert names == {"Member Primary Required", "Admin Only Optional"}
+    assert "Member Secondary Recommended" not in names
+
+
+@pytest.mark.asyncio
 async def test_generate_group_use_cases_unknown_group_is_404():
     from fastapi import HTTPException
 
