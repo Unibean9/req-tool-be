@@ -98,6 +98,11 @@ class Settings(BaseSettings):
     # Use-case generation returns the complete table and relationship details. It can be
     # substantially larger than an analyst turn, so keep its output budget independent.
     use_case_generation_max_tokens: int = 16000
+    # Split pipeline output budgets. Output length is what drives provider latency, so each
+    # request is capped to what it actually needs instead of the monolithic 16k above.
+    use_case_candidates_max_tokens: int = 2000
+    use_case_detail_max_tokens_per_use_case: int = 2500
+    use_case_relations_max_tokens: int = 4000
     # ELK runs in a small Node worker after semantic generation; keep layout latency bounded
     # independently from the provider timeout.
     use_case_layout_timeout_seconds: float = 30.0

@@ -8,6 +8,8 @@ from typing import Any
 
 from app.use_cases.models import (
     RequirementsSourceSnapshot,
+    UseCaseCandidateDraftList,
+    UseCaseDetailDraftList,
     UseCaseGroupDetailDraftList,
     UseCaseGroupsDraftList,
     UseCaseModel,
@@ -182,13 +184,7 @@ class UseCaseGroupsHarness:
         }
 
 
-USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT = (
-    "Generate atomic business-goal use cases for exactly the supplied capability module. "
-    "Do not emit a module as a use case. Do not emit L0/L1/L2, parent IDs, React Flow nodes or PlantUML. "
-    "Choose exactly one primary_actor_id from the supplied roster per use case -- the schema has no field "
-    "for a second (supporting) actor, so if more than one role is involved, name the primary actor as the "
-    "one who initiates the use case and mention the other role's part in the flow steps or description "
-    "instead. Include complete detail fields when the source supports them, and cite exact evidence IDs. "
+_NAMING_RULES = (
     "NAMING (name, max 70 characters): Verb + Noun, e.g. 'Send Notification', 'Process Order', 'Book Flight' -- "
     "not 'Order' (not specific enough) and not a full sentence. Do not include the actor in the name; it has "
     "its own field. Use an active verb naming the action performed (Calculate, Validate, Send, Assign...), "
@@ -197,7 +193,17 @@ USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT = (
     "integration, protocol, or technology in the name (Slack, webhook, API, database, SMTP, ...) -- that detail "
     "belongs in the description or flow steps, not the name. Every name in the whole module must be unique and "
     "unambiguous, and use plain business language a non-technical stakeholder would recognize. "
-    "The `sourceUseCases` list is the deterministic floor: enrich those rows only, preserve each row's ID "
+)
+
+USE_CASE_GROUP_DETAIL_SYSTEM_PROMPT = (
+    "Generate atomic business-goal use cases for exactly the supplied capability module. "
+    "Do not emit a module as a use case. Do not emit L0/L1/L2, parent IDs, React Flow nodes or PlantUML. "
+    "Choose exactly one primary_actor_id from the supplied roster per use case -- the schema has no field "
+    "for a second (supporting) actor, so if more than one role is involved, name the primary actor as the "
+    "one who initiates the use case and mention the other role's part in the flow steps or description "
+    "instead. Include complete detail fields when the source supports them, and cite exact evidence IDs. "
+    + _NAMING_RULES
+    + "The `sourceUseCases` list is the deterministic floor: enrich those rows only, preserve each row's ID "
     "in `local_tag`, and do not add or remove rows. "
     "Every source_refs value must be an exact evidence_id from the supplied index, never a rendered label "
     "or explanation. "
@@ -240,4 +246,105 @@ class UseCaseGroupUseCasesHarness:
         return {
             "type": "json_schema",
             "json_schema": {"name": "reqtool_use_case_group_detail", "strict": True, "schema": self.output_schema()},
+        }
+
+
+USE_CASE_CANDIDATES_SYSTEM_PROMPT = (
+    "Propose candidate use cases for exactly the supplied capability module, using ONLY behavior the supplied "
+    "BRD/PRD excerpt states or directly requires. Never invent a feature, actor, integration or report the "
+    "excerpt does not support; if it supports nothing for this module, return an empty list. "
+    "Return at most {limit} candidates, most important first. This is a shortlist: do not write flows, "
+    "preconditions or any other detail. For each candidate give: `name`; `primary_actor_id` (exactly one id "
+    "from the supplied roster -- the role that initiates it); `description` (one sentence, max 240 "
+    "characters); `priority` (required = core to the module's stated goal or marked Must; recommended = "
+    "stated but secondary; optional = nice-to-have); `evidence` (`explicit` only when the excerpt states this "
+    "behavior directly, `inferred` when it is a necessary consequence of stated requirements); `source_refs` "
+    "(at least one exact evidence_id from the supplied index that supports it -- never a rendered label or "
+    "explanation; a candidate without a real citation is discarded). "
+    + _NAMING_RULES
+    + "Return JSON with a `candidates` array only."
+)
+
+
+@dataclass(frozen=True)
+class UseCaseCandidatesHarness:
+    source: RequirementsSourceSnapshot
+    group: dict[str, Any]
+    actors: list[dict[str, Any]]
+    limit: int
+    source_text: str | None = None
+    evidence_text: str | None = None
+
+    def build_system_instruction(self) -> str:
+        return USE_CASE_CANDIDATES_SYSTEM_PROMPT.format(limit=self.limit)
+
+    def build_user_prompt(self) -> str:
+        return "\n\n".join(
+            (
+                f"Propose up to {self.limit} use cases for module: {self.group.get('name')}.",
+                f"source_hash: {self.source.source_hash}",
+                "Return only JSON.",
+                "--- MODULE ---\n" + json.dumps(self.group, ensure_ascii=False, indent=2),
+                "--- ACTORS ---\n" + json.dumps(self.actors, ensure_ascii=False, indent=2),
+                "--- SOURCE ---\n" + (self.source_text or self.source.render_full_source()),
+                "--- EVIDENCE ---\n" + (self.evidence_text or self.source.render_evidence_index()),
+                "--- SCHEMA ---\n" + json.dumps(self.output_schema(), ensure_ascii=False, indent=2),
+            )
+        )
+
+    def output_schema(self) -> dict[str, Any]:
+        return UseCaseCandidateDraftList.model_json_schema()
+
+    def response_format(self) -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "reqtool_use_case_candidates", "strict": True, "schema": self.output_schema()},
+        }
+
+
+USE_CASE_DETAIL_SYSTEM_PROMPT = (
+    "Write the detail for each supplied use case. Its name, primary actor, module, priority and evidence are "
+    "already fixed: do not rename, add, drop or merge use cases, and return exactly one `details` entry per "
+    "supplied `use_case_id`. Use ONLY the supplied BRD/PRD excerpt; where it says nothing that supports a "
+    "field, leave that field empty instead of inventing content. Keep it concise: a main flow of at most 8 "
+    "steps, at most 2 alternative and 2 exception flows. Flow steps use participantType actor/system/"
+    "external_system; an actor step's participantId is the use case's primary actor id. "
+    "`related_requirements` may only reference requirement codes that appear in the excerpt, and their "
+    "source_refs must be exact evidence_id values from the supplied index. "
+    "Return JSON with a `details` array only."
+)
+
+
+@dataclass(frozen=True)
+class UseCaseDetailHarness:
+    source: RequirementsSourceSnapshot
+    use_cases: list[dict[str, Any]]
+    actors: list[dict[str, Any]]
+    source_text: str
+    evidence_text: str
+
+    def build_system_instruction(self) -> str:
+        return USE_CASE_DETAIL_SYSTEM_PROMPT
+
+    def build_user_prompt(self) -> str:
+        return "\n\n".join(
+            (
+                f"Write the detail for these {len(self.use_cases)} use cases.",
+                f"source_hash: {self.source.source_hash}",
+                "Return only JSON.",
+                "--- USE CASES ---\n" + json.dumps(self.use_cases, ensure_ascii=False, indent=2),
+                "--- ACTORS ---\n" + json.dumps(self.actors, ensure_ascii=False, indent=2),
+                "--- SOURCE ---\n" + self.source_text,
+                "--- EVIDENCE ---\n" + self.evidence_text,
+                "--- SCHEMA ---\n" + json.dumps(self.output_schema(), ensure_ascii=False, indent=2),
+            )
+        )
+
+    def output_schema(self) -> dict[str, Any]:
+        return UseCaseDetailDraftList.model_json_schema()
+
+    def response_format(self) -> dict[str, Any]:
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "reqtool_use_case_details", "strict": True, "schema": self.output_schema()},
         }

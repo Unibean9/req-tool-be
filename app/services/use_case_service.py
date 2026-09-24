@@ -6,12 +6,14 @@ import asyncio
 import copy
 import json
 import logging
+import math
 import re
 import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,6 +42,8 @@ from app.schemas.use_case import (
 from app.services.llm_clients import LLMClientFactory
 from app.use_cases.completion import complete_use_case_table
 from app.use_cases.harness import (
+    UseCaseCandidatesHarness,
+    UseCaseDetailHarness,
     UseCaseGroupsHarness,
     UseCaseGroupUseCasesHarness,
     UseCaseRelationshipHarness,
@@ -48,6 +52,8 @@ from app.use_cases.layout import DiagramLayoutError, generate_diagram_layout
 from app.use_cases.models import (
     RequirementsSourceSnapshot,
     UseCaseActor,
+    UseCaseCandidateDraftList,
+    UseCaseDetailDraftList,
     UseCaseEntry,
     UseCaseGroupDetailDraftList,
     UseCaseGroupsDraftList,
@@ -86,22 +92,80 @@ def _generation_heartbeat_is_stale(generation: dict[str, Any]) -> bool:
 
 
 # Concept-stage cap: keep the generated table small enough to read and diagram at a glance
-# instead of exhaustively enumerating every requirement family. Split evenly across modules
-# (remainder going to the earliest ones) so every module keeps some representation rather than
-# a few modules exhausting the whole budget while the rest generate rows that only get
-# discarded, and within a module the higher-priority rows are kept over lower-priority ones.
+# instead of exhaustively enumerating every requirement family.
 _MAX_GENERATED_USE_CASES = 20
-_PRIORITY_ORDER = {"required": 0, "recommended": 1, "optional": 2}
+_PRIORITY_SCORE = {"required": 30, "recommended": 20, "optional": 10}
 
 
-def _module_use_case_budget(payload: dict[str, Any], module_id: str) -> int:
-    modules = payload.get("modules") or []
-    total = len(modules)
-    if total == 0:
-        return _MAX_GENERATED_USE_CASES
-    base, remainder = divmod(_MAX_GENERATED_USE_CASES, total)
-    index = next((i for i, item in enumerate(modules) if item.get("id") == module_id), total)
-    return base + (1 if index < remainder else 0)
+def _candidate_limit(payload: dict[str, Any]) -> int:
+    """Per-module shortlist size: about twice the final budget across all modules, so selection
+    has real choices without any module spending output tokens on a long list."""
+
+    modules = len(payload.get("modules") or []) or 1
+    return max(6, min(15, math.ceil(2 * _MAX_GENERATED_USE_CASES / modules)))
+
+
+def _select_candidates(
+    payload: dict[str, Any], candidates_by_module: dict[str, list[dict[str, Any]]], source: RequirementsSourceSnapshot
+) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """Pick at most _MAX_GENERATED_USE_CASES candidates, deterministically.
+
+    Hard filters: at least one citation that resolves to a real evidence line in the stored
+    BRD/PRD, and a known actor. Then, by score (priority, explicit over inferred, citation count):
+    first one per actor, then one per module, then the best of the rest. Ties go to the
+    candidate its module ranked higher, so equal scores spread across modules.
+    """
+
+    evidence_ids = set(source.evidence_by_id())
+    actor_ids = {item["id"] for item in payload.get("actors", [])}
+    module_order = {item["id"]: index for index, item in enumerate(payload.get("modules", []))}
+    stats = {"proposed": 0, "uncited": 0, "unknownActor": 0, "duplicate": 0, "selected": 0}
+    by_name: dict[str, dict[str, Any]] = {}
+    for module in payload.get("modules", []):
+        for rank, item in enumerate(candidates_by_module.get(module["id"]) or []):
+            stats["proposed"] += 1
+            refs = [ref for ref in canonical_evidence_refs(item.get("sourceRefs"), source) if ref in evidence_ids]
+            if not refs:
+                stats["uncited"] += 1
+                continue
+            if item.get("primaryActorId") not in actor_ids:
+                stats["unknownActor"] += 1
+                continue
+            score = (
+                _PRIORITY_SCORE.get(item.get("priority"), 0)
+                + (5 if item.get("evidence") == "explicit" else 0)
+                + min(len(refs), 3)
+            )
+            candidate = {**item, "moduleId": module["id"], "sourceRefs": refs, "score": score, "rank": rank}
+            key = _model_name_key(item.get("name") or "")
+            if key in by_name:
+                stats["duplicate"] += 1
+                if by_name[key]["score"] >= score:
+                    continue
+            by_name[key] = candidate
+
+    pool = sorted(by_name.values(), key=lambda item: (-item["score"], item["rank"], module_order[item["moduleId"]]))
+    chosen: list[dict[str, Any]] = []
+    taken: set[int] = set()
+
+    def fill(unique_by: str | None) -> None:
+        covered = {item[unique_by] for item in chosen} if unique_by else set()
+        for index, candidate in enumerate(pool):
+            if len(chosen) >= _MAX_GENERATED_USE_CASES:
+                return
+            if index in taken or (unique_by and candidate[unique_by] in covered):
+                continue
+            if unique_by:
+                covered.add(candidate[unique_by])
+            chosen.append(candidate)
+            taken.add(index)
+
+    fill("primaryActorId")
+    fill("moduleId")
+    fill(None)
+    chosen.sort(key=lambda item: (module_order[item["moduleId"]], -item["score"], item["rank"]))
+    stats["selected"] = len(chosen)
+    return chosen, stats
 
 
 class UseCaseService:
@@ -465,7 +529,7 @@ class UseCaseService:
             client.generate(
                 messages=[{"role": "user", "content": harness.build_user_prompt()}],
                 system=harness.build_system_instruction(),
-                max_tokens=settings.use_case_generation_max_tokens,
+                max_tokens=settings.use_case_relations_max_tokens,
                 response_format=harness.response_format(),
             ),
             timeout=settings.use_case_generation_batch_timeout_seconds,
@@ -473,11 +537,9 @@ class UseCaseService:
         drafts = UseCaseRelationshipDraftList.model_validate(_decode_llm_payload(raw_result)).relations
         self._apply_relationship_drafts(payload, drafts, source=source)
         self._refresh_relationship_ids(payload)
-        # This is the last step of table generation (both the monolithic /generate and the split
-        # generate_relations call it), so the full use-case set is finally known -- unlike Phase
-        # 1 (generate_groups), which proposes the actor roster before any use case exists and so
-        # cannot know in advance which of them will end up unused. Deterministic here rather than
-        # asking a provider to predict its own later output.
+        # For the monolithic /generate this is the last step, so the full use-case set is known
+        # and unused actors can be dropped deterministically. (The split pipeline already does
+        # this in select_use_cases and only merges relationships back from this payload.)
         self._drop_actors_without_use_cases(payload)
         return usage
 
@@ -551,7 +613,7 @@ class UseCaseService:
         source = await load_project_requirements_source(self.db, project_id=project_id)
         # This is the entry point of a split-generation run: mark it running (and reject a
         # second overlapping attempt with a clean 409) before doing anything else, mirroring
-        # the monolithic /generate route. generate_group_use_cases/generate_relations refresh
+        # the monolithic /generate route. The later pipeline steps refresh
         # this same marker rather than re-checking it, since they only ever run as this run's
         # own later phases.
         generation_id, _ = await self._mark_generation_started(project=project, source=source, user_id=user_id)
@@ -613,7 +675,7 @@ class UseCaseService:
                 usage=usage,
                 relations_generated=False,
             )
-            # The overall run is not done -- generate_group_use_cases/generate_relations still
+            # The overall run is not done -- the later pipeline steps still
             # have to run -- so this stays "running", not the terminal status _core_to_payload
             # would otherwise leave unset.
             self._touch_generation(payload, generation_id, status="running")
@@ -659,139 +721,72 @@ class UseCaseService:
         await self.db.flush()
         return UseCaseModelResponse.model_validate(payload)
 
-    async def generate_group_use_cases(
+    # ------------------------------------------------------------------------------------------
+    # Split pipeline, after generate_groups (step 1):
+    #   2. generate_module_candidates  -- one call per module, in parallel: names + citations only
+    #   3. select_use_cases            -- deterministic, no LLM: keeps the best cited candidates
+    #   4. generate_use_case_details   -- small batches, in parallel: flows for selected rows only
+    #      generate_relations          -- alongside step 4; needs only names/descriptions
+    #   5. finalize_generation         -- deterministic terminal step: validation + final status
+    # Each LLM step reads without a row lock, calls the provider, then locks only to merge its own
+    # slice back in -- so parallel requests do not queue behind each other's provider calls.
+    # ------------------------------------------------------------------------------------------
+
+    async def generate_module_candidates(
         self, *, project_id: uuid.UUID, user_id: uuid.UUID, group_id: str, body: UseCaseGenerateRequest
     ) -> UseCaseModelResponse:
         project = await self._project(project_id)
-        payload, record = await self._locked_payload(project)
+        payload = await self._payload(project)
+        generation_id = self._running_generation_id(payload)
         module = self._find(payload.get("modules", []), group_id)
         if module is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Use-case module not found")
-        # A later phase of the run generate_groups already marked "running"; refresh its
-        # heartbeat but do not re-check it (see generate_groups for the check). On failure this
-        # does resolve the marker to "failed" (see the except blocks below) -- the FE hook stops
-        # the whole run at the first failed module instead of skipping it, so this is the last
-        # chance to leave the project in a terminal state rather than "running" forever.
-        generation_id = (payload.get("generation") or {}).get("generationId")
         source = await load_project_requirements_source(self.db, project_id=project_id)
+        limit = _candidate_limit(payload)
         try:
-            client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
-            # Bound the prompt to what generate_groups itself already attributed to this module
-            # (module["sourceRefs"], its own module<->evidence mapping) instead of dumping the
-            # entire BRD/PRD into every module's request. Besides shrinking the prompt, this is
-            # what stops content from one module leaking into another's generation: the model is
-            # no longer left to infer scope from the whole source on every single call. A
-            # regex/heading-based split (as the deterministic floor parser does) is not a
-            # substitute here -- the BRD's capability groupings and the PRD's requirement-doc
-            # groupings do not always share one taxonomy, so generate_groups' own semantic read
-            # of the source is the only reliable module<->content mapping available.
-            module_refs = module.get("sourceRefs") or []
-            match_codes = _match_codes_from_refs(source, module_refs)
+            client, _provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+            await self._release_read_transaction()
+            # Bound the prompt to what generate_groups attributed to this module; a module whose
+            # refs resolve to no code falls back to the full source rather than an empty one.
+            match_codes = _match_codes_from_refs(source, module.get("sourceRefs") or [])
             bounded_context: tuple[str, str] | None = None
             if match_codes:
                 module_obj = UseCaseModule.model_validate(
-                    {"id": module["id"], "name": module["name"], "goal": module.get("goal"), "source_refs": module_refs}
+                    {
+                        "id": module["id"],
+                        "name": module["name"],
+                        "goal": module.get("goal"),
+                        "source_refs": module.get("sourceRefs") or [],
+                    }
                 )
                 bounded_context = _module_generation_context(source, module_obj, [], extra_match_codes=match_codes)
-            harness = UseCaseGroupUseCasesHarness(
+            harness = UseCaseCandidatesHarness(
                 source=source,
                 group=module,
                 actors=[{"id": item["id"], "name": item["name"]} for item in payload["actors"]],
-                # A module persisted before this bounding existed (or whose evidence refs did
-                # not resolve to any code) has no reliable scope signal to bound by -- fall back
-                # to the full source rather than risk sending an empty, worse-than-unbounded
-                # context (UseCaseGroupUseCasesHarness's own default when these are omitted).
+                limit=limit,
                 source_text=bounded_context[0] if bounded_context else None,
                 evidence_text=bounded_context[1] if bounded_context else None,
             )
-            raw_result, usage = await asyncio.wait_for(
+            raw_result, _usage = await asyncio.wait_for(
                 client.generate(
                     messages=[{"role": "user", "content": harness.build_user_prompt()}],
                     system=harness.build_system_instruction(),
-                    max_tokens=settings.use_case_generation_max_tokens,
+                    max_tokens=settings.use_case_candidates_max_tokens,
                     response_format=harness.response_format(),
                 ),
-                timeout=settings.use_case_generation_timeout_seconds,
+                timeout=settings.use_case_generation_batch_timeout_seconds,
             )
-            drafts = UseCaseGroupDetailDraftList.model_validate(_decode_llm_payload(raw_result)).use_cases
-
-            # Idempotent replacement for this module; module rows are never synthetic parent use cases.
-            stale = {item["id"] for item in payload["useCases"] if item.get("moduleId") == module["id"]}
-            payload["useCases"] = [item for item in payload["useCases"] if item.get("id") not in stale]
-            payload["relationships"] = [
-                item
-                for item in payload["relationships"]
-                if item.get("sourceId") not in stale and item.get("targetId") not in stale
-            ]
-            actor_ids = {item["id"] for item in payload["actors"]}
-            next_id = self._next_use_case_id
-            candidates = [draft for draft in drafts if draft.primary_actor_id in actor_ids]
-            # Keep highest-priority rows first (stable sort preserves the model's own ordering
-            # within a priority tier), then cap to this module's share of the concept-stage
-            # budget -- but reserve one slot per actor this module's own candidates introduce
-            # before filling the rest by priority alone. Otherwise an actor whose only candidate
-            # row here happens to be lower-priority than this module's other rows drops out
-            # entirely and ends up with no use case anywhere in the diagram, even though the
-            # model did generate something for them.
-            candidates.sort(key=lambda draft: _PRIORITY_ORDER.get(draft.priority, 99))
-            budget = _module_use_case_budget(payload, module["id"])
-            selected: list[Any] = []
-            selected_indices: set[int] = set()
-            covered_actors: set[str] = set()
-            for index, draft in enumerate(candidates):
-                if len(selected) >= budget:
-                    break
-                if draft.primary_actor_id in covered_actors:
-                    continue
-                selected.append(draft)
-                selected_indices.add(index)
-                covered_actors.add(draft.primary_actor_id)
-            for index, draft in enumerate(candidates):
-                if len(selected) >= budget:
-                    break
-                if index not in selected_indices:
-                    selected.append(draft)
-                    selected_indices.add(index)
-            accepted = 0
-            for draft in selected:
-                use_case_id = next_id(payload, module["name"])
-                row = self._draft_row(use_case_id, module["id"], draft, source)
-                payload["useCases"].append(row)
-                accepted += 1
-            model = self._payload_to_model(payload, project.name, source=source)
-            self._sync_actor_sides(payload, model)
-            payload["validation"] = UseCaseValidationResponse.model_validate(
-                validate_use_case_model(model, source).model_dump()
-            ).model_dump(by_alias=True)
-            payload["generation"] = {
-                "source": "ai",
-                "providerConfigId": str(provider.id) if provider else None,
-                "provider": provider.provider_type.value if provider else None,
-                "model": provider.model_name if provider else None,
-                "usage": usage,
-                "relationsGenerated": bool((payload.get("generation") or {}).get("relationsGenerated")),
-                "lastModuleGenerated": module["id"],
-                "lastModuleUseCasesAdded": accepted,
-            }
-            self._touch_generation(payload, generation_id, status="running")
-            self._refresh_relationship_ids(payload)
-            payload = _normalise_payload(payload, project)
-            layout_error = await self._attach_diagram_layout(payload)
-            if layout_error:
-                payload["generation"]["error"] = layout_error
+            drafts = UseCaseCandidateDraftList.model_validate(_decode_llm_payload(raw_result)).candidates
         except TimeoutError as exc:
-            # The FE hook stops the whole run at the first failed module rather than skipping it
-            # and moving on (see useUseCaseModel.ts's generateTableMutation) -- it never reaches
-            # generate_relations, the phase that would otherwise resolve this marker. Without
-            # this, the project would report "running" until the marker goes stale on its own.
             await self._mark_generation_failed(
-                project=project, generation_id=generation_id, message="Module use-case generation timed out."
+                project=project, generation_id=generation_id, message="Use-case candidate generation timed out."
             )
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={
-                    "code": "USE_CASE_GROUP_GENERATION_TIMEOUT",
-                    "message": "This module generation timed out; retry the module.",
+                    "code": "USE_CASE_CANDIDATES_TIMEOUT",
+                    "message": "Proposing use cases for this module timed out; regenerate the table.",
                 },
             ) from exc
         except HTTPException as exc:
@@ -800,71 +795,198 @@ class UseCaseService:
             )
             raise
         except Exception as exc:
-            logger.exception("Module use-case generation failed for %s/%s", project_id, group_id)
+            logger.exception("Use-case candidate generation failed for %s/%s", project_id, group_id)
             await self._mark_generation_failed(
                 project=project,
                 generation_id=generation_id,
-                message=f"Module use-case generation failed: {str(exc)[:400]}",
+                message=f"Use-case candidate generation failed: {str(exc)[:400]}",
             )
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
-                detail={"code": "USE_CASE_GROUP_GENERATION_FAILED", "message": str(exc)[:500]},
+                detail={"code": "USE_CASE_CANDIDATES_FAILED", "message": str(exc)[:500]},
             ) from exc
+
+        candidates = [
+            {
+                "name": draft.name.strip(),
+                "primaryActorId": draft.primary_actor_id,
+                "description": draft.description.strip(),
+                "priority": draft.priority,
+                "evidence": draft.evidence,
+                "sourceRefs": list(draft.source_refs),
+            }
+            for draft in drafts[:limit]
+        ]
+
+        def record_candidates(fresh: dict[str, Any]) -> None:
+            fresh["generation"].setdefault("candidates", {})[module["id"]] = candidates
+
+        payload = await self._merge_into_run(project, generation_id, record_candidates)
+        return UseCaseModelResponse.model_validate(payload)
+
+    async def select_use_cases(self, *, project_id: uuid.UUID) -> UseCaseModelResponse:
+        """Deterministic step: turn every module's candidates into the final (at most 20) rows.
+
+        This is where "only from the BRD/PRD" is enforced rather than requested: a candidate whose
+        citations do not resolve to a real evidence line in the stored source is dropped here, no
+        matter how the provider phrased it. Rows start with no flows (detailStatus "pending");
+        generate_use_case_details fills them in.
+        """
+
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        generation_id = self._running_generation_id(payload)
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        generation = payload["generation"]
+        selected, stats = _select_candidates(payload, generation.get("candidates") or {}, source)
+
+        modules_by_id = {item["id"]: item for item in payload["modules"]}
+        payload["useCases"] = []
+        payload["relationships"] = []
+        for candidate in selected:
+            module = modules_by_id[candidate["moduleId"]]
+            entry = UseCaseEntry.model_validate(
+                {
+                    "id": self._next_use_case_id(payload, module["name"]),
+                    "name": candidate["name"],
+                    "module_id": module["id"],
+                    "primary_actor_id": candidate["primaryActorId"],
+                    "description": candidate["description"],
+                    "priority": candidate["priority"],
+                    "evidence": candidate["evidence"],
+                    "source_refs": candidate["sourceRefs"],
+                }
+            )
+            payload["useCases"].append(_entry_payload(entry, source))
+        # The final use-case set is known from here on, so an actor nobody initiates anything as
+        # can be dropped now instead of waiting for a later step.
+        self._drop_actors_without_use_cases(payload)
+
+        generation.pop("candidates", None)
+        generation.pop("relationsError", None)
+        generation["selection"] = stats
+        generation["detailStatus"] = {item["id"]: "pending" for item in payload["useCases"]}
+        generation["relationsGenerated"] = False
+        payload["diagramLayout"] = None
+        self._touch_generation(payload, generation_id, status="running")
+        payload = _normalise_payload(payload, project)
         await self._save(record, payload)
         return UseCaseModelResponse.model_validate(payload)
+
+    async def generate_use_case_details(
+        self,
+        *,
+        project_id: uuid.UUID,
+        user_id: uuid.UUID,
+        use_case_ids: list[str],
+        body: UseCaseGenerateRequest,
+    ) -> UseCaseModelResponse:
+        """Write flows for a few already-selected rows. Also the per-row "retry" after a run.
+
+        A failure only marks these rows' detailStatus "failed" -- it never fails the run, since
+        every other row is independent of them and already (or still being) written.
+        """
+
+        project = await self._project(project_id)
+        payload = await self._payload(project)
+        rows = [self._find(payload["useCases"], use_case_id) for use_case_id in use_case_ids]
+        if any(row is None for row in rows):
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Use case not found")
+        # A row is identified by id + name when merging back: a table regenerated meanwhile can
+        # reuse the same id for a different use case, which must not receive this detail.
+        expected_names = {row["id"]: row["name"] for row in rows}
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        try:
+            client, _provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+            await self._release_read_transaction()
+            refs = {ref for row in rows for ref in _canonical_source_refs(row.get("sourceTrace"), source)}
+            source_text, evidence_text = _use_case_detail_context(source, refs)
+            actor_names = {item["id"]: item["name"] for item in payload["actors"]}
+            harness = UseCaseDetailHarness(
+                source=source,
+                use_cases=[
+                    {
+                        "use_case_id": row["id"],
+                        "name": row["name"],
+                        "primary_actor_id": row["primaryActorId"],
+                        "primary_actor": actor_names.get(row["primaryActorId"]),
+                        "description": row["description"],
+                        "priority": row["priority"],
+                        "evidence": row["evidence"],
+                    }
+                    for row in rows
+                ],
+                actors=[{"id": item["id"], "name": item["name"]} for item in payload["actors"]],
+                source_text=source_text,
+                evidence_text=evidence_text,
+            )
+            raw_result, _usage = await asyncio.wait_for(
+                client.generate(
+                    messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                    system=harness.build_system_instruction(),
+                    max_tokens=settings.use_case_detail_max_tokens_per_use_case * len(rows),
+                    response_format=harness.response_format(),
+                ),
+                timeout=settings.use_case_generation_batch_timeout_seconds,
+            )
+            drafts = UseCaseDetailDraftList.model_validate(_decode_llm_payload(raw_result)).details
+        except TimeoutError as exc:
+            await self._mark_details_failed(project, expected_names)
+            raise HTTPException(
+                status.HTTP_504_GATEWAY_TIMEOUT,
+                detail={"code": "USE_CASE_DETAIL_TIMEOUT", "message": "Writing the use-case detail timed out."},
+            ) from exc
+        except HTTPException:
+            await self._mark_details_failed(project, expected_names)
+            raise
+        except Exception as exc:
+            logger.exception("Use-case detail generation failed for %s/%s", project_id, use_case_ids)
+            await self._mark_details_failed(project, expected_names)
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                detail={"code": "USE_CASE_DETAIL_FAILED", "message": str(exc)[:500]},
+            ) from exc
+
+        drafts_by_id = {draft.use_case_id: draft for draft in drafts}
+        fresh, record = await self._locked_payload(project)
+        generation = fresh["generation"] if isinstance(fresh.get("generation"), dict) else {}
+        statuses = generation.setdefault("detailStatus", {})
+        for row in fresh["useCases"]:
+            if expected_names.get(row["id"]) != row["name"]:
+                continue
+            draft = drafts_by_id.get(row["id"])
+            applied = draft is not None and self._apply_detail_draft(row, draft, source)
+            statuses[row["id"]] = "completed" if applied else "failed"
+        fresh["generation"] = generation
+        if generation.get("status") == "running":
+            self._touch_generation(fresh, generation.get("generationId"), status="running")
+        else:
+            self._clear_resolved_errors(generation)
+        fresh = _normalise_payload(fresh, project)
+        await self._save(record, fresh)
+        return UseCaseModelResponse.model_validate(fresh)
 
     async def generate_relations(
         self, *, project_id: uuid.UUID, user_id: uuid.UUID, body: UseCaseGenerateRequest
     ) -> UseCaseModelResponse:
+        """Resolve include/extend/generalization for the current rows.
+
+        Runs alongside the detail batches (it only needs names/actors/descriptions, which exist
+        from selection on). Not the run's terminal step -- finalize_generation is -- so a failure
+        is recorded on the run as relationsError instead of failing it.
+        """
+
         project = await self._project(project_id)
-        payload, record = await self._locked_payload(project)
-        generation_id = (payload.get("generation") or {}).get("generationId")
-        if not payload["useCases"]:
-            # This is split generation's last phase, so it is also responsible for resolving the
-            # running marker -- even when module extraction produced nothing to relate (an empty
-            # source, or every module failing). Without this, that case would leave the project
-            # reporting "running" forever instead of a fresh Generate click being possible again.
-            self._touch_generation(payload, generation_id, status="completed")
-            payload["generation"]["relationsGenerated"] = False
-            payload = _normalise_payload(payload, project)
-            await self._save(record, payload)
-            return UseCaseModelResponse.model_validate(payload)
+        snapshot = await self._payload(project)
+        if not snapshot["useCases"]:
+            return UseCaseModelResponse.model_validate(snapshot)
         source = await load_project_requirements_source(self.db, project_id=project_id)
         try:
-            client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
-            usage = await self._resolve_relationships_with_client(payload=payload, source=source, client=client)
-            model = self._payload_to_model(payload, project.name, source=source)
-            self._sync_actor_sides(payload, model)
-            payload["validation"] = UseCaseValidationResponse.model_validate(
-                validate_use_case_model(model, source).model_dump()
-            ).model_dump(by_alias=True)
-            payload["generation"] = {
-                "source": "ai",
-                "providerConfigId": str(provider.id),
-                "provider": provider.provider_type.value,
-                "model": provider.model_name,
-                "usage": usage,
-                "relationsGenerated": True,
-                "stages": {
-                    "source": "completed",
-                    "table": "completed",
-                    "relationships": "completed",
-                    "validation": "completed",
-                    "layout": "pending",
-                },
-            }
-            layout_error = await self._attach_diagram_layout(payload)
-            payload["generation"]["stages"]["layout"] = "failed" if layout_error else "completed"
-            if layout_error:
-                payload["generation"]["error"] = layout_error
-            self._touch_generation(
-                payload, generation_id, status="completed_with_errors" if layout_error else "completed"
-            )
-            payload = _normalise_payload(payload, project)
+            client, _provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
+            await self._release_read_transaction()
+            await self._resolve_relationships_with_client(payload=snapshot, source=source, client=client)
         except TimeoutError as exc:
-            await self._mark_generation_failed(
-                project=project, generation_id=generation_id, message="Relationship generation timed out."
-            )
+            await self._record_relations_error(project, "Relationship generation timed out.")
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={
@@ -873,23 +995,182 @@ class UseCaseService:
                 },
             ) from exc
         except HTTPException as exc:
-            await self._mark_generation_failed(
-                project=project, generation_id=generation_id, message=_http_exception_message(exc)
-            )
+            await self._record_relations_error(project, _http_exception_message(exc))
             raise
         except Exception as exc:
             logger.exception("Relationship generation failed for project %s", project_id)
-            await self._mark_generation_failed(
-                project=project,
-                generation_id=generation_id,
-                message=f"Relationship generation failed: {str(exc)[:400]}",
-            )
+            await self._record_relations_error(project, f"Relationship generation failed: {str(exc)[:400]}")
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY,
                 detail={"code": "USE_CASE_RELATION_GENERATION_FAILED", "message": str(exc)[:500]},
             ) from exc
+
+        payload, record = await self._locked_payload(project)
+        use_case_ids = {item["id"] for item in payload["useCases"]}
+        payload["relationships"] = [
+            item
+            for item in snapshot["relationships"]
+            if item.get("sourceId") in use_case_ids and item.get("targetId") in use_case_ids
+        ]
+        self._refresh_relationship_ids(payload)
+        generation = payload["generation"] if isinstance(payload.get("generation"), dict) else {}
+        generation["relationsGenerated"] = True
+        generation.pop("relationsError", None)
+        payload["generation"] = generation
+        if generation.get("status") == "running":
+            self._touch_generation(payload, generation.get("generationId"), status="running")
+        else:
+            self._clear_resolved_errors(generation)
+        payload = _normalise_payload(payload, project)
         await self._save(record, payload)
         return UseCaseModelResponse.model_validate(payload)
+
+    async def finalize_generation(self, *, project_id: uuid.UUID) -> UseCaseModelResponse:
+        """Terminal step: validate and resolve the run to completed / completed_with_errors.
+
+        Called by the FE once every detail batch and the relationships call have settled,
+        whether or not they succeeded. Idempotent: a run that is no longer running is returned
+        unchanged.
+        """
+
+        project = await self._project(project_id)
+        payload, record = await self._locked_payload(project)
+        generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        if generation.get("status") != "running":
+            return UseCaseModelResponse.model_validate(payload)
+        source = await load_project_requirements_source(self.db, project_id=project_id)
+        statuses = generation.get("detailStatus") or {}
+        missing = [item["id"] for item in payload["useCases"] if statuses.get(item["id"]) != "completed"]
+        for use_case_id in missing:
+            statuses[use_case_id] = "failed"
+        generation["detailStatus"] = statuses
+        problems: list[str] = []
+        if missing:
+            problems.append(f"{len(missing)} use case(s) have no detail yet; retry them from the table.")
+        if generation.get("relationsError"):
+            problems.append(f"Relationships were not generated: {generation['relationsError']}")
+        if problems:
+            generation["error"] = " ".join(problems)
+        else:
+            generation.pop("error", None)
+
+        model = self._payload_to_model(payload, project.name, source=source)
+        self._sync_actor_sides(payload, model)
+        payload["validation"] = UseCaseValidationResponse.model_validate(
+            validate_use_case_model(model, source).model_dump()
+        ).model_dump(by_alias=True)
+        generation["completedAt"] = _generation_timestamp()
+        payload["generation"] = generation
+        self._touch_generation(
+            payload, generation.get("generationId"), status="completed_with_errors" if problems else "completed"
+        )
+        payload = _normalise_payload(payload, project)
+        await self._save(record, payload)
+        return UseCaseModelResponse.model_validate(payload)
+
+    @staticmethod
+    def _running_generation_id(payload: dict[str, Any]) -> str:
+        generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        generation_id = generation.get("generationId")
+        if generation.get("status") != "running" or not generation_id:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "USE_CASE_GENERATION_NOT_RUNNING",
+                    "message": "No table generation is running for this project.",
+                },
+            )
+        return generation_id
+
+    async def _release_read_transaction(self) -> None:
+        # Nothing is written before the provider call, so end the read transaction here: the
+        # pooled connection goes back instead of sitting idle for the whole (parallel) call.
+        await self.db.commit()
+
+    async def _merge_into_run(
+        self, project: Project, generation_id: str, merge: Any
+    ) -> dict[str, Any]:
+        payload, record = await self._locked_payload(project)
+        generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        if generation.get("generationId") != generation_id or generation.get("status") != "running":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "USE_CASE_GENERATION_SUPERSEDED",
+                    "message": "This generation run is no longer active; its result was discarded.",
+                },
+            )
+        merge(payload)
+        self._touch_generation(payload, generation_id, status="running")
+        payload = _normalise_payload(payload, project)
+        await self._save(record, payload)
+        return payload
+
+    async def _mark_details_failed(self, project: Project, expected_names: dict[str, str]) -> None:
+        # Commits itself: the request is about to raise, and get_db rolls back on an exception.
+        payload, record = await self._locked_payload(project)
+        generation = payload["generation"] if isinstance(payload.get("generation"), dict) else {}
+        statuses = generation.setdefault("detailStatus", {})
+        for row in payload["useCases"]:
+            if expected_names.get(row["id"]) == row["name"]:
+                statuses[row["id"]] = "failed"
+        payload["generation"] = generation
+        if generation.get("status") == "running":
+            self._touch_generation(payload, generation.get("generationId"), status="running")
+        await self._save(record, payload)
+        await self.db.commit()
+
+    async def _record_relations_error(self, project: Project, message: str) -> None:
+        payload, record = await self._locked_payload(project)
+        generation = payload["generation"] if isinstance(payload.get("generation"), dict) else {}
+        generation["relationsError"] = message[:500]
+        payload["generation"] = generation
+        await self._save(record, payload)
+        await self.db.commit()
+
+    @staticmethod
+    def _clear_resolved_errors(generation: dict[str, Any]) -> None:
+        """A retry after the run can resolve the last failure; reflect that in the run status."""
+
+        if generation.get("status") != "completed_with_errors" or generation.get("relationsError"):
+            return
+        if any(value != "completed" for value in (generation.get("detailStatus") or {}).values()):
+            return
+        generation["status"] = "completed"
+        generation.pop("error", None)
+
+    @staticmethod
+    def _apply_detail_draft(row: dict[str, Any], draft: Any, source: RequirementsSourceSnapshot) -> bool:
+        patched = {
+            **row,
+            "trigger": draft.trigger,
+            "preconditions": draft.preconditions,
+            "mainFlow": [_flow_step_payload(step) for step in draft.main_flow],
+            "alternativeFlows": [_flow_payload(flow) for flow in draft.alternative_flows],
+            "exceptionFlows": [_flow_payload(flow) for flow in draft.exception_flows],
+            "postconditionsSuccess": draft.postconditions_success,
+            "postconditionsFailure": draft.postconditions_failure,
+            "businessRules": draft.business_rules,
+            "relatedRequirements": [
+                {
+                    "id": link.id,
+                    "type": link.type,
+                    "title": link.title,
+                    "sourceTrace": _source_trace(canonical_evidence_refs(link.source_refs, source), source),
+                }
+                for link in draft.related_requirements
+            ],
+        }
+        # Same validation _normalise_payload applies on save -- which silently drops a row that
+        # fails it. Checking first keeps the row (flow-less) and reports it as failed instead.
+        try:
+            UseCaseEntry.model_validate(
+                {**patched, "module_id": patched["moduleId"], "source_refs": patched.get("sourceTrace") or ["internal"]}
+            )
+        except ValidationError:
+            return False
+        row.update(patched)
+        return True
 
     async def generate_diagram(self, *, project_id: uuid.UUID) -> UseCaseModelResponse:
         """Recompute the ELK diagram layout from the current, already-generated table.
@@ -1377,8 +1658,9 @@ class UseCaseService:
         use_case_ids = {item.get("id") for item in payload["useCases"]}
         # Actor associations are derived from primaryActorId/secondaryActorIds and are not stored
         # in the semantic relationship collection.
-        payload["relationships"] = []
-        existing: set[tuple[str, str, str]] = set()
+        # One relationship per pair of use cases, in either direction: include (mandatory) and
+        # extend (optional) on the same pair contradict each other. The provider's first wins.
+        seen_pairs: set[frozenset[str]] = set()
         accepted: list[dict[str, Any]] = []
         for draft in drafts:
             if (
@@ -1389,8 +1671,8 @@ class UseCaseService:
                 continue
             if draft.kind == "extend" and not draft.condition:
                 continue
-            key = (draft.kind, draft.source_id, draft.target_id)
-            if key in existing:
+            pair = frozenset((draft.source_id, draft.target_id))
+            if pair in seen_pairs:
                 continue
             source_refs = canonical_evidence_refs(draft.evidence, source, fallback_internal=False)
             # A semantic relationship must be traceable to the stored BRD/PRD
@@ -1401,7 +1683,6 @@ class UseCaseService:
                 continue
             accepted.append(
                 {
-                    "id": self._next_relationship_id(payload, draft.source_id, draft.target_id),
                     "sourceId": draft.source_id,
                     "targetId": draft.target_id,
                     "type": draft.kind,
@@ -1414,7 +1695,7 @@ class UseCaseService:
                     "sourceTrace": _source_trace(source_refs, source),
                 }
             )
-            existing.add(key)
+            seen_pairs.add(pair)
 
         # ``include`` denotes reusable behavior shared by at least two base
         # use cases.  Drop singleton candidates before validation/rendering so
@@ -1425,11 +1706,14 @@ class UseCaseService:
             if relation["type"] == "include":
                 target = relation["targetId"]
                 include_target_counts[target] = include_target_counts.get(target, 0) + 1
-        payload["relationships"] = [
-            relation
-            for relation in accepted
-            if relation["type"] != "include" or include_target_counts.get(relation["targetId"], 0) >= 2
-        ]
+        # Ids are assigned only now, one at a time, so each sees the ones before it --
+        # _next_relationship_id deduplicates against payload["relationships"].
+        payload["relationships"] = []
+        for relation in accepted:
+            if relation["type"] == "include" and include_target_counts.get(relation["targetId"], 0) < 2:
+                continue
+            relation_id = self._next_relationship_id(payload, relation["sourceId"], relation["targetId"])
+            payload["relationships"].append({"id": relation_id, **relation})
 
     @staticmethod
     def _draft_row(use_case_id: str, module_id: str, draft: Any, source: RequirementsSourceSnapshot) -> dict[str, Any]:
@@ -1566,7 +1850,7 @@ def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
             "goal": item.get("goal"),
             "sourceTrace": item.get("sourceTrace") or item.get("source_trace") or [],
             # Raw evidence ids (not the human-readable sourceTrace strings above) for the module
-            # extraction phase's own module<->evidence mapping. generate_group_use_cases uses
+            # extraction phase's own module<->evidence mapping. generate_module_candidates uses
             # this to bound its prompt to what Phase 1 actually attributed to this module,
             # instead of sending the whole BRD/PRD to every module's request.
             "sourceRefs": item.get("sourceRefs") or item.get("source_refs") or [],
@@ -1913,6 +2197,48 @@ def _module_generation_context(
         excerpt = " ".join(item.excerpt.split()).replace("|", "\\|")[:180]
         evidence_lines.append(f"{item.evidence_id} | {item.kind} | {item.locator} | {excerpt}")
         if len("\n".join(evidence_lines)) > 12000:
+            break
+    return context, "\n".join(evidence_lines)
+
+
+def _use_case_detail_context(source: RequirementsSourceSnapshot, refs: set[str]) -> tuple[str, str]:
+    """Bounded excerpt for writing a few use cases' detail: the evidence lines they cite plus
+    the requirement/rule rows sharing those codes -- not the whole BRD/PRD. What is not in here
+    is what the prompt tells the provider to leave empty rather than invent."""
+
+    evidence = source.evidence_by_id()
+    codes = _match_codes_from_refs(source, sorted(refs))
+    blocks: list[str] = []
+    cited = [f"[{ref}] {evidence[ref].excerpt}" for ref in sorted(refs) if ref in evidence]
+    if cited:
+        blocks.append("--- cited evidence ---\n" + "\n".join(cited))
+    for component in source.components:
+        if not codes or component.artifact_type not in {
+            "functional_requirement",
+            "non_functional_requirement",
+            "business_rules",
+            "scope_capabilities",
+            "use_case",
+        }:
+            continue
+        lines = [
+            line
+            for line in component.body.splitlines()
+            if any(code.casefold() in line.casefold() for code in codes)
+        ][:40]
+        if lines:
+            blocks.append(f"--- {component.document_type}.{component.artifact_type} ---\n" + "\n".join(lines))
+    context = "\n\n".join(blocks)
+    if len(context) > 16000:
+        context = context[:15950].rstrip() + "\n[context bounded by backend]"
+
+    evidence_lines = ["evidence_id | kind | locator | excerpt", "---|---|---|---"]
+    for item in source.evidence:
+        if item.evidence_id not in refs and (item.entity_id or "") not in codes:
+            continue
+        excerpt = " ".join(item.excerpt.split()).replace("|", "\\|")[:180]
+        evidence_lines.append(f"{item.evidence_id} | {item.kind} | {item.locator} | {excerpt}")
+        if len("\n".join(evidence_lines)) > 8000:
             break
     return context, "\n".join(evidence_lines)
 

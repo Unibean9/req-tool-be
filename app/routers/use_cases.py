@@ -22,6 +22,7 @@ from app.schemas.use_case import (
     DiagramPositionsUpdateRequest,
     RelationshipCreateRequest,
     UseCaseCreateRequest,
+    UseCaseDetailsGenerateRequest,
     UseCaseGenerateRequest,
     UseCaseModelResponse,
     UseCasePlantUmlResponse,
@@ -98,7 +99,8 @@ async def generate_use_case_relations(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Resolve include/extend/generalization for an already-generated table (step 2 of 2)."""
+    """Resolve include/extend/generalization for the current table. In the split pipeline this runs
+    alongside the detail step; a failure is recorded on the run, not fatal to it."""
 
     await require_project_access(project_id, user, db)
     service = UseCaseService(db)
@@ -166,7 +168,7 @@ async def generate_use_case_groups(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Split generation, phase 1 of 2: extracts modules/actors only (``useCases`` stays empty).
+    """Pipeline step 1: extracts modules/actors only (``useCases`` stays empty).
 
     This is the primary generation entrypoint the frontend drives -- each phase is its own
     bounded request instead of one request blocking for the whole pipeline, which is what
@@ -189,40 +191,111 @@ async def generate_use_case_groups(
 
 
 @router.post(
-    "/use-case-model/groups/{group_id}/use-cases/generate",
+    "/use-case-model/groups/{group_id}/candidates/generate",
     response_model=ApiResponse[UseCaseModelResponse],
     response_model_by_alias=True,
 )
-async def generate_use_case_group_use_cases(
+async def generate_use_case_candidates(
     project_id: uuid.UUID,
     group_id: str,
     body: UseCaseGenerateRequest = Body(default_factory=UseCaseGenerateRequest),
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Split generation, phase 2 of 2: generates one module's use cases (call once per module
-    returned by ``/groups/generate``). Idempotently replaces that module's previously generated
-    rows, so retrying a single failed/timed-out module is safe.
-    """
+    """Pipeline step 2: a short, cited shortlist of use-case candidates for one module (no
+    flows). Called once per module; safe to call for several modules in parallel."""
 
     await require_project_access(project_id, user, db)
     service = UseCaseService(db)
     try:
         return ok(
-            await service.generate_group_use_cases(
+            await service.generate_module_candidates(
                 project_id=project_id, user_id=user.id, group_id=group_id, body=body
             )
         )
     except HTTPException:
         raise
     except Exception as exc:
-        # Same rationale as /generate's handler above: release the running marker on an
-        # exception that escaped generate_group_use_cases' own handling, so a bug here cannot
-        # leave the Generate button permanently locked out.
-        logger.exception("Module use-case generation request failed for %s/%s", project_id, group_id)
         await service.mark_running_generation_failed(
             project_id=project_id,
-            message=f"Module use-case generation failed: {str(exc)[:400] or 'unexpected server error'}",
+            message=f"Use-case candidate generation failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
+        raise
+
+
+@router.post(
+    "/use-case-model/use-cases/select",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def select_use_cases(
+    project_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Pipeline step 3 (no LLM call): keeps the best source-cited candidates as table rows."""
+
+    await require_project_access(project_id, user, db)
+    service = UseCaseService(db)
+    try:
+        return ok(await service.select_use_cases(project_id=project_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Use-case selection failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
+        raise
+
+
+@router.post(
+    "/use-case-model/use-cases/details/generate",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def generate_use_case_details(
+    project_id: uuid.UUID,
+    body: UseCaseDetailsGenerateRequest,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Pipeline step 4, and the per-row retry: writes flows for up to 3 existing use cases. A
+    failure marks only those rows as failed; it never fails the whole run."""
+
+    await require_project_access(project_id, user, db)
+    return ok(
+        await UseCaseService(db).generate_use_case_details(
+            project_id=project_id,
+            user_id=user.id,
+            use_case_ids=body.use_case_ids,
+            body=UseCaseGenerateRequest(provider_config_id=body.provider_config_id),
+        )
+    )
+
+
+@router.post(
+    "/use-case-model/generation/finalize",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def finalize_use_case_generation(
+    project_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Pipeline step 5 (no LLM call): validates and resolves the run's final status."""
+
+    await require_project_access(project_id, user, db)
+    service = UseCaseService(db)
+    try:
+        return ok(await service.finalize_generation(project_id=project_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Finalizing generation failed: {str(exc)[:400] or 'unexpected server error'}",
         )
         raise
 

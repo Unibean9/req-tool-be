@@ -655,6 +655,63 @@ class UseCaseGroupDetailDraftList(BaseModel):
     use_cases: list[UseCaseGroupDetailDraft] = Field(default_factory=list)
 
 
+def _normalize_priority(data: dict[str, Any]) -> dict[str, Any]:
+    priority = str(data.get("priority", "")).lower()
+    data["priority"] = {"must": "required", "should": "recommended", "could": "optional"}.get(
+        priority, priority or "recommended"
+    )
+    return data
+
+
+class UseCaseCandidateDraft(BaseModel):
+    """Shortlist entry: just enough to rank and select a use case, no flows."""
+
+    model_config = ConfigDict(extra="forbid")
+    name: str = Field(min_length=1, max_length=70)
+    primary_actor_id: str = Field(min_length=1)
+    description: str = Field(min_length=1, max_length=240)
+    priority: UseCasePriority = "recommended"
+    evidence: EvidenceType = "inferred"
+    source_refs: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "primary_actor_id" not in data and data.get("primaryActorId"):
+            data["primary_actor_id"] = data["primaryActorId"]
+        data.pop("primaryActorId", None)
+        return _normalize_priority(data)
+
+
+class UseCaseCandidateDraftList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidates: list[UseCaseCandidateDraft] = Field(default_factory=list)
+
+
+class UseCaseDetailDraft(BaseModel):
+    """Detail for an already-selected use case; its name/actor/module are fixed by then."""
+
+    model_config = ConfigDict(extra="forbid")
+    use_case_id: str = Field(min_length=1)
+    trigger: str | None = Field(default=None, max_length=300)
+    preconditions: list[str] = Field(default_factory=list)
+    main_flow: list[UseCaseFlowStep] = Field(default_factory=list)
+    alternative_flows: list[UseCaseFlow] = Field(default_factory=list)
+    exception_flows: list[UseCaseFlow] = Field(default_factory=list)
+    postconditions_success: list[str] = Field(default_factory=list)
+    postconditions_failure: list[str] = Field(default_factory=list)
+    business_rules: list[str] = Field(default_factory=list)
+    related_requirements: list[UseCaseRequirementLink] = Field(default_factory=list)
+
+
+class UseCaseDetailDraftList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    details: list[UseCaseDetailDraft] = Field(default_factory=list)
+
+
 class UseCaseModel(BaseModel):
     """Canonical structured model: System → Module → Use Case + relationships."""
 

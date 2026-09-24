@@ -85,7 +85,7 @@ class ModuleResponse(UseCaseApiModel):
     goal: str | None = None
     source_trace: list[str] = Field(default_factory=list, alias="sourceTrace")
     # Raw evidence ids the module extraction phase attributed to this module (distinct from the
-    # human-readable source_trace strings above). generate_group_use_cases reads this back to
+    # human-readable source_trace strings above). generate_module_candidates reads this back to
     # bound its own prompt to this module's evidence instead of the entire BRD/PRD.
     source_refs: list[str] = Field(default_factory=list, alias="sourceRefs")
 
@@ -321,3 +321,9 @@ class RelationshipCreateRequest(UseCaseApiModel):
 
 class UseCaseGenerateRequest(UseCaseApiModel):
     provider_config_id: uuid.UUID | None = Field(default=None, alias="providerConfigId")
+
+
+class UseCaseDetailsGenerateRequest(UseCaseApiModel):
+    provider_config_id: uuid.UUID | None = Field(default=None, alias="providerConfigId")
+    # Small on purpose: each request's output (and so its latency) grows with this.
+    use_case_ids: list[str] = Field(alias="useCaseIds", min_length=1, max_length=3)
