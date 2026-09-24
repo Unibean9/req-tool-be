@@ -134,22 +134,19 @@ def _source() -> RequirementsSourceSnapshot:
 
 
 def test_completion_enumerates_capabilities_and_requirement_families_with_actor_associations():
+    """A capability becomes a module, never a use case -- only functional-requirement families
+    become use-case rows. Actor association is carried on primary_actor_id/secondary_actor_ids;
+    UseCaseRelation.kind has no "association" value, so there is no separate relation row for it."""
     source = _source()
     model = complete_use_case_table(source)
 
-    assert len(model.use_cases) == 5
-    assert sum(item.level == "L0" for item in model.use_cases) == 2
-    assert sum(item.level == "L1" for item in model.use_cases) == 3
+    assert len(model.use_cases) == 3
+    assert len(model.modules) == 2
     assert len(model.actors) == 3
-    assert all(
-        any(
-            relation.kind == "association"
-            and {relation.source_id, relation.target_id} == {actor_id, item.id}
-            for relation in model.relations
-        )
-        for item in model.use_cases
-        for actor_id in [item.primary_actor_id, *item.secondary_actor_ids]
-    )
+    module_ids = {module.id for module in model.modules}
+    actor_ids = {actor.id for actor in model.actors}
+    assert all(item.module_id in module_ids for item in model.use_cases)
+    assert all(item.primary_actor_id in actor_ids for item in model.use_cases)
     report = validate_use_case_model(model, source)
     assert report.errors == []
 
@@ -169,5 +166,5 @@ def test_completion_replaces_short_llm_enumeration_without_fabricating_include_o
 
     model = complete_use_case_table(source, candidate)
 
-    assert len(model.use_cases) == 5
-    assert not [relation for relation in model.relations if relation.kind in {"include", "extend"}]
+    assert len(model.use_cases) == 3
+    assert not [relation for relation in model.relationships if relation.kind in {"include", "extend"}]

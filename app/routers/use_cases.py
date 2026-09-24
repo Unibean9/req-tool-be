@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends, Query, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.guards import require_project_access
@@ -29,6 +30,8 @@ from app.schemas.use_case import (
     UseCaseUpdateRequest,
 )
 from app.services.use_case_service import UseCaseService
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["Use Cases"])
 
@@ -67,7 +70,20 @@ async def generate_use_case_model(
     db: AsyncSession = Depends(get_db),
 ) -> Any:
     await require_project_access(project_id, user, db)
-    return ok(await UseCaseService(db).generate(project_id=project_id, user_id=user.id, body=body))
+    service = UseCaseService(db)
+    try:
+        return ok(await service.generate(project_id=project_id, user_id=user.id, body=body))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # The generation marker is committed before the long-running provider calls. If an
+        # unexpected exception escapes after that point, release it so the next request can
+        # retry instead of leaving the FE permanently disabled.
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Use-case generation failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
+        raise
 
 
 @router.post(
@@ -84,7 +100,37 @@ async def generate_use_case_relations(
     """Resolve include/extend/generalization for an already-generated table (step 2 of 2)."""
 
     await require_project_access(project_id, user, db)
-    return ok(await UseCaseService(db).generate_relations(project_id=project_id, user_id=user.id, body=body))
+    service = UseCaseService(db)
+    try:
+        return ok(await service.generate_relations(project_id=project_id, user_id=user.id, body=body))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        # Same rationale as /generate's handler below: release the running marker on an
+        # exception that escaped generate_relations' own handling, so a bug here cannot leave
+        # the Generate button (and a fresh generate_groups call) permanently locked out.
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Relationship generation failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
+        raise
+
+
+@router.post(
+    "/use-case-model/diagram/generate",
+    response_model=ApiResponse[UseCaseModelResponse],
+    response_model_by_alias=True,
+)
+async def generate_use_case_diagram(
+    project_id: uuid.UUID,
+    user: User = Depends(current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Any:
+    """Recompute the ELK diagram layout from the already-generated table. No LLM call; requires
+    at least one use case to already exist (409 otherwise)."""
+
+    await require_project_access(project_id, user, db)
+    return ok(await UseCaseService(db).generate_diagram(project_id=project_id))
 
 
 @router.post(
@@ -98,10 +144,26 @@ async def generate_use_case_groups(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Deprecated split-generation compatibility route; new clients should call ``/generate``."""
+    """Split generation, phase 1 of 2: extracts modules/actors only (``useCases`` stays empty).
+
+    This is the primary generation entrypoint the frontend drives -- each phase is its own
+    bounded request instead of one request blocking for the whole pipeline, which is what
+    ``/generate`` (the monolithic endpoint) does and why it can exceed a client/proxy timeout
+    on projects with several modules.
+    """
 
     await require_project_access(project_id, user, db)
-    return ok(await UseCaseService(db).generate_groups(project_id=project_id, user_id=user.id, body=body))
+    service = UseCaseService(db)
+    try:
+        return ok(await service.generate_groups(project_id=project_id, user_id=user.id, body=body))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await service.mark_running_generation_failed(
+            project_id=project_id,
+            message=f"Module extraction failed: {str(exc)[:400] or 'unexpected server error'}",
+        )
+        raise
 
 
 @router.post(
@@ -116,14 +178,27 @@ async def generate_use_case_group_use_cases(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Deprecated per-module compatibility route; new clients use the complete model endpoint."""
+    """Split generation, phase 2 of 2: generates one module's use cases (call once per module
+    returned by ``/groups/generate``). Idempotently replaces that module's previously generated
+    rows, so retrying a single failed/timed-out module is safe.
+    """
 
     await require_project_access(project_id, user, db)
-    return ok(
-        await UseCaseService(db).generate_group_use_cases(
-            project_id=project_id, user_id=user.id, group_id=group_id, body=body
+    try:
+        return ok(
+            await UseCaseService(db).generate_group_use_cases(
+                project_id=project_id, user_id=user.id, group_id=group_id, body=body
+            )
         )
-    )
+    except HTTPException:
+        raise
+    except Exception:
+        # Deliberately does not touch the run's running marker (unlike /generate,
+        # /groups/generate and /relations/generate): one module failing must not block the
+        # caller's remaining queued-up modules or the closing relations call. Logged here so
+        # a failure that also escaped generate_group_use_cases' own handling is still visible.
+        logger.exception("Module use-case generation request failed for %s/%s", project_id, group_id)
+        raise
 
 
 @router.patch(

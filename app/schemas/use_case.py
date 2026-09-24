@@ -84,6 +84,10 @@ class ModuleResponse(UseCaseApiModel):
     name: str
     goal: str | None = None
     source_trace: list[str] = Field(default_factory=list, alias="sourceTrace")
+    # Raw evidence ids the module extraction phase attributed to this module (distinct from the
+    # human-readable source_trace strings above). generate_group_use_cases reads this back to
+    # bound its own prompt to this module's evidence instead of the entire BRD/PRD.
+    source_refs: list[str] = Field(default_factory=list, alias="sourceRefs")
 
 
 class SystemResponse(UseCaseApiModel):

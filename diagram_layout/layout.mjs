@@ -149,11 +149,21 @@ function median(values) {
 }
 
 function actorSides(input, useCasePositions) {
+  // `side` is always recomputed here, never taken from `input.actors[].side` -- the backend
+  // round-trips whatever this function last returned back into the stored actor list, and an
+  // earlier version of this function treated an actor's existing side as fixed and only
+  // balanced actors that had none yet. Once every actor had been assigned a side once (often
+  // early on, while the table was still small and every actor's weight was 0 or tied, which
+  // this same tie-break sends to "left"), no actor was ever rebalanced again on a later run,
+  // no matter how lopsided the real weights had become. Recomputing from scratch every time
+  // keeps this a pure function of the current table (same input -> same output, via the
+  // weight-then-name sort below), not of whatever an earlier, possibly much smaller table
+  // happened to produce.
   const actors = asList(input.actors).map((actor, index) => ({
     id: asString(actor?.id, `actor-${index + 1}`),
     name: asString(actor?.name, "Actor"),
     kind: asString(actor?.kind, "human"),
-    side: actor?.side === "right" ? "right" : actor?.side === "left" ? "left" : null,
+    side: null,
   }));
   const linked = new Map(actors.map((actor) => [actor.id, []]));
   for (const item of asList(input.useCases)) {
@@ -163,12 +173,12 @@ function actorSides(input, useCasePositions) {
       linked.get(actorId).push(item.id);
     }
   }
-  let leftWeight = actors.filter((actor) => actor.side === "left").reduce((sum, actor) => sum + linked.get(actor.id).length, 0);
-  let rightWeight = actors.filter((actor) => actor.side === "right").reduce((sum, actor) => sum + linked.get(actor.id).length, 0);
-  const unresolved = actors
-    .filter((actor) => !actor.side)
-    .sort((left, right) => linked.get(right.id).length - linked.get(left.id).length || left.name.localeCompare(right.name));
-  for (const actor of unresolved) {
+  let leftWeight = 0;
+  let rightWeight = 0;
+  const ordered = [...actors].sort(
+    (left, right) => linked.get(right.id).length - linked.get(left.id).length || left.name.localeCompare(right.name),
+  );
+  for (const actor of ordered) {
     actor.side = leftWeight <= rightWeight ? "left" : "right";
     if (actor.side === "left") leftWeight += linked.get(actor.id).length;
     else rightWeight += linked.get(actor.id).length;
@@ -215,25 +225,33 @@ function buildLayout(input, elkGraph, elkResult) {
   }
   const useCasesById = new Map(nodes.map((node) => [node.id, node]));
   const { actors, linked } = actorSides(input, useCasesById);
-  const leftActors = actors.filter((actor) => actor.side === "left");
-  const rightActors = actors.filter((actor) => actor.side === "right");
-  const actorY = (actor, index, group) => {
+  const desiredY = (actor) => {
     const ys = linked.get(actor.id).map((useCaseId) => useCasesById.get(useCaseId)?.y + USE_CASE_HEIGHT / 2).filter(Number.isFinite);
-    const desired = median(ys) ?? SYSTEM_Y + 120;
-    const previous = index > 0 ? group[index - 1].__layoutY : null;
-    const y = Math.max(SYSTEM_Y + 34, previous == null ? desired - ACTOR_HEIGHT / 2 : Math.max(desired - ACTOR_HEIGHT / 2, previous + ACTOR_HEIGHT + 24));
-    actor.__layoutY = y;
-    return y;
+    return median(ys) ?? SYSTEM_Y + 120;
   };
-  leftActors.sort((left, right) => left.name.localeCompare(right.name));
-  rightActors.sort((left, right) => left.name.localeCompare(right.name));
-  for (const [index, actor] of leftActors.entries()) {
-    nodes.push({ id: actor.id, kind: "actor", name: actor.name, actorKind: actor.kind, side: "left", x: 0, y: actorY(actor, index, leftActors), width: ACTOR_WIDTH, height: ACTOR_HEIGHT });
-  }
-  for (const [index, actor] of rightActors.entries()) {
-    nodes.push({ id: actor.id, kind: "actor", name: actor.name, actorKind: actor.kind, side: "right", x: SYSTEM_X + boundary.width + 160, y: actorY(actor, index, rightActors), width: ACTOR_WIDTH, height: ACTOR_HEIGHT });
-  }
-  for (const actor of actors) delete actor.__layoutY;
+  // Placed in desired-Y order (top to bottom), not alphabetically: an actor is pushed down only
+  // as far as the one immediately above it in that same order requires, so it stays as close as
+  // possible to the use cases it actually connects to. Sorting by name instead meant an actor
+  // whose connections sit near the bottom could land alphabetically first and get placed at the
+  // top on its own, while the actors that belonged near the top got cascade-pushed down below
+  // it -- stranding it far from its own edges with everyone else bunched together elsewhere.
+  const placeColumn = (side, x) => {
+    const ordered = actors
+      .filter((actor) => actor.side === side)
+      .sort((left, right) => desiredY(left) - desiredY(right) || left.name.localeCompare(right.name));
+    let previousY = null;
+    for (const actor of ordered) {
+      const desired = desiredY(actor);
+      const y = Math.max(
+        SYSTEM_Y + 34,
+        previousY == null ? desired - ACTOR_HEIGHT / 2 : Math.max(desired - ACTOR_HEIGHT / 2, previousY + ACTOR_HEIGHT + 24),
+      );
+      previousY = y;
+      nodes.push({ id: actor.id, kind: "actor", name: actor.name, actorKind: actor.kind, side, x, y, width: ACTOR_WIDTH, height: ACTOR_HEIGHT });
+    }
+  };
+  placeColumn("left", 0);
+  placeColumn("right", SYSTEM_X + boundary.width + 160);
 
   const elkEdges = collectElkEdges(elkResult);
   const edges = [];

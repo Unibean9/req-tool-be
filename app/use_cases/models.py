@@ -267,6 +267,11 @@ class UseCaseFlowStep(BaseModel):
         data = dict(value)
         data.setdefault("participant_type", data.get("participantType"))
         data.setdefault("participant_id", data.get("participantId"))
+        # extra="forbid" rejects the now-redundant camelCase keys if they are left in place --
+        # a source of "Extra inputs are not permitted" failures for a step the LLM sent in
+        # (correct, FE-facing) camelCase.
+        data.pop("participantType", None)
+        data.pop("participantId", None)
         return data
 
 
@@ -286,6 +291,8 @@ class UseCaseFlow(BaseModel):
         data = dict(value)
         data.setdefault("flow_type", data.get("flowType"))
         data.setdefault("branch_at_step", data.get("branchAtStep"))
+        data.pop("flowType", None)
+        data.pop("branchAtStep", None)
         return data
 
 
