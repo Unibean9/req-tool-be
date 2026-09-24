@@ -602,9 +602,10 @@ class UseCaseService:
         except Exception as exc:
             # Layout is a derived presentation artifact.  A worker/runtime problem must leave
             # the source-backed table available instead of turning the whole generation request
-            # into an unrelated 500.
+            # into an unrelated 500. The type name is kept because some errors have no message.
+            logger.exception("Diagram layout failed")
             payload["diagramLayout"] = None
-            return f"diagram layout failed: {str(exc)[:240]}"
+            return f"diagram layout failed: {type(exc).__name__}: {str(exc)[:240]}"
 
     async def generate_groups(
         self, *, project_id: uuid.UUID, user_id: uuid.UUID, body: UseCaseGenerateRequest

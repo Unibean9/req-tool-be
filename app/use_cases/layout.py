@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -27,28 +28,25 @@ async def generate_diagram_layout(payload: dict[str, Any]) -> dict[str, Any]:
     if not _RUNNER.is_file():
         raise DiagramLayoutError(f"ELK layout worker is missing: {_RUNNER}")
 
-    process = await asyncio.create_subprocess_exec(
-        node,
-        str(_RUNNER),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    # A blocking subprocess.run in a worker thread rather than asyncio.create_subprocess_exec: the
+    # latter needs a Proactor event loop on Windows, and uvicorn --reload runs a Selector loop
+    # there, where it raises a bare NotImplementedError.
     try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            [node, str(_RUNNER)],
+            input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            capture_output=True,
             timeout=settings.use_case_layout_timeout_seconds,
         )
-    except TimeoutError as exc:
-        process.kill()
-        await process.wait()
+    except subprocess.TimeoutExpired as exc:
         raise DiagramLayoutError("ELK layout generation timed out") from exc
 
-    error_text = stderr.decode("utf-8", errors="replace").strip()
-    if process.returncode:
+    error_text = completed.stderr.decode("utf-8", errors="replace").strip()
+    if completed.returncode:
         raise DiagramLayoutError(error_text[-500:] or "ELK layout worker failed")
     try:
-        result = json.loads(stdout.decode("utf-8"))
+        result = json.loads(completed.stdout.decode("utf-8"))
     except json.JSONDecodeError as exc:
         raise DiagramLayoutError("ELK layout worker returned invalid JSON") from exc
     if not isinstance(result, dict) or result.get("engine") != "elk":
