@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # Use-case generation sends the complete stored BRD/PRD snapshot and can take longer than
     # an ordinary agent turn.  Keep this separate so normal agent-loop latency is unchanged.
     use_case_generation_timeout_seconds: float = 180.0
+    # Detail enrichment is intentionally one module at a time.  A separate deadline prevents
+    # one slow Bedrock batch from consuming the entire request budget while still allowing the
+    # larger Claude requests used by the source-backed model to finish.
+    use_case_generation_batch_timeout_seconds: float = 180.0
     summary_trigger_every: int = 6
 
     # Quality gate — reflection critic loop
@@ -91,9 +95,12 @@ class Settings(BaseSettings):
 
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000
-    # Use-case generation returns the complete multi-level table and diagram definitions.  It can
-    # be substantially larger than an analyst turn, so keep its output budget independent.
+    # Use-case generation returns the complete table and relationship details. It can be
+    # substantially larger than an analyst turn, so keep its output budget independent.
     use_case_generation_max_tokens: int = 16000
+    # ELK runs in a small Node worker after semantic generation; keep layout latency bounded
+    # independently from the provider timeout.
+    use_case_layout_timeout_seconds: float = 30.0
 
     # "auto" → model decides whether to call a tool (enables clean terminal-text turns).
     # "required" → model must pick at least one tool (pre-M1 behaviour, for rollback).

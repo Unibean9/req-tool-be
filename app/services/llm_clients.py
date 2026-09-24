@@ -30,6 +30,9 @@ class LLMClientConfig:
     region: str | None = None
     secret_key: str | None = None
     base_url: str | None = None
+    # Used by clients whose SDK owns the socket (currently Bedrock/boto3).  The
+    # service still applies its own asyncio deadline around each generation call.
+    request_timeout: float = 120.0
 
 
 _TOOL_CALL_PROBE = {
@@ -326,6 +329,24 @@ def _create_google_sdk(*, api_key: str, timeout: float):
     return genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(timeout=int(timeout * 1000), retry_options=retry_options),
+    )
+
+
+def _bedrock_client_config(timeout: float):
+    """Give boto3 enough socket time for a large structured Claude response.
+
+    The service wraps each call in an asyncio deadline.  boto3 has its own default
+    read timeout (60 seconds), which would otherwise terminate the request before
+    that service deadline and make a valid slow generation look like a failed batch.
+    """
+
+    from botocore.config import Config
+
+    read_timeout = max(10, int(timeout) + 10)
+    return Config(
+        connect_timeout=10,
+        read_timeout=read_timeout,
+        retries={"mode": "standard", "max_attempts": 2},
     )
 
 
@@ -782,6 +803,7 @@ class BedrockLLMClient:
                         region_name=self.config.region or "us-east-1",
                         aws_access_key_id=self.config.api_key,
                         aws_secret_access_key=self.config.secret_key,
+                        config=_bedrock_client_config(self.config.request_timeout),
                     )
         return self._iam_boto3_client
 
@@ -977,6 +999,7 @@ class LLMClientFactory:
         region: str | None = None,
         secret_key: str | None = None,
         base_url: str | None = None,
+        request_timeout: float = 120.0,
     ) -> LLMClient:
         client_class = cls._client_classes.get(provider_type)
         if client_class is None:
@@ -996,6 +1019,7 @@ class LLMClientFactory:
                 region=region,
                 model=resolved_model,
                 base_url=base_url,
+                request_timeout=request_timeout,
             )
         )
 

@@ -1,4 +1,4 @@
-"""Use-case table, PlantUML source, and generation endpoints."""
+"""Use-case table, React Flow layout, and generation endpoints."""
 
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ async def update_use_case_uml(
     user: User = Depends(current_user),
     db: AsyncSession = Depends(get_db),
 ) -> Any:
-    """Save developer edits to the PlantUML source without rerunning the LLM."""
+    """Compatibility route for old clients; the current Use Case screen does not use PlantUML."""
 
     await require_project_access(project_id, user, db)
     return ok(await UseCaseService(db).update_plant_uml(project_id=project_id, body=body))

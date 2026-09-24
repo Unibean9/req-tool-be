@@ -7,6 +7,7 @@ import copy
 import json
 import re
 import uuid
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -41,6 +42,7 @@ from app.use_cases.harness import (
     UseCaseGroupUseCasesHarness,
     UseCaseRelationshipHarness,
 )
+from app.use_cases.layout import DiagramLayoutError, generate_diagram_layout
 from app.use_cases.models import (
     RequirementsSourceSnapshot,
     UseCaseActor,
@@ -53,7 +55,6 @@ from app.use_cases.models import (
     UseCaseRelationshipDraftList,
     UseCaseSystem,
 )
-from app.use_cases.plantuml import render_plantuml
 from app.use_cases.rules import validate_use_case_model
 from app.use_cases.source_loader import canonical_evidence_refs, load_project_requirements_source
 
@@ -142,7 +143,7 @@ class UseCaseService:
         _ = (project_id, body)
         raise HTTPException(
             status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Use cases are generated from BRD/PRD; edit PlantUML source instead",
+            detail="Use cases are generated from BRD/PRD; regenerate the model after source changes",
         )
 
     async def update_use_case(
@@ -151,14 +152,14 @@ class UseCaseService:
         _ = (project_id, use_case_id, body)
         raise HTTPException(
             status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Use cases are generated from BRD/PRD; edit PlantUML source instead",
+            detail="Use cases are generated from BRD/PRD; regenerate the model after source changes",
         )
 
     async def delete_use_case(self, *, project_id: uuid.UUID, use_case_id: str) -> dict[str, Any]:
         _ = (project_id, use_case_id)
         raise HTTPException(
             status.HTTP_405_METHOD_NOT_ALLOWED,
-            detail="Use cases are generated from BRD/PRD; edit PlantUML source instead",
+            detail="Use cases are generated from BRD/PRD; regenerate the model after source changes",
         )
 
     async def create_relationship(
@@ -216,6 +217,7 @@ class UseCaseService:
                 },
             ) from exc
         provider = None
+        client = None
         usage: Any = None
         candidate_rows: list[UseCaseEntry] = []
         generation_errors: list[str] = []
@@ -235,13 +237,15 @@ class UseCaseService:
                     "message": f"Stored BRD/PRD components could not be mapped to a use-case table: {str(exc)[:400]}",
                 },
             ) from exc
+        generation_id, generation_started_at = await self._mark_generation_started(
+            project=project, source=source, user_id=user_id
+        )
         try:
             client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
             batches = [
                 module for module in floor.modules if any(item.module_id == module.id for item in floor.use_cases)
             ]
             total_batches = len(batches)
-            batch_semaphore = asyncio.Semaphore(3)
 
             async def generate_module(module: UseCaseModule) -> tuple[UseCaseModule, list[Any], Any, str | None]:
                 rows = [item for item in floor.use_cases if item.module_id == module.id]
@@ -258,18 +262,17 @@ class UseCaseService:
                     evidence_text=evidence,
                 )
                 try:
-                    async with batch_semaphore:
-                        raw_result, batch_usage = await asyncio.wait_for(
-                            client.generate(
-                                messages=[{"role": "user", "content": harness.build_user_prompt()}],
-                                system=harness.build_system_instruction(),
-                                # A module has a small bounded output; reserving the global token budget
-                                # here makes each batch cheaper and less likely to hit a provider limit.
-                                max_tokens=min(settings.use_case_generation_max_tokens, 8000),
-                                response_format=harness.response_format(),
-                            ),
-                            timeout=min(settings.use_case_generation_timeout_seconds, 90.0),
-                        )
+                    raw_result, batch_usage = await asyncio.wait_for(
+                        client.generate(
+                            messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                            system=harness.build_system_instruction(),
+                            # A module has a small bounded output; reserving the global token budget
+                            # here makes each batch cheaper and less likely to hit a provider limit.
+                            max_tokens=min(settings.use_case_generation_max_tokens, 8000),
+                            response_format=harness.response_format(),
+                        ),
+                        timeout=settings.use_case_generation_batch_timeout_seconds,
+                    )
                     drafts = UseCaseGroupDetailDraftList.model_validate(_decode_llm_payload(raw_result)).use_cases
                     return module, drafts, batch_usage, None
                 except TimeoutError:
@@ -277,21 +280,33 @@ class UseCaseService:
                 except Exception as exc:
                     return module, [], None, f"{module.name}: {str(exc)[:240]}"
 
-            # Run module passes concurrently.  Each request carries only the relevant source
-            # excerpt, so the total wall time is bounded by the slowest module rather than the
-            # size of the complete BRD/PRD snapshot.
-            results = await asyncio.gather(*(generate_module(module) for module in batches))
             usages: list[Any] = []
-            for module, drafts, batch_usage, error in results:
+            # Bedrock Claude requests are deliberately serialized.  Sending several 15k-token
+            # structured-output calls at once causes provider queuing and turns otherwise valid
+            # batches into simultaneous deadline failures.  Persist the counter after every
+            # module so a reload can show real progress while the request is still running.
+            for module in batches:
+                module, drafts, batch_usage, error = await generate_module(module)
                 if error:
                     generation_errors.append(error)
-                    continue
-                completed_batches += 1
-                if batch_usage is not None:
-                    usages.append(batch_usage)
-                candidate_rows.extend(_candidate_rows_from_drafts(floor, module, drafts))
+                else:
+                    completed_batches += 1
+                    if batch_usage is not None:
+                        usages.append(batch_usage)
+                    candidate_rows.extend(_candidate_rows_from_drafts(floor, module, drafts))
+                await self._update_generation_batch_progress(
+                    project=project,
+                    generation_id=generation_id,
+                    batch_count=total_batches,
+                    completed_batch_count=completed_batches,
+                )
             usage = {"batches": usages} if usages else None
-        except HTTPException:
+        except HTTPException as exc:
+            await self._mark_generation_failed(
+                project=project,
+                generation_id=generation_id,
+                message=_http_exception_message(exc),
+            )
             raise
         except Exception as exc:
             generation_errors.append(f"generation setup failed: {str(exc)[:300]}")
@@ -306,10 +321,6 @@ class UseCaseService:
                 relationships=[],
             )
         model = complete_use_case_table(source, candidate)
-        generation_error = "; ".join(generation_errors) if generation_errors else None
-        if total_batches and completed_batches < total_batches:
-            prefix = f"AI details completed for {completed_batches}/{total_batches} modules; "
-            generation_error = prefix + (generation_error or "source-backed details retained for failed modules")
         report = validate_use_case_model(model, source)
         payload = self._core_to_payload(
             project=project,
@@ -318,18 +329,139 @@ class UseCaseService:
             report=report,
             provider=provider,
             usage=usage,
-            generation_error=generation_error,
+            relations_generated=False,
         )
         payload["generation"] = payload.get("generation") or {}
         payload["generation"].update(
             {
+                "generationId": generation_id,
+                "startedAt": generation_started_at,
                 "batchCount": total_batches,
                 "completedBatchCount": completed_batches,
                 "generationMode": "module-batch",
+                "stages": {
+                    "source": "completed",
+                    "table": "completed",
+                    "relationships": "pending",
+                    "validation": "pending",
+                    "layout": "pending",
+                    "persist": "pending",
+                },
             }
         )
+        if client is not None and model.use_cases:
+            payload["generation"]["stages"]["relationships"] = "running"
+        else:
+            payload["generation"]["stages"]["relationships"] = "skipped"
+        await self._persist_generation_progress(project=project, generation_id=generation_id, payload=payload)
+        if client is not None and model.use_cases:
+            try:
+                relation_usage = await self._resolve_relationships_with_client(
+                    payload=payload,
+                    source=source,
+                    client=client,
+                )
+                model = self._payload_to_model(payload, project.name, source=source)
+                report = validate_use_case_model(model, source)
+                payload["validation"] = UseCaseValidationResponse.model_validate(
+                    report.model_dump()
+                ).model_dump(by_alias=True)
+                payload["generation"]["relationsGenerated"] = True
+                payload["generation"]["relationshipUsage"] = relation_usage
+                payload["generation"]["stages"]["relationships"] = "completed"
+            except TimeoutError:
+                generation_errors.append("relationship generation timed out")
+                payload["generation"]["stages"]["relationships"] = "failed"
+            except Exception as exc:
+                generation_errors.append(f"relationship generation failed: {str(exc)[:240]}")
+                payload["generation"]["stages"]["relationships"] = "failed"
+        payload["generation"]["stages"]["validation"] = "completed"
+        payload["generation"]["stages"]["layout"] = "running"
+        await self._persist_generation_progress(project=project, generation_id=generation_id, payload=payload)
+
+        layout_error = await self._attach_diagram_layout(payload)
+        if layout_error:
+            generation_errors.append(layout_error)
+            payload["generation"]["stages"]["layout"] = "failed"
+        else:
+            payload["generation"]["stages"]["layout"] = "completed"
+
+        if total_batches and completed_batches < total_batches:
+            prefix = f"AI details completed for {completed_batches}/{total_batches} modules; "
+            generation_errors.insert(0, prefix.rstrip("; "))
+        if generation_errors:
+            payload["generation"]["error"] = "; ".join(dict.fromkeys(generation_errors))
+        else:
+            payload["generation"].pop("error", None)
+        payload["generation"].update(
+            {
+                "generationId": generation_id,
+                "status": "completed_with_errors" if generation_errors else "completed",
+                "completedAt": _generation_timestamp(),
+            }
+        )
+        payload["generation"]["stages"]["persist"] = "completed"
         await self._persist_generated(project_id=project_id, user_id=user_id, source=source, payload=payload)
         return UseCaseModelResponse.model_validate(payload)
+
+    async def _resolve_relationships_with_client(
+        self,
+        *,
+        payload: dict[str, Any],
+        source: RequirementsSourceSnapshot,
+        client: Any,
+    ) -> Any:
+        harness = UseCaseRelationshipHarness(
+            source=source,
+            use_cases=payload.get("useCases", []),
+            actors=payload.get("actors", []),
+            source_text=_relationship_generation_context(source),
+            evidence_text=_bounded_evidence_index(source, 14000),
+        )
+        raw_result, usage = await asyncio.wait_for(
+            client.generate(
+                messages=[{"role": "user", "content": harness.build_user_prompt()}],
+                system=harness.build_system_instruction(),
+                max_tokens=settings.use_case_generation_max_tokens,
+                response_format=harness.response_format(),
+            ),
+            timeout=settings.use_case_generation_batch_timeout_seconds,
+        )
+        drafts = UseCaseRelationshipDraftList.model_validate(_decode_llm_payload(raw_result)).relations
+        self._apply_relationship_drafts(payload, drafts, source=source)
+        self._refresh_relationship_ids(payload)
+        return usage
+
+    async def _attach_diagram_layout(self, payload: dict[str, Any]) -> str | None:
+        try:
+            layout = await generate_diagram_layout(
+                {
+                    "systemName": (payload.get("system") or {}).get("name") or payload.get("projectName"),
+                    "modules": payload.get("modules", []),
+                    "actors": payload.get("actors", []),
+                    "useCases": payload.get("useCases", []),
+                    "relationships": payload.get("relationships", []),
+                }
+            )
+            payload["diagramLayout"] = layout
+            side_by_id = {
+                item.get("id"): item.get("side")
+                for item in layout.get("nodes", [])
+                if item.get("kind") == "actor" and item.get("side") in {"left", "right"}
+            }
+            for actor in payload.get("actors", []):
+                if actor.get("id") in side_by_id:
+                    actor["side"] = side_by_id[actor["id"]]
+            return None
+        except DiagramLayoutError as exc:
+            payload["diagramLayout"] = None
+            return f"diagram layout failed: {str(exc)[:240]}"
+        except Exception as exc:
+            # Layout is a derived presentation artifact.  A worker/runtime problem must leave
+            # the source-backed table available instead of turning the whole generation request
+            # into an unrelated 500.
+            payload["diagramLayout"] = None
+            return f"diagram layout failed: {str(exc)[:240]}"
 
     async def generate_groups(
         self, *, project_id: uuid.UUID, user_id: uuid.UUID, body: UseCaseGenerateRequest
@@ -411,6 +543,9 @@ class UseCaseService:
             usage=usage,
             relations_generated=False,
         )
+        layout_error = await self._attach_diagram_layout(payload)
+        if layout_error:
+            payload.setdefault("generation", {})["error"] = layout_error
         record = await self._record(project_id, for_update=True)
         if record is None:
             record = UseCaseModelRecord(project_id=project_id, model_data=payload)
@@ -488,7 +623,6 @@ class UseCaseService:
             payload["useCases"].append(row)
             accepted += 1
         model = self._payload_to_model(payload, project.name, source=source)
-        payload["plantUml"] = self._plantuml_payload(model)
         self._sync_actor_sides(payload, model)
         payload["validation"] = UseCaseValidationResponse.model_validate(
             validate_use_case_model(model, source).model_dump()
@@ -505,6 +639,9 @@ class UseCaseService:
         }
         self._refresh_relationship_ids(payload)
         payload = _normalise_payload(payload, project)
+        layout_error = await self._attach_diagram_layout(payload)
+        if layout_error:
+            payload.setdefault("generation", {})["error"] = layout_error
         await self._save(record, payload)
         return UseCaseModelResponse.model_validate(payload)
 
@@ -524,23 +661,7 @@ class UseCaseService:
         source = await load_project_requirements_source(self.db, project_id=project_id)
         try:
             client, provider = await self._llm_client(user_id=user_id, provider_config_id=body.provider_config_id)
-            harness = UseCaseRelationshipHarness(
-                source=source,
-                use_cases=payload["useCases"],
-                actors=payload["actors"],
-                source_text=_relationship_generation_context(source),
-                evidence_text=_bounded_evidence_index(source, 14000),
-            )
-            raw_result, usage = await asyncio.wait_for(
-                client.generate(
-                    messages=[{"role": "user", "content": harness.build_user_prompt()}],
-                    system=harness.build_system_instruction(),
-                    max_tokens=settings.use_case_generation_max_tokens,
-                    response_format=harness.response_format(),
-                ),
-                timeout=min(settings.use_case_generation_timeout_seconds, 90.0),
-            )
-            drafts = UseCaseRelationshipDraftList.model_validate(_decode_llm_payload(raw_result)).relations
+            usage = await self._resolve_relationships_with_client(payload=payload, source=source, client=client)
         except TimeoutError as exc:
             raise HTTPException(
                 status.HTTP_504_GATEWAY_TIMEOUT,
@@ -556,10 +677,7 @@ class UseCaseService:
                 status.HTTP_502_BAD_GATEWAY,
                 detail={"code": "USE_CASE_RELATION_GENERATION_FAILED", "message": str(exc)[:500]},
             ) from exc
-        self._apply_relationship_drafts(payload, drafts, source=source)
-        self._refresh_relationship_ids(payload)
         model = self._payload_to_model(payload, project.name, source=source)
-        payload["plantUml"] = self._plantuml_payload(model)
         self._sync_actor_sides(payload, model)
         payload["validation"] = UseCaseValidationResponse.model_validate(
             validate_use_case_model(model, source).model_dump()
@@ -571,7 +689,18 @@ class UseCaseService:
             "model": provider.model_name,
             "usage": usage,
             "relationsGenerated": True,
+            "stages": {
+                "source": "completed",
+                "table": "completed",
+                "relationships": "completed",
+                "validation": "completed",
+                "layout": "pending",
+            },
         }
+        layout_error = await self._attach_diagram_layout(payload)
+        payload["generation"]["stages"]["layout"] = "failed" if layout_error else "completed"
+        if layout_error:
+            payload["generation"]["error"] = layout_error
         payload = _normalise_payload(payload, project)
         await self._save(record, payload)
         return UseCaseModelResponse.model_validate(payload)
@@ -639,6 +768,118 @@ class UseCaseService:
         record.last_generation_error = generation.get("error")
         await self.db.flush()
 
+    async def _mark_generation_started(
+        self, *, project: Project, source: RequirementsSourceSnapshot, user_id: uuid.UUID
+    ) -> tuple[str, str]:
+        payload, record = await self._locked_payload(project)
+        previous_generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        if previous_generation.get("status") == "running":
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "USE_CASE_GENERATION_IN_PROGRESS",
+                    "message": "A use-case model generation is already running for this project.",
+                },
+            )
+        generation_id = str(uuid.uuid4())
+        started_at = _generation_timestamp()
+        payload["sourceHash"] = source.source_hash
+        payload["diagramLayout"] = None
+        payload["generation"] = {
+            "source": "ai",
+            "status": "running",
+            "generationId": generation_id,
+            "startedAt": started_at,
+            "batchCount": None,
+            "completedBatchCount": 0,
+            "generationMode": "module-batch",
+            "stages": {
+                "source": "completed",
+                "table": "running",
+                "relationships": "pending",
+                "validation": "pending",
+                "layout": "pending",
+                "persist": "pending",
+            },
+        }
+        record.model_data = payload
+        record.source_hash = source.source_hash
+        record.generated_by_id = user_id
+        record.last_generation_error = None
+        await self.db.flush()
+        # Make the running marker visible to a fresh browser tab/reload while the LLM request is
+        # still in progress. The final generation payload is committed by _persist_generated.
+        await self.db.commit()
+        return generation_id, started_at
+
+    async def _mark_generation_failed(self, *, project: Project, generation_id: str, message: str) -> None:
+        record = await self._record(project.id, for_update=True)
+        if record is None:
+            return
+        payload = _normalise_payload(record.model_data, project)
+        generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        if generation.get("generationId") != generation_id:
+            return
+        generation["status"] = "failed"
+        generation["error"] = message
+        generation["completedAt"] = _generation_timestamp()
+        stages = generation.get("stages") if isinstance(generation.get("stages"), dict) else {}
+        for stage, value in list(stages.items()):
+            if value == "running":
+                stages[stage] = "failed"
+        generation["stages"] = stages
+        payload["generation"] = generation
+        record.model_data = payload
+        record.last_generation_error = message
+        await self.db.flush()
+        await self.db.commit()
+
+    async def _update_generation_batch_progress(
+        self,
+        *,
+        project: Project,
+        generation_id: str,
+        batch_count: int,
+        completed_batch_count: int,
+    ) -> None:
+        """Publish module-batch progress without replacing the source-backed model."""
+
+        record = await self._record(project.id, for_update=True)
+        if record is None:
+            return
+        payload = _normalise_payload(record.model_data, project)
+        generation = payload.get("generation") if isinstance(payload.get("generation"), dict) else {}
+        if generation.get("generationId") != generation_id:
+            return
+        generation["batchCount"] = batch_count
+        generation["completedBatchCount"] = completed_batch_count
+        generation["status"] = "running"
+        payload["generation"] = generation
+        record.model_data = payload
+        await self.db.flush()
+        await self.db.commit()
+
+    async def _persist_generation_progress(
+        self, *, project: Project, generation_id: str, payload: dict[str, Any]
+    ) -> None:
+        record = await self._record(project.id, for_update=True)
+        if record is None:
+            return
+        stored = _normalise_payload(record.model_data, project)
+        stored_generation = stored.get("generation") if isinstance(stored.get("generation"), dict) else {}
+        if stored_generation.get("generationId") != generation_id:
+            return
+        progress_payload = copy.deepcopy(payload)
+        generation = progress_payload.get("generation") if isinstance(progress_payload.get("generation"), dict) else {}
+        generation["generationId"] = generation_id
+        generation["status"] = "running"
+        generation.setdefault("startedAt", stored_generation.get("startedAt"))
+        progress_payload["generation"] = generation
+        record.model_data = progress_payload
+        record.last_generation_error = None
+        await self.db.flush()
+        await self.db.commit()
+
     async def _llm_client(self, *, user_id: uuid.UUID, provider_config_id: uuid.UUID | None):
         query = select(LLMProviderConfig).where(
             LLMProviderConfig.user_id == user_id, LLMProviderConfig.status == LLMProviderStatus.ACTIVE
@@ -661,6 +902,7 @@ class UseCaseService:
             model=config.model_name,
             region=config.region,
             base_url=config.base_url,
+            request_timeout=settings.use_case_generation_batch_timeout_seconds,
         ), config
 
     def _core_to_payload(
@@ -685,7 +927,6 @@ class UseCaseService:
                 description=model.system.description,
                 source_refs=model.system.source_refs,
             )
-        plant_uml = self._plantuml_payload(model)
         relationships = []
         for relation in model.relationships:
             if relation.kind == "association":
@@ -739,19 +980,10 @@ class UseCaseService:
                 else relations_generated,
                 **({"error": generation_error} if generation_error else {}),
             },
-            "plantUml": plant_uml,
+            "diagramLayout": None,
+            "plantUml": None,
         }
         return _normalise_payload(payload, project)
-
-    @staticmethod
-    def _plantuml_payload(model: UseCaseModel) -> dict[str, Any]:
-        return {
-            "language": "plantuml",
-            "source": render_plantuml(model),
-            "editable": True,
-            "stale": False,
-            "generatedFrom": "use-case-table",
-        }
 
     @staticmethod
     def _payload_to_model(
@@ -949,6 +1181,7 @@ class UseCaseService:
 
     @staticmethod
     def _mark_table_changed(payload: dict[str, Any]) -> None:
+        payload["diagramLayout"] = None
         if isinstance(payload.get("plantUml"), dict):
             payload["plantUml"]["stale"] = True
         payload["validation"] = None
@@ -978,6 +1211,17 @@ def _empty_payload(project: Project) -> dict[str, Any]:
         projectName=project.name,
         system={"id": "SYSTEM", "name": project.name, "description": None, "sourceTrace": []},
     ).model_dump(by_alias=True, mode="json")
+
+
+def _generation_timestamp() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _http_exception_message(error: HTTPException) -> str:
+    detail = error.detail
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("detail") or detail)
+    return str(detail)
 
 
 def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
@@ -1096,6 +1340,7 @@ def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
         "sourceHash": raw.get("sourceHash"),
         "validation": raw.get("validation"),
         "generation": raw.get("generation"),
+        "diagramLayout": raw.get("diagramLayout") if isinstance(raw.get("diagramLayout"), dict) else None,
         "plantUml": raw.get("plantUml") if isinstance(raw.get("plantUml"), dict) else None,
     }
     UseCaseService._refresh_relationship_ids(output)
@@ -1109,6 +1354,7 @@ def _normalise_payload(raw: Any, project: Project) -> dict[str, Any]:
             "modules": modules,
             "useCases": rows,
             "relationships": relationships,
+            "diagramLayout": output["diagramLayout"],
             "plantUml": output["plantUml"],
         }
 

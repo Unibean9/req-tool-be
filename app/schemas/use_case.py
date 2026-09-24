@@ -1,7 +1,7 @@
-"""HTTP contracts for the generated Use Case Table and editable PlantUML source.
+"""HTTP contracts for the generated Use Case Table and backend-laid-out React Flow diagram.
 
-The canonical aggregate is System → Module/Capability → Use Case.  Use cases are generated from
-stored BRD/PRD components; the only editable artifact is the PlantUML source.
+The canonical aggregate is System → Module/Capability → Use Case. Use cases and diagram coordinates
+are generated from stored BRD/PRD components; PlantUML fields remain only for old clients.
 """
 
 from __future__ import annotations
@@ -165,6 +165,62 @@ class UseCasePlantUmlUpdateRequest(UseCaseApiModel):
     source: str = Field(min_length=1, max_length=500_000)
 
 
+class DiagramLayoutPointResponse(UseCaseApiModel):
+    x: float
+    y: float
+
+
+class DiagramLayoutBoundaryResponse(UseCaseApiModel):
+    id: str = "SYSTEM"
+    name: str
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class DiagramLayoutNodeResponse(UseCaseApiModel):
+    id: str
+    kind: Literal["system_boundary", "actor", "use_case"]
+    name: str
+    x: float
+    y: float
+    width: float
+    height: float
+    module_id: str | None = Field(default=None, alias="moduleId")
+    module_name: str | None = Field(default=None, alias="moduleName")
+    priority: UseCasePriority | None = None
+    actor_kind: ActorKind | None = Field(default=None, alias="actorKind")
+    side: ActorSide | Literal["inside"] | None = None
+
+
+class DiagramLayoutEdgeResponse(UseCaseApiModel):
+    id: str
+    source: str
+    target: str
+    kind: Literal["association", "include", "extend", "generalization"]
+    label: str | None = None
+    line_style: Literal["solid", "dashed"] = Field(alias="lineStyle")
+    directed: bool = False
+    source_handle: str | None = Field(default=None, alias="sourceHandle")
+    target_handle: str | None = Field(default=None, alias="targetHandle")
+    points: list[DiagramLayoutPointResponse] = Field(default_factory=list)
+
+
+class DiagramLayoutDiagnosticsResponse(UseCaseApiModel):
+    warnings: list[str] = Field(default_factory=list)
+    overlap_count: int = Field(default=0, alias="overlapCount")
+
+
+class DiagramLayoutResponse(UseCaseApiModel):
+    engine: Literal["elk"] = "elk"
+    version: str
+    system: DiagramLayoutBoundaryResponse
+    nodes: list[DiagramLayoutNodeResponse] = Field(default_factory=list)
+    edges: list[DiagramLayoutEdgeResponse] = Field(default_factory=list)
+    diagnostics: DiagramLayoutDiagnosticsResponse = Field(default_factory=DiagramLayoutDiagnosticsResponse)
+
+
 class UseCaseValidationIssueResponse(UseCaseApiModel):
     severity: Literal["error", "warning"]
     code: str
@@ -191,6 +247,7 @@ class UseCaseModelResponse(UseCaseApiModel):
     source_hash: str | None = Field(default=None, alias="sourceHash")
     validation: UseCaseValidationResponse | None = None
     generation: dict[str, Any] | None = None
+    diagram_layout: DiagramLayoutResponse | None = Field(default=None, alias="diagramLayout")
     plant_uml: UseCasePlantUmlResponse | None = Field(default=None, alias="plantUml")
 
 

@@ -5,6 +5,13 @@ ARG UV_VERSION=0.9.30
 
 FROM ghcr.io/astral-sh/uv:${UV_VERSION} AS uv
 
+FROM node:22-bookworm-slim AS elk-deps
+
+WORKDIR /diagram_layout
+
+COPY diagram_layout/package.json diagram_layout/package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
 FROM python:${PYTHON_VERSION}-slim AS builder
 
 WORKDIR /app
@@ -26,6 +33,7 @@ FROM python:${PYTHON_VERSION}-slim AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq5 \
+    nodejs \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash appuser
 
@@ -36,6 +44,8 @@ ENV PATH="/opt/venv/bin:$PATH" \
 WORKDIR /app
 
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=elk-deps /diagram_layout/node_modules ./diagram_layout/node_modules
+COPY diagram_layout/package.json diagram_layout/package-lock.json diagram_layout/layout.mjs ./diagram_layout/
 COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini .

@@ -25,6 +25,7 @@ tasks:
   dev:
     desc: Run FastAPI development server
     cmds:
+      - npm --prefix diagram_layout ci --ignore-scripts
       - docker compose -f docker/docker-compose.dev.yml --env-file .env up -d && uv run uvicorn app.main:app --reload --port 8000
 
   test:
