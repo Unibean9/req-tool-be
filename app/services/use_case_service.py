@@ -675,8 +675,10 @@ class UseCaseService:
         relations_generated: bool | None = None,
         generation_error: str | None = None,
     ) -> dict[str, Any]:
-        system_name = project.name if model.system.name == "Requirements System" else model.system.name
-        if model.system.name == "Requirements System":
+        # The system boundary represents the product being built.  Document registry titles
+        # such as "Product Requirements Document" are source labels, not the product name.
+        system_name = project.name
+        if model.system.name != system_name:
             model.system = UseCaseSystem(
                 id=model.system.id,
                 name=system_name,
