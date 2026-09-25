@@ -839,6 +839,7 @@ async def test_ping_tool_calling_accepts_valid_probe_call(monkeypatch, client_cl
         assert body["toolConfig"]["functionCallingConfig"]["mode"] == "AUTO"
     elif client_class is BedrockLLMClient:
         assert "toolChoice" not in body["toolConfig"]
+        assert body["inferenceConfig"]["maxTokens"] == 100
     elif client_class is MistralLLMClient:
         assert body["tool_choice"] == "auto"
     else:
@@ -1084,6 +1085,29 @@ async def test_bedrock_ping_tool_calling_forces_any_tool_choice(monkeypatch):
 
     assert await client.ping_tool_calling() is True
     assert recorder.requests[0]["json"]["toolConfig"]["toolChoice"] == {"any": {}}
+    assert recorder.requests[0]["json"]["inferenceConfig"]["maxTokens"] == 100
+
+
+@pytest.mark.asyncio
+async def test_bedrock_iam_ping_tool_calling_uses_probe_budget(monkeypatch):
+    requests = []
+
+    class _FakeBotoClient:
+        def converse(self, **kwargs):
+            requests.append(kwargs)
+            return _PROBE_TOOL_RESPONSE_BY_PROVIDER[BedrockLLMClient]
+
+    def _fake_boto3_client(*_args, **_kwargs):
+        return _FakeBotoClient()
+
+    monkeypatch.setattr("boto3.client", _fake_boto3_client)
+    client = BedrockLLMClient(
+        LLMClientConfig(api_key="AKIATEST", model="model-test", secret_key="secret-test")
+    )
+
+    assert await client.ping_tool_calling() is True
+    assert requests[0]["toolConfig"]["toolChoice"] == {"any": {}}
+    assert requests[0]["inferenceConfig"]["maxTokens"] == 100
 
 
 @pytest.mark.asyncio

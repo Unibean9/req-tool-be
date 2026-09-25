@@ -292,5 +292,8 @@ async def _ping_provider(config: LLMProviderConfig) -> tuple[str | None, bool | 
         model=config.model_name,
         base_url=config.base_url,
     )
-    tool_calling_supported = await client.ping_tool_calling(settings.tool_choice_mode)
+    # A capability probe must force a tool call. The runtime tool-choice setting may stay on
+    # "auto" so normal agent turns can finish with plain text, but "auto" is not a reliable
+    # capability check because the model is allowed to answer without selecting the probe tool.
+    tool_calling_supported = await client.ping_tool_calling("required")
     return None, tool_calling_supported
