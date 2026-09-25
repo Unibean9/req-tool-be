@@ -383,6 +383,9 @@ class WorkflowState(TypedDict):
     # each build from the same pre-turn snapshot (see merge_draft_sections for the same-heading
     # same-turn caveat this does NOT cover).
     draft_sections: Annotated[dict[str, dict[str, Any]], merge_draft_sections]
+    # draft_in_parallel's finished parts, keyed by a hash of each part's inputs, so a retry after a
+    # partial failure re-runs only the failed parts. Per-key union (same reducer as draft_sections).
+    parallel_draft_cache: Annotated[dict[str, Any], merge_draft_sections]
 
 
 def build_initial_workflow_state(
@@ -445,4 +448,5 @@ def build_initial_workflow_state(
         "out_of_phase_tool_calls": 0,
         "section_findings": {},
         "draft_sections": {},
+        "parallel_draft_cache": {},
     }

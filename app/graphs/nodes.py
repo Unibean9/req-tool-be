@@ -11,7 +11,7 @@ from langgraph.types import interrupt
 from sqlalchemy import exists, select
 
 from app.config import settings
-from app.documents.registry import children_of, status_score
+from app.documents.registry import children_of, get_config, status_score
 from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, current_session_phase, get_available_tools
 
 # analyze_node's concerns live in app.graphs.analysis.* now. The private
@@ -231,6 +231,16 @@ def _triage_heuristic_certain_work(phase: str | None, message: str) -> bool:
     return not _GREETING_ONLY_PATTERN.match(stripped)
 
 
+def _artifact_display_label(artifact_type: Any) -> str:
+    value = str(artifact_type or "").strip()
+    if not value:
+        return "current"
+    try:
+        return get_config(value).label
+    except ValueError:
+        return value.replace("_", " ")
+
+
 async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     """Entry node: classify a fresh turn so a greeting/smalltalk skips the full analyst pass.
 
@@ -259,14 +269,23 @@ async def triage_node(state: WorkflowState, config: RunnableConfig) -> dict[str,
     if llm_client is None:
         raise ValueError("LLM provider is not configured. Add an API key in settings.")
 
+    # The classifier sees only this message, so without the workbench's own context a short
+    # message like "continue with this part" read as small talk and got a generic greeting.
+    section = _artifact_display_label(state.get("artifact_type"))
+    prior_turns = sum(1 for m in state.get("messages") or [] if _msg_role_content(m)[0] == "user") - 1
     prompt = (
         "Classify the user's message.\n\n"
+        f"Context: the user is in the workbench for the '{section}' section "
+        f"({'continuing a conversation' if prior_turns > 0 else 'first message of the session'}). "
+        "References like 'this part', 'this section', 'continue', 'go on', 'tiếp tục', 'phần này', "
+        "'làm tiếp' mean this section.\n\n"
         f"Message: {last_user!r}\n\n"
-        "turn_type: 'converse' if only greeting, thanks, small talk, or off-topic; "
-        "'work' if is a request to analyze, clarify, or create an artifact.\n"
+        "turn_type: 'converse' ONLY for a pure greeting, thanks, or clearly off-topic small talk; "
+        "'work' for anything that asks to continue, analyze, clarify, draft, review, or refers to this "
+        "section. When unsure, choose 'work'.\n"
         "locale: 'vi' if Vietnamese, 'en' if English.\n"
         "If turn_type='converse', set 'reply' to a short, friendly sentence in the user's exact language "
-        "- greet back, briefly say what you can help with, and invite them to share what they want to build."
+        f"- greet back and invite them to continue with the '{section}' section."
     )
     started_at = time.monotonic()
     try:

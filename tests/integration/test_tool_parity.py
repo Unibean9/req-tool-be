@@ -1049,6 +1049,66 @@ async def test_read_artifact_truncates_large_body(client, db_session):
 
 
 @pytest.mark.asyncio
+async def test_read_artifact_sections_returns_only_those_sections_in_full(client, db_session):
+    """An excerpt in PREDECESSOR CONTEXT lists what it left out; asking for one of those sections
+    must return it whole, even when it sits past the plain read's character cap."""
+    from app.graphs.agent_tools import READ_ARTIFACT_MAX_CHARS, _read_artifact_impl
+
+    rows = "\n".join(f"| O{index} | Muc tieu {index} |" for index in range(1, 400))
+    body = "## Vision\n" + ("v" * READ_ARTIFACT_MAX_CHARS) + "\n\n## Objectives\n| # | Muc tieu |\n|---|---|\n" + rows
+    project_id = await _project(client)
+    artifact = await _artifact_with_body(db_session, project_id, body)
+    config = _config(str(uuid.uuid4()), str(project_id))
+
+    command = await _read_artifact_impl(str(artifact.id), config, "call_1", sections=["Objectives"])
+
+    content = command.update["messages"][0].content
+    assert "## Vision" not in content
+    assert "| O399 | Muc tieu 399 |" in content
+    assert "truncated" not in content
+
+
+@pytest.mark.asyncio
+async def test_predecessor_preload_is_selective_for_brd_items(client, db_session):
+    """business_rules preloads only the scope/stakeholder sections it draws on -- not every
+    accepted sibling in full -- and keeps every table row instead of cutting at a char count."""
+    from app.graphs.analysis.context_loader import _load_predecessor_bodies, context_artifact_types
+
+    project_id = await _project(client)
+    rows = "\n".join(f"| C{index} | Capability {index} | Must | reason {index} |" for index in range(1, 300))
+    scope_body = (
+        "## Scope\nMVP only.\n\n## Capabilities\n| # | Capability | Ưu tiên | Lý do |\n|---|---|---|---|\n" + rows
+    )
+    fixtures = {
+        ArtifactType.SCOPE_CAPABILITIES: scope_body,
+        ArtifactType.STAKEHOLDER_REGISTER: "## Stakeholders\n| Vai trò | Quyền quyết định | Mức độ tham gia |\n"
+        "|---|---|---|\n| Trưởng nhóm | Cao | Hàng ngày |",
+        ArtifactType.VISION_OBJECTIVES: "## Vision\nA vision business_rules does not need.",
+    }
+    for artifact_type, body in fixtures.items():
+        artifact = await _artifact_with_body(db_session, project_id, body, title=artifact_type.value)
+        artifact.type = artifact_type
+        artifact.status = ArtifactStatus.ACCEPTED
+    await db_session.commit()
+
+    bodies = await _load_predecessor_bodies(
+        db_session,
+        project_id=project_id,
+        artifact_type="business_rules",
+        context_types=context_artifact_types("business_rules"),
+    )
+
+    by_type = {item["artifact_type"]: item for item in bodies}
+    assert set(by_type) == {"scope_capabilities", "stakeholder_register"}
+    scope = by_type["scope_capabilities"]
+    assert scope["included_sections"] == ["Capabilities"]
+    assert scope["omitted_sections"] == ["Scope"]
+    assert "| C299 | Capability 299 | Must |" in scope["body"]
+    assert "Lý do" not in scope["body"]
+    assert "Mức độ tham gia" not in by_type["stakeholder_register"]["body"]
+
+
+@pytest.mark.asyncio
 async def test_read_artifact_scoped_to_project(client, db_session):
     """An artifact in another project is invisible — the project_id filter is the scope boundary."""
     from app.graphs.agent_tools import _read_artifact_impl

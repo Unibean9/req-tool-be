@@ -51,10 +51,18 @@ class Settings(BaseSettings):
     # healthy operation — hitting it means the model is stuck looping without interacting.
     max_agent_turns: int = 30
     llm_provider_health_timeout_seconds: float = 25.0
-    # A multi-step graph turn (context gathering, drafting, self-critique) can chain several LLM
-    # calls; a single call alone has been observed to take 60-70s against a loaded provider, so
-    # 90s left almost no room for a second step and made ordinary artifact drafting time out.
-    agent_turn_timeout_seconds: float = 180.0
+    # Deadline for ONE agent LLM call, on every provider. A single drafting call writing a large
+    # section has been measured at 48-60s, so this leaves room for a slow provider while still
+    # failing a genuinely hung call quickly.
+    llm_call_timeout_seconds: float = 120.0
+    # Backstop for a whole graph turn, not the expected duration: a turn chains several LLM calls
+    # (read, note, write sections in batches), each bounded by llm_call_timeout_seconds, and ends as
+    # soon as the work is done. A total that sums several healthy calls must not be cut off.
+    agent_turn_timeout_seconds: float = 600.0
+    # How many parts of a draft_in_parallel artifact are written at the same time. A provider streams
+    # one answer at a fixed speed (~90 tokens/s measured on Bedrock Sonnet), so a ~30k-token table
+    # takes ~330s written by one call and ~40s split over 8.
+    parallel_draft_concurrency: int = 8
     # Use-case generation sends the complete stored BRD/PRD snapshot and can take longer than
     # an ordinary agent turn.  Keep this separate so normal agent-loop latency is unchanged.
     use_case_generation_timeout_seconds: float = 180.0

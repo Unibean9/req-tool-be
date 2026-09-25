@@ -324,7 +324,7 @@ def _create_google_sdk(*, api_key: str, timeout: float):
     # genuinely slow/hanging attempt (not a fast-failing 503) can retry once and still land inside
     # that outer deadline instead of being cut off mid-retry and surfacing as a bare
     # ``asyncio.TimeoutError`` with no useful message. The generate() path has a much larger
-    # budget (120s per call / 180s outer) and tolerates this fine.
+    # budget (llm_call_timeout_seconds per call) and tolerates this fine.
     retry_options = types.HttpRetryOptions(attempts=2, initial_delay=1.0, max_delay=5.0, exp_base=2.0, jitter=1.0)
     return genai.Client(
         api_key=api_key,
@@ -403,6 +403,35 @@ class LLMClient(Protocol):
         pass
 
 
+class LLMCallTimeoutError(TimeoutError):
+    """One LLM call exceeded its deadline (as opposed to a whole agent turn running long)."""
+
+    def __init__(self, seconds: float):
+        super().__init__(f"LLM call exceeded {int(seconds)}s")
+        self.seconds = seconds
+
+
+class DeadlineLLMClient:
+    """Bounds every generate() call with one asyncio deadline, whatever the provider.
+
+    SDK timeouts are per socket operation and SDKs retry on their own, so a single call can run far
+    past its nominal timeout; this is the call's real upper bound. Everything else is delegated.
+    """
+
+    def __init__(self, inner: Any, seconds: float):
+        self.inner = inner
+        self.seconds = seconds
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.inner, name)
+
+    async def generate(self, **kwargs: Any) -> tuple[str | dict[str, Any] | AIMessage, dict[str, int] | None]:
+        try:
+            return await asyncio.wait_for(self.inner.generate(**kwargs), timeout=self.seconds)
+        except TimeoutError as exc:
+            raise LLMCallTimeoutError(self.seconds) from exc
+
+
 class OpenAILLMClient:
     def __init__(self, config: LLMClientConfig):
         self.config = config
@@ -448,7 +477,7 @@ class OpenAILLMClient:
         if response_format:
             body["text"] = {"format": _responses_json_schema_format(response_format)}
 
-        data = await _openai_create_response(self.config.api_key, 30.0, body)
+        data = await _openai_create_response(self.config.api_key, self.config.request_timeout, body)
 
         text = _extract_openai_text(data)
         return _parse_generate_text(text, response_format), _extract_openai_usage(data)
@@ -469,7 +498,7 @@ class OpenAILLMClient:
             "tools": [_to_openai_tool(t) for t in tools],
             "tool_choice": tool_choice,
         }
-        data = await _openai_create_response(self.config.api_key, 30.0, body)
+        data = await _openai_create_response(self.config.api_key, self.config.request_timeout, body)
         return _parse_openai_tool_response(data), _extract_openai_usage(data)
 
 
@@ -515,7 +544,7 @@ class ChatCompletionsLLMClient:
             "messages": _openai_chat_messages(messages, _system_with_schema_instruction(system, response_format)),
             "max_tokens": max_tokens,
         }
-        data = await self._chat_completion(30.0, body)
+        data = await self._chat_completion(self.config.request_timeout, body)
         return _parse_generate_text(_extract_openai_chat_text(data), response_format), _extract_openai_chat_usage(data)
 
     async def _generate_with_tools(
@@ -534,7 +563,7 @@ class ChatCompletionsLLMClient:
             "tools": [_to_openai_chat_tool(t) for t in tools],
             "tool_choice": self._wire_tool_choice(tool_choice),
         }
-        data = await self._chat_completion(30.0, body)
+        data = await self._chat_completion(self.config.request_timeout, body)
         return _parse_openai_chat_tool_response(data), _extract_openai_chat_usage(data)
 
     async def _chat_completion(self, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
@@ -668,9 +697,7 @@ class GoogleLLMClient:
             "config": config,
         }
 
-        # A complete BRD/PRD snapshot can take longer to process than a normal chat turn.
-        # The service-level timeout remains the final request deadline.
-        data = await _google_generate_content(self.config.api_key, 120.0, body)
+        data = await _google_generate_content(self.config.api_key, self.config.request_timeout, body)
 
         text = _extract_google_text(data)
         return _parse_generate_text(text, response_format), _extract_google_usage(data)
@@ -696,7 +723,7 @@ class GoogleLLMClient:
         }
         if system:
             body["config"]["systemInstruction"] = {"parts": [{"text": system}]}
-        data = await _google_generate_content(self.config.api_key, 30.0, body)
+        data = await _google_generate_content(self.config.api_key, self.config.request_timeout, body)
         return _parse_google_tool_response(data), _extract_google_usage(data)
 
 
@@ -755,7 +782,7 @@ class AnthropicLLMClient:
         if final_system:
             body["system"] = _anthropic_system_blocks(final_system)
 
-        data = await _anthropic_create_message(self.config.api_key, 30.0, body)
+        data = await _anthropic_create_message(self.config.api_key, self.config.request_timeout, body)
 
         text = _extract_anthropic_text(data)
         return _parse_generate_text(text, response_format), _extract_anthropic_usage(data)
@@ -779,7 +806,7 @@ class AnthropicLLMClient:
         }
         if system:
             body["system"] = _anthropic_system_blocks(system)
-        data = await _anthropic_create_message(self.config.api_key, 30.0, body)
+        data = await _anthropic_create_message(self.config.api_key, self.config.request_timeout, body)
         return _parse_anthropic_tool_response(data), _extract_anthropic_usage(data)
 
 
@@ -969,7 +996,7 @@ class BedrockLLMClient:
                 tool_config["toolChoice"] = {"any": {}}
             body["toolConfig"] = tool_config
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=self.config.request_timeout) as client:
             response = await client.post(
                 f"https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse",
                 headers={"Authorization": f"Bearer {self.config.api_key}"},

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.documents.registry import children_of, container_for, output_contract
+from app.graphs.analysis.context_excerpts import CONTEXT_PICKS, excerpt_body
 from app.graphs.gate_logging import log_gate_decision
 from app.graphs.lifecycle_resolver import (
     ArtifactLifecycleSnapshot,
@@ -79,7 +80,7 @@ def _same_container_source_types(artifact_type: str) -> list[str]:
         return []
 
 
-def _context_artifact_types(artifact_type: str) -> list[str]:
+def context_artifact_types(artifact_type: str) -> list[str]:
     """Artifact rows worth exposing as source candidates for this turn.
 
     Predecessors remain the authoritative finalize/session dependency gate. Same-container document
@@ -325,7 +326,11 @@ async def _load_predecessor_bodies(
     artifact_type: str,
     context_types: list[str],
 ) -> list[dict[str, Any]]:
-    """Eagerly load full (capped) body content for every already-accepted context artifact.
+    """Eagerly load body content for already-accepted context artifacts.
+
+    For a type listed in CONTEXT_PICKS only the picked sections/columns of its declared
+    predecessors are loaded (see context_excerpts); otherwise every context artifact's full body,
+    capped at PREDECESSOR_BODY_MAX_CHARS.
 
     Without this, the model has to spend a separate LLM round-trip per predecessor calling
     read_artifact to see its content before it can draft. For an artifact type late in its
@@ -335,15 +340,43 @@ async def _load_predecessor_bodies(
     each one is a full LLM call on top of the one that actually drafts. Front-loading the content
     here costs a handful of cheap by-id DB reads instead of several extra LLM calls.
     """
+    picks = CONTEXT_PICKS.get(artifact_type)
     other_types = [item for item in context_types if item != artifact_type and item in _KNOWN_ARTIFACT_TYPES]
-    if not other_types:
+    if picks is not None:
+        # Selective mode (see context_excerpts): exactly the predecessors this type draws on; the
+        # rest stay listed in Current context and readable on demand.
+        other_types = [item for item in picks if item in _KNOWN_ARTIFACT_TYPES]
+    bodies: list[dict[str, Any]] = []
+    for row in await load_accepted_artifacts(db, project_id=project_id, artifact_types=other_types):
+        row_type = _artifact_type(row.type)
+        body = row.current_version.body or ""
+        item = {"artifact_type": row_type, "artifact_id": str(row.id), "title": row.title}
+        if picks is not None:
+            excerpt = excerpt_body(body, picks[row_type])
+            item |= {
+                "body": excerpt.text,
+                "truncated": excerpt.truncated,
+                "included_sections": excerpt.included,
+                "omitted_sections": excerpt.omitted,
+            }
+        else:
+            item |= {"body": body[:PREDECESSOR_BODY_MAX_CHARS], "truncated": len(body) > PREDECESSOR_BODY_MAX_CHARS}
+        bodies.append(item)
+    return bodies
+
+
+async def load_accepted_artifacts(db, *, project_id: uuid.UUID, artifact_types: list[str]) -> list[Artifact]:
+    """The accepted artifact (with its current version) for each type, first-created one per type."""
+
+    known_types = [item for item in artifact_types if item in _KNOWN_ARTIFACT_TYPES]
+    if not known_types:
         return []
     rows = (
         (
             await db.execute(
                 select(Artifact)
                 .where(Artifact.project_id == project_id)
-                .where(Artifact.type.in_(other_types))
+                .where(Artifact.type.in_(known_types))
                 .where(Artifact.status == ArtifactStatus.ACCEPTED)
                 .where(Artifact.current_version_id.is_not(None))
                 .options(selectinload(Artifact.current_version))
@@ -354,23 +387,14 @@ async def _load_predecessor_bodies(
         .all()
     )
     seen_types: set[str] = set()
-    bodies: list[dict[str, Any]] = []
+    artifacts: list[Artifact] = []
     for row in rows:
         row_type = _artifact_type(row.type)
         if row_type in seen_types or row.current_version is None:
             continue
         seen_types.add(row_type)
-        body = row.current_version.body or ""
-        bodies.append(
-            {
-                "artifact_type": row_type,
-                "artifact_id": str(row.id),
-                "title": row.title,
-                "body": body[:PREDECESSOR_BODY_MAX_CHARS],
-                "truncated": len(body) > PREDECESSOR_BODY_MAX_CHARS,
-            }
-        )
-    return bodies
+        artifacts.append(row)
+    return artifacts
 
 
 async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> TurnContext:
@@ -388,7 +412,7 @@ async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> Tur
     # let the model resolve user references like "based on Executive Summary" before asking for
     # pasted content. Dedup keeps this token-light because read_artifacts returns title-only rows.
     artifact_type = state["artifact_type"]
-    context_types = _context_artifact_types(artifact_type)
+    context_types = context_artifact_types(artifact_type)
     async with session_factory() as db:
         db_focused_artifact_id = (
             await db.execute(select(AgentSession.focused_artifact_id).where(AgentSession.id == session_id))

@@ -210,13 +210,16 @@ async def test_resolve_llm_client_creates_default_and_optional_strong_client(
 
         default_client, strong_client = await _make_service(db_session)._resolve_llm_client(config.id)
 
-        assert default_client is created[0][1]
+        # Each client is wrapped in the per-call deadline, and its SDK gets the same timeout.
+        assert default_client.inner is created[0][1]
+        assert default_client.seconds == settings.llm_call_timeout_seconds
+        assert all(item[0]["request_timeout"] == settings.llm_call_timeout_seconds for item in created)
         assert [item[0]["model"] for item in created] == expected_models
         for key, value in extra_assertions.items():
             assert all(item[0][key] == value for item in created)
 
         if expect_strong:
-            assert strong_client is created[1][1]
+            assert strong_client.inner is created[1][1]
         else:
             assert strong_client is None
             assert len(created) == 1
@@ -811,6 +814,44 @@ async def test_run_graph_timeout_sets_session_turn_failed(client, db_session, mo
     assert any(
         "turn_timeout" in r.getMessage() and str(session.id) in r.getMessage() for r in caplog.records
     )
+
+
+@pytest.mark.asyncio
+async def test_run_graph_llm_call_timeout_names_the_provider_not_the_turn(client, db_session, monkeypatch):
+    """A single hung provider call fails the turn resumably, and the message says the provider was
+    slow (with the per-call limit), not that the whole turn ran over its backstop."""
+    from app.services.llm_clients import LLMCallTimeoutError
+
+    project_id = await _setup(client)
+
+    async def _hung_call(*args, **kwargs):
+        raise LLMCallTimeoutError(120.0)
+
+    graph = _mock_graph()
+    graph.ainvoke = _hung_call
+    svc = _make_service(db_session, graph)
+
+    session = AgentSession(
+        project_id=project_id, artifact_type="goal", workflow_area="analysis",
+        graph_checkpoint={}, status=AgentSessionStatus.ACTIVE,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    await svc._run_graph(
+        session_id=session.id, project_id=project_id, artifact_type="goal", step_key=None,
+        workflow_area="analysis", agent_role=None, missing_context=[], llm_client=AsyncMock(),
+        initial_state=None, resume_command=None,
+    )
+
+    updated = (await db_session.execute(select(AgentSession).where(AgentSession.id == session.id))).scalar_one()
+    messages = (
+        await db_session.execute(select(AgentMessage).where(AgentMessage.session_id == session.id))
+    ).scalars().all()
+    assert updated.status == AgentSessionStatus.TURN_FAILED
+    agent_text = " ".join(m.content or "" for m in messages if m.role == AgentMessageRole.AGENT)
+    assert "did not answer within 120s" in agent_text
+    assert "600" not in agent_text
 
 
 @pytest.mark.asyncio

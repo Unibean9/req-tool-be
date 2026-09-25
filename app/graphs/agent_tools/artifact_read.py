@@ -17,12 +17,14 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import InjectedToolCallId, tool
 from langgraph.types import Command
 
+from app.graphs.analysis.context_excerpts import select_sections
 from app.graphs.tools import read_current_body
 from app.graphs.tools import read_source_documents as read_source_documents_query
 
 # Cap a single read so a large body cannot dominate the analyze prompt; the head is enough to orient,
 # and a focused draft is reached through write_draft/current_draft_body, not this tool.
 READ_ARTIFACT_MAX_CHARS = 8000
+READ_ARTIFACT_SECTIONS_MAX_CHARS = 16000
 READ_SOURCE_DOCUMENT_MAX_CHARS = 8000
 READ_SOURCE_DOCUMENT_MAX_ITEMS = 3
 
@@ -65,7 +67,9 @@ def _source_document_source_context(documents: list[dict[str, Any]]) -> list[dic
     return entries
 
 
-async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_call_id: str):
+async def _read_artifact_impl(
+    artifact_id: str, config: RunnableConfig, tool_call_id: str, sections: list[str] | None = None
+):
     cfg = config["configurable"]
     project_id_raw = cfg.get("project_id")
     session_factory = cfg.get("session_factory")
@@ -97,8 +101,16 @@ async def _read_artifact_impl(artifact_id: str, config: RunnableConfig, tool_cal
         source_context = []
     else:
         body = result["body"] or ""
-        excerpt = body[:READ_ARTIFACT_MAX_CHARS]
-        if len(body) > READ_ARTIFACT_MAX_CHARS:
+        selected = select_sections(body, sections or [])
+        if selected is not None:
+            # Named sections are returned whole (up to their own larger cap): asking for one
+            # section must not come back cut off partway through its table.
+            body = selected
+            max_chars = READ_ARTIFACT_SECTIONS_MAX_CHARS
+        else:
+            max_chars = READ_ARTIFACT_MAX_CHARS
+        excerpt = body[:max_chars]
+        if len(body) > max_chars:
             body = excerpt + "\n\n…(remaining content truncated)"
             result = {**result, "truncated": True}
         else:
@@ -116,14 +128,19 @@ async def read_artifact(
     id: Annotated[str, "The artifact id (UUID) to read — a sibling or ancestor in this project."],
     config: RunnableConfig,
     tool_call_id: Annotated[str, InjectedToolCallId],
+    sections: Annotated[
+        list[str] | None,
+        "Optional `##` section headings to return in full (e.g. [\"Capabilities\"]); omit for the whole body.",
+    ] = None,
 ) -> Command:
     """Read the current body of another artifact in this project by its id.
 
     Use to pull context from a sibling or ancestor artifact (e.g. the parent BRD) instead of asking
-    the user for content that already exists. Read-only and non-interrupting; the body is returned to
-    you, not shown to the user.
+    the user for content that already exists. Pass `sections` to get just those `##` sections in
+    full — e.g. a section an excerpt in PREDECESSOR CONTEXT lists as not loaded. Read-only and
+    non-interrupting; the body is returned to you, not shown to the user.
     """
-    return await _read_artifact_impl(id, config, tool_call_id)
+    return await _read_artifact_impl(id, config, tool_call_id, sections)
 
 
 def _normalize_source_document_ids(ids: Any) -> tuple[bool, list[uuid.UUID], list[str]]:

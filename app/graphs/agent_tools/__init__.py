@@ -178,6 +178,11 @@ from app.graphs.agent_tools.notes import (  # noqa: E402
     explore_note,
     note,
 )
+from app.graphs.agent_tools.parallel_draft import (  # noqa: E402
+    _draft_in_parallel_impl,
+    draft_in_parallel,
+    has_parallel_plan,
+)
 
 # workflow/readiness moved to agent_tools.workflow; re-exported for stable imports.
 from app.graphs.agent_tools.workflow import (  # noqa: E402
@@ -225,6 +230,7 @@ def get_all_analyzer_tools() -> list:
         respond,
         write_draft,
         write_draft_section,
+        draft_in_parallel,
         finalize,
         note,
         critique_note,
@@ -329,6 +335,8 @@ def get_available_tools(state: WorkflowState) -> list:
         recommend_next_workflow,
         run_readiness_check,
     ]
+    if has_parallel_plan(state.get("artifact_type")):
+        candidates.insert(candidates.index(write_draft_section) + 1, draft_in_parallel)
     menu_rules.ensure_menu_rules_registered()
     # Computed once (not per candidate tool): current_session_phase can invoke _finalize_gate_open
     # (via _phase_signals), which logs — a call per candidate would multiply that logging.
@@ -402,6 +410,7 @@ __all__ = [
     '_stale_predecessor_warnings',
     '_tool_is_available',
     '_tool_not_available_update',
+    '_draft_in_parallel_impl',
     '_write_draft_impl',
     '_write_draft_section_impl',
     '_write_note_impl',
@@ -412,12 +421,14 @@ __all__ = [
     'critique_note',
     'current_draft_body',
     'current_session_phase',
+    'draft_in_parallel',
     'elicit',
     'elicit_tool',
     'explore_note',
     'finalize',
     'get_all_analyzer_tools',
     'get_available_tools',
+    'has_parallel_plan',
     'interrupt',
     'log_gate_decision',
     'logger',

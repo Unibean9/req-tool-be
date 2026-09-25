@@ -64,7 +64,12 @@ async def test_agent_message_content_still_required(db_session):
 
 
 def test_settings_agent_turn_timeout_default():
-    assert settings.agent_turn_timeout_seconds == 180.0
+    # Each call is bounded by llm_call_timeout_seconds; the turn total is only a backstop that must
+    # leave room for several healthy calls (a Constraints drafting turn measured ~173s).
+    # Code defaults, independent of any local .env override.
+    fields = type(settings).model_fields
+    assert fields["llm_call_timeout_seconds"].default == 120.0
+    assert fields["agent_turn_timeout_seconds"].default == 600.0
 
 
 def test_workflow_state_accepts_locale():

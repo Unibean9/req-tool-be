@@ -45,6 +45,7 @@ from app.schemas.artifact_synthesis import (
 from app.services.agent_tool_visibility import public_tool_call_filter
 from app.services.artifact_service import ArtifactInUseError, ArtifactLinkService, ArtifactService
 from app.services.document_service import DocumentService
+from app.services.llm_clients import LLMCallTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -1159,7 +1160,7 @@ class AgentService:
                 elif graph_ended and row.status in (AgentSessionStatus.ACTIVE, AgentSessionStatus.WAITING_FOR_HUMAN):
                     row.status = AgentSessionStatus.COMPLETED
                 await db.commit()
-        except TimeoutError:
+        except TimeoutError as exc:
             async with self.session_factory() as db:
                 row = (
                     await db.execute(select(AgentSession).where(AgentSession.id == session_id))
@@ -1177,7 +1178,7 @@ class AgentService:
                         AgentMessage(
                             session_id=session_id,
                             role=AgentMessageRole.AGENT,
-                            content=_agent_timeout_message(timeout),
+                            content=_agent_timeout_message(timeout, exc),
                         )
                     )
                 await db.commit()
@@ -1389,7 +1390,7 @@ class AgentService:
             return None, None
         from app.core.crypto import decrypt_token
         from app.models.llm_provider import LLMProviderConfig, LLMProviderStatus
-        from app.services.llm_clients import LLMClientFactory
+        from app.services.llm_clients import DeadlineLLMClient, LLMClientFactory
 
         config_row = (
             await self.db.execute(select(LLMProviderConfig).where(LLMProviderConfig.id == provider_config_id))
@@ -1406,24 +1407,24 @@ class AgentService:
             secret_key = decrypt_token(config_row.encrypted_secret_key)
             if not secret_key:
                 raise ValueError("secret_key cannot be decrypted - key rotation may be out of sync")
-        default_client = LLMClientFactory.create(
-            provider_type=config_row.provider_type,
-            api_key=api_key,
-            secret_key=secret_key,
-            model=config_row.model_name,
-            region=config_row.region,
-            base_url=config_row.base_url,
-        )
-        strong_client = None
-        if config_row.strong_model_name:
-            strong_client = LLMClientFactory.create(
-                provider_type=config_row.provider_type,
-                api_key=api_key,
-                secret_key=secret_key,
-                model=config_row.strong_model_name,
-                region=config_row.region,
-                base_url=config_row.base_url,
+        call_timeout = settings.llm_call_timeout_seconds
+
+        def _client(model: str | None) -> DeadlineLLMClient:
+            return DeadlineLLMClient(
+                LLMClientFactory.create(
+                    provider_type=config_row.provider_type,
+                    api_key=api_key,
+                    secret_key=secret_key,
+                    model=model,
+                    region=config_row.region,
+                    base_url=config_row.base_url,
+                    request_timeout=call_timeout,
+                ),
+                call_timeout,
             )
+
+        default_client = _client(config_row.model_name)
+        strong_client = _client(config_row.strong_model_name) if config_row.strong_model_name else None
         return default_client, strong_client
 
 
@@ -1446,7 +1447,12 @@ def _agent_turn_limit_message() -> str:
     )
 
 
-def _agent_timeout_message(timeout: float) -> str:
+def _agent_timeout_message(timeout: float, exc: BaseException | None = None) -> str:
+    if isinstance(exc, LLMCallTimeoutError):
+        return (
+            f"The AI provider did not answer within {int(exc.seconds)}s, so this turn was stopped. "
+            "Please send the request again."
+        )
     return (
         f"Agent took too long to respond (over {int(timeout)}s) so this turn was stopped. "
         "Please send the request again."

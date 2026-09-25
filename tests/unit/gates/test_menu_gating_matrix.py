@@ -151,7 +151,8 @@ def test_analyzer_tool_registry_no_longer_carries_the_4_removed_tools():
     from app.graphs.agent_tools import get_all_analyzer_tools
 
     names = {t.name for t in get_all_analyzer_tools()}
-    assert len(names) == 20
+    # 20 loop tools + draft_in_parallel.
+    assert len(names) == 21
     assert not ({"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"} & names)
 
 

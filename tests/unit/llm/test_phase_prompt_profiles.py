@@ -6,7 +6,7 @@ legacy checkpoints and callers that build a prompt before orchestrator_node assi
 """
 
 from app.documents.registry import children_of
-from app.graphs.analysis.context_loader import _context_artifact_types
+from app.graphs.analysis.context_loader import context_artifact_types
 from app.graphs.analysis.prompt_assembly import (
     _PHASE_PROFILE_BLOCKS,
     _phase_includes,
@@ -285,10 +285,10 @@ def test_elicit_renders_type_profile_for_event_storming_item():
 def test_add_turn_context_types_include_event_storming_ancestry():
     """ADD's source-candidate context (not just the finalize gate) must expose ES types.
 
-    `_context_artifact_types` backs the artifact rows read for a turn (context_loader.py); this
+    `context_artifact_types` backs the artifact rows read for a turn (context_loader.py); this
     pins that an ADD-focused turn sees `event_storming` (and its own ancestor, `prd`) as context.
     """
-    context_types = _context_artifact_types("add")
+    context_types = context_artifact_types("add")
     assert "event_storming" in context_types
     assert "prd" in context_types
 

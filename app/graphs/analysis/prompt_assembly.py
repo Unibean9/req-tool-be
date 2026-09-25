@@ -5,7 +5,8 @@ from typing import Any
 
 from app.config import settings
 from app.documents.registry import get_config, output_contract
-from app.graphs.agent_tools import get_available_tools
+from app.graphs.agent_tools import get_available_tools, has_parallel_plan
+from app.graphs.analysis.coverage import COVERAGE_RULES, coverage_instruction, coverage_items
 from app.graphs.analysis.turn_audit import _REPEATED_TOOL_CALL_EXIT_THRESHOLD
 from app.graphs.lifecycle_context import render_artifact_history, render_situation_report
 from app.graphs.policy import ancestor_types
@@ -65,13 +66,50 @@ def _build_analyzer_messages(state: WorkflowState, prompt: str) -> list[dict[str
     messages: list[dict[str, Any]] = []
     tool_names_by_id: dict[str, str] = {}
     tool_provider_metadata_by_id: dict[str, dict[str, Any]] = {}
-    for raw in _analyzer_history_messages(state):
+    history = _analyzer_history_messages(state)
+    superseded = _superseded_read_ids(history)
+    for raw in history:
+        if _message_tool_call_id(raw) in superseded:
+            raw = _with_content(raw, _SUPERSEDED_READ_NOTE)
         message = _client_message_from_state(raw, tool_names_by_id, tool_provider_metadata_by_id)
         if message is not None:
             _append_client_message(messages, message)
     _append_analyzer_prompt(messages, prompt)
     _append_latest_user_emphasis(messages, _latest_human_text(state))
     return messages
+
+
+_SUPERSEDED_READ_NOTE = (
+    "(Content omitted: this artifact was read again later in the conversation; the later "
+    "read_artifact result shows it.)"
+)
+
+
+def _superseded_read_ids(history: list[Any]) -> set[str]:
+    """read_artifact results that a later read of the same artifact repeats (same or more sections,
+    or the whole body). The agent re-reading an artifact it already read sent the same body several
+    times per call (41% of one NFR session's history); only the latest copy is kept."""
+    reads: list[tuple[str, str, frozenset[str] | None]] = []  # (tool_call_id, artifact id, sections)
+    for message in history:
+        for call in _message_tool_calls(message):
+            if call.get("name") != "read_artifact" or not call.get("id"):
+                continue
+            args = call.get("args") or {}
+            sections = args.get("sections")
+            reads.append((str(call["id"]), str(args.get("id") or ""), frozenset(sections) if sections else None))
+    superseded: set[str] = set()
+    for index, (call_id, artifact_id, sections) in enumerate(reads):
+        for _later_id, later_artifact, later_sections in reads[index + 1 :]:
+            if later_artifact == artifact_id and (later_sections is None or (sections and sections <= later_sections)):
+                superseded.add(call_id)
+                break
+    return superseded
+
+
+def _with_content(message: Any, content: str) -> Any:
+    if isinstance(message, dict):
+        return {**message, "content": content}
+    return message.model_copy(update={"content": content})
 
 
 def _analyzer_history_messages(state: WorkflowState) -> list[Any]:
@@ -303,9 +341,7 @@ def _build_draft_block(state: WorkflowState, draft_body: str | None) -> str:
     return f"\n\nCURRENT DRAFT for type '{state['artifact_type']}':\n{draft_body}"
 
 
-def _build_draft_delta_block(
-    state: WorkflowState, draft_body: str | None, previous_draft_body: str | None
-) -> str:
+def _build_draft_delta_block(state: WorkflowState, draft_body: str | None, previous_draft_body: str | None) -> str:
     """Draft block for turns after the first: send only what changed since the last turn.
 
     Full-body resend every turn was the token-heavy default; the previous turn's body is already
@@ -376,12 +412,31 @@ def _build_predecessor_content_block(predecessor_bodies: list[dict[str, Any]]) -
     for item in predecessor_bodies:
         suffix = "\n…(truncated)" if item.get("truncated") else ""
         header = f"### [{item['artifact_type']}] {item['title']} (id={item['artifact_id']})"
+        if item.get("included_sections") is not None:
+            header += "\nExcerpt — sections shown: " + ", ".join(item["included_sections"])
+            if item.get("omitted_sections"):
+                header += (
+                    ". Not loaded: "
+                    + ", ".join(item["omitted_sections"])
+                    + " (read_artifact with `sections` if you need one)"
+                )
         sections.append(f"{header}\n{item['body']}{suffix}")
     return (
-        "\n\nPREDECESSOR CONTEXT (already loaded, do not call read_artifact for these):\n"
+        "\n\nPREDECESSOR CONTEXT (already loaded; an excerpt shows only the sections it lists):\n"
         + "\n\n".join(sections)
         + "\n\n"
     )
+
+
+def _build_coverage_rule_block(artifact_type: str, predecessor_bodies: list[dict[str, Any]]) -> str:
+    """States the coverage gate's rule (and the exact IDs) before drafting, so the first draft is
+    complete instead of being rejected by write_draft for a missing upstream item."""
+    rule = COVERAGE_RULES.get(artifact_type)
+    if rule is None:
+        return ""
+    source_body = next((item["body"] for item in predecessor_bodies if item["artifact_type"] == rule[0]), "")
+    instruction = coverage_instruction(artifact_type, coverage_items(source_body, rule[1]))
+    return f"{instruction}\n\n" if instruction else ""
 
 
 def _build_draft_sections_progress_block(state: WorkflowState) -> str:
@@ -427,8 +482,9 @@ def _build_artifact_reference_policy_block(
     if preloaded_types:
         lines.append(
             "- Content for the artifact types listed in PREDECESSOR CONTEXT above is already "
-            "loaded; do not call `read_artifact` for those — synthesize directly from what is "
-            "shown there."
+            "loaded; do not call `read_artifact` for what is shown there — synthesize directly "
+            "from it. Where an entry is an excerpt, call `read_artifact` with `sections` only if "
+            "you genuinely need one of the sections it lists as not loaded."
         )
     lines.extend(
         [
@@ -471,6 +527,7 @@ def _build_tool_selection_prompt(
     artifact_reference_policy = _build_artifact_reference_policy_block(
         artifacts, state["artifact_type"], preloaded_types
     )
+    coverage_rule_block = _build_coverage_rule_block(state["artifact_type"], predecessor_bodies)
 
     # The analyst already receives the full conversation as a real message thread
     # (_build_analyzer_messages), so restating it here would double every recent turn. The payload
@@ -508,6 +565,7 @@ def _build_tool_selection_prompt(
         f"{artifact_history_block}"
         f"{predecessor_content_block}"
         f"{artifact_reference_policy}"
+        f"{coverage_rule_block}"
         f"Tools available this turn: {tool_menu}.\n"
         "Choose 1-3 suitable tools and fill each tool's fields according to the system prompt policy."
         f"{section_coverage_hint}"
@@ -591,9 +649,7 @@ def _build_feedback_control_block(state: WorkflowState) -> str:
         stale_predecessors = lifecycle_rejection.get("stale_predecessors") or []
         rendered = _compact_list(
             [
-                f"{item.get('artifact_id')}: {item.get('reason')}"
-                if isinstance(item, dict)
-                else str(item)
+                f"{item.get('artifact_id')}: {item.get('reason')}" if isinstance(item, dict) else str(item)
                 for item in stale_predecessors
             ]
         )
@@ -812,6 +868,15 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         if contract.table_columns
         else ""
     )
+    parallel_note = (
+        "- Write the FIRST draft of this artifact with draft_in_parallel(brief) as soon as the intent is "
+        "confirmed: it writes every part at the same time and covers every upstream item, far faster than "
+        "writing it yourself with write_draft_section. Then call write_draft (short placeholder body). Use "
+        "write_draft_section only to revise parts of an existing draft, or if draft_in_parallel reports "
+        "it cannot run.\n"
+        if has_parallel_plan(artifact_type)
+        else ""
+    )
     return (
         "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"
@@ -825,6 +890,14 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         "- Do not weaken the body by dropping headings; if data is insufficient, keep headings "
         "and mark missing content clearly.\n"
         f"- Guidance: {contract.guidance}\n"
+        "- Write every section's content out in full so it reads on its own: never replace content with a "
+        "reference such as 'see C2' or 'as above' (cite IDs in addition to the content, not instead of "
+        "it). Leave out only filler: introductions, closing summaries, a point repeated twice.\n"
+        "- If a part needs information that is not in the context shown, read it with "
+        "read_artifact(id, sections=[...]) before writing that part; do not guess.\n"
+        "- note is for short facts only (the user's answers, a decision, a key fact). Never draft the "
+        "artifact's content in a note -- write it straight into the draft.\n"
+        f"{parallel_note}"
         f"{multi_section_note}"
         f"{table_batching_note}"
         "Required headings:\n"
@@ -958,6 +1031,4 @@ def _build_section_repair_block(state: WorkflowState) -> str:
             lines.append(f"- {section}: {finding.get('message')} ({severity})")
     if not lines:
         return ""
-    return (
-        "\n\nSECTION REPAIR — fix these written sections before advancing:\n" + "\n".join(lines)
-    )
+    return "\n\nSECTION REPAIR — fix these written sections before advancing:\n" + "\n".join(lines)

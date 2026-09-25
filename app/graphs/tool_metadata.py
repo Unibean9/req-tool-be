@@ -63,6 +63,10 @@ TOOL_METADATA: dict[str, ToolMetadata] = {
     "write_draft_section": ToolMetadata(
         "write_draft_section", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True
     ),
+    # Writes a whole draft into state.draft_sections through several concurrent LLM calls. Not a
+    # ride-along: paired with write_draft it would be dropped, since write_draft would propose the
+    # pre-call sections and a resume would re-run every LLM call.
+    "draft_in_parallel": ToolMetadata("draft_in_parallel", readonly=False, interrupts=False, writes_db=False),
     "confirm_intent": ToolMetadata("confirm_intent", readonly=False, interrupts=True, writes_db=True),
     "note": ToolMetadata("note", readonly=False, interrupts=False, writes_db=False, can_run_with_interrupt=True),
     # Deprecated alias of "note" — kept so ToolNode resuming an old checkpoint (whose tool_call

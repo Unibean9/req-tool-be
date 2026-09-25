@@ -27,6 +27,15 @@ from app.graphs.agent_tools._shared import (
     _missing_required_arg_update,
     _recoverable_tool_update,
 )
+from app.graphs.analysis.context_excerpts import CONTEXT_PICKS, unknown_reference_warnings
+from app.graphs.analysis.context_loader import context_artifact_types, load_accepted_artifacts
+from app.graphs.analysis.coverage import (
+    COVERAGE_RULES,
+    CoverageItem,
+    coverage_gap_message,
+    coverage_items,
+    missing_coverage,
+)
 from app.graphs.analysis.section_validation import VIOLATION, validate_section
 from app.graphs.decision_graph import (
     render_node_map,
@@ -272,6 +281,39 @@ async def _stale_predecessor_warnings(
     return warnings
 
 
+async def _unknown_reference_warnings(
+    db: AsyncSession, project_id: uuid.UUID | None, artifact_type: str, body: str
+) -> list[str]:
+    """Advisory: ids the draft cites from an accepted predecessor's scheme (C7, BR-R9, ...) that the
+    predecessor does not define -- the deterministic check that the draft stays traceable to what
+    was actually agreed upstream. Only for types using selective context (CONTEXT_PICKS)."""
+    if project_id is None or artifact_type not in CONTEXT_PICKS:
+        return []
+    context_types = list(
+        dict.fromkeys([*CONTEXT_PICKS[artifact_type], *context_artifact_types(artifact_type)])
+    )
+    context_types = [item for item in context_types if item != artifact_type]
+    artifacts = await load_accepted_artifacts(db, project_id=project_id, artifact_types=context_types)
+    return unknown_reference_warnings(
+        body, {artifact.type.value: artifact.current_version.body or "" for artifact in artifacts}
+    )
+
+
+async def _coverage_gap(
+    db: AsyncSession, project_id: uuid.UUID | None, artifact_type: str, body: str
+) -> list[CoverageItem]:
+    """Upstream items (COVERAGE_RULES) the draft never cites. Empty when the type has no rule, the
+    upstream artifact is not accepted yet, or its section carries no IDs to check against."""
+    rule = COVERAGE_RULES.get(artifact_type)
+    if project_id is None or rule is None:
+        return []
+    source_type, section = rule
+    sources = await load_accepted_artifacts(db, project_id=project_id, artifact_types=[source_type])
+    if not sources:
+        return []
+    return missing_coverage(body, coverage_items(sources[0].current_version.body or "", section))
+
+
 def _cold_start_draft_blocked(state: WorkflowState) -> bool:
     if state.get("decision_nodes"):
         return False
@@ -409,6 +451,37 @@ async def _write_draft_impl(
                 reason=f"{len(gate.warnings)} warning(s)" if gate.warnings else None,
                 session_id=str(session_id),
             )
+            coverage_gap = await _coverage_gap(db, project_id, focused.type.value, body)
+            if settings.enforce_deterministic_gate and coverage_gap:
+                reject_streak = (state.get("readiness_reject_streak") or 0) + 1
+                gap_message = coverage_gap_message(focused.type.value, coverage_gap)
+                agent_tools.log_gate_decision(
+                    "coverage",
+                    "blocked",
+                    reason=", ".join(item.id for item in coverage_gap),
+                    session_id=str(session_id),
+                )
+                if reject_streak >= 2:
+                    recovery = (
+                        "Do not retry write_draft again. Call ask_user: list these items and ask the "
+                        "human which ones this artifact must cover and which do not apply (and why)."
+                    )
+                else:
+                    recovery = (
+                        "Add rows for the missing items: write_draft_section with the section's heading, "
+                        "append=true and done=true (or pass the full corrected body to write_draft), then "
+                        "call write_draft again."
+                    )
+                return _recoverable_tool_update(
+                    RecoverableToolError(
+                        code="coverage_incomplete",
+                        message=gap_message,
+                        recovery=recovery,
+                        user_fixable=True,
+                    ),
+                    tool_call_id,
+                    extra_update={"readiness_reject_streak": reject_streak},
+                )
             # Single source of truth: assumptions/open-questions are derived from the
             # decision graph only — no parallel state fields, no key-fact reconciliation shim.
             graph_confirmed, graph_pending = synthesis_assumption_signals(state.get("decision_nodes") or {})
@@ -427,7 +500,8 @@ async def _write_draft_impl(
                 for item in state.get("turn_context_artifacts") or []
             }
             stale_warnings = await _stale_predecessor_warnings(db, project_id, based_on, predecessor_types)
-            deterministic_warnings = [*gate.warnings, *stale_warnings]
+            reference_warnings = await _unknown_reference_warnings(db, project_id, focused.type.value, body)
+            deterministic_warnings = [*gate.warnings, *stale_warnings, *reference_warnings]
             metadata = ArtifactSynthesisMetadata(
                 artifact_type=focused.type.value,
                 focused_artifact_id=focused.id,
