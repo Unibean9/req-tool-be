@@ -450,7 +450,7 @@ async def test_update_non_custom_base_url_rejected(client, db_session, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_ping_provider_passes_custom_base_url(db_session, monkeypatch):
+async def test_ping_provider_forces_required_tool_probe_for_custom_base_url(db_session, monkeypatch):
     monkeypatch.setattr(settings, "encryption_key", Fernet.generate_key().decode())
     monkeypatch.setattr(settings, "tool_choice_mode", "auto")
     crypto._get_fernet.cache_clear()
@@ -488,7 +488,7 @@ async def test_ping_provider_passes_custom_base_url(db_session, monkeypatch):
     assert captured["api_key"] == "sk-custom"
     assert captured["model"] == "custom-model"
     assert captured["base_url"] == "https://custom.example/v1"
-    assert captured["tool_choice"] == "auto"
+    assert captured["tool_choice"] == "required"
 
 
 @pytest.mark.asyncio
