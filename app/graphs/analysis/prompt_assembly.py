@@ -361,20 +361,87 @@ def _build_artifact_history_block(state: WorkflowState) -> str:
     return render_artifact_history(history[-_MAX_LIFECYCLE_ITEMS_RENDERED:])
 
 
-def _build_artifact_reference_policy_block(artifacts: list[dict], current_artifact_type: str) -> str:
+def _build_predecessor_content_block(predecessor_bodies: list[dict[str, Any]]) -> str:
+    """Render already-accepted predecessor/sibling artifact bodies loaded ahead of time.
+
+    Without this, the model has to call `read_artifact` once per predecessor before it can
+    synthesize anything — for an artifact type with several ancestors and same-container
+    siblings, that chain of sequential tool-call round-trips (each a full extra LLM call) is the
+    single largest driver of turn latency. Front-loading the content here removes the need for
+    those calls entirely for anything already listed.
+    """
+    if not predecessor_bodies:
+        return ""
+    sections = []
+    for item in predecessor_bodies:
+        suffix = "\n…(truncated)" if item.get("truncated") else ""
+        header = f"### [{item['artifact_type']}] {item['title']} (id={item['artifact_id']})"
+        sections.append(f"{header}\n{item['body']}{suffix}")
+    return (
+        "\n\nPREDECESSOR CONTEXT (already loaded, do not call read_artifact for these):\n"
+        + "\n\n".join(sections)
+        + "\n\n"
+    )
+
+
+def _build_draft_sections_progress_block(state: WorkflowState) -> str:
+    """Progress on write_draft_section's accumulator, when the mechanism is relevant for this
+    artifact type (multiple required headings, or a table that may need row-batching) and at least
+    one section has been saved this session."""
+    draft_sections = state.get("draft_sections") or {}
+    if not draft_sections:
+        return ""
+    try:
+        contract = output_contract(state["artifact_type"])
+    except ValueError:
+        return ""
+    required_headings = contract.required_headings
+    if len(required_headings) <= 1 and not contract.table_columns:
+        return ""
+    done = [h for h in required_headings if h in draft_sections and draft_sections[h].get("done")]
+    in_progress = [h for h in required_headings if h in draft_sections and not draft_sections[h].get("done")]
+    missing = [h for h in required_headings if h not in draft_sections]
+    if not in_progress and not missing:
+        return (
+            "\n\nDRAFT SECTIONS: all required headings are saved -- call write_draft now to "
+            "assemble and propose (body can be a short placeholder).\n"
+        )
+    lines = [f"- done: {', '.join(done) if done else '(none)'}"]
+    if in_progress:
+        lines.append(f"- in progress (more batches expected): {', '.join(in_progress)}")
+    if missing:
+        lines.append(f"- not started: {', '.join(missing)}")
+    return "\n\nDRAFT SECTIONS:\n" + "\n".join(lines) + "\n"
+
+
+def _build_artifact_reference_policy_block(
+    artifacts: list[dict], current_artifact_type: str, preloaded_types: frozenset[str] = frozenset()
+) -> str:
     if not any(str(item.get("type") or "") != current_artifact_type for item in artifacts):
         return ""
     lines = [
         "- If the latest user turn references uploaded/pasted source documents, call "
         "`read_source_documents` before drafting; omit ids when you need bounded excerpts from the "
         "latest project source documents.",
-        "- If the latest user turn asks to base this work on a named artifact in Current context, "
-        "call `read_artifact` for that artifact id before asking the user for content or an id.",
-        "- Ask the user to paste content or provide an artifact id only after no matching Current "
-        "context artifact exists, or `read_artifact` reports that it was not found.",
-        "- Do not bundle `read_artifact` or `read_source_documents` with `ask_user`, `respond`, "
-        "`write_draft`, or `finalize`; read first, then synthesize, draft, or ask on the next turn.",
     ]
+    if preloaded_types:
+        lines.append(
+            "- Content for the artifact types listed in PREDECESSOR CONTEXT above is already "
+            "loaded; do not call `read_artifact` for those — synthesize directly from what is "
+            "shown there."
+        )
+    lines.extend(
+        [
+            "- If the latest user turn asks to base this work on a named artifact in Current "
+            "context that is NOT already in PREDECESSOR CONTEXT, call `read_artifact` for that "
+            "artifact id before asking the user for content or an id.",
+            "- Ask the user to paste content or provide an artifact id only after no matching "
+            "Current context artifact exists, or `read_artifact` reports that it was not found.",
+            "- Do not bundle `read_artifact` or `read_source_documents` with `ask_user`, "
+            "`respond`, `write_draft`, or `finalize`; read first, then synthesize, draft, or ask "
+            "on the next turn.",
+        ]
+    )
     return "\n\nARTIFACT REFERENCE POLICY:\n" + "\n".join(lines) + "\n\n"
 
 
@@ -383,6 +450,7 @@ def _build_tool_selection_prompt(
     artifacts: list[dict],
     draft_body: str | None = None,
     previous_draft_body: str | None = None,
+    predecessor_bodies: list[dict[str, Any]] | None = None,
 ) -> str:
     """Build the per-turn analyst payload: context the model needs to pick the next tool.
 
@@ -394,10 +462,15 @@ def _build_tool_selection_prompt(
     content-depth rules — lives in the instruction layers (the system prompt), so it is never
     restated here. analyze_node converts the returned dict into an AIMessage(tool_calls).
     """
+    predecessor_bodies = predecessor_bodies or []
     artifact_context = (
         "\n".join(f"- [{a['type']}] {a['title']} (id={a['id']})" for a in artifacts) or "(no artifacts yet)"
     )
-    artifact_reference_policy = _build_artifact_reference_policy_block(artifacts, state["artifact_type"])
+    preloaded_types = frozenset(item["artifact_type"] for item in predecessor_bodies)
+    predecessor_content_block = _build_predecessor_content_block(predecessor_bodies)
+    artifact_reference_policy = _build_artifact_reference_policy_block(
+        artifacts, state["artifact_type"], preloaded_types
+    )
 
     # The analyst already receives the full conversation as a real message thread
     # (_build_analyzer_messages), so restating it here would double every recent turn. The payload
@@ -419,6 +492,9 @@ def _build_tool_selection_prompt(
         else ""
     )
     section_coverage_hint = _build_section_coverage_hint(state) if _phase_includes(state, "section_coverage") else ""
+    draft_sections_block = (
+        _build_draft_sections_progress_block(state) if _phase_includes(state, "decision_view") else ""
+    )
     feedback_block = _build_feedback_control_block(state)
     key_facts_block = _build_key_facts_block(state)
     situation_report_block = _build_situation_report_block(state)
@@ -430,10 +506,12 @@ def _build_tool_selection_prompt(
         f"Current context:\n{artifact_context}\n\n"
         f"{situation_report_block}"
         f"{artifact_history_block}"
+        f"{predecessor_content_block}"
         f"{artifact_reference_policy}"
         f"Tools available this turn: {tool_menu}.\n"
         "Choose 1-3 suitable tools and fill each tool's fields according to the system prompt policy."
         f"{section_coverage_hint}"
+        f"{draft_sections_block}"
         f"{key_facts_block}"
         f"{summary_block}"
         f"{feedback_block}"
@@ -717,6 +795,23 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         return ""
     headings = "\n".join(f"- {heading}" for heading in contract.required_headings)
     columns = ", ".join(contract.table_columns) if contract.table_columns else "(table not required)"
+    multi_section_note = (
+        "- This artifact has multiple required sections: write each one with its own "
+        "write_draft_section(heading, content) call instead of one large write_draft body -- "
+        "each call is smaller and faster. Call write_draft only after every required heading has "
+        "been saved this way; write_draft then assembles them automatically.\n"
+        if len(contract.required_headings) > 1
+        else ""
+    )
+    table_batching_note = (
+        "- A heading whose content is a table can grow large (many rows): write it with "
+        "write_draft_section in batches of roughly 8-10 rows instead of all at once -- call it "
+        "repeatedly for that SAME heading with append=true, done=false on every batch except the "
+        "last (done=true on the final one), one call per turn. This applies even if the artifact "
+        "has only one required heading.\n"
+        if contract.table_columns
+        else ""
+    )
     return (
         "\n\nREQUIRED OUTPUT CONTRACT:\n"
         f"- Artifact type: {artifact_type}\n"
@@ -730,6 +825,8 @@ def _build_output_contract_block(state: WorkflowState) -> str:
         "- Do not weaken the body by dropping headings; if data is insufficient, keep headings "
         "and mark missing content clearly.\n"
         f"- Guidance: {contract.guidance}\n"
+        f"{multi_section_note}"
+        f"{table_batching_note}"
         "Required headings:\n"
         f"{headings}\n"
         f"Table columns when using a table: {columns}\n"

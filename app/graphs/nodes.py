@@ -582,7 +582,9 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     ctx = await load_turn_context(state, config)
     effective_state, coverage = ctx.effective_state, ctx.coverage
 
-    prompt = _build_tool_selection_prompt(effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body)
+    prompt = _build_tool_selection_prompt(
+        effective_state, ctx.artifacts, ctx.draft_body, ctx.previous_draft_body, ctx.predecessor_bodies
+    )
     system_prompt = build_system_prompt(effective_state, cfg.get("agent_role"), has_draft=ctx.draft_body is not None)
     available_tools = get_available_tools(effective_state)
     tool_schemas = _build_tool_schemas(available_tools)

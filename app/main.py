@@ -25,6 +25,7 @@ from app.routers import (
     organizations,
     projects,
     source_documents,
+    use_cases,
     users,
     workflow,
 )
@@ -115,6 +116,7 @@ api_v1.include_router(workflow.router)
 api_v1.include_router(exports.router)
 api_v1.include_router(llm_providers.router)
 api_v1.include_router(agent_sessions.router)
+api_v1.include_router(use_cases.router)
 
 app.include_router(api_v1)
 

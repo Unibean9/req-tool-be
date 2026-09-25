@@ -17,6 +17,7 @@ from app.services.llm_clients import (
     MistralLLMClient,
     OpenAILLMClient,
     _extract_bedrock_text,
+    _extract_google_text,
     _google_contents,
     _parse_generate_text,
     _parse_google_tool_response,
@@ -176,6 +177,53 @@ async def test_openai_generate_uses_responses_text_format_for_schema(monkeypatch
         "schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False},
         "strict": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_google_generate_unwraps_json_schema_response_format(monkeypatch):
+    recorder = _install_httpx_recorder(
+        monkeypatch,
+        {"candidates": [{"content": {"parts": [{"text": json.dumps(ANALYSIS_RESULT)}]}}]},
+    )
+    client = GoogleLLMClient(LLMClientConfig(api_key="key-test", model="model-test"))
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "reqtool_use_case_model",
+            "strict": True,
+            "schema": ANALYSIS_RESULT_SCHEMA,
+        },
+    }
+
+    await client.generate(
+        messages=[{"role": "user", "content": "Analyze requirements"}],
+        system="You are a BA.",
+        max_tokens=256,
+        response_format=response_format,
+    )
+
+    body = recorder.requests[0]["json"]
+    assert body["responseMimeType"] == "application/json"
+    assert body["responseJsonSchema"] == ANALYSIS_RESULT_SCHEMA
+    assert "responseSchema" not in body
+
+
+def test_google_text_extractor_joins_final_parts_and_skips_thoughts():
+    data = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"thought": True, "text": "internal reasoning"},
+                        {"text": '{"answer":'},
+                        {"text": '"ok"}'},
+                    ]
+                }
+            }
+        ]
+    }
+
+    assert _extract_google_text(data) == '{"answer":"ok"}'
 
 
 def test_openai_responses_schema_makes_optional_fields_nullable_and_required():

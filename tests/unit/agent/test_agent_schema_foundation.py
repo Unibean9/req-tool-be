@@ -64,7 +64,7 @@ async def test_agent_message_content_still_required(db_session):
 
 
 def test_settings_agent_turn_timeout_default():
-    assert settings.agent_turn_timeout_seconds == 90.0
+    assert settings.agent_turn_timeout_seconds == 180.0
 
 
 def test_workflow_state_accepts_locale():

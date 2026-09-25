@@ -43,7 +43,7 @@ _LEGAL_EDGES: frozenset[tuple[str, str]] = frozenset(
 # Tools removed from the menu per phase; everything else stays offered (permissive start — the
 # baseline's failure modes are drafting pre-intent and re-eliciting mid-review, which these block).
 PHASE_EXCLUDED_TOOLS: dict[str, frozenset[str]] = {
-    INTENT: frozenset({"write_draft", "run_critique", "run_readiness_check", "finalize"}),
+    INTENT: frozenset({"write_draft", "write_draft_section", "run_critique", "run_readiness_check", "finalize"}),
     ELICIT: frozenset({"confirm_intent", "run_critique", "run_readiness_check", "finalize"}),
     DRAFT: frozenset({"confirm_intent", "finalize"}),
     REVIEW: frozenset({"confirm_intent", "elicit", "web_search"}),

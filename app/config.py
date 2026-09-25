@@ -51,7 +51,17 @@ class Settings(BaseSettings):
     # healthy operation — hitting it means the model is stuck looping without interacting.
     max_agent_turns: int = 30
     llm_provider_health_timeout_seconds: float = 25.0
-    agent_turn_timeout_seconds: float = 90.0
+    # A multi-step graph turn (context gathering, drafting, self-critique) can chain several LLM
+    # calls; a single call alone has been observed to take 60-70s against a loaded provider, so
+    # 90s left almost no room for a second step and made ordinary artifact drafting time out.
+    agent_turn_timeout_seconds: float = 180.0
+    # Use-case generation sends the complete stored BRD/PRD snapshot and can take longer than
+    # an ordinary agent turn.  Keep this separate so normal agent-loop latency is unchanged.
+    use_case_generation_timeout_seconds: float = 180.0
+    # Detail enrichment is intentionally one module at a time.  A separate deadline prevents
+    # one slow Bedrock batch from consuming the entire request budget while still allowing the
+    # larger Claude requests used by the source-backed model to finish.
+    use_case_generation_batch_timeout_seconds: float = 180.0
     summary_trigger_every: int = 6
 
     # Quality gate — reflection critic loop
@@ -85,6 +95,17 @@ class Settings(BaseSettings):
 
     # Analyst call token budget — must be large enough to serialize a full artifact body in JSON.
     analyze_max_tokens: int = 6000
+    # Use-case generation returns the complete table and relationship details. It can be
+    # substantially larger than an analyst turn, so keep its output budget independent.
+    use_case_generation_max_tokens: int = 16000
+    # Split pipeline output budgets. Output length is what drives provider latency, so each
+    # request is capped to what it actually needs instead of the monolithic 16k above.
+    use_case_candidates_max_tokens: int = 2000
+    use_case_detail_max_tokens_per_use_case: int = 2500
+    use_case_relations_max_tokens: int = 4000
+    # ELK runs in a small Node worker after semantic generation; keep layout latency bounded
+    # independently from the provider timeout.
+    use_case_layout_timeout_seconds: float = 30.0
 
     # "auto" → model decides whether to call a tool (enables clean terminal-text turns).
     # "required" → model must pick at least one tool (pre-M1 behaviour, for rollback).

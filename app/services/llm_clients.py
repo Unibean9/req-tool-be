@@ -30,6 +30,9 @@ class LLMClientConfig:
     region: str | None = None
     secret_key: str | None = None
     base_url: str | None = None
+    # Used by clients whose SDK owns the socket (currently Bedrock/boto3).  The
+    # service still applies its own asyncio deadline around each generation call.
+    request_timeout: float = 120.0
 
 
 _TOOL_CALL_PROBE = {
@@ -44,10 +47,6 @@ _TOOL_CALL_PROBE = {
 }
 
 _PROVIDER_TOOL_CALLS_KEY = "provider_tool_calls"
-
-# Claude Sonnet can spend more than 20 output tokens preparing a valid tool input. Keep the
-# health-check probe budget above that threshold so a forced tool call is not returned with `{}`.
-_BEDROCK_TOOL_PROBE_MAX_TOKENS = 64
 
 
 def _to_bedrock_probe_tool() -> dict[str, Any]:
@@ -314,7 +313,41 @@ def _create_google_sdk(*, api_key: str, timeout: float):
     from google import genai
     from google.genai import types
 
-    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=int(timeout * 1000)))
+    # Gemini returns 503 UNAVAILABLE ("high demand") and 504 DEADLINE_EXCEEDED for transient
+    # overload; without retry_options the SDK never retries (it defaults to None = no retries) and
+    # every spike bubbles straight up as a hard failure. The default http_status_codes already
+    # cover 408/429/5xx, so only attempts/backoff need to be set.
+    #
+    # This helper is shared by every Google call, including the health-check ping, which uses a
+    # short per-call timeout (10s) wrapped by an even tighter outer deadline
+    # (llm_provider_health_timeout_seconds = 25s). attempts must stay low enough that even a
+    # genuinely slow/hanging attempt (not a fast-failing 503) can retry once and still land inside
+    # that outer deadline instead of being cut off mid-retry and surfacing as a bare
+    # ``asyncio.TimeoutError`` with no useful message. The generate() path has a much larger
+    # budget (120s per call / 180s outer) and tolerates this fine.
+    retry_options = types.HttpRetryOptions(attempts=2, initial_delay=1.0, max_delay=5.0, exp_base=2.0, jitter=1.0)
+    return genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=int(timeout * 1000), retry_options=retry_options),
+    )
+
+
+def _bedrock_client_config(timeout: float):
+    """Give boto3 enough socket time for a large structured Claude response.
+
+    The service wraps each call in an asyncio deadline.  boto3 has its own default
+    read timeout (60 seconds), which would otherwise terminate the request before
+    that service deadline and make a valid slow generation look like a failed batch.
+    """
+
+    from botocore.config import Config
+
+    read_timeout = max(10, int(timeout) + 10)
+    return Config(
+        connect_timeout=10,
+        read_timeout=read_timeout,
+        retries={"mode": "standard", "max_attempts": 2},
+    )
 
 
 async def _openai_create_response(api_key: str, timeout: float, body: dict[str, Any]) -> dict[str, Any]:
@@ -457,7 +490,7 @@ class ChatCompletionsLLMClient:
         body = {
             "model": self.config.model,
             "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
-            "max_tokens": 20,
+            "max_tokens": 100,
             "tools": [_to_openai_chat_tool(_TOOL_CALL_PROBE)],
             "tool_choice": self._wire_tool_choice(tool_choice),
         }
@@ -598,7 +631,7 @@ class GoogleLLMClient:
                 "toolConfig": {
                     "functionCallingConfig": {"mode": "ANY" if tool_choice == "required" else "AUTO"}
                 },
-                "maxOutputTokens": 20,
+                "maxOutputTokens": 100,
             },
         }
         data = await _google_generate_content(self.config.api_key, 10.0, body)
@@ -620,7 +653,12 @@ class GoogleLLMClient:
         config: dict[str, Any] = {"maxOutputTokens": max_tokens}
         if response_format:
             config["responseMimeType"] = "application/json"
-            config["responseSchema"] = response_format.get("schema", response_format)
+            # Gemini's responseSchema is a provider-specific OpenAPI subset.  The shared
+            # harness sends the OpenAI-style wrapper {type: json_schema, json_schema: {...}},
+            # which must be unwrapped and sent through responseJsonSchema.  Passing the wrapper
+            # to responseSchema makes google-genai validate `name`/`strict`/`json_schema` as
+            # fields of types.Schema and fail before the network request is made.
+            config["responseJsonSchema"] = _json_schema_body(response_format)
         if system:
             config["systemInstruction"] = {"parts": [{"text": system}]}
 
@@ -630,7 +668,9 @@ class GoogleLLMClient:
             "config": config,
         }
 
-        data = await _google_generate_content(self.config.api_key, 30.0, body)
+        # A complete BRD/PRD snapshot can take longer to process than a normal chat turn.
+        # The service-level timeout remains the final request deadline.
+        data = await _google_generate_content(self.config.api_key, 120.0, body)
 
         text = _extract_google_text(data)
         return _parse_generate_text(text, response_format), _extract_google_usage(data)
@@ -678,7 +718,7 @@ class AnthropicLLMClient:
     async def ping_tool_calling(self, tool_choice: str = "required") -> bool:
         body = {
             "model": self.config.model,
-            "max_tokens": 20,
+            "max_tokens": 100,
             "messages": [{"role": "user", "content": "Call the probe tool with ok set to true."}],
             "tools": [
                 {
@@ -763,6 +803,7 @@ class BedrockLLMClient:
                         region_name=self.config.region or "us-east-1",
                         aws_access_key_id=self.config.api_key,
                         aws_secret_access_key=self.config.secret_key,
+                        config=_bedrock_client_config(self.config.request_timeout),
                     )
         return self._iam_boto3_client
 
@@ -838,7 +879,7 @@ class BedrockLLMClient:
             response = client.converse(
                 modelId=self.config.model,
                 messages=[{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-                inferenceConfig={"maxTokens": _BEDROCK_TOOL_PROBE_MAX_TOKENS, "temperature": 0.0},
+                inferenceConfig={"maxTokens": 100, "temperature": 0.0},
                 toolConfig=tool_config,
             )
             return _has_valid_probe_tool_call(_parse_bedrock_tool_response(response).tool_calls)
@@ -855,7 +896,7 @@ class BedrockLLMClient:
             tool_config["toolChoice"] = {"any": {}}
         body = {
             "messages": [{"role": "user", "content": [{"text": "Call the probe tool with ok set to true."}]}],
-            "inferenceConfig": {"maxTokens": _BEDROCK_TOOL_PROBE_MAX_TOKENS, "temperature": 0.0},
+            "inferenceConfig": {"maxTokens": 100, "temperature": 0.0},
             "toolConfig": tool_config,
         }
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -958,6 +999,7 @@ class LLMClientFactory:
         region: str | None = None,
         secret_key: str | None = None,
         base_url: str | None = None,
+        request_timeout: float = 120.0,
     ) -> LLMClient:
         client_class = cls._client_classes.get(provider_type)
         if client_class is None:
@@ -977,6 +1019,7 @@ class LLMClientFactory:
                 region=region,
                 model=resolved_model,
                 base_url=base_url,
+                request_timeout=request_timeout,
             )
         )
 
@@ -1114,6 +1157,14 @@ def _json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
             "strict": response_format.get("strict", True),
         }
     return response_format
+
+
+def _json_schema_body(response_format: dict[str, Any]) -> dict[str, Any]:
+    """Extract the provider-neutral JSON Schema from any supported response-format wrapper."""
+
+    schema_format = _json_schema_format(response_format)
+    schema = schema_format.get("schema")
+    return schema if isinstance(schema, dict) else schema_format
 
 
 def _responses_json_schema_format(response_format: dict[str, Any]) -> dict[str, Any]:
@@ -1532,9 +1583,17 @@ def _extract_google_text(data: dict[str, Any]) -> str | None:
     if not candidates:
         return None
     parts = candidates[0].get("content", {}).get("parts") or []
-    if not parts:
-        return None
-    return parts[0].get("text")
+    text_parts = [
+        str(part["text"])
+        for part in parts
+        if isinstance(part, dict) and part.get("text") is not None and not part.get("thought", False)
+    ]
+    # Thinking-capable Gemini models can return a thought part before the final JSON part.  If a
+    # provider returns only thought-marked parts, retain the old fallback so the caller still gets
+    # a useful parse error rather than silently treating the response as empty.
+    if not text_parts:
+        text_parts = [str(part["text"]) for part in parts if isinstance(part, dict) and part.get("text") is not None]
+    return "".join(text_parts) or None
 
 
 def _bedrock_content(content: Any) -> list[dict[str, Any]]:

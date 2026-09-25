@@ -1,7 +1,7 @@
 """Per-turn context loading: focus reconciliation, artifact reads, coverage, decision view."""
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
@@ -20,10 +20,15 @@ from app.graphs.policy import ancestor_types
 from app.graphs.state import WorkflowState
 from app.graphs.tools import read_artifacts, read_current_body
 from app.models.agent import AgentSession
-from app.models.artifact import Artifact, ArtifactType, ArtifactVersion
+from app.models.artifact import Artifact, ArtifactStatus, ArtifactType, ArtifactVersion
 from app.services.document_service import DocumentService
 
 _KNOWN_ARTIFACT_TYPES = frozenset(item.value for item in ArtifactType)
+
+# Cap per predecessor so preloading several context artifacts cannot dominate the prompt; mirrors
+# READ_ARTIFACT_MAX_CHARS (agent_tools/artifact_read.py) with a small safety margin since several of
+# these can be included in one turn instead of one at a time.
+PREDECESSOR_BODY_MAX_CHARS = 6000
 
 
 async def _document_coverage(
@@ -50,6 +55,7 @@ class TurnContext:
     coverage: dict[str, Any]
     draft_body: str | None
     previous_draft_body: str | None
+    predecessor_bodies: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _dedupe_types(types: list[str]) -> list[str]:
@@ -312,6 +318,61 @@ async def _load_artifact_history(db, *, artifact_ids: list[str]) -> list[dict[st
     return history
 
 
+async def _load_predecessor_bodies(
+    db,
+    *,
+    project_id: uuid.UUID,
+    artifact_type: str,
+    context_types: list[str],
+) -> list[dict[str, Any]]:
+    """Eagerly load full (capped) body content for every already-accepted context artifact.
+
+    Without this, the model has to spend a separate LLM round-trip per predecessor calling
+    read_artifact to see its content before it can draft. For an artifact type late in its
+    container's dependency chain (e.g. constraints_assumptions, which depends on 3 ancestors plus
+    same-container siblings that are normally already accepted by the time it is drafted), that
+    chain of sequential read_artifact round-trips is the single largest driver of turn latency —
+    each one is a full LLM call on top of the one that actually drafts. Front-loading the content
+    here costs a handful of cheap by-id DB reads instead of several extra LLM calls.
+    """
+    other_types = [item for item in context_types if item != artifact_type and item in _KNOWN_ARTIFACT_TYPES]
+    if not other_types:
+        return []
+    rows = (
+        (
+            await db.execute(
+                select(Artifact)
+                .where(Artifact.project_id == project_id)
+                .where(Artifact.type.in_(other_types))
+                .where(Artifact.status == ArtifactStatus.ACCEPTED)
+                .where(Artifact.current_version_id.is_not(None))
+                .options(selectinload(Artifact.current_version))
+                .order_by(Artifact.type, Artifact.created_at)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen_types: set[str] = set()
+    bodies: list[dict[str, Any]] = []
+    for row in rows:
+        row_type = _artifact_type(row.type)
+        if row_type in seen_types or row.current_version is None:
+            continue
+        seen_types.add(row_type)
+        body = row.current_version.body or ""
+        bodies.append(
+            {
+                "artifact_type": row_type,
+                "artifact_id": str(row.id),
+                "title": row.title,
+                "body": body[:PREDECESSOR_BODY_MAX_CHARS],
+                "truncated": len(body) > PREDECESSOR_BODY_MAX_CHARS,
+            }
+        )
+    return bodies
+
+
 async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> TurnContext:
     """Load everything analyze_node needs from the DB for this turn (one session scope)."""
     cfg = config["configurable"]
@@ -366,6 +427,12 @@ async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> Tur
             db,
             artifact_ids=[str(item.get("artifact_id")) for item in lifecycle_reports if item.get("artifact_id")],
         )
+        predecessor_bodies = await _load_predecessor_bodies(
+            db,
+            project_id=project_id,
+            artifact_type=artifact_type,
+            context_types=context_types,
+        )
         # Load the current draft body for this artifact_type so the analyst can mine
         # the delta instead of re-asking what the draft already records (M7/M8).
         draft = await read_current_body(
@@ -413,6 +480,7 @@ async def load_turn_context(state: WorkflowState, config: RunnableConfig) -> Tur
         coverage=coverage,
         draft_body=draft_body,
         previous_draft_body=previous_draft_body,
+        predecessor_bodies=predecessor_bodies,
     )
 
 

@@ -1,0 +1,8 @@
+{
+  "name": "req-tool-diagram-layout",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "elkjs": "^0.11.0"
+  }
+}

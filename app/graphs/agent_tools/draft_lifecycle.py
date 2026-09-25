@@ -91,12 +91,36 @@ def _draft_structural_violations(artifact_type: str, body: str) -> list[str]:
     return violations
 
 
+def _assembled_draft_sections(state: WorkflowState, artifact_type: str) -> str | None:
+    """Assemble write_draft_section's accumulated sections into a full body, in contract order.
+
+    Returns None unless every required heading has been saved AND marked done -- a partial or
+    still-open set must not silently replace whatever the model passed as `body`, since that would
+    drop the sections not yet written (or cut off a table mid-batch).
+    """
+    sections = state.get("draft_sections") or {}
+    if not sections:
+        return None
+    try:
+        required_headings = output_contract(artifact_type).required_headings
+    except ValueError:
+        return None
+    if any(heading not in sections or not sections[heading].get("done") for heading in required_headings):
+        return None
+    return "\n\n".join(sections[heading]["content"] for heading in required_headings)
+
+
 def _resolve_proposed_body(state: WorkflowState, body: str) -> str:
     """Pick the proposal body that is safe to canonicalize and persist."""
+    artifact_type = state.get("artifact_type") or "brd"
+
+    assembled = _assembled_draft_sections(state, artifact_type)
+    if assembled is not None:
+        return assembled
+
     decision_nodes = state.get("decision_nodes") or {}
     if not decision_nodes:
         return body
-    artifact_type = state.get("artifact_type") or "brd"
     rendered = render_view(decision_nodes, artifact_type)
     if not _missing_required_headings(artifact_type, rendered):
         return rendered
@@ -489,13 +513,130 @@ async def _write_draft_impl(
     )
 
 
+def _normalize_heading(value: str) -> str:
+    return str(value or "").strip().lower().lstrip("#").strip()
+
+
+async def _write_draft_section_impl(
+    heading: str,
+    content: str,
+    state: WorkflowState,
+    tool_call_id: str,
+    append: bool = False,
+    done: bool = True,
+) -> Command:
+    if not str(content or "").strip():
+        return _missing_required_arg_update("write_draft_section", "content", tool_call_id, state.get("locale"))
+    if not str(heading or "").strip():
+        return _missing_required_arg_update("write_draft_section", "heading", tool_call_id, state.get("locale"))
+
+    artifact_type = state.get("artifact_type") or "brd"
+    try:
+        required_headings = output_contract(artifact_type).required_headings
+    except ValueError:
+        required_headings = ()
+
+    target = _normalize_heading(heading)
+    matched = next((item for item in required_headings if _normalize_heading(item) == target), None)
+    if matched is None:
+        valid = ", ".join(required_headings) or "(this artifact type has no required headings)"
+        return _recoverable_tool_update(
+            RecoverableToolError(
+                code="unknown_draft_section",
+                message=f"{heading!r} is not a required section heading for {artifact_type}. Valid headings: {valid}",
+                recovery=(
+                    "Call write_draft_section again with one of the exact headings listed, "
+                    "or call write_draft directly with the full body."
+                ),
+            ),
+            tool_call_id,
+        )
+
+    existing = (state.get("draft_sections") or {}).get(matched)
+    if append and existing and str(existing.get("content") or "").strip():
+        new_content = f"{existing['content']}\n{content.strip()}"
+    else:
+        new_content = f"{matched}\n{content.strip()}"
+    merged = {**(state.get("draft_sections") or {}), matched: {"content": new_content, "done": done}}
+
+    if not done:
+        status_message = (
+            f"Saved a batch into section {matched!r} (not yet complete -- more batches expected). "
+            "Call write_draft_section again with the SAME heading and append=true to add the next "
+            "batch, or append=true and done=true once this is the last one. Do this in a separate "
+            "turn each time, not several write_draft_section calls for this same heading at once."
+        )
+    else:
+        not_ready = [item for item in required_headings if item not in merged or not merged[item]["done"]]
+        if not_ready:
+            status_message = (
+                f"Saved section {matched!r}. Still needed: {', '.join(not_ready)}. Call "
+                "write_draft_section for each remaining heading, then call write_draft to assemble "
+                "and propose the draft."
+            )
+        else:
+            status_message = (
+                "All required sections are saved. Call write_draft now -- the accumulated sections are "
+                "assembled into the body automatically."
+            )
+    return Command(
+        update={
+            "draft_sections": merged,
+            "messages": [ToolMessage(content=status_message, tool_call_id=tool_call_id)],
+        }
+    )
+
+
+@tool
+async def write_draft_section(
+    heading: Annotated[
+        str,
+        "One of this artifact's required section headings, exact match (see REQUIRED OUTPUT "
+        "CONTRACT in your instructions), e.g. '## Constraints' or '## Functional Requirements'.",
+    ],
+    content: Annotated[
+        str,
+        "This batch's content only -- do not repeat the heading line. Same rules as write_draft's "
+        "body: mark inferred / missing / needs_confirmation parts explicitly.",
+    ],
+    state: Annotated[dict, InjectedState],
+    tool_call_id: Annotated[str, InjectedToolCallId],
+    append: Annotated[
+        bool,
+        "true to add this content onto what was already saved for this heading (continuing a "
+        "table written in batches); false (default) replaces the heading's saved content.",
+    ] = False,
+    done: Annotated[
+        bool,
+        "false if more batches are still coming for THIS heading (e.g. a long table written a "
+        "chunk at a time) -- the heading will not count as complete until a later call sets this "
+        "true. true (default) if this call is the whole section, or the last batch of it.",
+    ] = True,
+) -> Command:
+    """Save one required section of an artifact's draft, instead of writing the whole document in a
+    single write_draft call.
+
+    For an artifact with several required headings, call this once per heading to build the draft
+    incrementally. For a heading whose content is a large table (many rows), write it in batches of
+    roughly 8-10 rows: call this repeatedly for the SAME heading with append=true, and done=false on
+    every batch except the last (done=true on the final one) -- one call per turn, not several calls
+    for the same heading in one turn. Each call is smaller and faster than generating everything at
+    once. Once every required heading is saved and done, call write_draft as usual (body can be a
+    short placeholder) to assemble and propose the draft. Skip this tool entirely for a small,
+    single-heading artifact; call write_draft directly.
+    """
+    return await _write_draft_section_impl(heading, content, state, tool_call_id, append, done)
+
+
 @tool
 async def write_draft(
     title: Annotated[str, "Short title for the proposed artifact."],
     body: Annotated[
         str,
         "Full draft body in Markdown following the artifact's output contract (required headings); "
-        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump.",
+        "mark inferred / missing / needs_confirmation parts explicitly. Not a transcript or form dump. "
+        "If every required heading was already saved via write_draft_section, a short placeholder is "
+        "fine -- the accumulated sections are used automatically.",
     ],
     state: Annotated[dict, InjectedState],
     config: RunnableConfig,

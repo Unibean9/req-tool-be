@@ -16,6 +16,7 @@ _UNCONDITIONAL = {
     "ask_user",
     "respond",
     "write_draft",
+    "write_draft_section",
     "note",
     "confirm_intent",
     "read_artifact",
@@ -35,10 +36,16 @@ def _names(state):
 
 def test_no_draft_no_phase():
     """Fresh state, no session_phase set: derives to INTENT (unconfirmed) -> excludes
-    write_draft/run_critique/run_readiness_check/finalize; no draft/coverage/decision-graph
-    conditions hold."""
+    write_draft/write_draft_section/run_critique/run_readiness_check/finalize; no
+    draft/coverage/decision-graph conditions hold."""
     state = {}
-    assert _names(state) == _UNCONDITIONAL - {"write_draft", "run_critique", "run_readiness_check", "finalize"}
+    assert _names(state) == _UNCONDITIONAL - {
+        "write_draft",
+        "write_draft_section",
+        "run_critique",
+        "run_readiness_check",
+        "finalize",
+    }
 
 
 def test_has_draft_critique_zero():
@@ -144,7 +151,7 @@ def test_analyzer_tool_registry_no_longer_carries_the_4_removed_tools():
     from app.graphs.agent_tools import get_all_analyzer_tools
 
     names = {t.name for t in get_all_analyzer_tools()}
-    assert len(names) == 19
+    assert len(names) == 20
     assert not ({"create_decision_node", "update_decision_node", "supersede_decision_node", "dismiss_question"} & names)
 
 
@@ -155,6 +162,7 @@ def test_phase_excludes_tool():
     state = {"session_phase": INTENT, "draft_body": "A draft", "critique_rounds": 1}
     names = _names(state)
     assert "write_draft" not in names
+    assert "write_draft_section" not in names
     assert "run_critique" not in names
     assert "run_readiness_check" not in names
     assert "finalize" not in names
