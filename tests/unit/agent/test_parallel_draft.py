@@ -608,3 +608,18 @@ def test_the_users_own_messages_reach_every_part():
 
     assert "- viết FR\n- team 5 người, ra mắt trước 3/2027" in block
     assert "tool output" not in block
+
+
+def test_the_approved_intent_summary_reaches_every_part():
+    from app.graphs.agent_tools.parallel_draft import _approved_intent, _brief_block
+
+    messages = [
+        AIMessage(
+            content="", tool_calls=[{"id": "c1", "name": "confirm_intent", "args": {"summary": "FR cho MVP, bỏ B2B"}}]
+        ),
+        {"role": "user", "content": "ok"},
+    ]
+
+    block = _brief_block("", [], ["ok"], _approved_intent(messages))
+
+    assert "Intent summary the user approved:\nFR cho MVP, bỏ B2B" in block

@@ -13,6 +13,13 @@ from sqlalchemy import exists, select
 from app.config import settings
 from app.documents.registry import children_of, get_config, status_score
 from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, current_session_phase, get_available_tools
+from app.graphs.analysis.auto_steps import (
+    honest_fallback,
+    needs_tool_retry,
+    retry_nudge,
+    scripted_tool_call,
+    with_nudge,
+)
 
 # analyze_node's concerns live in app.graphs.analysis.* now. The private
 # names are re-exported here because existing tests/evals import them from nodes.
@@ -84,6 +91,7 @@ from app.graphs.decision_graph import (
     migrate_legacy_notes,
     scan_parked_questions,
 )
+from app.graphs.gate_logging import log_gate_decision
 
 # Moved to app.graphs.interrupts (neutral leaf) to break the nodes ↔ agent_tools import cycle;
 # re-exported here because existing tests and callers import them from nodes.
@@ -590,6 +598,12 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
     return update
 
 
+def _sum_usage(first: Any, second: Any) -> Any:
+    if not isinstance(first, dict) or not isinstance(second, dict):
+        return second if isinstance(second, dict) else first
+    return {key: (first.get(key) or 0) + (second.get(key) or 0) for key in ("input", "output", "total")}
+
+
 async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str, Any]:
     """Analyst turn — orchestration over app.graphs.analysis.* (logic moved there verbatim)."""
     cfg = config["configurable"]
@@ -608,14 +622,35 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     available_tools = get_available_tools(effective_state)
     tool_schemas = _build_tool_schemas(available_tools)
     analyzer_messages = _build_analyzer_messages(effective_state, prompt)
+    available_names = {tool.name for tool in available_tools}
+    locale = effective_state.get("locale") or "vi"
     started_at = time.monotonic()
-    ai_message, usage = await llm_client.generate(
-        messages=analyzer_messages,
-        system=system_prompt,
-        max_tokens=settings.analyze_max_tokens,
-        tools=tool_schemas,
-        tool_choice=settings.tool_choice_mode,
-    )
+    scripted = scripted_tool_call(effective_state, available_names)
+    if scripted is not None:
+        # The next step is fixed by state: take it without asking the model (see auto_steps).
+        ai_message = AIMessage(content="", tool_calls=[{"id": f"auto-{uuid.uuid4().hex[:12]}", **scripted}])
+        usage = None
+    else:
+        ai_message, usage = await llm_client.generate(
+            messages=analyzer_messages,
+            system=system_prompt,
+            max_tokens=settings.analyze_max_tokens,
+            tools=tool_schemas,
+            tool_choice=settings.tool_choice_mode,
+        )
+        if needs_tool_retry(effective_state, ai_message):
+            # A reply that skipped the tool it needed (or claims work no tool did): ask once more
+            # with a tool call required, then never let an unbacked "done" reach the user.
+            log_gate_decision("tool_retry", "required", session_id=str(session_id))
+            ai_message, retry_usage = await llm_client.generate(
+                messages=with_nudge(analyzer_messages, retry_nudge(available_names)),
+                system=system_prompt,
+                max_tokens=settings.analyze_max_tokens,
+                tools=tool_schemas,
+                tool_choice="required",
+            )
+            usage = _sum_usage(usage, retry_usage)
+            ai_message = honest_fallback(effective_state, ai_message, locale)
     latency_ms = int((time.monotonic() - started_at) * 1000)
     token_usage = annotate_token_usage(
         usage,
@@ -630,7 +665,6 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
     )
     # Analytic fields are derived from state, not self-reported by the LLM: locale sticky-from-state
     # (default vi). Drafts of record flow through decision_nodes and write_draft.
-    locale = effective_state.get("locale") or "vi"
     analysis_result_base = build_analysis_result_base(
         gated_tools=gated_tools,
         model_tool_calls=model_tool_calls,

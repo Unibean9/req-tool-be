@@ -396,9 +396,23 @@ def _user_messages(messages: list[Any]) -> list[str]:
     return texts[-USER_MESSAGES_MAX:]
 
 
-def _brief_block(brief: str, key_facts: list[dict[str, Any]], user_messages: list[str] | None = None) -> str:
+def _approved_intent(messages: list[Any]) -> str:
+    """The latest intent summary the user was asked to confirm (confirm_intent's argument)."""
+    for message in reversed(messages):
+        calls = message.get("tool_calls") if isinstance(message, dict) else getattr(message, "tool_calls", None)
+        for call in reversed(calls or []):
+            if isinstance(call, dict) and call.get("name") == "confirm_intent":
+                return str((call.get("args") or {}).get("summary") or "").strip()
+    return ""
+
+
+def _brief_block(
+    brief: str, key_facts: list[dict[str, Any]], user_messages: list[str] | None = None, intent: str = ""
+) -> str:
     facts = "\n".join(f"- {fact.get('statement')}" for fact in key_facts if fact.get("statement"))
     parts = []
+    if intent:
+        parts.append(f"Intent summary the user approved:\n{intent}")
     if brief.strip():
         parts.append(f"Decisions and facts agreed in this conversation (they override the sources):\n{brief.strip()}")
     if facts:
@@ -1133,7 +1147,10 @@ async def _draft_in_parallel_impl(
         )
     bodies = {artifact.type.value: artifact.current_version.body or "" for artifact in artifacts}
 
-    brief_text = _brief_block(brief or "", state.get("key_facts") or [], _user_messages(state.get("messages") or []))
+    messages = state.get("messages") or []
+    brief_text = _brief_block(
+        brief or "", state.get("key_facts") or [], _user_messages(messages), _approved_intent(messages)
+    )
     started = time.monotonic()
     try:
         result = await generate_parallel_draft(
