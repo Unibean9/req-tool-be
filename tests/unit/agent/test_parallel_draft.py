@@ -62,7 +62,11 @@ def _ids_asked(prompt: str) -> list[str]:
 class ScriptedLLM:
     """Answers each part from its prompt. `drop` leaves an item out (per attempt), `delay` sleeps."""
 
-    def __init__(self, *, drop: dict[str, int] | None = None, delay: float = 0.0, fail_labels=(), slow=()):
+    def __init__(
+        self, *, drop: dict[str, int] | None = None, delay: float = 0.0, fail_labels=(), slow=(), duplicates=()
+    ):
+        self.duplicates = list(duplicates)  # the duplicate review's answer
+        self.reviews: list[str] = []
         self.drop = dict(drop or {})
         self.delay = delay
         self.slow = set(slow)
@@ -72,6 +76,11 @@ class ScriptedLLM:
     async def generate(self, *, messages, system, max_tokens, tools, tool_choice):
         assert tool_choice == "required" and tools[0]["name"] == "submit"
         prompt = messages[0]["content"]
+        if "duplicates" in tools[0]["parameters"]["properties"]:
+            self.reviews.append(prompt)
+            if self.duplicates == "fail":
+                raise TimeoutError("review hung")
+            return _submit({"duplicates": self.duplicates}), None
         self.prompts.append(prompt)
         ids = _ids_asked(prompt)
         await asyncio.sleep(self.delay + (0.05 if self.slow & set(ids) else 0))
@@ -526,3 +535,76 @@ def test_a_daily_quota_is_not_waited_out():
     assert _is_rate_limited(RuntimeError("429 RESOURCE_EXHAUSTED"))
     assert not _is_rate_limited(RuntimeError("ThrottlingException: Too many tokens per day, please wait"))
     assert not _is_rate_limited(TimeoutError("provider hung"))
+
+
+@pytest.mark.asyncio
+async def test_rows_two_parts_both_wrote_are_merged_keeping_both_sources():
+    # FR-03 merges into FR-01, then FR-01 into FR-04: every source travels along. FR-99 is unknown,
+    # and FR-03 cannot absorb anything once it is gone.
+    llm = ScriptedLLM(
+        duplicates=[
+            {"keep": "FR-01", "drop": ["FR-03", "FR-99"]},
+            {"keep": "FR-03", "drop": ["FR-02"]},
+            {"keep": "FR-04", "drop": ["FR-01"]},
+        ]
+    )
+
+    result = await generate_parallel_draft(
+        "functional_requirement", {"use_case": CAPABILITIES}, client=llm, brief="", locale="en"
+    )
+
+    table = result.sections["## Functional Requirements"]
+    rows = [line for line in table.splitlines() if line.startswith("| FR-")]
+    assert [row.split("|")[2].strip() for row in rows] == ["BC2", "BC5, BC1, BC3"]
+    assert [row.split("|")[1].strip() for row in rows] == ["FR-01", "FR-02"]  # renumbered
+    assert "FR-01 [BC1]: Hệ thống hỗ trợ BC1" in llm.reviews[0]
+    assert missing_coverage(table, coverage_items(CAPABILITIES, "Business Capabilities")) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_duplicate_review_keeps_the_table_unchanged():
+    llm = ScriptedLLM(duplicates="fail")
+
+    result = await generate_parallel_draft(
+        "functional_requirement", {"use_case": CAPABILITIES}, client=llm, brief="", locale="en"
+    )
+
+    assert not result.failures
+    assert (
+        len([line for line in result.sections["## Functional Requirements"].splitlines() if line.startswith("| FR-")])
+        == 4
+    )
+
+
+@pytest.mark.asyncio
+async def test_each_part_sees_the_other_items_scope_and_who_owns_shared_things():
+    llm = ScriptedLLM()
+    capabilities = CAPABILITIES.replace(
+        "| ID | Capability | Goal | Priority |", "| ID | Capability | Scope | Priority |"
+    )
+
+    await generate_parallel_draft(
+        "functional_requirement", {"use_case": capabilities}, client=llm, brief="", locale="en"
+    )
+
+    first = next(prompt for prompt in llm.prompts if _ids_asked(prompt) == ["BC1", "BC2"])
+    assert "- BC3: Báo cáo (C3) -- scope: Theo dõi" in first
+    assert "Something several items share (e.g. login, history, content moderation) is written ONCE" in first
+
+
+def test_the_users_own_messages_reach_every_part():
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    from app.graphs.agent_tools.parallel_draft import _brief_block, _user_messages
+
+    messages = [
+        HumanMessage(content="viết FR"),
+        AIMessage(content="", tool_calls=[{"id": "t1", "name": "ask_user", "args": {}}]),
+        ToolMessage(content="tool output", tool_call_id="t1"),
+        HumanMessage(content="team 5 người, ra mắt trước 3/2027"),
+    ]
+
+    block = _brief_block("", [], _user_messages(messages))
+
+    assert "- viết FR\n- team 5 người, ra mắt trước 3/2027" in block
+    assert "tool output" not in block

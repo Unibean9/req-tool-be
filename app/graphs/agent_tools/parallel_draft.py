@@ -52,6 +52,7 @@ from app.graphs.analysis.coverage import (
     cited_ids,
     coverage_items,
     item_rows,
+    item_summaries,
     missing_coverage,
     rows_citing,
 )
@@ -87,6 +88,9 @@ class ItemsPlan:
     # False for a table keyed by the items it answers (a validation plan row per assumption A-01):
     # no new ID column, the source column comes first.
     own_ids: bool = True
+    # After assembly, one short call finds rows that two parts both wrote (a shared behaviour such as
+    # history or moderation, owned by two overlapping items) and the code merges them.
+    review_duplicates: bool = False
     # One broad capability measured 3.5-5.3k output tokens of Vietnamese rows (Bedrock Sonnet). A
     # truncated answer is unparseable and costs a whole second call, so the cap errs high -- it only
     # bounds the length, the model stops when the rows are done.
@@ -171,6 +175,7 @@ PLANS: dict[str, ItemsPlan | OutlinePlan | SectionsPlan] = {
             "state changes, permissions, pricing, compliance. Usually 2-5 per capability; one rule per row."
         ),
         dedupe_on=("condition", "trigger", "outcome"),
+        review_duplicates=True,
         context={
             "stakeholder_register": (_pick("Stakeholders", "role", "responsibility", "decision"),),
             "scope_capabilities": (_pick("Out of Scope"),),
@@ -195,6 +200,7 @@ PLANS: dict[str, ItemsPlan | OutlinePlan | SectionsPlan] = {
             "3-8 per capability depending on its scope. Apply every business rule shown that concerns it."
         ),
         dedupe_on=("requirement",),
+        review_duplicates=True,
         context={
             "business_rules": (_pick("Business Rules"),),
         },
@@ -365,13 +371,41 @@ def _base_rules(locale: str, confirmation_note: str) -> str:
     )
 
 
-def _brief_block(brief: str, key_facts: list[dict[str, Any]]) -> str:
+USER_MESSAGES_MAX = 12
+USER_MESSAGE_MAX_CHARS = 800
+
+
+def _user_messages(messages: list[Any]) -> list[str]:
+    """The human's own messages in this session, newest last. Passed to every part verbatim, so a
+    decision the user stated reaches the parts even if the agent's brief leaves it out."""
+    texts = []
+    for message in messages:
+        if isinstance(message, dict):
+            is_human = message.get("role") in {"user", "human"} and not message.get("tool_call_id")
+            content = message.get("content")
+        else:
+            is_human = getattr(message, "type", "") == "human"
+            content = getattr(message, "content", "")
+        if not is_human:
+            continue
+        if isinstance(content, list):
+            content = " ".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+        text = str(content or "").strip()
+        if text:
+            texts.append(text[:USER_MESSAGE_MAX_CHARS])
+    return texts[-USER_MESSAGES_MAX:]
+
+
+def _brief_block(brief: str, key_facts: list[dict[str, Any]], user_messages: list[str] | None = None) -> str:
     facts = "\n".join(f"- {fact.get('statement')}" for fact in key_facts if fact.get("statement"))
     parts = []
     if brief.strip():
         parts.append(f"Decisions and facts agreed in this conversation (they override the sources):\n{brief.strip()}")
     if facts:
         parts.append(f"Confirmed key facts:\n{facts}")
+    if user_messages:
+        quoted = "\n".join(f"- {text}" for text in user_messages)
+        parts.append(f"The user's own messages in this conversation (their answers override the sources):\n{quoted}")
     return "\n\n".join(parts)
 
 
@@ -473,9 +507,8 @@ def _dedupe_key(row: dict[str, Any], keys: tuple[str, ...]) -> tuple[str, str]:
     return source, re.sub(r"\W+", " ", content).strip().casefold()
 
 
-def render_table(
-    plan: ItemsPlan | OutlinePlan, rows: list[dict[str, Any]], not_applicable: list[dict[str, str]], locale: str
-) -> str:
+def _unique_rows(plan: ItemsPlan | OutlinePlan, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop rows repeated verbatim (same sources, same content columns)."""
     keys = plan.dedupe_on or tuple(column.key for column in plan.columns)
     seen: set[tuple[str, str]] = set()
     unique: list[dict[str, Any]] = []
@@ -485,6 +518,13 @@ def render_table(
             continue
         seen.add(key)
         unique.append(row)
+    return unique
+
+
+def render_table(
+    plan: ItemsPlan | OutlinePlan, rows: list[dict[str, Any]], not_applicable: list[dict[str, str]], locale: str
+) -> str:
+    unique = _unique_rows(plan, rows)
     own_ids = getattr(plan, "own_ids", True)
     headers = [_header(plan.source_label, locale), *(_header(column, locale) for column in plan.columns)]
     if own_ids:
@@ -591,6 +631,7 @@ async def _items_group(
     group: list[CoverageItem],
     *,
     all_items: list[CoverageItem],
+    summaries: dict[str, str],
     source_rows: str,
     context: str,
     system: str,
@@ -598,7 +639,9 @@ async def _items_group(
 ) -> dict[str, Any]:
     ids = [item.id for item in group]
     label = ",".join(ids)
-    others = ", ".join(f"{item.id} {item.label}".strip() for item in all_items if item.id not in ids)
+    others = "\n".join(
+        f"- {item.id}: {summaries.get(item.id) or item.label}".rstrip(": ") for item in all_items if item.id not in ids
+    )
     prompt = (
         f"Write the rows of the '{plan.heading.removeprefix('## ')}' table for YOUR ITEMS only: {', '.join(ids)}.\n"
         f"{plan.guidance}\n"
@@ -607,7 +650,11 @@ async def _items_group(
         f"Columns:\n{_columns_spec(plan.columns)}\n\n"
         f"YOUR ITEMS (full source rows):\n{source_rows}\n\n"
         + (
-            f"Other items (written separately at the same time -- do not write rows for them):\n{others}\n\n"
+            "Other items (written separately at the same time -- do not write rows for them):\n"
+            f"{others}\n"
+            "Something several items share (e.g. login, history, content moderation) is written ONCE, under "
+            "the item whose scope covers it most directly. If that is one of the other items, do not write "
+            "it here: put that item's ID in your row's dependencies instead.\n\n"
             if others
             else ""
         )
@@ -664,6 +711,72 @@ def _system(artifact_type: str, locale: str) -> str:
     )
 
 
+_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "duplicates": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"keep": {"type": "string"}, "drop": {"type": "array", "items": {"type": "string"}}},
+                "required": ["keep", "drop"],
+            },
+        }
+    },
+    "required": ["duplicates"],
+}
+REVIEW_MAX_TOKENS = 1500
+REVIEW_ROW_MAX_CHARS = 300
+
+
+async def _merge_duplicates(
+    runner: Runner, plan: ItemsPlan, rows: list[dict[str, Any]], system: str
+) -> list[dict[str, Any]]:
+    """Merge rows two parallel parts both wrote. The model only names the duplicates; the code keeps
+    one row per set and gives it every dropped row's source IDs, so coverage cannot be lost. If the
+    review fails, the rows are returned unchanged -- it is a refinement, never a reason to fail."""
+    numbered = {f"{plan.id_prefix}-{number:02d}": row for number, row in enumerate(rows, start=1)}
+    keys = plan.dedupe_on or tuple(column.key for column in plan.columns)
+    listing = "\n".join(
+        f"{row_id} [{', '.join(row['source_ids'])}]: "
+        + " / ".join(str(row.get(key) or "") for key in keys)[:REVIEW_ROW_MAX_CHARS]
+        for row_id, row in numbered.items()
+    )
+    prompt = (
+        f"These '{plan.heading.removeprefix('## ')}' rows were written in parallel parts, one per item in "
+        "brackets, so the same requirement can appear twice under different items. Find rows that state "
+        "the same requirement (the same behaviour or rule, even if worded differently) -- not rows that "
+        "are merely related, share a condition, or cover different steps of one flow. For each set, keep "
+        "the most complete row and list the others to drop. Return an empty list if there are none.\n\n"
+        f"{listing}\n"
+    )
+    try:
+        result = await runner.call(
+            "duplicate review", system=system, prompt=prompt, schema=_REVIEW_SCHEMA, max_tokens=REVIEW_MAX_TOKENS
+        )
+    except PartFailed as exc:
+        logger.warning("parallel_draft duplicate review skipped: %s", exc)
+        return rows
+    dropped: set[str] = set()
+    for entry in result.get("duplicates") or []:
+        if not isinstance(entry, dict):
+            continue
+        keep = str(entry.get("keep") or "").strip()
+        if keep not in numbered or keep in dropped:
+            continue
+        for row_id in entry.get("drop") or []:
+            row_id = str(row_id).strip()
+            # A row that already absorbed others passes their sources on in turn, so none is lost.
+            if row_id == keep or row_id not in numbered or row_id in dropped:
+                continue
+            target = numbered[keep]
+            target["source_ids"] = list(dict.fromkeys([*target["source_ids"], *numbered[row_id]["source_ids"]]))
+            dropped.add(row_id)
+    if dropped:
+        logger.info("parallel_draft merged duplicate rows: %s", sorted(dropped))
+    return [row for row_id, row in numbered.items() if row_id not in dropped]
+
+
 async def _write_item_rows(
     runner: Runner,
     plan: ItemsPlan,
@@ -682,6 +795,7 @@ async def _write_item_rows(
     PartFailed once every part has finished (the finished ones are in new_cache for the retry)."""
     groups = split_groups(items, settings.parallel_draft_concurrency)
     results: dict[str, dict[str, Any]] = {}
+    summaries = item_summaries(source_body, section)
 
     def part(group: list[CoverageItem]) -> tuple[str, str, str]:
         ids = [item.id for item in group]
@@ -708,7 +822,15 @@ async def _write_item_rows(
             return
         try:
             results[key] = await _items_group(
-                runner, plan, group, all_items=items, source_rows=rows_text, context=context, system=system, brief=brief
+                runner,
+                plan,
+                group,
+                all_items=items,
+                summaries=summaries,
+                source_rows=rows_text,
+                context=context,
+                system=system,
+                brief=brief,
             )
         except PartFailed:
             if len(group) == 1:
@@ -737,6 +859,9 @@ async def _write_item_rows(
         (entry for result in results.values() for entry in result["not_applicable"]),
         key=lambda entry: order.get(entry["id"], len(order)),
     )
+    rows = _unique_rows(plan, rows)
+    if plan.review_duplicates and len(groups) > 1:
+        rows = await _merge_duplicates(runner, plan, rows, system)
     table = render_table(plan, rows, not_applicable, runner.locale)
     missing = missing_coverage(table, items)
     if missing:  # defensive: every group was checked, so this means rendering lost a row
@@ -1008,7 +1133,7 @@ async def _draft_in_parallel_impl(
         )
     bodies = {artifact.type.value: artifact.current_version.body or "" for artifact in artifacts}
 
-    brief_text = _brief_block(brief or "", state.get("key_facts") or [])
+    brief_text = _brief_block(brief or "", state.get("key_facts") or [], _user_messages(state.get("messages") or []))
     started = time.monotonic()
     try:
         result = await generate_parallel_draft(

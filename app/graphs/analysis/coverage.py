@@ -134,6 +134,35 @@ def item_rows(source_body: str, section: str, ids: list[str]) -> str:
     return "\n".join(output).strip()
 
 
+_SCOPE_KEYWORDS = ("scope", "phạm vi")
+_SUMMARY_MAX_CHARS = 240
+
+
+def item_summaries(source_body: str, section: str) -> dict[str, str]:
+    """One line per item of `section`: its name and, when the table has one, its scope column --
+    enough for a writer of one item to tell what belongs to another."""
+
+    text = select_sections(source_body or "", [section]) or ""
+    lines = text.splitlines()
+    summaries: dict[str, str] = {}
+    for start, end in _table_blocks(lines):
+        header = [cell.casefold() for cell in _cells(lines[start])]
+        scope_index = next(
+            (index for index, cell in enumerate(header) if any(keyword in cell for keyword in _SCOPE_KEYWORDS)), None
+        )
+        for line in lines[start + 2 : end]:
+            cells = [_plain(cell) for cell in _cells(line)]
+            match = _LEADING_ID_RE.match(cells[0])
+            if match is None or match.group(1) in summaries:
+                continue
+            identifier = match.group(1)
+            name = cells[0][len(identifier) :].strip(" -—:") or (cells[1] if len(cells) > 1 else "")
+            scope = cells[scope_index] if scope_index is not None and scope_index < len(cells) else ""
+            summary = f"{name} -- scope: {scope}" if scope and scope != name else name
+            summaries[identifier] = summary[:_SUMMARY_MAX_CHARS]
+    return summaries
+
+
 def cited_ids(text: str) -> set[str]:
     """IDs cited anywhere in `text` (C1, BR-R1, C-LEG-01, ...)."""
     return set(re.findall(r"(?<![A-Za-z0-9-])[A-Z]{1,5}(?:-[A-Z]{1,6})*-?\d{1,3}(?![A-Za-z0-9])", text or ""))
