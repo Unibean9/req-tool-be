@@ -45,6 +45,9 @@ _CLAIM_RE = re.compile(
 )
 
 _WRITE_TOOLS = frozenset({"write_draft", "write_draft_section", "draft_in_parallel"})
+# Tools whose result (after the human's decision) legitimately ends the loop: an empty or "done"
+# reply right after one of them is the normal close of the turn, not a skipped tool call.
+_CONCLUDING_TOOLS = frozenset({"finalize", "write_draft", "create_artifact_link", "propose_retirement"})
 AUTO_BRIEF = "(none beyond the approved intent summary and the user's messages)"
 
 
@@ -149,13 +152,21 @@ def _reply_text(ai_message: AIMessage) -> str | None:
     return None
 
 
+def after_concluding_tool(state: dict[str, Any]) -> bool:
+    """The latest message is the result of a tool whose outcome ends the loop (see _CONCLUDING_TOOLS)."""
+    messages = list(state.get("messages") or [])
+    if not messages or not _message_tool_call_id(messages[-1]):
+        return False
+    return _call_names_by_id(messages).get(_message_tool_call_id(messages[-1])) in _CONCLUDING_TOOLS
+
+
 def needs_tool_retry(state: dict[str, Any], ai_message: AIMessage) -> bool:
     """A reply that should have been a tool call: text-only before any draft exists (the work of this
     phase is done through tools), or any reply claiming something was created that no write tool
     produced this turn."""
     messages = list(state.get("messages") or [])
     text = _reply_text(ai_message)
-    if text is None:
+    if text is None or after_concluding_tool(state):
         return False
     if claims_completion(text) and not _write_tool_succeeded_this_turn(messages):
         return True
@@ -188,6 +199,22 @@ _HONEST_FALLBACK = {
         "Please send the request again, or pick a stronger model in Settings."
     ),
 }
+
+
+_EMPTY_REPLY_FALLBACK = {
+    "vi": (
+        "Model chưa trả lời được lượt này (không có nội dung, hoặc chỉ gọi công cụ không dùng được lúc này). "
+        "Bạn gửi lại yêu cầu nhé; nếu lặp lại, hãy chọn model khác trong Settings."
+    ),
+    "en": (
+        "The model gave no usable answer this turn (no content, or only tools that cannot be used right now). "
+        "Please send the request again; if it keeps happening, pick another model in Settings."
+    ),
+}
+
+
+def empty_reply_fallback(locale: str) -> str:
+    return _EMPTY_REPLY_FALLBACK.get(locale, _EMPTY_REPLY_FALLBACK["en"])
 
 
 def honest_fallback(state: dict[str, Any], ai_message: AIMessage, locale: str) -> AIMessage:

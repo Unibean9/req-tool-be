@@ -14,6 +14,8 @@ from app.config import settings
 from app.documents.registry import children_of, get_config, status_score
 from app.graphs.agent_tools import DIAGNOSIS_JUDGE_CALLS_MAX, _phase_signals, current_session_phase, get_available_tools
 from app.graphs.analysis.auto_steps import (
+    after_concluding_tool,
+    empty_reply_fallback,
     honest_fallback,
     needs_tool_retry,
     retry_nudge,
@@ -598,6 +600,14 @@ async def orchestrator_node(state: WorkflowState, config: RunnableConfig | None 
     return update
 
 
+def _selects_nothing(state: WorkflowState, ai_message: AIMessage) -> bool:
+    """No text and no tool call that survives the phase/solo gate: the graph would end the turn.
+    Right after a concluding tool (finalize, a decided proposal) that is the normal end, not a miss."""
+    if after_concluding_tool(state):
+        return False
+    return not _ai_text_content(ai_message) and not gate_model_selection(state, ai_message)[1]
+
+
 def _sum_usage(first: Any, second: Any) -> Any:
     if not isinstance(first, dict) or not isinstance(second, dict):
         return second if isinstance(second, dict) else first
@@ -638,9 +648,10 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             tools=tool_schemas,
             tool_choice=settings.tool_choice_mode,
         )
-        if needs_tool_retry(effective_state, ai_message):
-            # A reply that skipped the tool it needed (or claims work no tool did): ask once more
-            # with a tool call required, then never let an unbacked "done" reach the user.
+        if needs_tool_retry(effective_state, ai_message) or _selects_nothing(effective_state, ai_message):
+            # A reply that skipped the tool it needed, claims work no tool did, or leaves nothing to
+            # run (empty, or only tools this phase does not allow): ask once more with a tool call
+            # required, then never let an unbacked "done" reach the user.
             log_gate_decision("tool_retry", "required", session_id=str(session_id))
             ai_message, retry_usage = await llm_client.generate(
                 messages=with_nudge(analyzer_messages, retry_nudge(available_names)),
@@ -651,6 +662,10 @@ async def analyze_node(state: WorkflowState, config: RunnableConfig) -> dict[str
             )
             usage = _sum_usage(usage, retry_usage)
             ai_message = honest_fallback(effective_state, ai_message, locale)
+            if _selects_nothing(effective_state, ai_message):
+                # Still nothing: say so and keep the session open. Ending the graph here used to
+                # mark the session COMPLETED, which closed it on the user mid-conversation.
+                ai_message = AIMessage(content=empty_reply_fallback(locale))
     latency_ms = int((time.monotonic() - started_at) * 1000)
     token_usage = annotate_token_usage(
         usage,

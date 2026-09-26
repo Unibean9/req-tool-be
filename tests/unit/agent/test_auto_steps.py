@@ -212,3 +212,63 @@ async def test_analyze_does_not_retry_a_plain_question(client, db_session):
 
     assert llm.generate.await_count == 1
     assert [call["name"] for call in out["messages"][-1].tool_calls] == ["ask_user"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reply_is_retried_then_answered_instead_of_ending_the_turn(client, db_session):
+    """An empty reply used to end the graph, which marked the session COMPLETED (closed on the user)."""
+    state = _fr_state([{"role": "user", "content": "viết FR"}], locale="vi")
+    empty = AIMessage(content="", tool_calls=[])
+
+    out, llm = await _analyze(client, db_session, state, [empty, empty])
+
+    assert llm.generate.await_count == 2
+    [call] = out["messages"][-1].tool_calls
+    assert call["name"] == "respond"  # an interrupt: the session stays open
+    assert call["args"]["message"].startswith("Model chưa trả lời được lượt này")
+
+
+@pytest.mark.asyncio
+async def test_a_reply_whose_only_tool_the_phase_forbids_is_retried(client, db_session):
+    # Intent not confirmed yet: write_draft is not on this phase's menu, so the gate drops it.
+    state = _state(artifact_type="functional_requirement")
+    state["messages"] = [{"role": "user", "content": "viết FR"}]
+    forbidden = AIMessage(
+        content="", tool_calls=[{"id": "w", "name": "write_draft", "args": {"title": "t", "body": "b"}}]
+    )
+    allowed = AIMessage(content="", tool_calls=[{"id": "c", "name": "confirm_intent", "args": {"summary": "Viết FR"}}])
+
+    out, llm = await _analyze(client, db_session, state, [forbidden, allowed])
+
+    assert llm.generate.await_count == 2
+    assert [call["name"] for call in out["messages"][-1].tool_calls] == ["confirm_intent"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reply_right_after_finalize_ends_the_turn_normally(client, db_session):
+    state = _fr_state(
+        [
+            {"role": "user", "content": "xong rồi"},
+            AIMessage(content="", tool_calls=[{"id": "f1", "name": "finalize", "args": {"summary": "Xong"}}]),
+            ToolMessage(content="Xong", tool_call_id="f1"),
+        ],
+        draft_body="## Functional Requirements\n...",
+    )
+
+    out, llm = await _analyze(client, db_session, state, [AIMessage(content="", tool_calls=[])])
+
+    assert llm.generate.await_count == 1  # no retry, no fallback message: the graph ends as before
+    assert not any(getattr(message, "tool_calls", None) for message in out.get("messages") or [])
+
+
+def test_a_done_claim_right_after_finalize_is_not_retried():
+    state = _fr_state(
+        [
+            {"role": "user", "content": "chốt đi"},
+            AIMessage(content="", tool_calls=[{"id": "f1", "name": "finalize", "args": {"summary": "Xong"}}]),
+            ToolMessage(content="Xong", tool_call_id="f1"),
+        ],
+        draft_body="## Functional Requirements\n...",
+    )
+
+    assert not needs_tool_retry(state, AIMessage(content="Đã hoàn tất như yêu cầu."))

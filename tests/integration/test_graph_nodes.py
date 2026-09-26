@@ -22,6 +22,12 @@ from tests.factories import (
 )
 from tests.helpers import create_org, create_project, make_auth_headers
 
+
+def _ask_reply() -> AIMessage:
+    """A valid analyst selection. A reply with nothing to run is retried (see auto_steps), so tests
+    about other concerns use a real tool call to keep the call count and usage at exactly one."""
+    return AIMessage(content="", tool_calls=[{"id": "s0", "name": "ask_user", "args": {"message": "Mục tiêu?"}}])
+
 # ---------------------------------------------------------------------------
 # analyze_node tests
 # ---------------------------------------------------------------------------
@@ -320,12 +326,7 @@ async def test_analyze_prefers_strong_client_when_present(client, db_session):
     default_llm = AsyncMock()
     default_llm.generate = AsyncMock()
     strong_llm = AsyncMock()
-    strong_llm.generate = AsyncMock(return_value=({
-        "next_action": "done",
-        "confidence": 0.9,
-        "gaps": [],
-        "proposals": [],
-    }, None))
+    strong_llm.generate = AsyncMock(return_value=(_ask_reply(), None))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), default_llm)
@@ -348,12 +349,7 @@ async def test_analyze_falls_back_to_default_when_strong_absent(client, db_sessi
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     default_llm = AsyncMock()
-    default_llm.generate = AsyncMock(return_value=({
-        "next_action": "done",
-        "confidence": 0.9,
-        "gaps": [],
-        "proposals": [],
-    }, None))
+    default_llm.generate = AsyncMock(return_value=(_ask_reply(), None))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), default_llm)
@@ -754,10 +750,7 @@ async def test_analyze_node_records_token_usage_and_latency(client, db_session):
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=(
-        {"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []},
-        {"input": 5, "output": 10, "total": 15},
-    ))
+    mock_llm.generate = AsyncMock(return_value=(_ask_reply(), {"input": 5, "output": 10, "total": 15}))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), mock_llm)
@@ -789,10 +782,7 @@ async def test_analyze_node_token_usage_has_additive_component_breakdown(client,
     agent_session = await _make_agent_session(client, db_session, project_id)
 
     mock_llm = AsyncMock()
-    mock_llm.generate = AsyncMock(return_value=(
-        {"next_action": "done", "confidence": 0.8, "gaps": [], "proposals": []},
-        {"input": 5, "output": 10, "total": 15},
-    ))
+    mock_llm.generate = AsyncMock(return_value=(_ask_reply(), {"input": 5, "output": 10, "total": 15}))
 
     state = _state()
     config = _config(str(agent_session.id), str(project_id), mock_llm)
